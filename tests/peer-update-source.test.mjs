@@ -195,6 +195,7 @@ struct UpdateChannel {
   var isPrivate: Bool { IO.mode == "private" }
   var username: String? { "fixture" }
   static func current() -> Self { Self() }
+  static func currentOffMain() async -> Self { current() }   // W107：產品端在主執行緒改用這個
   func authorize(_ request: inout URLRequest) {
     if isPrivate { request.setValue("Bearer fixture-only", forHTTPHeaderField: "Authorization") }
   }

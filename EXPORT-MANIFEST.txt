@@ -1,6 +1,6 @@
-Source commit: 397d855a0204479ce6e16418fed405e5942f110c
+Source commit: 791893073bba9f9c9ee2ccf2e12421085234506d
 Source worktree: clean
-Files: 1696
+Files: 1698
 .gitignore
 App/Sources/Tatwo2/Bot/BotPage.swift
 App/Sources/Tatwo2/Bot/BotPageState.swift
@@ -18,6 +18,7 @@ App/Sources/Tatwo2/Browser/BrowserAnnotationSheet.swift
 App/Sources/Tatwo2/Browser/BrowserBookmarkExport.swift
 App/Sources/Tatwo2/Browser/BrowserBookmarkRows.swift
 App/Sources/Tatwo2/Browser/BrowserChatLifecycle.swift
+App/Sources/Tatwo2/Browser/BrowserChatSessionsSection.swift
 App/Sources/Tatwo2/Browser/BrowserDailyNavigationControls.swift
 App/Sources/Tatwo2/Browser/BrowserDailyNavigationPolicy.swift
 App/Sources/Tatwo2/Browser/BrowserDefaultBrowserRow.swift
@@ -1690,6 +1691,7 @@ tests/w91c-hostkey-pin.test.mjs
 tests/w95-job-queue.test.mjs
 tests/w96-skills-shipping.test.mjs
 tests/w97-browser-perf.test.mjs
+tests/w97b-pgo-recipe.test.mjs
 tests/w98-devices-page.test.mjs
 tests/w99-cef-ceiling.test.mjs
 tests/webmcp-runtime.test.mjs

@@ -103,6 +103,7 @@ ${compare}
 struct UpdateChannel {
   let isPrivate = false, requestedPrivate = false
   static func current() -> Self { Self() }
+  static func currentOffMain() async -> Self { current() }   // W107：產品端在主執行緒改用這個
   func authorize(_ request: inout URLRequest) {}
 }
 @MainActor final class InAppUpdater {
@@ -136,8 +137,10 @@ final class UpdateRedirectDelegate: NSObject, URLSessionTaskDelegate { static le
   while !c.isChecking { await Task.yield() }
   precondition(c.lastCheckedAt == nil)
   await c.check()
-  precondition(c.session.calls == 1)
+  // W107：check() 現在先在背景讀更新通道（不在主執行緒讀鑰匙圈），第一個請求要等第一次檢查跑完才保證已送出；
+  // 去重的意思不變——兩次 check 只准打一次網路。
   await task.value
+  precondition(c.session.calls == 1)
   precondition(!c.isChecking && c.lastCheckedAt! >= start)
   precondition(c.status == "目前沒有較新的正式版本")
   let previous = c.lastCheckedAt!

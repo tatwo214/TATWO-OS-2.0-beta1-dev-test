@@ -85,6 +85,11 @@ struct UpdateChannel {
         let token = account.flatMap { try? store.mcpToken(username: $0.username) }
         return Self(requestedPrivate: true, username: account?.username, token: token)
     }
+    /// W107：`current()` 會讀鑰匙圈（GitHub token）。鑰匙圈服務一次只處理一個請求，任何地方跳出授權視窗時
+    /// 主執行緒上的讀取就會一起卡住（.021 App 卡死的間接原因）。主執行緒的呼叫端一律改用這個。
+    static func currentOffMain() async -> Self {
+        await Task.detached(priority: .utility) { current() }.value
+    }
     func authorize(_ request: inout URLRequest) {
         guard isPrivate, request.url?.scheme == "https", request.url?.host == "api.github.com",
               request.url?.path.hasPrefix("/repos/\(Self.privateRepository)/") == true else { return }
@@ -174,7 +179,8 @@ final class GitHubReleaseUpdateChecker: ObservableObject {
     private let defaults: UserDefaults
     let session: URLSession
     var repository: String {
-        if UpdateChannel.current().isPrivate { return UpdateChannel.privateRepository }
+        // 用上一次檢查（背景讀到）的結果，不在這個同步屬性裡讀鑰匙圈（W107）。
+        if isPrivateChannel { return UpdateChannel.privateRepository }
         return (defaults.string(forKey: "tatwo2.feedback.repository") ?? Self.defaultRepository)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -220,7 +226,7 @@ final class GitHubReleaseUpdateChecker: ObservableObject {
                 InAppUpdater.shared.invalidateCandidate()
             }
         }
-        let channel = UpdateChannel.current()
+        let channel = await UpdateChannel.currentOffMain()
         if isPrivateChannel != channel.isPrivate { availableRelease = nil }
         isPrivateChannel = channel.isPrivate
         defer { if channel.requestedPrivate && !channel.isPrivate { status = "私人通道需要 GitHub 登入" } }

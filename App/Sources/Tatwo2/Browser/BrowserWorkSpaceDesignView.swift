@@ -429,6 +429,7 @@ struct BrowserWorkSpaceDesignView: View {
     @State var loginHelpPresented = false
     @State private var browserFocused = false
     @State private var addressEditing = false
+    @ObservedObject private var chatSessionSelection = BrowserChatSessionSelection.shared
     @State var extensionsPresented = false
     @State private var findPresented = false
     @State private var findFocusRequest = 0
@@ -537,6 +538,7 @@ struct BrowserWorkSpaceDesignView: View {
 
     @ViewBuilder private var browserPageContent: some View {
         if EmbeddedBrowserEnginePolicy.current != .chromiumCEF { BrowserEngineUnavailablePlaceholder() }
+        else if store.selectedSpace.isSessionSpace, let pick = chatSessionSelection.pick { BrowserChatSessionSurface(pick: pick, source: store.registry) }
         else if store.selectedSpace.isSessionSpace { sessionContent }
         else { browserContent }
     }
@@ -960,14 +962,12 @@ struct BrowserWorkSpaceSidebarList: View {
                         }
                     }
                 }
-                Divider().padding(.horizontal, BrowserSidebarMetrics.dividerHorizontalInset)
-                    .padding(.vertical, BrowserSidebarMetrics.dividerVerticalInset)
-                Text("Bot 開啟的瀏覽器").font(.system(size: BrowserSidebarMetrics.metaFontSize, weight: .semibold))
-                    .foregroundStyle(.secondary).padding(BrowserSidebarMetrics.captionPadding)
+                BrowserChatSessionsSection(registry: .chatInspectorRegistry(source: store.registry)) // W109
+                Divider().padding(.horizontal, BrowserSidebarMetrics.dividerHorizontalInset).padding(.vertical, BrowserSidebarMetrics.dividerVerticalInset)
+                Text("Bot 開啟的瀏覽器").font(.system(size: BrowserSidebarMetrics.metaFontSize, weight: .semibold)).foregroundStyle(.secondary).padding(BrowserSidebarMetrics.captionPadding)
                 BrowserBotTabRows(tabs: store.botTabs)
                 if store.botTabs.isEmpty {
-                    Text("尚未有 bot 瀏覽器").font(.system(size: BrowserSidebarMetrics.metaFontSize))
-                        .foregroundStyle(.tertiary).padding(BrowserSidebarMetrics.captionPadding)
+                    Text("尚未有 bot 瀏覽器").font(.system(size: BrowserSidebarMetrics.metaFontSize)).foregroundStyle(.tertiary).padding(BrowserSidebarMetrics.captionPadding)
                 }
             }
         }.frame(maxHeight: .infinity)
@@ -977,7 +977,7 @@ struct BrowserWorkSpaceSidebarList: View {
         BrowserTabRow(title: tab.title, tabID: tab.id.uuidString, host: tab.url?.host ?? "about:blank", favicon: tab.faviconPNG,
             selected: store.selectedSessionTabID == tab.id, sleeping: tab.isSleeping,
             leadingInset: BrowserSidebarMetrics.childLeadingInset,
-            onSelect: { store.selectSessionTab(tab.id) }).help(tab.url?.absoluteString ?? tab.title)
+            onSelect: { BrowserChatSessionSelection.shared.pick = nil; store.selectSessionTab(tab.id) }).help(tab.url?.absoluteString ?? tab.title)
             .accessibilityAddTraits(store.selectedSessionTabID == tab.id ? .isSelected : [])
             .contextMenu {
                 BrowserFavoriteMenu(registry: store.registry, url: tab.url) {

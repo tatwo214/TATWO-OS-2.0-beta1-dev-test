@@ -427,7 +427,7 @@ final class InAppUpdater: ObservableObject {
     }
 
     private func revalidate(tag: String, repository: String, folder: URL) async throws {
-        let channel = UpdateChannel.current()
+        let channel = await UpdateChannel.currentOffMain()   // W107：不在主執行緒讀鑰匙圈
         if repository == UpdateChannel.privateRepository && !channel.isPrivate { throw URLError(.userAuthenticationRequired) }
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/tags/\(tag)")!,
                                  cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
@@ -798,7 +798,7 @@ final class InAppUpdater: ObservableObject {
         func check(_ response: URLResponse) throws {
             try UpdateDownloadProgress.check(response)
         }
-        let channel = UpdateChannel.current()
+        let channel = await UpdateChannel.currentOffMain()   // W107：不在主執行緒讀鑰匙圈
         if repository == UpdateChannel.privateRepository && !channel.isPrivate { throw failure("私人通道需要 GitHub 登入") }
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repository)/releases/tags/\(tag)")!,
                                  cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)

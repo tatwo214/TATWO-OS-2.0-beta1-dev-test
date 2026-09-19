@@ -47,17 +47,29 @@ REVISION="$(printf '%s\n' "$PIN_VALUES" | sed -n '3p')"
 BRANCH="$(printf '%s\n' "$PIN_VALUES" | sed -n '4p')"
 ARCHIVE="$(printf '%s\n' "$PIN_VALUES" | sed -n '5p')"
 WORK="$OUTPUT_PATH/work-$REVISION"
-export GN_DEFINES="proprietary_codecs=true ffmpeg_branding=Chrome is_official_build=true chrome_pgo_phase=0 enable_dsyms=false"
+# W97b：chrome_pgo_phase=0 是 W94 的將就（profile 沒下載時 phase=2 會在 gn gen assert 失敗），
+# 不是想要的組態——Chromium 官方 mac build 預設就是 phase=2，官方 CEF 也是 PGO 版。CEF_PGO=1 把它補回來。
+PGO_PHASE=0
+OUT_ARCHIVE="$ARCHIVE"
+PGO_ARGS=()
+if [[ "${CEF_PGO:-0}" == "1" ]]; then
+  PGO_PHASE=2
+  # --with-pgo-profiles 把 .gclient 的 checkout_pgo_profiles 設成 True；DEPS 的兩個 hook
+  # （chrome mac-arm profile 與 V8 builtins profile）都掛在這個條件上，缺任一個 ninja 都會停。
+  PGO_ARGS=("--with-pgo-profiles")
+  OUT_ARCHIVE="${ARCHIVE%.tar.bz2}-pgo.tar.bz2"
+fi
+export GN_DEFINES="proprietary_codecs=true ffmpeg_branding=Chrome is_official_build=true chrome_pgo_phase=$PGO_PHASE enable_dsyms=false"
 ARGS=("--download-dir=$WORK" "--branch=$BRANCH" "--checkout=$REVISION"
   "--chromium-checkout=refs/tags/$CHROMIUM" "--arm64-build" "--no-debug-build"
   "--minimal-distrib-only" "--no-distrib-archive" "--build-target=cefclient"
-  "--no-release-tests" "--force-build")
+  "--no-release-tests" "--force-build" "${PGO_ARGS[@]+"${PGO_ARGS[@]}"}")
 # --build-target=cefclient: make_distrib takes the framework from cefclient.app/Contents/Frameworks；
 # 只編 cefsimple 會得到「No Release build files」空 distrib。clang-format 由 depot_tools 提供（PATH 已含）。
 # --force-build: a previous interrupted run leaves src/out and recorded hashes, and
 # automate-git would otherwise print "Not building" and skip straight to a missing distrib.
 printf 'CEF=%s\nCHROMIUM=%s\nGN_DEFINES=%s\nOUTPUT=%s/%s\nWORK=%s\n' \
-  "$VERSION" "$CHROMIUM" "$GN_DEFINES" "$OUTPUT" "$ARCHIVE" "$WORK"
+  "$VERSION" "$CHROMIUM" "$GN_DEFINES" "$OUTPUT" "$OUT_ARCHIVE" "$WORK"
 printf 'automate-git.py'; printf ' %q' "${ARGS[@]}"; printf '\n'
 if [[ "${2:-}" != "--execute" ]]; then
   printf '%s\n' 'PLAN_ONLY: no files created, no downloads, no build started.'
@@ -87,7 +99,7 @@ FREE_KB="$(df -Pk "$VOLUME" | awk 'END {print $4}')"
 (( FREE_KB >= 120 * 1024 * 1024 )) || {
   printf '%s\n' 'error: less than 120 GiB available; refusing build' >&2; exit 1;
 }
-[[ ! -e "$OUTPUT/$ARCHIVE" && ! -e "$OUTPUT/$ARCHIVE.sha256" ]] || {
+[[ ! -e "$OUTPUT/$OUT_ARCHIVE" && ! -e "$OUTPUT/$OUT_ARCHIVE.sha256" ]] || {
   printf '%s\n' 'error: output already exists; choose another output directory' >&2; exit 1;
 }
 mkdir -p "$WORK/tmp" "$WORK/cache" "$WORK/vpython"
@@ -119,24 +131,33 @@ NAME="${ARCHIVE%.tar.bz2}"
 # CEF_OFFICIAL_ARCHIVE：自建的部分 dylib（libcef_sandbox／libEGL／libvk_swiftshader）在 macOS 27 dyld 上
 # 會被拒「mis-aligned LINKEDIT string pool」（Chromium 內建 lld 的輸出對齊問題；主 framework 不受影響）。
 # 給官方 archive 路徑時，用 dlopen 探測每個 Libraries/*.dylib，載入失敗的以官方同版取代（這些 dylib 與解碼器無關）。
-if [[ -n "${CEF_OFFICIAL_ARCHIVE:-}" ]]; then
-  [[ -f "$CEF_OFFICIAL_ARCHIVE" ]] || { printf '%s\n' 'error: CEF_OFFICIAL_ARCHIVE not found' >&2; exit 2; }
+# CEF_OFFICIAL_LIBS_DIR：同一件事的省事入口，直接給已解開的官方 Libraries/ 目錄
+# （W97b 重編時 archive 已經不在機器上了，但 W94 留下的解開副本還在）。
+if [[ -n "${CEF_OFFICIAL_ARCHIVE:-}" || -n "${CEF_OFFICIAL_LIBS_DIR:-}" ]]; then
   LIBS="$DIST/$NAME/Release/Chromium Embedded Framework.framework/Libraries"
   OFFTMP="$WORK/tmp/official-libs"; rm -rf "$OFFTMP"; mkdir -p "$OFFTMP"
+  if [[ -n "${CEF_OFFICIAL_LIBS_DIR:-}" ]]; then
+    [[ -d "$CEF_OFFICIAL_LIBS_DIR" ]] || { printf '%s\n' 'error: CEF_OFFICIAL_LIBS_DIR not found' >&2; exit 2; }
+    OFFLIBS="$CEF_OFFICIAL_LIBS_DIR"
+  else
+    [[ -f "$CEF_OFFICIAL_ARCHIVE" ]] || { printf '%s\n' 'error: CEF_OFFICIAL_ARCHIVE not found' >&2; exit 2; }
+    OFFLIBS="$OFFTMP/$NAME/Release/Chromium Embedded Framework.framework/Libraries"
+  fi
   for lib in "$LIBS"/*.dylib; do
     base="$(basename "$lib")"
     if ! python3 -c 'import ctypes,sys; ctypes.CDLL(sys.argv[1])' "$lib" 2>/dev/null; then
-      tar -xjf "$CEF_OFFICIAL_ARCHIVE" -C "$OFFTMP" "$NAME/Release/Chromium Embedded Framework.framework/Libraries/$base"
+      [[ -n "${CEF_OFFICIAL_LIBS_DIR:-}" ]] || tar -xjf "$CEF_OFFICIAL_ARCHIVE" -C "$OFFTMP" "$NAME/Release/Chromium Embedded Framework.framework/Libraries/$base"
+      [[ -f "$OFFLIBS/$base" ]] || { printf 'error: official %s not available\n' "$base" >&2; exit 2; }
       mkdir -p "$OUTPUT/selfbuilt-misaligned"; cp "$lib" "$OUTPUT/selfbuilt-misaligned/$base"
-      cp "$OFFTMP/$NAME/Release/Chromium Embedded Framework.framework/Libraries/$base" "$lib"
+      cp "$OFFLIBS/$base" "$lib"
       printf 'replaced dyld-rejected %s with official copy (self-built kept in selfbuilt-misaligned/)\n' "$base"
     fi
   done
 fi
 # macOS bsdtar 預設把 xattr 存成 AppleDouble（._*）成員，數量翻倍且會被 runtime 完整性檢查擋下（W13 同款坑）。
-COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cjf "$OUTPUT/$ARCHIVE.part" -C "$DIST" "$NAME"
-mv "$OUTPUT/$ARCHIVE.part" "$OUTPUT/$ARCHIVE"
-(cd "$OUTPUT" && shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256")
-SHA="$(shasum -a 256 "$OUTPUT/$ARCHIVE" | awk '{print $1}')"
-printf 'TATWO2_CEF_LOCAL_ARCHIVE=%q\nTATWO2_CEF_LOCAL_SHA256=%s\n' "$OUTPUT/$ARCHIVE" "$SHA"
+COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cjf "$OUTPUT/$OUT_ARCHIVE.part" -C "$DIST" "$NAME"
+mv "$OUTPUT/$OUT_ARCHIVE.part" "$OUTPUT/$OUT_ARCHIVE"
+(cd "$OUTPUT" && shasum -a 256 "$OUT_ARCHIVE" > "$OUT_ARCHIVE.sha256")
+SHA="$(shasum -a 256 "$OUTPUT/$OUT_ARCHIVE" | awk '{print $1}')"
+printf 'TATWO2_CEF_LOCAL_ARCHIVE=%q\nTATWO2_CEF_LOCAL_SHA256=%s\n' "$OUTPUT/$OUT_ARCHIVE" "$SHA"
 printf '%s\n' 'Archive ready; playback and distribution/licensing review remain required.'

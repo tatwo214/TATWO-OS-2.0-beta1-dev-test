@@ -389,6 +389,7 @@ struct EmbeddedBrowserNavigationState {
 }
 @MainActor final class BrowserWorkSpaceRuntime: ObservableObject {
     static let shared = BrowserWorkSpaceRuntime()
+    static func forChat(_ sessionID: String, registry: BrowserTabRegistry? = nil, adoptsWorkSpaceTabs: Bool = false) -> BrowserWorkSpaceRuntime { shared }
     var navigationTabID: UUID? = nil
     var navigationState = EmbeddedBrowserNavigationState.blank
     var shortcutSerial = 0
@@ -474,6 +475,7 @@ extension View {
     join(root, 'App/Sources/Tatwo2/Browser/BrowserToolbarGlass.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceEmbeddedChrome.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserFloatingToolsPanel.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserChatSessionsSection.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift')];
   run('swiftc', ['-typecheck', ...viewSources]);
   if (process.env.W54_BROWSER_UI_EVIDENCE_DIR) {

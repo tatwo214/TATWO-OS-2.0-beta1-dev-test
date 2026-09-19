@@ -245,3 +245,34 @@ test('/goal 102 G1/G2: chat-side tabs and open state follow the thread; docked p
   assert.doesNotMatch(body.slice(0, 1400), /liquidGlassSurface|LinearGradient|\.shadow\(/);
 });
 
+test('W109: chat-side browsers are listed in the Browser Session space by project/thread and open live', () => {
+  const section = read('Browser/BrowserChatSessionsSection.swift');
+  assert.match(section, /name\.hasPrefix\("thread:"\)/);
+  assert.match(section, /if entry\.tabs\.count == 1, let tab = entry\.tabs\.first \{/);      // single tab opens directly
+  assert.match(section, /ForEach\(entry\.tabs\) \{ tab in/);                                    // several tabs listed like bookmarks
+  assert.match(section, /let runtime = BrowserWorkSpaceRuntime\.forChat\("chat-browser-inspector", registry: registry, adoptsWorkSpaceTabs: true\)/);
+  const design = read('Browser/BrowserWorkSpaceDesignView.swift');
+  assert.match(design, /BrowserChatSessionsSection\(registry: \.chatInspectorRegistry\(source: store\.registry\)\)/);
+  assert.match(design, /isSessionSpace, let pick = chatSessionSelection\.pick \{ BrowserChatSessionSurface\(pick: pick, source: store\.registry\) \}/);
+  assert.match(read('Chat/ChatPage.swift'), /BrowserChatSessionSelection\.shared\.titles = \{ \[weak model\] id in/);
+});
+
+test('列車 103 收尾：W107 鑰匙圈不在主執行緒讀、W108 空間不足不留大檔、刪討論串清分頁組、Session space 自己的導覽鈕', () => {
+  const checker = read('Facade/GitHubReleaseUpdateChecker.swift');
+  assert.match(checker, /static func currentOffMain\(\) async -> Self \{\s*await Task\.detached\(priority: \.utility\) \{ current\(\) \}\.value/);
+  assert.match(checker, /if isPrivateChannel \{ return UpdateChannel\.privateRepository \}/);
+  for (const file of ['Facade/GitHubReleaseUpdateChecker.swift', 'Facade/InAppUpdater.swift']) {
+    assert.doesNotMatch(read(file), /UpdateChannel\.current\(\)/);
+  }
+  const installer = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
+  assert.match(installer, /\|\| SPACE_SHORTFALL=1/);
+  assert.match(installer, /"\$\{SPACE_SHORTFALL:-0\}" == 1 && "\$COMMITTED" == 0 && "\$REPLACED" == 0/);
+  assert.match(installer, /for payload in download split "TATWO OS\.app"; do/);
+  assert.equal(installer, readFileSync(new URL('../public/install.sh', import.meta.url), 'utf8'));
+  const host = read('Chat/ChatPage.swift');
+  assert.match(host, /live\.threadRecord\(chatBrowserThreadKey\) != nil else \{ return \}/);   // 資料沒載入就不清
+  assert.match(host, /live\.threadRecord\(threadID\) == nil else \{ continue \}\s*registry\.removeSpace\(space\.id, closingTabs: true\)/);
+  const section = read('Browser/BrowserChatSessionsSection.swift');
+  assert.match(section, /BrowserChatSessionControls\(runtime: runtime, tabID: pick\.tabID\) \{ command = EmbeddedBrowserCommand\(action: \$0\) \}/);
+});
+

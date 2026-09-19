@@ -138,7 +138,21 @@ struct ChatPage: View {
             else { browserInspectorOpenThreads.remove(chatBrowserThreadKey) }
         }
     }
+    /// 討論串已經不存在（被刪除）的聊天旁分頁組一併清掉。只在本機、資料已載入時做；封存的討論串還有紀錄，不會被清。
+    func pruneChatBrowserSpaces() {
+        // 「目前這條討論串查得到」＝聊天資料確定已載入；查不到就什麼都不清，寧可留著也不誤刪。
+        guard model.isLive, model.selectedRemote == nil, let live = model.live,
+              live.threadRecord(chatBrowserThreadKey) != nil else { return }
+        let registry = chatBrowserWorkSpaceStore.registry
+        for space in registry.spaces where !space.isSessionSpace {
+            guard let threadID = BrowserChatSessionSelection.threadID(ofSpaceNamed: space.name),
+                  threadID != Self.noThreadBrowserKey, threadID != chatBrowserThreadKey,
+                  live.threadRecord(threadID) == nil else { continue }
+            registry.removeSpace(space.id, closingTabs: true)
+        }
+    }
     func syncChatBrowserToThread() {
+        pruneChatBrowserSpaces()
         chatBrowserWorkSpaceStore.selectThreadSpace(chatBrowserThreadKey)
         if browserInspectorPresented && chatBrowserWorkSpaceStore.tabs.isEmpty { chatBrowserWorkSpaceStore.addTab() }
     }
@@ -221,6 +235,14 @@ struct ChatPage: View {
             }
             .onChange(of: visible && layout.canDock ? Double(width + ChatBrowserInspectorLayout.dividerWidth) : 0, initial: true) { _, docked in
                 dockedBrowserWidthSignal = docked
+            }
+            .onAppear {
+                // W109：Browser 的 Session space 要顯示「專案／討論串標題」，但 Browser 那層不認識聊天資料，由這裡提供。
+                BrowserChatSessionSelection.shared.titles = { [weak model] id in
+                    guard let thread = model?.live?.threadRecord(id) else { return nil }
+                    let project = model?.live?.projectRecord(thread.projectID)?.name ?? "一般"
+                    return (project, thread.title)
+                }
             }
         }
         .onChange(of: model.mode) { _, mode in

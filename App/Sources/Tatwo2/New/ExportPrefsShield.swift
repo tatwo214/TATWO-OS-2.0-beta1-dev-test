@@ -23,7 +23,7 @@ enum ExportPrefsShield {
         "tatwo.island.enabled": true,
         "tatwo.island.notchScale": 1.0,
         "tatwo.island.glassScale": 1.0,
-        "tatwo.island.style": "classic",
+        "tatwo.island.glassOpacity": 1.0,
     ]
 
     static func isExportProcess(_ env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

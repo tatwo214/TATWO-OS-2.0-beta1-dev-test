@@ -175,6 +175,13 @@ cleanup() {
     plutil -replace phases -json "$phases" "$STAGE/result.json" 2>/dev/null || plutil -insert phases -json "$phases" "$STAGE/result.json" || true
     [[ -z "${TATWO_OS_PHASES_FILE:-}" ]] || printf '%s' "$phases" > "$TATWO_OS_PHASES_FILE"
   fi
+  # W108：App 完全沒被動到、失敗原因又只是空間不足時，只留小的診斷檔（result.json、log），下載與組裝出來的大檔不留。
+  if [[ "${SPACE_SHORTFALL:-0}" == 1 && "$COMMITTED" == 0 && "$REPLACED" == 0 && -n "$STAGE" && -d "$STAGE" && ! -L "$STAGE"
+        && "$(dirname "$STAGE")" == "$(dirname "$DEST")" ]]; then
+    for payload in download split "TATWO OS.app"; do
+      [[ -L "$STAGE/$payload" ]] || rm -rf "${STAGE:?}/$payload"
+    done
+  fi
   if [[ -n "$LOCK" && -n "$STAGE" ]]; then mv "$LOCK" "$STAGE/lock.finished" || true; fi
   finish_update_stage || printf '更新暫存清理未完成；保留原位置供檢查。\n' >&2
   exit "$status"
@@ -343,6 +350,8 @@ check_space() {
   [[ "$bytes" -gt 0 && "${#bytes}" -le 13 && "$bytes" -le 1000000000000 ]] || fail "候選大小無效"
   [[ "$reserve" =~ ^[0-9]+$ && "${#reserve}" -le 13 && "$reserve" -le 4000000000000 ]] || fail "下載空間估算無效"
   required=$(((bytes * safety_multiplier + reserve + 1023) / 1024))
+  # W108：空間不足是「還沒動到 App」的失敗；標記起來，結束時不要把整包下載留成診斷（實測每次留下約 1.8 GB，下一次更容易再失敗）。
+  [[ "$available" -ge "$required" ]] || SPACE_SHORTFALL=1
   [[ "$available" -ge "$required" ]] || fail "空間不足，請清出至少 $(((required - available + 1023) / 1024)) MB（候選 App 大小 ×2＋分段下載峰值）"
 }
 manifest_size() {
