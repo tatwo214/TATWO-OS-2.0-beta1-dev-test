@@ -246,9 +246,7 @@ test('shell renders shared content and every interrupt caller preserves the Bool
   assert.match(app, /NSApp.reply\(toApplicationShouldTerminate: confirmed\)/);
   assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .escapeClose/);
   assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .windowClose/);
-  for (const path of ['Chat/ChatPage+Composer.swift', 'CLI/CLILoopDetailPane.swift']) {
-    assert.match(read(`App/Sources/Tatwo2/${path}`), /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .composerStop\)/);
-  }
+  assert.match(read('App/Sources/Tatwo2/CLI/CLILoopDetailPane.swift'), /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .composerStop\)/);
 });
 
 test('window close asks only while work is running; app terminate and composer stop always ask', () => {
@@ -259,4 +257,16 @@ test('window close asks only while work is running; app terminate and composer s
   assert.match(stubs, /guard TatwoInterruptGate\.decision\(kind: kind, snapshot: \.init\(\)\)\.requiresConfirmation else \{ return true \}/);
   const page = readFileSync(new URL('../App/Sources/Tatwo2/Chat/ChatPage.swift', import.meta.url), 'utf8');
   assert.match(page, /TatwoInterruptGate\.activityProvider = \{ \[weak model\] in\s*model\?\.hasRunningWork \?\? false/);
+});
+
+test('/goal 102: chat stop needs no confirmation, swaps to send while typing, and has a forced fallback', () => {
+  // 使用者 2026-09-19：聊天的終止鍵不要二次確認；回覆中有字時同一顆鈕變送出；引擎不理中斷時要有保底。
+  const composer = read('App/Sources/Tatwo2/Chat/ChatPage+Composer.swift');
+  assert.doesNotMatch(composer, /TatwoInterruptConfirmationPresenter\.confirm\(kind: \.composerStop\)/);
+  assert.match(composer, /if model\.isRunning && !model\.canSend \{\s*composerStopButton\s*\} else \{\s*composerSendButton/);
+  assert.doesNotMatch(composer, /islandExceptionsCount/);
+  const engine = read('App/Sources/Tatwo2/Facade/ChatLiveEngine.swift');
+  assert.match(engine, /if stoppingThreads\.contains\(threadID\) \{ forceStop\(threadID\); return \}/);
+  assert.match(engine, /guard let self, self\.turnID\[threadID\] == stoppedTurn else \{ return \}/);
+  assert.match(engine, /sidecar\.onEvent = nil[^\n]*\n\s*sidecar\.terminate\(\)/);
 });

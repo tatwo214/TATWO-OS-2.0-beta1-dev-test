@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, realpathSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -60,6 +61,10 @@ test('production Swift: registry/available round-trip, LAN order, argv, capture-
     const fixtureTypes = sync.slice(sync.indexOf('enum RemoteEngineSyncError'), sync.indexOf('struct RemoteEngineSync {'));
     const harness = `
 import Foundation
+// W76 的 DeviceRole 只在 DeviceRegistry 當欄位型別；同 case 同 rawValue 的 stub，避免拖進 DeviceIdentity 的整串依賴。
+enum DeviceRole: String, Codable, Sendable { case primary, secondary }
+// SSHHostPin.make(deviceID:) 只用這一個查表；harness 給空表（本測試不走有 pin 的路徑）。
+enum DeviceStatusReader { static func registry(environment: [String: String]) -> [DeviceRecord] { [] } }
 ${fixtureTypes}
 @main struct Main {
   @MainActor static func main() async throws {
@@ -135,8 +140,9 @@ ${fixtureTypes}
     writeFileSync(join(root, 'Main.swift'), harness);
     const binary = join(root, 'probe');
     const compile = spawnSync('swiftc', ['-D', 'DEBUG', '-swift-version', '5', '-parse-as-library',
-      new URL('../App/Sources/Tatwo2/Facade/PeerUpdateSource.swift', import.meta.url).pathname,
-      new URL('../App/Sources/Tatwo2/Facade/DeviceRegistry.swift', import.meta.url).pathname,
+      fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/PeerUpdateSource.swift', import.meta.url)),
+      fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/DeviceRegistry.swift', import.meta.url)),
+      fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/SSHHostPin.swift', import.meta.url)),
       join(root, 'Main.swift'), '-o', binary], { encoding: 'utf8', timeout: 90_000 });
     assert.equal(compile.status, 0, compile.stderr);
     const clean = { ...process.env };
@@ -153,13 +159,15 @@ ${fixtureTypes}
       .flatMap(n => JSON.parse(readFileSync(join(root, n))).commands);
     assert.equal(commands.length, 4);
     const ssh = commands.find(c => c[0] === '/usr/bin/ssh');
-    assert.deepEqual(ssh.slice(1, 7), ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=2']);
+    // W91c：不再 accept-new；fixture 沒有 pin 時是「空 known_hosts、必拒」的形狀。
+    for (const option of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ConnectTimeout=2']) assert.ok(ssh.includes(option), option);
+    assert.ok(!ssh.join(' ').includes('accept-new'));
     assert.equal(ssh.at(-2), 'sample@sample.local');
     for (const option of ['ControlMaster=no', 'ControlPath=none', 'ForwardAgent=no']) assert.ok(ssh.includes(option));
     assert.equal(ssh.at(-1), "cat ~/'Library/Application Support/TATWO OS/Updater/available.json'");
     const rsync = commands.find(c => c[0] === '/usr/bin/rsync' && !c.includes('--relative'));
     assert.deepEqual(rsync.slice(1, 5), ['-az', '--partial', '--inplace', '--timeout=5']);
-    assert.match(rsync[6], /StrictHostKeyChecking=accept-new.*-p 2222$/);
+    assert.match(rsync[6], /StrictHostKeyChecking=yes.*-p 2222$/);
     assert.match(rsync[7], /^sample@sample\.local:'\/Users\/sample\/Library\/Application Support/);
     assert.equal(rsync.at(-1), join(root, 'app.zip'));
     const installed = commands.find(c => c.includes('--relative'));

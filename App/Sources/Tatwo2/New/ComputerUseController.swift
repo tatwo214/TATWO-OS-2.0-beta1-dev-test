@@ -4,6 +4,8 @@ import ScreenCaptureKit
 
 @MainActor
 final class ComputerUseController {
+    /// 本次呼叫是否允許以 TATWO OS 自己為目標（只有「全權」預設會給 true）。
+    private var allowSelfTarget = false
     static let shared = ComputerUseController()
     nonisolated let session = ComputerUseSession()
     /// The NSAlert (fallback sheet) or ComputerUseConsentPrompt (Island card) that is waiting.
@@ -36,6 +38,12 @@ final class ComputerUseController {
         pendingOwner = nil
     }
 
+    /// 目前的授權是不是在操作 TATWO OS 自己（只有全權才拿得到這種授權）。
+    func isOperatingSelf(owner: UUID? = nil) -> Bool {
+        guard let granted, owner == nil || granted.owner == owner else { return false }
+        return granted.pid == ProcessInfo.processInfo.processIdentifier
+    }
+
     private func stop(ifCurrent expected: ComputerUseSession.Grant) {
         guard granted == expected else { return }
         stop(owner: expected.owner)
@@ -53,9 +61,11 @@ final class ComputerUseController {
 
     func perform(_ method: String, params: [String: Any], caller: UUID, scope: String,
                  workspace: URL,
+                 allowSelfTarget: Bool = false,
                  requestIsConnected: @escaping @Sendable () -> Bool,
                  contextIsCurrent: @escaping @MainActor () -> Bool) async throws -> [String: Any] {
         guard contextIsCurrent() else { throw ComputerUseFailure("computer_local_chat_required") }
+        self.allowSelfTarget = allowSelfTarget
         if method == "computer_list_apps" {
             let apps: [[String: Any]] = NSWorkspace.shared.runningApplications
                 .filter { $0.activationPolicy == .regular && !$0.isTerminated }
@@ -65,7 +75,7 @@ final class ComputerUseController {
         }
         if method == "computer_start" {
             return try await start(caller: caller, scope: scope,
-                                   requestedTarget: ComputerUseTarget.requested(params["bundleIdentifier"]),
+                                   requestedTarget: ComputerUseTarget.requested(params["bundleIdentifier"], allowSelf: allowSelfTarget),
                                    contextIsCurrent: contextIsCurrent)
         }
         if method == "computer_stop" {
@@ -82,7 +92,7 @@ final class ComputerUseController {
             stop(ifCurrent: grant)
             throw ComputerUseFailure("computer_target_closed")
         }
-        let approved = try ComputerUseTarget.requested(id)
+        let approved = try ComputerUseTarget.requested(id, allowSelf: allowSelfTarget)
         guard AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else {
             stop(ifCurrent: grant)
             throw ComputerUseFailure("computer_system_permission_revoked")
@@ -106,10 +116,10 @@ final class ComputerUseController {
         do {
             try checkContext(grant, contextIsCurrent)
             let backgroundDeadline = ProcessInfo.processInfo.systemUptime + 10
-            let background = try await Task.detached {
+            let background = try await ComputerUseNative.run(pid: grant.pid) {
                 try ComputerUseNative.backgroundInput(request, observation: observation, grant: grant,
                                                       gate: gate, deadline: backgroundDeadline)
-            }.value
+            }
             if case .done(let point) = background {
                 if let point { ComputerUsePointerOverlay.shared.point(at: point, label: request.overlayLabel,
                                                                         click: request.isClick) }
@@ -131,10 +141,10 @@ final class ComputerUseController {
             ComputerUsePointerOverlay.shared.beginActivity(label: request.overlayLabel,
                                                            followsSystemCursor: borrowed != nil)
             defer { ComputerUsePointerOverlay.shared.endActivity() }
-            try await Task.detached {
+            try await ComputerUseNative.run(pid: grant.pid) {
                 try ComputerUseNative.input(request, observation: observation, grant: grant,
                                             gate: gate, deadline: deadline, requestIsConnected: requestIsConnected)
-            }.value
+            }
             if request.isClick { ComputerUsePointerOverlay.shared.point(at: ComputerUseBackgroundEvents.takeLastPoint() ?? NSEvent.mouseLocation, click: true) }
             borrowed?.restore()
             try checkContext(grant, contextIsCurrent)
@@ -238,10 +248,10 @@ final class ComputerUseController {
             do {
                 try checkContext(grant, contextIsCurrent)
                 let stepDeadline = ProcessInfo.processInfo.systemUptime + 10
-                let background = try await Task.detached {
+                let background = try await ComputerUseNative.run(pid: grant.pid) {
                     try ComputerUseNative.backgroundInput(request, observation: observation, grant: grant,
                                                           gate: gate, deadline: stepDeadline)
-                }.value
+                }
                 if case .done(let point) = background {
                     if let point { ComputerUsePointerOverlay.shared.point(at: point, label: request.overlayLabel,
                                                                             click: request.isClick) }
@@ -259,10 +269,10 @@ final class ComputerUseController {
                 ComputerUsePointerOverlay.shared.beginActivity(label: request.overlayLabel,
                                                                followsSystemCursor: borrowed != nil)
                 defer { ComputerUsePointerOverlay.shared.endActivity() }
-                try await Task.detached {
+                try await ComputerUseNative.run(pid: grant.pid) {
                     try ComputerUseNative.input(request, observation: observation, grant: grant,
                                                 gate: gate, deadline: deadline, requestIsConnected: requestIsConnected)
-                }.value
+                }
                 if request.isClick { ComputerUsePointerOverlay.shared.point(at: ComputerUseBackgroundEvents.takeLastPoint() ?? NSEvent.mouseLocation, click: true) }
                 borrowed?.restore()
                 completed += 1
@@ -341,9 +351,9 @@ final class ComputerUseController {
                          includeImage: Bool = true,
                          contextIsCurrent: @escaping @MainActor () -> Bool) async throws -> [String: Any] {
         let deadline = ProcessInfo.processInfo.systemUptime + 20
-        let before = try await Task.detached {
+        let before = try await ComputerUseNative.run(pid: grant.pid) {
             try ComputerUseNative.read(pid: grant.pid, expectedTarget: target, deadline: deadline, includeTree: false)
-        }.value
+        }
         try checkContext(grant, contextIsCurrent)
         var image: CGImage?
         var windowID: CGWindowID?
@@ -390,9 +400,9 @@ final class ComputerUseController {
             image = capture.value
         }
         // Only window identity/geometry fences the capture, not clocks, values or animation.
-        let after = try await Task.detached {
+        let after = try await ComputerUseNative.run(pid: grant.pid) {
             try ComputerUseNative.read(pid: grant.pid, expectedTarget: target, deadline: deadline)
-        }.value
+        }
         try checkContext(grant, contextIsCurrent)
         guard ComputerUseNative.sameWindow(before.window, after.window),
               before.launchDate == after.launchDate,
@@ -547,8 +557,9 @@ final class ComputerUseController {
         session.stop()
         let switchEpoch = switchFrom &+ 1
         guard session.currentEpoch == switchEpoch else {
+            let seen = session.currentEpoch
             stop()
-            throw ComputerUseFailure("computer_consent_cancelled")
+            throw ComputerUseFailure("computer_epoch_conflict:expected_\(switchEpoch)_got_\(seen)")
         }
         granted = nil
         target = nil
@@ -584,8 +595,14 @@ final class ComputerUseController {
             if consent == nil { consent = reserveConsent(caller: caller, epoch: switchEpoch) }
             defer { if let consent { finishConsent(consent.token) } }
             let epoch = consent?.epoch ?? switchEpoch
-            guard contextIsCurrent(), AXIsProcessTrusted(), CGPreflightScreenCaptureAccess() else {
-                throw ComputerUseFailure("computer_consent_cancelled")
+            // /goal 101：三種原因各回各的錯誤碼。原本全部回 consent_cancelled，全權（不跳同意框）時
+            // 使用者與模型都看不出是「情境變了」還是「系統權限沒了」。
+            guard contextIsCurrent() else { throw ComputerUseFailure("computer_context_changed") }
+            guard AXIsProcessTrusted() else {
+                throw ComputerUseFailure("computer_system_permissions_required:enable_TATWO_Accessibility")
+            }
+            guard CGPreflightScreenCaptureAccess() else {
+                throw ComputerUseFailure("computer_system_permissions_required:enable_TATWO_Screen_Recording")
             }
             let app: NSRunningApplication
             if let running = NSRunningApplication.runningApplications(withBundleIdentifier: requestedTarget.bundleIdentifier)
@@ -601,10 +618,14 @@ final class ComputerUseController {
                 }
                 app = opened.value
             }
-            guard contextIsCurrent(), consentPolicyProvider(caller) == policy, session.currentEpoch == epoch, !app.isTerminated,
-                  app.bundleIdentifier == requestedTarget.bundleIdentifier,
+            guard contextIsCurrent() else { throw ComputerUseFailure("computer_context_changed:after_open") }
+            guard consentPolicyProvider(caller) == policy else { throw ComputerUseFailure("computer_policy_changed") }
+            guard session.currentEpoch == epoch else {
+                throw ComputerUseFailure("computer_epoch_conflict:after_open_expected_\(epoch)_got_\(session.currentEpoch)")
+            }
+            guard !app.isTerminated, app.bundleIdentifier == requestedTarget.bundleIdentifier,
                   app.bundleURL?.standardizedFileURL == resolved.url.standardizedFileURL else {
-                throw ComputerUseFailure("computer_consent_cancelled")
+                throw ComputerUseFailure("computer_target_mismatch")
             }
             let grant = try session.authorize(owner: caller, scope: scope, pid: app.processIdentifier,
                                              expectedEpoch: epoch, expiresAt: .greatestFiniteMagnitude)
@@ -738,6 +759,27 @@ final class ComputerUseController {
 }
 
 enum ComputerUseNative {
+    /// 操作 TATWO OS 自己時，被按的元件可能開選單／對話框（modal 事件迴圈）。同步呼叫會讓這次 RPC
+    /// 連同主執行緒一起卡在迴圈裡直到有人手動關掉（.015 自測：AXShowMenu 開了右鍵選單，App 看起來當掉）。
+    /// 改成排進主佇列後立刻回報成功；結果由下一次觀察確認。其他 App 是跨行程呼叫，照舊同步。
+    static func performAction(_ node: AXUIElement, _ name: String, grant: ComputerUseSession.Grant) -> AXError {
+        guard grant.pid == ProcessInfo.processInfo.processIdentifier else {
+            return AXUIElementPerformAction(node, name as CFString)
+        }
+        DispatchQueue.main.async { _ = AXUIElementPerformAction(node, name as CFString) }
+        return .success
+    }
+
+    /// /goal 101：目標是 TATWO OS 自己時，AX 呼叫不走跨行程訊息，而是在「呼叫端執行緒」同行程直接執行。
+    /// 背景執行緒因此會碰到 SwiftUI 的更新鎖並把它弄壞，主執行緒之後永遠等不到鎖（整個 App 卡死，
+    /// 2026-09-19 sample 實證）。所以自我目標一律回主執行緒做；其他 App 照舊在背景做，不佔主執行緒。
+    static func run<T>(pid: Int32, _ work: @escaping @Sendable () throws -> T) async throws -> T {
+        if pid == ProcessInfo.processInfo.processIdentifier {
+            return try await MainActor.run { try work() }
+        }
+        return try await Task.detached { try work() }.value
+    }
+
     static func attribute(_ element: AXUIElement, _ name: String, deadline: TimeInterval) throws -> CFTypeRef? {
         let remaining = deadline - ProcessInfo.processInfo.systemUptime
         guard remaining > 0 else { throw ComputerUseFailure("computer_observation_timeout") }
@@ -1139,7 +1181,7 @@ enum ComputerUseNative {
                 guard actions(node).contains(name) else { return false }
                 var result = AXError.success
                 try gate.dispatch(observationID: observation.id, for: grant) {
-                    result = AXUIElementPerformAction(node, name as CFString)
+                    result = performAction(node, name, grant: grant)
                 }
                 return result == .success || result == .cannotComplete
             }
@@ -1204,7 +1246,7 @@ enum ComputerUseNative {
                   let item = try menuItem(for: key, app: app, deadline: deadline) else { return .notApplicable }
             var result = AXError.success
             try gate.dispatch(observationID: observation.id, for: grant) {
-                result = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                result = performAction(item, kAXPressAction, grant: grant)
             }
             guard result == .success || result == .cannotComplete else { return .notApplicable }
             return .done(nil)
@@ -1315,7 +1357,7 @@ enum ComputerUseNative {
         case .axAction(let index, let name):
             let node = try checkedElement(index)
             try check()
-            let result = AXUIElementPerformAction(node, name as CFString)
+            let result = performAction(node, name, grant: grant)
             // Opening a menu enters the target's menu-tracking loop, so AX often
             // reports cannotComplete even though the menu opened. The follow-up
             // observation, not this code, is the evidence of what happened.
@@ -1327,7 +1369,7 @@ enum ComputerUseNative {
                 throw ComputerUseFailure("computer_element_stale")
             }
             try check()
-            try checkResult(AXUIElementPerformAction(window, kAXRaiseAction as CFString))
+            try checkResult(performAction(window, kAXRaiseAction, grant: grant))
             try check()
             try checkResult(AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue))
         case .pressKey, .typeText:
@@ -1424,7 +1466,7 @@ enum ComputerUseNative {
                     try check()
                     var result = AXError.success
                     try gate.dispatch(observationID: observation.id, for: grant) {
-                        result = AXUIElementPerformAction(button, kAXPressAction as CFString)
+                        result = performAction(button, kAXPressAction, grant: grant)
                     }
                     if result == .success || result == .cannotComplete { break }
                 }

@@ -13,7 +13,8 @@ const policy = read('Browser/BrowserOmniboxInteraction.swift');
 const glass = read('Browser/BrowserOmniboxGlass.swift');
 const tokens = read('Visual/LiquidGlassTokens.swift');
 const workspace = read('Browser/BrowserWorkSpaceDesignView.swift');
-const content = workspace.split('private var workspaceToolbar: some View {')[1].split('private func performBrowserAction')[0];
+const content = workspace.split('private var workspaceToolbar: some View {')[1].split('func performBrowserAction')[0];
+const chrome = read('Browser/BrowserWorkSpaceEmbeddedChrome.swift');
 const value = name => Number(metrics.match(new RegExp(`static let ${name}: CGFloat = ([\\d.]+)`))?.[1]);
 
 test('W67 Dia toolbar reserves layout height so native page cannot overlap controls', () => {
@@ -27,7 +28,7 @@ test('W67 Dia toolbar reserves layout height so native page cannot overlap contr
   }
   assert.match(workspace, /VStack\(spacing: BrowserOmniboxMetrics.zero\) \{\s*workspaceToolbar/);
   assert.doesNotMatch(content, /BrowserWorkSpaceCEFSurface[\s\S]*?\.overlay\(alignment: \.top\)/);
-  assert.match(toolbar, /\.overlay\(alignment: \.top\) \{\s*if showsAddress && isExpanded \{/);
+  assert.match(toolbar, /\.overlay\(alignment: compactChrome \? \.topLeading : \.top\) \{\s*if showsAddress && isExpanded && !compactChrome \{/);
   assert.match(toolbar, /CGFloat\(choices.count\) \* BrowserOmniboxMetrics.suggestionRowHeight/);
   assert.match(toolbar, /panelMinimumHeight\)\s*\.fixedSize\(horizontal: false, vertical: true\)/);
   for (const source of [toolbar, content, glass]) {
@@ -72,7 +73,7 @@ test('W67 click opens; escape, focus loss and outside native clicks collapse wit
 });
 
 test('W67 collapse shows committed host only and never presents HTTP as locked', () => {
-  const trigger = toolbar.split('Button(action: expandEditor)')[1].split('.overlay(alignment: .top)')[0];
+  const trigger = toolbar.split('Button(action: expandEditor)')[1].split('.overlay(alignment:')[0];
   assert.match(trigger, /Text\(BrowserOmniboxPresentation.domain\(for: state.urlString\)\)/);
   assert.doesNotMatch(trigger, /TextField|Text\(addressText\)|Text\(state.urlString/);
   assert.match(policy, /url.host/);
@@ -96,8 +97,10 @@ test('W67 preserves identifier, dynamic binding notifications, open-tab callback
   assert.match(toolbar, /@Environment\(\\\.accessibilityReduceMotion\)/);
   assert.match(toolbar, /animation\(reduceMotion \? nil/);
   assert.match(toolbar, /transition\(reduceMotion \? \.identity/);
-  assert.match(content, /Menu \{[\s\S]*?accessibilityLabel\("瀏覽器功能"\)/);
-  assert.match(content, /accessibilityLabel\("註解"\)\.fixedSize\(\)/);
+  // PR #4 之後兩種 chrome 共用同一份動作清單；獨立 Browser 仍有可見的「瀏覽器功能」選單。
+  assert.match(chrome, /Menu \{ browserActionsMenu \}[\s\S]*?accessibilityLabel\("瀏覽器功能"\)/);
+  assert.match(content, /if onClose == nil \{ browserActionsButton \}/);
+  assert.match(chrome, /accessibilityLabel\("註解"\)\.fixedSize\(\)/);
   assert.match(read('Browser/EmbeddedBrowserView.swift'), /\.zIndex\(BrowserOmniboxMetrics.chromeZIndex\)\s*BrowserNavigationProgress/);
 });
 
@@ -117,3 +120,12 @@ test('W67 native click, typing, Esc, focus, tab suggestion and light/dark narrow
   skip: process.env.TATWO_W67_NATIVE !== '1' ? 'Requires lead compiler/UI approval (TATWO_W67_NATIVE=1)' : false,
   timeout: 180_000,
 }, runOmniboxNativeChecks);
+
+test('/goal 101: chat-side address editing is inline in the toolbar row, not a floating panel over the page', () => {
+  const toolbar = readFileSync(new URL('../App/Sources/Tatwo2/Browser/EmbeddedBrowserToolbar.swift', import.meta.url), 'utf8');
+  assert.match(toolbar, /if showsAddress && compactChrome && isExpanded \{\s*addressField/);
+  assert.match(toolbar, /\.onChange\(of: isExpanded\) \{ _, expanded in isEditing\.wrappedValue = expanded && compactChrome \}/);
+  const design = readFileSync(new URL('../App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift', import.meta.url), 'utf8');
+  assert.match(design, /if onClose != nil && !addressEditing \{ embeddedTabStrip \}/);
+});
+

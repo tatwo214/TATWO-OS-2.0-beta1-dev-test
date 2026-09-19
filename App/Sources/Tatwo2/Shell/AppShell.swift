@@ -3298,6 +3298,8 @@ struct TatwoWindowPageRail: View {
     private var browserOverlayOpen: Bool = false
     @AppStorage("tatwo.chat.browserPanelWidth")
     private var browserPanelWidth: Double = 480
+    @AppStorage("tatwo.chat.dockedBrowserWidth")
+    private var dockedBrowserWidth: Double = 0
 
     var body: some View {
         HStack(spacing: WindowChromeMetrics.controlSpacing) {
@@ -3315,6 +3317,11 @@ struct TatwoWindowPageRail: View {
                 Color.clear
                     .frame(width: CGFloat(max(browserPanelWidth, 420)))
                     .allowsHitTesting(false)
+            }
+            // /goal 101：聊天旁「並排」瀏覽器開著時，聊天的頂右按鈕往左移、面板自己的工具列也畫進 band；
+            // 拖曳 NSView 不讓位就會把這兩排的真實點擊全部吃掉（.016 ui_probe 實測：整段命中 TatwoWindowDragNSView）。
+            if dockedBrowserWidth > 0 {
+                Color.clear.frame(width: CGFloat(dockedBrowserWidth)).allowsHitTesting(false)
             }
 
             if showRightPanelToggle {

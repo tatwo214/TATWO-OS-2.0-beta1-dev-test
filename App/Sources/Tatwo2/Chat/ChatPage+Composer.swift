@@ -248,19 +248,20 @@ extension ChatPage {
     var composerStatusBar: some View {
         let state = model.composerFooterState
         let hasActiveStatus = state.isActive
-        let visibleStatusText = islandExceptionsCount.count > 0 ? islandExceptionsCount.text : state.presentationText
+        // 使用者 09-19：「有 N 件等你」拿掉——沒作用又永遠消不掉；有問題一律由 AI 回報。梯形只留提示與狀態。
+        let visibleStatusText = state.presentationText
         // 2026-08-21 重大修復：composerHint 全 app 零渲染點（考古＝7/31
         // 方框移除／8/7 footer 改版遺孤），幾十處 flashComposerHint 全在
         // 對空氣喊話——這就是兩輪驗收「靜默丟棄」的顯示層真兇。hint
         // 借道既有抽屜顯示（不造新形狀），優先於中性狀態。
         let hint = model.composerHint?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let showsHint = islandExceptionsCount.count == 0 && !(hint ?? "").isEmpty
+        let showsHint = !(hint ?? "").isEmpty
         let showsFeedbackLoginError = showsHint && hint == "請先登入github才能提交issue"
         // 2026-09-11 使用者：沒有額外提醒時梯形裡不要有字（抽屜形狀照舊）。
         // 2026-09-11 使用者：「工作中」從工具列搬進梯形，當作梯形的狀態。
-        let showsWorking = model.isRunning && !showsHint && islandExceptionsCount.count == 0
-        let isQuiet = !showsHint && islandExceptionsCount.count == 0 && state == .neutral && !showsWorking
+        let showsWorking = model.isRunning && !showsHint
+        let isQuiet = !showsHint && state == .neutral && !showsWorking
 
         return HStack(spacing: 7) {
             if showsWorking {
@@ -342,7 +343,6 @@ extension ChatPage {
         .animation(.easeInOut(duration: 0.15), value: state)
         .onTapGesture(count: 2) { globalNoteOpen = true }
         .onTapGesture(count: 1) { IslandExceptionsNavigation.openWork() }
-        .task { await islandExceptionsCount.observe() }
     }
 
     func composerStatusTextColor(
@@ -453,10 +453,8 @@ extension ChatPage {
                 modelCollaborationComposerPill(compact: compactToolbar)
             }
 
-            if model.isRunning {
-                if model.canSend {
-                    composerSendButton(compactToolbar: compactToolbar)
-                }
+            // 使用者 09-19（同 Codex App）：回覆中同一顆鈕——沒字是終止，一打字就變送出（插話），不並排兩顆。
+            if model.isRunning && !model.canSend {
                 composerStopButton
             } else {
                 composerSendButton(compactToolbar: compactToolbar)
@@ -581,7 +579,7 @@ extension ChatPage {
     var composerStopButton: some View {
         Button {
             // 中斷要二次確認：停止會打斷這輪回應與相關派工，誤觸就整批消失。
-            guard TatwoInterruptConfirmationPresenter.confirm(kind: .composerStop) else { return }
+            // 使用者 09-19：終止不用二次確認。
             model.stop()
         } label: {
             Image(systemName: "stop.fill")

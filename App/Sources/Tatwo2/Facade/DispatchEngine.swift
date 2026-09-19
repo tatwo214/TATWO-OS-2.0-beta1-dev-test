@@ -184,8 +184,9 @@ extension ChatPageModel {
     }
 
     /// 純 formatter：runSSH 實際送出的 ssh argv（production 執行與 fixture 擷取用同一份）。
-    static func sshArguments(_ ref: RemoteDeviceRef, command: [String]) -> [String] {
-        ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=8", "-p", String(ref.sshPort), ref.sshTarget]
+    /// W91c：主機金鑰一律 pin（`SSHHostPin`）。pin 省略＝fixture 擷取，帶的是「空 known_hosts」形狀，連不上。
+    static func sshArguments(_ ref: RemoteDeviceRef, command: [String], pin: SSHHostPin? = nil) -> [String] {
+        SSHHostPin.options(pin) + ["-o", "ConnectTimeout=8", "-p", String(ref.sshPort), ref.sshTarget]
             + command.map { remoteShellQuote($0, expandHome: $0.hasPrefix("~/")) }
     }
 
@@ -201,14 +202,16 @@ extension ChatPageModel {
 
     private static func prepareRemoteRoomWorktree(ref: RemoteDeviceRef, workdir: String, roomID: String) throws -> String {
         let plan = remoteWorktreePlan(workdir: workdir, roomID: roomID)
-        for command in plan.commands { try runSSH(ref, command: command) }
+        // 缺主機金鑰指紋就在這裡擋掉（訊息沿用既有的派工錯誤通道：請重新配對），不會退回 TOFU。
+        let pin = try SSHHostPin.make(deviceID: ref.id, name: ref.name)
+        for command in plan.commands { try runSSH(ref, command: command, pin: pin) }
         return plan.worktree
     }
 
-    private static func runSSH(_ ref: RemoteDeviceRef, command: [String]) throws {
+    private static func runSSH(_ ref: RemoteDeviceRef, command: [String], pin: SSHHostPin) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = sshArguments(ref, command: command)   // 與 fixture 擷取同一份 formatter
+        process.arguments = sshArguments(ref, command: command, pin: pin)   // 與 fixture 擷取同一份 formatter
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output

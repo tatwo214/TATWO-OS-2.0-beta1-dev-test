@@ -1343,33 +1343,23 @@ struct ChatModelAvatar: View {
     let route: ChatRouteChoice
     var size: CGFloat = 24
 
+    // 使用者 2026-09-19：對話裡的標誌＝模型登入頁同一套供應商標誌，單色、不要框、不要影子。
     var body: some View {
-        let cornerRadius = min(size / 2, LiquidGlassTokens.radiusChip)
-        let softenedBrandColors = quotaBrandColors(route.providerIconID).map {
-            $0.opacity(LiquidGlassTokens.tintOpacity)
-        }
-
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: LiquidGlassTokens.shapeStyle)
-                .fill(
-                    LinearGradient(
-                        colors: softenedBrandColors,
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing))
+        Group {
             if let image = ProviderSVGIconLoader.image(for: route.providerIconID) {
                 Image(nsImage: image)
                     .resizable()
+                    .renderingMode(.template)   // SVG 是單色；跟著文字色，深淺主題都看得見
                     .scaledToFit()
-                    .padding(size * LiquidGlassTokens.tintOpacity)
-                    .opacity(1 - LiquidGlassTokens.tintOpacity)
+                    .foregroundStyle(Color.primary.opacity(0.82))
+                    .padding(size * 0.12)
             } else {
                 Text(ProviderSVGIconLoader.fallbackInitials(for: route.providerIconID))
-                    .font(.system(size: max(8, size * 0.36), weight: .black, design: .rounded))
-                    .foregroundStyle(.primary.opacity(1 - LiquidGlassTokens.tintOpacity))
+                    .font(.system(size: max(8, size * 0.42), weight: .black, design: .rounded))
+                    .foregroundStyle(Color.primary.opacity(0.82))
             }
         }
         .frame(width: size, height: size)
-        .liquidGlassSurface(cornerRadius: cornerRadius)
         .accessibilityLabel("\(route.title) logo")
     }
 }

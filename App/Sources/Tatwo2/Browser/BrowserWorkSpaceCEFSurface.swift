@@ -107,14 +107,19 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
         for runtime in runtimes { runtime.updateHost(); runtime.retireIfUnused() }
         return victims.count
     }
-    static func forChat(_ sessionID: String, registry: BrowserTabRegistry? = nil) -> BrowserWorkSpaceRuntime {
+    /// `adoptsWorkSpaceTabs`（/goal 101）：聊天旁面板有自己獨立的 registry，裡面的分頁是 work space 擁有的
+    /// （面板沿用 Browser work space 的 store）。這個 runtime 要管的就是那些分頁；只認 chatSession 擁有的分頁
+    /// 會讓面板永遠是空白頁（.013 自測實證：分頁有網址、CEF 從未載入）。
+    static func forChat(_ sessionID: String, registry: BrowserTabRegistry? = nil,
+                        adoptsWorkSpaceTabs: Bool = false) -> BrowserWorkSpaceRuntime {
         let registry = registry ?? .shared
         let key = ChatRuntimeKey(registry: ObjectIdentifier(registry), sessionID: sessionID)
         if let runtime = chatRuntimes[key] { return runtime }
         retiredRuntimes = retiredRuntimes.filter { $0.value.value != nil }
         if let runtime = retiredRuntimes[key]?.value { return runtime }
         let profile = TatwoBrowserProfileIdentity(sessionID: sessionID)!.dataStoreIdentifier
-        let runtime = BrowserWorkSpaceRuntime(owner: .chatSession(sessionID: sessionID), profile: .persistent(profile), registry: registry)
+        let runtime = BrowserWorkSpaceRuntime(owner: .chatSession(sessionID: sessionID), profile: .persistent(profile),
+            registry: registry, adoptsWorkSpaceTabs: adoptsWorkSpaceTabs)
         retiredRuntimes[key] = WeakRuntime(runtime)
         return runtime
     }
@@ -137,10 +142,13 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
     private var observations: Set<AnyCancellable> = []
     private let registry: BrowserTabRegistry
 
+    private let adoptsWorkSpaceTabs: Bool
+
     private init(owner: BrowserTabOwner? = nil, profile: EmbeddedBrowserRuntimeProfile? = nil,
-                 registry: BrowserTabRegistry? = nil) {
+                 registry: BrowserTabRegistry? = nil, adoptsWorkSpaceTabs: Bool = false) {
         self.registry = registry ?? .shared
         self.owner = owner
+        self.adoptsWorkSpaceTabs = adoptsWorkSpaceTabs
         runtimeProfile = profile ?? Self.profile
         access = .checking(profileKey: runtimeProfile.registryKey)
         Self.memoryRuntimes.append(WeakRuntime(self))
@@ -270,7 +278,7 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
     }
 
     private var workTabs: [BrowserTab] {
-        if let owner { return registry.tabs(ownedBy: owner) }
+        if let owner, !adoptsWorkSpaceTabs { return registry.tabs(ownedBy: owner) }
         return registry.tabs.filter { if case .workSpace = $0.owner { return true }; return false }
     }
 
@@ -390,7 +398,7 @@ private struct BrowserWorkSpaceNativeSurface: NSViewRepresentable {
         init(id: UUID, runtime: BrowserWorkSpaceRuntime) { self.id = id; self.runtime = runtime }
     }
     func makeCoordinator() -> Coordinator { Coordinator(id: surfaceID, runtime: runtime) }
-    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+    func makeNSView(context: Context) -> NSView { BrowserChromeAwareContainerView(frame: .zero) }
     func updateNSView(_ container: NSView, context: Context) {
         let coordinator = context.coordinator
         coordinator.revision += 1

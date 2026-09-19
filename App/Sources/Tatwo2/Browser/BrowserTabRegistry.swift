@@ -79,6 +79,16 @@ final class BrowserTabRegistry: ObservableObject {
     static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/TATWO OS/Browser/tabs.json")
     static let shared = BrowserTabRegistry(storageURL: defaultURL)
+    /// Chat's embedded browser is a separate human workspace. PR4b：它從空的開始，
+    /// 不再抄獨立 Browser 的分頁，兩邊從第一次啟動就互不干擾。
+    static let chatInspectorURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.json")
+    /// PR #4 的一次性快照遷移留下的標記；只用來認出「這份 chat-tabs.json 是抄來的」。
+    static let chatInspectorMigrationURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.migrated-v1")
+    /// PR4b 清理只做一次，之後使用者在 Chat 瀏覽器裡開的分頁照常保留。
+    static let chatInspectorCleanupURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.cleaned-pr4b")
     static let sessionSpaceID = UUID(uuidString: "00000000-0000-0000-0000-000000000046")!
     typealias TitleProvider = (String) -> (threadTitle: String, projectName: String)
 
@@ -250,6 +260,52 @@ final class BrowserTabRegistry: ObservableObject {
                 guard let self else { return }
                 do { try self.flush() } catch { self.persistenceError = error.localizedDescription }
             }
+    }
+
+    private static var chatInspectorRegistries: [ObjectIdentifier: BrowserTabRegistry] = [:]
+
+    /// ChatPage 是 struct，SwiftUI 每次重建都會重跑 init。每次都新建一個 registry
+    /// 會讓 StateObject 留住的第一個 store 和後來的 runtime 綁到不同物件，導覽狀態
+    /// 就寫到看不到的那一份；同一個來源 registry 只解析一次。
+    static func chatInspectorRegistry(source: BrowserTabRegistry) -> BrowserTabRegistry {
+        let key = ObjectIdentifier(source)
+        if let existing = chatInspectorRegistries[key] { return existing }
+        let created = makeChatInspectorRegistry(source: source)
+        chatInspectorRegistries[key] = created
+        return created
+    }
+
+    /// PR4b：Chat 旁瀏覽器一律從自己的空 registry 開始。PR #4 的「首次啟動快照遷移」
+    /// 會把獨立 Browser 的分頁整批抄過來，使用者看到的就是 X／OpenAI 出現在 Chat 裡；
+    /// 這裡直接不抄，來源 registry 依舊只讀不寫。
+    static func makeChatInspectorRegistry(source: BrowserTabRegistry,
+                                          store: URL = chatInspectorURL) -> BrowserTabRegistry {
+        discardMigratedChatInspectorStoreIfNeeded(store: store)
+        let registry = BrowserTabRegistry(storageURL: store)
+        // source 只用來確認呼叫端沒有把同一份 registry 當成來源；不讀它的分頁。
+        guard source !== registry else { return registry }
+        return registry
+    }
+
+    /// 升級時做一次：上一版遷移出來的 chat-tabs.json 整份移開。分頁沒有記錄「在哪一邊
+    /// 建立」，分不出來源就全部清成空的（Chat 瀏覽器開起來是一個新分頁），舊檔備份成
+    /// `chat-tabs.json.pre-pr4b`。獨立 Browser 的 tabs.json 完全不碰。
+    static func discardMigratedChatInspectorStoreIfNeeded(store: URL = chatInspectorURL,
+                                                          fileManager: FileManager = .default) {
+        let folder = store.deletingLastPathComponent()
+        let migrated = folder.appendingPathComponent(chatInspectorMigrationURL.lastPathComponent)
+        let cleaned = folder.appendingPathComponent(chatInspectorCleanupURL.lastPathComponent)
+        guard !fileManager.fileExists(atPath: cleaned.path) else { return }
+        if fileManager.fileExists(atPath: migrated.path) {
+            if fileManager.fileExists(atPath: store.path) {
+                let backup = store.appendingPathExtension("pre-pr4b")
+                try? fileManager.removeItem(at: backup)
+                try? fileManager.moveItem(at: store, to: backup)
+            }
+            try? fileManager.removeItem(at: migrated)
+        }
+        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Data("pr4b\n".utf8).write(to: cleaned, options: .atomic)
     }
 
     func tabs(ownedBy owner: BrowserTabOwner) -> [BrowserTab] { tabs.filter { $0.owner == owner } }

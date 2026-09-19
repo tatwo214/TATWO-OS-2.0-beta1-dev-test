@@ -7,6 +7,21 @@ import SwiftUI
 enum SelfTest {
     @MainActor private static var headlessHostModel: ChatPageModel?
 
+    /// W100：`RemoteHostLink` 的 call／connect 禁止主執行緒進入（`notOnQueue(.main)`）。
+    /// 自測與診斷入口本來就跑在主執行緒，要打 link 一律經這裡：工作丟背景佇列，主執行緒只等結果。
+    /// 這些路徑沒有 `@MainActor` 回呼要跑，所以用 semaphore 等是安全的。
+    private static let linkProbeQueue = DispatchQueue(
+        label: "ai.tatwo.tatwo2.selftest-link", qos: .userInitiated)
+
+    static func offMain<T>(_ work: @escaping () throws -> T) throws -> T {
+        var outcome: Result<T, Error>?
+        let done = DispatchSemaphore(value: 0)
+        linkProbeQueue.async { outcome = Result(catching: work); done.signal() }
+        done.wait()
+        guard let outcome else { throw RemoteHostLinkError.invalidResponse }
+        return try outcome.get()
+    }
+
     static func ruleGeneratorChecks() throws {
         let fm = FileManager.default
         let temporary = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
@@ -1769,8 +1784,26 @@ extension SelfTest {
 
         guard includeTransfers else { finish(model) }
 
+        // W100：併回／拉到改成背景執行＋完成回呼。在主執行緒上等就會卡死回呼本身，
+        // 所以用 XCTest 風格的等待：邊等邊讓主 run loop 把 @MainActor 回呼跑完，逾時 30 秒判 FAIL。
+        func settle(_ label: String, _ done: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline {
+                if done() { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            }
+            print("\(prefix) DIAG \(label) 逾時 30 秒未回呼")
+            return false
+        }
+
         let hostCountBeforePush = ChatLiveStore(root: hostRoot).load().threads.count
-        let pushedThreadID = model.pushThreadToDevice(clientThreadID, device.id)
+        var pushedThreadID: UUID?
+        var pushSettled = false
+        _ = model.pushThreadToDevice(clientThreadID, device.id) { result in
+            pushedThreadID = result
+            pushSettled = true
+        }
+        let pushReturned = settle("pushThreadToDevice", { pushSettled })
         let pushedThread = pushedThreadID.flatMap { pushedID in
             ChatLiveStore(root: hostRoot).load().threads.first {
                 $0.id == pushedID
@@ -1780,7 +1813,8 @@ extension SelfTest {
         print("\(prefix) DIAG push threadID=\(pushedThreadID?.uuidString.lowercased() ?? "nil") hint=\(model.composerHint ?? "nil") hostThreads=\(ChatLiveStore(root: hostRoot).load().threads.count) before=\(hostCountBeforePush)")
         check(
             "pushThreadToDevice 在 A 建同標題串含兩則與系統訊息",
-            pushedThread?.title == "B 要搬的討論串"
+            pushReturned
+                && pushedThread?.title == "B 要搬的討論串"
                 && pushedTexts.contains("第一則")
                 && pushedTexts.contains("第二則")
                 && pushedTexts.contains(where: { $0.contains("已併回 A localhost") })
@@ -1788,9 +1822,15 @@ extension SelfTest {
             "threadID=\(pushedThreadID?.uuidString.lowercased() ?? "nil") messages=\(pushedTexts.count)")
 
         let clientCountBeforePull = ChatLiveStore(root: clientRoot).load().threads.count
-        let pulledThreadID = pushedThreadID.flatMap {
-            model.pullThreadFromDevice(device.id, $0)
+        var pulledThreadID: UUID?
+        var pullSettled = pushedThreadID == nil
+        if let pushedID = pushedThreadID {
+            _ = model.pullThreadFromDevice(device.id, pushedID) { result in
+                pulledThreadID = result
+                pullSettled = true
+            }
         }
+        let pullReturned = settle("pullThreadFromDevice", { pullSettled }) && pushedThreadID != nil
         if pushedThreadID == nil { print("\(prefix) DIAG pull skipped because push returned nil（不是獨立缺陷）") }
         else { print("\(prefix) DIAG pull threadID=\(pulledThreadID?.uuidString.lowercased() ?? "nil") hint=\(model.composerHint ?? "nil")") }
         let clientAfterPull = ChatLiveStore(root: clientRoot).load()
@@ -1799,7 +1839,8 @@ extension SelfTest {
         }
         check(
             "pullThreadFromDevice 把 A 串拉回 B",
-            pulledThread != nil
+            pullReturned
+                && pulledThread != nil
                 && clientAfterPull.threads.count == clientCountBeforePull + 1
                 && pulledThread?.messages.contains(where: {
                     $0.text.contains("已拉到這台，來源：B 要搬的討論串")
@@ -3444,8 +3485,10 @@ extension SelfTest {
         let known = root.appendingPathComponent("known_hosts")
         try put(known, "[127.0.0.1]:1 " + publicKey)
         try check("host-pin-mismatch", rejects {
-            _ = try RemoteHostLink(environment: ["TATWO2_KNOWN_HOSTS": known.path])
-                .callPinned(device: pPeer, method: "dispatch_fetch")
+            _ = try offMain {
+                try RemoteHostLink(environment: ["TATWO2_KNOWN_HOSTS": known.path])
+                    .callPinned(device: pPeer, method: "dispatch_fetch")
+            }
         })
         // W91b：兩把指紋要分流。產生配對碼端存的是對方的客戶端金鑰，
         // 就算那把也躺在 known_hosts 裡，也不准拿來 pin 隧道。
@@ -3455,8 +3498,10 @@ extension SelfTest {
         try check("w91b-rpc-success-records-client-source",
             pairedS.clientKeyFingerprintSource?.source == "rpc_proof")
         try check("w91b-client-key-never-pins-tunnel", rejects {
-            _ = try RemoteHostLink(environment: ["TATWO2_KNOWN_HOSTS": known.path])
-                .callPinned(device: pairedS, method: "dispatch_fetch")
+            _ = try offMain {
+                try RemoteHostLink(environment: ["TATWO2_KNOWN_HOSTS": known.path])
+                    .callPinned(device: pairedS, method: "dispatch_fetch")
+            }
         })
         // 加入端存的是對方的主機金鑰：隧道那把在、客戶端那把缺，RPC 照樣沒得驗。
         let hostKnown = root.appendingPathComponent("w91b-known-hosts")
@@ -4338,9 +4383,10 @@ extension SelfTest {
             print("REMOTEPROBE FAIL no device \(key); have \(registry.list().map(\.name))"); exit(1)
         }
         let link = RemoteHostLink(environment: env)
+        // W100：診斷入口照規矩走共用的 offMain，主執行緒不直接進 RemoteHostLink。
         do {
-            try link.connect(device: device)
-            let doc = try link.call(method: "get_document")
+            try offMain { try link.connect(device: device) }
+            let doc = try offMain { try link.call(method: "get_document") }
             let result = (doc["result"] as? [String: Any]) ?? doc
             let projects = (result["document"] as? [String: Any])?["projects"] as? [[String: Any]]
                 ?? result["projects"] as? [[String: Any]] ?? []
@@ -4354,7 +4400,7 @@ extension SelfTest {
             }
             print("REMOTEPROBE CONNECTED device=\(device.name) projects=\(projects.count) threads=\(threadCount) revision=\(result["revision"] ?? "?")")
             if pieces.count == 2, let tid = firstThread {
-                let r = try link.call(method: "send_message", params: ["threadID": tid, "text": pieces[1]])
+                let r = try offMain { try link.call(method: "send_message", params: ["threadID": tid, "text": pieces[1]]) }
                 print("REMOTEPROBE SENT to=\(firstTitle) ok=\(r["ok"] ?? r["result"] ?? "?")")
             }
             link.disconnect(); exit(0)

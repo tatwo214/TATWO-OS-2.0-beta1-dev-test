@@ -37,8 +37,10 @@ enum PeerUpdateSource {
     }
     static func validTag(_ tag: String) -> Bool { safe(tag, pattern: #"^v?[0-9]+[.][0-9]+([.][0-9]+){0,2}([-+][A-Za-z0-9.-]+)?$"#) }
     static func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-    static func options(_ device: DeviceRecord) -> [String] {
-        ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=2",
+    /// W91c：主機金鑰一律 pin（`SSHHostPin`），缺指紋的設備在 discover／pull 就被擋掉，不會走到這裡。
+    /// `pin` 省略＝fixture 擷取用的「空 known_hosts、必拒」形狀（`SSHHostPin.denied`），跟 DispatchEngine／RemoteEngineSync 一致；不是放寬旋鈕。
+    static func options(_ device: DeviceRecord, pin: SSHHostPin? = nil) -> [String] {
+        SSHHostPin.options(pin) + ["-o", "ConnectTimeout=2",
          "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ForwardAgent=no",
          "-o", "ServerAliveInterval=1", "-o", "ServerAliveCountMax=2", "-p", String(device.sshPort)]
     }
@@ -48,12 +50,12 @@ enum PeerUpdateSource {
             if safe(host, pattern: "^[A-Za-z0-9][A-Za-z0-9.-]*$"), !result.contains(host) { result.append(host) }
         }
     }
-    static func ssh(_ device: DeviceRecord, host: String) -> [String] {
-        ["/usr/bin/ssh"] + options(device) + ["\(device.user)@\(host)", "cat ~/\(quote(relativeRoot + "/available.json"))"]
+    static func ssh(_ device: DeviceRecord, host: String, pin: SSHHostPin? = nil) -> [String] {
+        ["/usr/bin/ssh"] + options(device, pin: pin) + ["\(device.user)@\(host)", "cat ~/\(quote(relativeRoot + "/available.json"))"]
     }
-    static func rsync(_ offer: Offer, path: String, destination: URL, relative: Bool = false) -> [String] {
+    static func rsync(_ offer: Offer, path: String, destination: URL, relative: Bool = false, pin: SSHHostPin? = nil) -> [String] {
         ["/usr/bin/rsync", "-az", "--partial", "--inplace", "--timeout=5"] + (relative ? ["--relative"] : []) +
-        ["-e", (["/usr/bin/ssh"] + options(offer.device)).joined(separator: " "),
+        ["-e", (["/usr/bin/ssh"] + options(offer.device, pin: pin)).joined(separator: " "),
          "\(offer.device.user)@\(offer.host):\(quote(path))", destination.path]
     }
     // Every command, including local fixture commands, goes through the existing owned capture-only fixture gate.
@@ -102,10 +104,12 @@ enum PeerUpdateSource {
         await withTaskGroup(of: Offer?.self) { group in
             for device in devices {
                 group.addTask {
+                    // 缺主機金鑰指紋的設備不參與對機更新（等重新配對）；探索沒有提示通道，等同這台沒有可提供的更新。
+                    guard let pin = try? SSHHostPin.make(device) else { return nil }
                     let candidates = hosts(device), deadline = ProcessInfo.processInfo.systemUptime + 5
                     for (index, host) in candidates.enumerated() {
                         let budget = (deadline - ProcessInfo.processInfo.systemUptime) / Double(candidates.count - index)
-                        if let data = try? await run(ssh(device, host: host), seconds: budget),
+                        if let data = try? await run(ssh(device, host: host, pin: pin), seconds: budget),
                            let entries = try? JSONDecoder().decode([String: PeerUpdateEntry].self, from: data) {
                             return Offer(device: device, host: host, entries: entries.filter { validTag($0.key) })
                         }
@@ -139,7 +143,9 @@ enum PeerUpdateSource {
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let output = stage.appendingPathComponent(name)
         if let path = entry.files[name] ?? (runtime ? entry.runtime : entry.app), cachePath(path, tag: tag, name: name) {
-            _ = try await run(rsync(offer, path: path, destination: output), seconds: 86_400)
+            // 缺主機金鑰指紋就在拉檔之前擋掉（訊息：請重新配對），不會退回 TOFU。
+            let pin = try SSHHostPin.make(offer.device)
+            _ = try await run(rsync(offer, path: path, destination: output, pin: pin), seconds: 86_400)
         } else { return nil }
         let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
         guard attributes[.type] as? FileAttributeType == .typeRegular else { return nil }

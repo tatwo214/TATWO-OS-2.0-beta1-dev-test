@@ -104,6 +104,7 @@ App/Sources/Tatwo2/SelfTest.swift | personal hostname | Synthetic local-domain f
 App/Sources/Tatwo2/Shell/AppShell.swift | ssh host alias | Product/model names, UI symbols or synthetic device and artifact identifiers; not a configured SSH target. | ^(?:macbook\.and\.iphone)$
 App/Sources/Tatwo2/Shell/TatwoM3PrototypeViews.swift | ssh host alias | Product/model names, UI symbols or synthetic device and artifact identifiers; not a configured SSH target. | ^(?:ProviderIcon-codex)$
 App/Sources/Tatwo2/Visual/TatwoTheme.swift | macos username | Named code entities, query fields, tools, artifacts or synthetic test identities; not a personal OS account. | ^(?:CIRandomGenerator)$
+App/Tests/Tatwo2Tests/BrowserAgentRequestTests.swift | private ip | Synthetic RFC1918 security fixture; must remain private to exercise rejection, consent or transport policy. | ^(?:10\.0\.0\.1)$
 App/Tests/Tatwo2Tests/BrowserStagingLoopbackTests.swift | private ip | Synthetic RFC1918 security fixture; must remain private to exercise rejection, consent or transport policy. | ^(?:10\.0\.0\.1|172\.16\.0\.1)$
 App/Tests/Tatwo2Tests/BrowserStagingLoopbackTests.swift | personal hostname | Synthetic local-domain fixture for hostname policy, transport or toolchain comparison; not a live endpoint. | ^(?:test\.local)$
 App/Tests/Tatwo2Tests/ComputerUseChatEntryTests.swift | macos username | Named code entities, query fields, tools, artifacts or synthetic test identities; not a personal OS account. | ^(?:AXDelete)$

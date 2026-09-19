@@ -22,10 +22,11 @@ test('W57e only map-derived browser shortcuts, ordered settings and recording UI
   const model = read(b+'BrowserShortcuts.swift');
   for (const copy of ['已被 OS 使用', '與『']) assert.ok(model.includes(copy));
   const design = read(b+'BrowserWorkSpaceDesignView.swift');
-  assert.match(design, /Button\("搜尋分頁…", action: openTabSearch\)/);
+  // PR #4：兩種 chrome 共用的動作清單搬到 BrowserWorkSpaceEmbeddedChrome.swift。
+  assert.match(read(b+'BrowserWorkSpaceEmbeddedChrome.swift'), /Button\("搜尋分頁…", action: openTabSearch\)/);
   assert.match(design, /case \.openImport: store\.requestImport\(\)/);
   assert.match(design, /func requestImport\(\) \{[\s\S]*?tatwo\.browser\.openImport/);
-  assert.match(design, /Button\(store\.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
+  assert.match(read(b+'BrowserWorkSpaceEmbeddedChrome.swift'), /Button\(store\.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
   assert.match(ui, /firstResponder === self/);
   assert.doesNotMatch(ui, /addGlobalMonitor|addLocalMonitor/);
   assert.match(read(b+'BrowserDailyNavigationControls.swift'), /BrowserShortcutInvocation\(message: shortcutKind\)/);

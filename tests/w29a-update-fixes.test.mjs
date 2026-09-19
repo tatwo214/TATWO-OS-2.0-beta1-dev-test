@@ -1,6 +1,7 @@
 // W29a isolated regression gates. Never runs the whole installer or touches host apps.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -214,7 +215,7 @@ def capture(self, info, mode='r', *args, **kwargs):
 zipfile.ZipFile.open=capture
 root=pathlib.Path(sys.argv[2]); tree=root/'tree';tree.mkdir();(tree/'f').write_bytes(b'abcd'*10000)
 layer.archive(tree,root/'runtime.zip');assert seen and all(x==9 for x in seen),seen
-`,new URL('../scripts/runtime-layer.py',import.meta.url).pathname,dir],{encoding:'utf8',env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
+`,fileURLToPath(new URL('../scripts/runtime-layer.py',import.meta.url)),dir],{encoding:'utf8',env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
   assert.equal(r2.status,0,r2.stderr);
 });
 test('D17 shell version patterns agree; soft assembly failures and reused-parent symlinks fail closed', () => {

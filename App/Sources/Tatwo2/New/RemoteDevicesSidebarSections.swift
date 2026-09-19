@@ -1,61 +1,75 @@
-// 2.0 新畫面（不是照搬）：左列「本機專案」底下，每台已配對設備各一段，列它的專案與討論串；點了就在那台跑。
+// 2.0 新畫面（不是照搬）：每台已配對設備在左列有自己的區塊，列它的專案與討論串；點了就在那台跑。
 // 使用者 2026-09-05：遠端跟本地並行，不做遙控模式開關。
 import SwiftUI
 
-// W98b：這一段已改由側欄「專案」區的「遠端設備（名稱）」項目展開顯示（見 ChatPage+Sidebar 的
-// RemoteDeviceProjectRow）；這裡只留給沒有對應設備項目的工作階段當 fallback。
-struct RemoteDevicesSidebarSections: View {
-    @ObservedObject var model: ChatPageModel
-    @State private var collapsed: Set<String> = []
+/// W98d：設備頁「遠端設備專案」→ 側欄的帶路訊號（展開那台的區塊並捲過去）。nonce 讓同一台按第二次也生效。
+struct SidebarDeviceFocus: Equatable {
+    let deviceID: String
+    let nonce: Int
+}
 
-    /// 已經在專案區有「遠端設備（名稱）」項目的那幾台不再重複列。
-    private var unmatchedSections: [RemoteSidebarSection] {
-        model.remoteSidebarSections.filter { section in
-            !model.devices.contains { $0.id == section.deviceID }
-        }
-    }
+/// W98d（使用者 2026-09-18 裁決「要像圈起來的大分類」）：一台遠端設備＝一個跟「專案」「聊天」同層的
+/// 側欄區塊。標題列照 `ChatPage+Sidebar` 的 `projectSidebarSectionHeader`（字級、chevron、間距、右側
+/// 控制位置），點標題只收合／展開，不進遠端模式；要進遠端模式一律點裡面的討論串。
+/// 預設展開，展開狀態只在這個 View、不持久化（同「專案」區的做法）。
+struct RemoteDeviceSidebarSection: View {
+    @ObservedObject var model: ChatPageModel
+    let deviceID: String
+    let deviceName: String
+    let iconName: String
+    let isOnline: Bool
+    @State private var isExpanded = true
+
+    /// 設備頁「遠端設備專案」要捲到這個區塊用的錨點。
+    static func anchorID(_ deviceID: String) -> String { "chat-sidebar-remote-device-\(deviceID)" }
 
     var body: some View {
-        ForEach(unmatchedSections) { section in
-            VStack(alignment: .leading, spacing: 5) {
-                Button {
-                    if collapsed.contains(section.id) { collapsed.remove(section.id) } else { collapsed.insert(section.id) }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: isCollapsed(section) ? "chevron.right" : "chevron.down")
-                            .font(.system(size: 9, weight: .black))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 12)
-                        Image(systemName: "laptopcomputer")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text(section.deviceName)
-                            .font(ChatTypography.sidebarProject)
-                            .lineLimit(1)
-                        Circle()
-                            .fill(section.isOnline ? Color.green : Color.secondary.opacity(0.4))
-                            .frame(width: 6, height: 6)
-                        Spacer()
-                        if !section.isOnline {
-                            Text("離線・\(Self.seen(section.lastSeenAt))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if !isCollapsed(section), section.isOnline {
-                    RemoteDeviceSectionContent(model: model, section: section, showsOfflineLine: false)
-                }
+        let section = model.remoteSidebarSections.first { $0.deviceID == deviceID }
+        LazyVStack(alignment: .leading, spacing: 5) {
+            header
+            if isExpanded, let section {
+                RemoteDeviceSectionContent(model: model, section: section)
             }
-            .padding(.top, 6)
+        }
+        .onReceive(model.$sidebarDeviceFocus) { focus in
+            guard let focus, focus.deviceID == deviceID, !isExpanded else { return }
+            withAnimation(.easeInOut(duration: 0.12)) { isExpanded = true }
         }
     }
 
-    private func isCollapsed(_ section: RemoteSidebarSection) -> Bool { collapsed.contains(section.id) }
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.12)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("遠端設備（\(deviceName)）" + (isOnline ? "" : "・離線"))
+                        .font(ChatTypography.sidebarHeader)
+                        .lineLimit(1)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .black))
+                }
+                .foregroundStyle(.secondary.opacity(0.72))
+                .opacity(isOnline ? 1 : 0.55)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "收起「\(deviceName)」" : "展開「\(deviceName)」")
+            .accessibilityIdentifier("chat-sidebar-remote-device")
+            .frame(minHeight: 30)
+            Spacer(minLength: 8)
+            // 「專案」區同一個位置是「＋」；這裡放設備圖示（純顯示），正在遙控的那台用 brandAccent。
+            Image(systemName: iconName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(model.remoteMode?.id == deviceID ? LiquidGlassTokens.brandAccent : Color.secondary)
+                .frame(width: 26, height: 26)
+                .help(isOnline ? "「\(deviceName)」在線" : "「\(deviceName)」目前離線")
+        }
+        .padding(.top, 2)
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
 
     static func seen(_ date: Date) -> String {
         let now = ChatPageModel.exportChatScene != nil ? Date(timeIntervalSinceReferenceDate: 800_000_000) : Date()
@@ -66,13 +80,15 @@ struct RemoteDevicesSidebarSections: View {
     }
 }
 
-/// W98b：一台遠端設備的子層內容（專案→討論串）。從上面那段原封不動抽出來，讓側欄「專案」區的
-/// 「遠端設備（名稱）」項目展開時重用；顯示文字、狀態與離線格式都沒改。
+/// 一台遠端設備區塊的內容（專案→討論串）。
+/// W98c：專案不再攤平——每個專案是自己的可展開列（chevron＋專案名，照本機 `projectSection` 的寫法），
+/// 討論串只在該專案展開後才列。專案的寫入動作（右鍵、開新聊天）遠端這邊不給。
+/// W98d：設備升格成側欄區塊後少掉一層，專案列與本機專案列同一個縮排級距。
 struct RemoteDeviceSectionContent: View {
     @ObservedObject var model: ChatPageModel
     let section: RemoteSidebarSection
-    /// 舊的段落把離線時間放在自己的標題列，展開的新項目則要在子層顯示。
-    var showsOfflineLine = true
+    /// W98c：專案列預設收合，展開狀態只活在這個 View（設備列一收合就整個丟掉），不持久化。
+    @State private var expandedProjects: Set<UUID> = []
 
     var body: some View {
         if section.isOnline {
@@ -83,19 +99,49 @@ struct RemoteDeviceSectionContent: View {
                     .padding(.leading, 20)
             }
             ForEach(section.projects) { project in
+                let isExpanded = expandedProjects.contains(project.id)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(project.name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .padding(.leading, 20)
-                    ForEach(project.threads) { thread in
-                        RemoteThreadRowView(model: model, deviceID: section.deviceID, thread: thread)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            if expandedProjects.contains(project.id) {
+                                expandedProjects.remove(project.id)
+                            } else {
+                                expandedProjects.insert(project.id)
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 12)
+                            Text(project.name)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 30)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .chatMenuRowHover()
+                    .help(isExpanded ? "收起「\(project.name)」" : "展開「\(project.name)」")
+                    .accessibilityLabel(isExpanded ? "收起專案 \(project.name)" : "展開專案 \(project.name)")
+                    .accessibilityIdentifier("chat-sidebar-remote-project")
+
+                    if isExpanded {
+                        ForEach(project.threads) { thread in
+                            RemoteThreadRowView(model: model, deviceID: section.deviceID, thread: thread)
+                                .padding(.leading, 24)
+                        }
                     }
                 }
             }
-        } else if showsOfflineLine {
-            Text("離線・\(RemoteDevicesSidebarSections.seen(section.lastSeenAt))")
+        } else {
+            Text("離線・\(RemoteDeviceSidebarSection.seen(section.lastSeenAt))")
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
@@ -121,7 +167,6 @@ private struct RemoteThreadRowView: View {
             label
         }
         .buttonStyle(.plain)
-        .padding(.leading, 20)
         .contextMenu {
             Button("拉到這台（複製一份到本機）") { _ = model.pullThreadFromDevice(deviceID, thread.id) }
         }

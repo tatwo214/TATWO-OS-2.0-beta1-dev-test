@@ -60,9 +60,11 @@ enum NativeStagingIsolation {
     ) -> [String: String] {
         var result = environment
         result["CLAUDE_CONFIG_DIR"] = configDirectory
-        if isEnabled(environment) {
-            result["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = configDirectory
-        }
+        // W106：一定要明寫，而且要跟聊天 sidecar 同一個值。留空不寫，Claude Code 會自己
+        // 從 CLAUDE_CONFIG_DIR 推出一個獨立的 Keychain namespace，於是登入寫進
+        // "Claude Code-credentials-<sha8>"、聊天讀共用的那份，額度永遠讀到沒人更新的舊憑證。
+        result["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = sidecarClaudeNamespace(
+            environment: environment, configDirectory: configDirectory)
         return result
     }
 

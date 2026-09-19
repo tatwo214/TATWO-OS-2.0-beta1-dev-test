@@ -5,6 +5,8 @@ import AppKit
 struct UpdateAvailableCard: View {
     @ObservedObject private var checker = GitHubReleaseUpdateChecker.shared
     @ObservedObject private var updater = InAppUpdater.shared
+    // W87b-1：計量網路自動下載開關，預設關；沿用既有偏好機制（UserDefaults）。
+    @AppStorage(UpdateNetworkPolicy.allowMeteredKey) private var allowsMeteredDownload = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -18,6 +20,16 @@ struct UpdateAvailableCard: View {
             }
             Text("目前版本 v\(currentVersion)（build \(currentBuild)）")
                 .font(.footnote).foregroundStyle(.secondary)
+            // W87b-3：排程檢查沒有畫面，靠這一行讓使用者看得到它有在跑。
+            if checker.status != "目前沒有較新的正式版本", let checkedAt = checker.lastCheckedAt {
+                Text("上次檢查：\(Self.checkTime.string(from: checkedAt))")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Toggle(UpdateNetworkPolicy.allowMeteredLabel, isOn: $allowsMeteredDownload)
+                .toggleStyle(.switch).font(.footnote)
+                .onChange(of: allowsMeteredDownload) { _, value in
+                    updater.setAllowsMeteredAutomaticDownload(value)
+                }
             if !updater.lastPhases.isEmpty {
                 Text(updater.lastPhases).font(.footnote).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -38,6 +50,15 @@ struct UpdateAvailableCard: View {
             }
             if let release = checker.availableRelease, !checker.dismissed {
                 if let title = release.name, !title.isEmpty { Text(title) }
+                // W87b-1／2：被計量網路擋下或暫停時要看得見，並且可以當場放行一次。
+                if let notice = updater.networkNotice {
+                    Text(notice).font(.footnote).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(UpdateNetworkPolicy.downloadNowLabel) {
+                        updater.downloadNowIgnoringMetering(to: release.tag_name, repository: checker.repository)
+                    }
+                    .font(.footnote)
+                }
                 Text(updater.updateMarkTitle)
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

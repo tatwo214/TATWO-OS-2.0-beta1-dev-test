@@ -529,6 +529,7 @@ extension ChatPage {
                 }
                 .buttonStyle(.plain)
                 .help(sidebarPinnedPref ? "取消左列常駐" : "左列常駐展示")
+                .accessibilityLabel(sidebarPinnedPref ? "取消左列常駐" : "左列常駐展示")
             }
 
             if showsThreadControls {
@@ -541,27 +542,39 @@ extension ChatPage {
             .buttonStyle(.plain)
             .help("資訊卡")
 
-            // 工具箱：變更收據、瀏覽器、檔案（收進 Menu）。
-            let browserFileActive = (rightPanelContent == .browser || rightPanelContent == .file || rightPanelContent == .diff) && isRightPanelOpen
-            Menu {
-                Button { applyRightPanelInteraction(.toggleDiff) } label: {
-                    Label("變更收據 (diff)", systemImage: "doc.text.magnifyingglass")
-                }
-                Divider()
-                Button { applyRightPanelInteraction(.toggleBrowser) } label: {
-                    Label("瀏覽器", systemImage: "globe")
-                }
-                Button { applyRightPanelInteraction(.toggleFile) } label: {
-                    Label("檔案", systemImage: "folder")
-                }
-            } label: {
-                controlStripGlyph("case")
-                    .accessibilityLabel(browserFileActive ? "工具箱（已開啟面板）" : "工具箱")
+            Button { applyRightPanelInteraction(.toggleBrowser) } label: {
+                controlStripGlyph("globe")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("工具箱：變更收據／瀏覽器／檔案")
+            .buttonStyle(.plain)
+            .help(browserInspectorPresented ? "收合瀏覽器" : "在聊天旁開啟瀏覽器")
+            .accessibilityLabel(browserInspectorPresented ? "收合瀏覽器" : "在聊天旁開啟瀏覽器")
+            .accessibilityIdentifier("chat.browser.toggle")
+            .keyboardShortcut("b", modifiers: [.command, .option])
+
+            // 工具箱（使用者 09-19）：跟瀏覽器的 ⌃ 一樣，滑鼠移入就往下展開一列浮空圓鈕；點一下固定、再點收合。
+            // 「瀏覽器」已有自己的地球鈕，不再放這裡；「變更收據 (diff)」實機是壞鍵，先從工具箱拿掉
+            //（DiffReviewView 與快照用的入口還在，要修要刪另案決定，見 docs/issue.md W104）。
+            let fileActive = rightPanelContent == .file && isRightPanelOpen
+            Button { toolboxPinned.toggle() } label: {
+                controlStripGlyph("case")
+                    .accessibilityLabel(fileActive ? "工具箱（已開啟面板）" : "工具箱")
+            }
+            .buttonStyle(.plain)
+            .help("工具箱：移入向下展開；點擊固定，再點收合")
+            .accessibilityIdentifier("chat.toolbox")
+            .onHover { toolboxHovered = $0 }
+            .background {
+                BrowserFloatingToolsAnchor(isOpen: toolboxHovered || toolboxPanelHovered || toolboxPinned,
+                                           onHoverPanel: { toolboxPanelHovered = $0 }) {
+                    VStack(spacing: BrowserChatChromeMetrics.toolsGap) {
+                        Button { toolboxPinned = false; applyRightPanelInteraction(.toggleFile) } label: {
+                            BrowserFloatingChip(systemImage: "folder")
+                        }
+                        .buttonStyle(.plain).help("檔案").accessibilityLabel("檔案")
+                    }
+                    .foregroundStyle(Color.secondary)
+                }
+            }
             }
         }
     }

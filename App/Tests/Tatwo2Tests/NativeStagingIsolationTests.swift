@@ -52,8 +52,11 @@ final class NativeStagingIsolationTests: XCTestCase {
         XCTAssertFalse(NativeStagingIsolation.isEnabled(["TATWO_STAGING_SCRATCH_HOME": " \n"]))
         XCTAssertEqual(NativeStagingIsolation.sidecarClaudeNamespace(
             environment: env, configDirectory: "/chosen"), "")
+        // W106：正式版一定要把 namespace 釘成聊天 sidecar 用的那一個（共用＝空字串），
+        // 不能沿用繼承來的值、更不能不寫。留給 Claude Code 自己從 CLAUDE_CONFIG_DIR 推，
+        // 登入會寫進 "Claude Code-credentials-<sha8>"，聊天卻讀共用那份，額度就永遠是舊憑證。
         XCTAssertEqual(NativeStagingIsolation.isolateClaude(
-            env, configDirectory: "/chosen")["CLAUDE_SECURESTORAGE_CONFIG_DIR"], "existing")
+            env, configDirectory: "/chosen")["CLAUDE_SECURESTORAGE_CONFIG_DIR"], "")
     }
 
     func testStagingRequiresExplicitConsistentContainedHomes() throws {

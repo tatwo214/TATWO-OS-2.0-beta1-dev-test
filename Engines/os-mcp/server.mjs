@@ -23,7 +23,7 @@ const tools = [
     limit: { type: 'integer', minimum: 1, maximum: 200, default: 80 },
   }, ['symbol']],
   ['computer_list_apps', 'List running regular Apps: name, bundleIdentifier, pid, isFrontmost. No consent needed. ' + computerRules, {}, []],
-  ['computer_start', 'Request consent for any installed App by bundleIdentifier, except TATWO, password managers and security/settings Apps. 授權層級跟隨這條對話的權限設定：全權／代我核准不再詢問；要求核准則每個 session 問一次。 switches the single current target and returns sessionID. Stop clears all approvals; human input revokes unless full access is selected. ' + computerRules, {
+  ['computer_start', 'Request consent for any installed App by bundleIdentifier, except password managers and security/settings Apps. TATWO OS itself (ai.tatwo.tatwo2) is allowed only when the permission preset of this chat is 全權 (full access); otherwise the App returns computer_target_denied. 授權層級跟隨這條對話的權限設定：全權／代我核准不再詢問；要求核准則每個 session 問一次。 switches the single current target and returns sessionID. Stop clears all approvals; human input revokes unless full access is selected. ' + computerRules, {
     bundleIdentifier: { type: 'string', minLength: 1, maxLength: 255, pattern: '^[A-Za-z0-9][A-Za-z0-9.-]*$' },
   }, ['bundleIdentifier']],
   ['computer_observe', 'Read the focused/main/first target window: screenshot and indexed AX tree (600 elements, depth 40, strings 300 characters, text 80KB; truncated rather than failed). Includes windows, focusedElement, appName, bundleIdentifier, width/height and fresh observationID. Secure values are redacted. No window returns windowState:none. ' + computerRules, {
@@ -189,8 +189,9 @@ async function callTool(name, args) {
       })) throw new Error('computer_invalid_arguments');
     if (name === 'computer_start') {
       const id = params.bundleIdentifier.toLowerCase();
-      if (id.startsWith('ai.tatwo.tatwo2') || computerDenied.has(id)) throw new Error('computer_target_denied');
-      // Bundle.main identity is checked by the App, not inferred by this process.
+      // W102b：TATWO 自己能不能當目標由 App 決定（只有聊天在「全權」預設時放行，見 ComputerUseTarget.requested allowSelf）；
+      // 這個行程不知道使用者的權限預設，所以這裡只擋永遠禁止的那幾類（密碼管理、系統設定、安全代理）。
+      if (computerDenied.has(id)) throw new Error('computer_target_denied');
     }
     if (name === 'computer_observe' || name === 'computer_action') {
       const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

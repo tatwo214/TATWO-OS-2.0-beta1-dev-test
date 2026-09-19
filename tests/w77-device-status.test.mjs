@@ -178,8 +178,16 @@ import Foundation
         } else if mode == "offline" {
             let record = DeviceRecord(id: secondaryID, name: "synthetic", host: "127.0.0.1", user: "fixture", sshPort: 1,
                 publicKeyFingerprint: "", addedAt: now, lastSeenAt: now, workdirMap: [:])
-            let result = RemoteHostLink(environment: [:]).queryDeviceStatus(device: record)
-            try check(result.connection == .sshUnavailable && result.snapshot == nil, "real SSH unavailable classification")
+            // W100：queryDeviceStatus 會等 SSH，RemoteHostLink 已禁止主佇列進入
+            // （生產端每個呼叫點都在 Task.detached）。fixture 照同樣規矩走背景佇列。
+            var result: DeviceStatusProbe?
+            let done = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .userInitiated).async {
+                result = RemoteHostLink(environment: [:]).queryDeviceStatus(device: record)
+                done.signal()
+            }
+            done.wait()
+            try check(result?.connection == .sshUnavailable && result?.snapshot == nil, "real SSH unavailable classification")
         }
         print("W77 PASS \(mode)")
     }

@@ -23,6 +23,21 @@ test('collapsed Browser uses the shared edge overlay without reserving canvas wi
   assert.match(sidebar, /WorkspaceSidebarModePicker\(modes: ChatRunMode.visibleChatTabs/);
 });
 
+test('PR4b rail hover is one state machine over all zones, not last-writer-wins', () => {
+  const bridge = readFileSync(path.join(repo, 'App/Sources/Tatwo2/Chat/ChatPageAppKitBridges.swift'), 'utf8');
+  const view = bridge.slice(bridge.indexOf('final class TrackingView: NSView'), bridge.indexOf('// #2 skill'));
+  // 三個 reveal／retention／exit 區塊共用一份聯集，單一區塊的 false 不能收掉整條 rail。
+  assert.match(view, /private static let zones = NSHashTable<TrackingView>\.weakObjects\(\)/);
+  assert.match(view, /pointerIsInsideAnyZone[\s\S]*?zones.allObjects.contains \{ zone in\s*zone.isHovering/);
+  assert.match(view, /private func setHovering\(_ hovering: Bool\) \{\s*guard hovering != isHovering else \{ return \}\s*isHovering = hovering\s*publishUnion\(\)/);
+  // 聯集排在同一輪事件的最後發布，蓋過 SwiftUI 自己那個單一區塊的 onHover(false)。
+  assert.match(view, /private func publishUnion\(\)[\s\S]*?DispatchQueue.main.async[\s\S]*?onHover\?\(Self.pointerIsInsideAnyZone\(of: window\)\)/);
+  // hover 只由事件流決定：不得讀硬體游標補狀態，否則「明確收合」會被指標位置復活。
+  assert.doesNotMatch(view, /mouseLocationOutsideOfEventStream/);
+  // 命中行為不變：這幾塊仍然只做 hover，不吃點擊。
+  assert.match(view, /passthrough \? nil : self/);
+});
+
 test('Browser hover is independent of Chat pin preference and resets at lifecycle boundaries', () => {
   assert.match(sidebar, /model.mode == \.browser \? !browserWorkSpaceStore.focusMode : sidebarPinnedPref \|\| Self.envRailPinned/);
   assert.match(page, /onChange\(of: model.mode\)[^{]*\{[^\n]*\n\s*resetChatProjectHover\(\)/);

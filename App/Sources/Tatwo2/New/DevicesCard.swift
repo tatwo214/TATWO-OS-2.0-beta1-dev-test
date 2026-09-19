@@ -185,13 +185,13 @@ struct DevicesCard: View {
                         .foregroundStyle(.tertiary)
                     HStack(spacing: 8) {
                         if model.remoteMode?.id != device.id {
-                            // W98：設備頁不再是遙控入口，這顆只把側欄「專案」區打開並跳進那個項目。
+                            // W98d：設備頁只負責帶路——把左列「遠端設備（名稱）」那個區塊展開並捲過去；
+                            // 要不要進遠端模式由使用者在那邊點討論串決定，這顆不自己進。
                             Button("遠端設備專案") {
-                                model.requestSidebarProjectsExpanded()
-                                _ = model.enterRemoteMode(device)
+                                model.requestSidebarDeviceSection(device.id)
                             }
                             .buttonStyle(.bordered)
-                            .help("到左側「專案」區的「遠端設備（\(device.name)）」，在那台上工作")
+                            .help("到左列的「遠端設備（\(device.name)）」區塊，點裡面的討論串就在那台上工作")
                         }
                         Button("移除") { model.removeDevice(device.id) }
                             .buttonStyle(.bordered)

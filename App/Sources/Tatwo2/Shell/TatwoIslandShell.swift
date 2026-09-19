@@ -2,6 +2,109 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    /// W105：Island 設定（總開關／尺寸／風格）變動，供 controller 立即套用，不必重開 App。
+    static let tatwoIslandSettingsChanged = Notification.Name("tatwo.island.settingsChanged")
+}
+
+/// Settings › Tatwo Island（W105，使用者 2026-09-19「island開關、尺寸調節(黑劉海跟玻璃尺寸分開調)、風格」）。
+/// 刻意放在本檔：Island 幾何要能跟著設定走，而 tests/island-hover.test.mjs 是單檔編譯這支 Shell，
+/// 模型拆出去會讓那個契約測試失去自足性。全部出廠值＝今天的外觀，滑桿沒動過就一模一樣。
+@MainActor
+final class TatwoIslandSettings: ObservableObject {
+    static let shared = TatwoIslandSettings()
+
+    /// 風格用與 Computer Use 箭頭風格相同的磚塊呈現方式讓使用者挑。
+    enum Style: String, CaseIterable, Identifiable, Sendable {
+        case classic   // 黑瀏海＋液態玻璃（目前樣式，出廠值）
+        case glass     // 只留液態玻璃，不畫黑瀏海
+        case solid     // 只留實心黑瀏海，不開玻璃
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .classic: "經典"
+            case .glass: "純玻璃"
+            case .solid: "實心黑"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .classic: "黑瀏海＋液態玻璃"
+            case .glass: "只有玻璃，不畫黑瀏海"
+            case .solid: "只有黑瀏海，不開玻璃"
+            }
+        }
+    }
+
+    private enum Key {
+        static let enabled = "tatwo.island.enabled"
+        static let notchScale = "tatwo.island.notchScale"
+        static let glassScale = "tatwo.island.glassScale"
+        static let style = "tatwo.island.style"
+    }
+
+    /// 兩支滑桿共用的倍率區間；1.0＝出廠尺寸。
+    nonisolated static let scaleRange: ClosedRange<Double> = 0.6...1.6
+    nonisolated static let defaultScale: Double = 1
+
+    @Published var enabled: Bool {
+        didSet { UserDefaults.standard.set(enabled, forKey: Key.enabled); settingsChanged() }
+    }
+    /// 黑瀏海（收合態）尺寸倍率，與玻璃分開調。
+    @Published var notchScale: Double {
+        didSet {
+            UserDefaults.standard.set(notchScale, forKey: Key.notchScale)
+            settingsChanged()
+        }
+    }
+    /// 玻璃（展開態）尺寸倍率，與黑瀏海分開調。
+    @Published var glassScale: Double {
+        didSet {
+            UserDefaults.standard.set(glassScale, forKey: Key.glassScale)
+            settingsChanged()
+        }
+    }
+    @Published var style: Style {
+        didSet { UserDefaults.standard.set(style.rawValue, forKey: Key.style); settingsChanged() }
+    }
+
+    private init() {
+        let defaults = UserDefaults.standard
+        enabled = defaults.object(forKey: Key.enabled) as? Bool ?? true
+        notchScale = Self.clamped(defaults.object(forKey: Key.notchScale) as? Double)
+        glassScale = Self.clamped(defaults.object(forKey: Key.glassScale) as? Double)
+        style = Style(rawValue: defaults.string(forKey: Key.style) ?? "") ?? .classic
+    }
+
+    func resetSizes() {
+        notchScale = Self.defaultScale
+        glassScale = Self.defaultScale
+    }
+
+    private func settingsChanged() {
+        NotificationCenter.default.post(name: .tatwoIslandSettingsChanged, object: nil)
+    }
+
+    nonisolated private static func clamped(_ value: Double?) -> Double {
+        guard let value, value.isFinite else { return defaultScale }
+        return min(max(value, scaleRange.lowerBound), scaleRange.upperBound)
+    }
+
+    // 幾何在非 main actor 的 enum 裡讀，UserDefaults 本身是 thread-safe（同 ComputerUseSettings.isEnabled）。
+    nonisolated static var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: Key.enabled) as? Bool ?? true
+    }
+    nonisolated static var notchScaleValue: CGFloat {
+        CGFloat(clamped(UserDefaults.standard.object(forKey: Key.notchScale) as? Double))
+    }
+    nonisolated static var glassScaleValue: CGFloat {
+        CGFloat(clamped(UserDefaults.standard.object(forKey: Key.glassScale) as? Double))
+    }
+    nonisolated static var styleValue: Style {
+        Style(rawValue: UserDefaults.standard.string(forKey: Key.style) ?? "") ?? .classic
+    }
+}
+
 enum TatwoIslandShellMetrics {
     struct ShellGeometry {
         let bodySize: NSSize
@@ -11,13 +114,51 @@ enum TatwoIslandShellMetrics {
     }
 
     // Measured from the supplied Vibe Island references at 2x scale.
-    static let collapsedSize = NSSize(width: 240, height: 33)
-    static let expandedSize = NSSize(width: 648, height: 172)
-    static let collapsedTopReverseCornerRadius: CGFloat = 10
-    static let expandedTopReverseCornerRadius: CGFloat = 22
-    static let collapsedBottomCornerRadius: CGFloat = 17
-    static let expandedBottomCornerRadius: CGFloat = 28
-    static let expandedOverlaySize = NSSize(width: 692, height: 172)
+    // W105：這一組是出廠基準，設定頁的兩支倍率滑桿乘在上面（倍率 1.0 時數值與過去完全相同）。
+    static let baseCollapsedSize = NSSize(width: 240, height: 33)
+    static let baseExpandedSize = NSSize(width: 648, height: 172)
+    static let baseCollapsedTopReverseCornerRadius: CGFloat = 10
+    static let baseExpandedTopReverseCornerRadius: CGFloat = 22
+    static let baseCollapsedBottomCornerRadius: CGFloat = 17
+    static let baseExpandedBottomCornerRadius: CGFloat = 28
+
+    /// 黑瀏海＝收合態，玻璃＝展開態；兩組尺寸各自獨立，對應設定頁兩支滑桿。
+    static var notchScale: CGFloat { TatwoIslandSettings.notchScaleValue }
+    static var glassScale: CGFloat { TatwoIslandSettings.glassScaleValue }
+
+    static var collapsedSize: NSSize {
+        NSSize(
+            width: baseCollapsedSize.width * notchScale,
+            height: baseCollapsedSize.height * notchScale
+        )
+    }
+    static var expandedSize: NSSize {
+        NSSize(
+            width: baseExpandedSize.width * glassScale,
+            height: baseExpandedSize.height * glassScale
+        )
+    }
+    static var collapsedTopReverseCornerRadius: CGFloat {
+        baseCollapsedTopReverseCornerRadius * notchScale
+    }
+    static var expandedTopReverseCornerRadius: CGFloat {
+        baseExpandedTopReverseCornerRadius * glassScale
+    }
+    static var collapsedBottomCornerRadius: CGFloat {
+        baseCollapsedBottomCornerRadius * notchScale
+    }
+    static var expandedBottomCornerRadius: CGFloat {
+        baseExpandedBottomCornerRadius * glassScale
+    }
+    /// 承載視窗要同時裝得下放大的玻璃與放大的黑瀏海，否則其中一邊會被裁掉。
+    static var expandedOverlaySize: NSSize {
+        let glassWidth = expandedSize.width + (expandedTopReverseCornerRadius * 2)
+        let notchWidth = collapsedSize.width + (collapsedTopReverseCornerRadius * 2)
+        return NSSize(
+            width: max(glassWidth, notchWidth),
+            height: max(expandedSize.height, collapsedSize.height)
+        )
+    }
     static let windowLevel = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 2)
     static let collapseDelay: TimeInterval = IslandCollapsePolicy.delay
     static let expandAnimation = Animation.spring(
@@ -204,13 +345,13 @@ final class TatwoIslandShellController {
     private var localEvents: Any?
     private var outsideEvents: Any?
     private var pointerTimer: Timer?
+    private var settingsObserver: NSObjectProtocol?
 
     init() {
         let state = TatwoIslandShellState()
         let hostingController = NSHostingController(rootView: TatwoIslandShellView(state: state))
         self.state = state
         IslandExceptionsNavigation.shell = state
-        IslandNotice.shared.hostAvailable = true
         self.panel = TatwoIslandShellPanel(
             contentRect: .zero,
             viewController: hostingController
@@ -244,15 +385,25 @@ final class TatwoIslandShellController {
             guard let state, state.isExpanded else { return }
             state.handleCollapseEvent(.outsideTapped)
         }
+        // W105：總開關與尺寸改動當場生效，不必重開 App。
+        settingsObserver = NotificationCenter.default.addObserver(
+            forName: .tatwoIslandSettingsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applySettings() }
+        }
     }
 
     deinit {
         pointerTimer?.invalidate()
         if let localEvents { NSEvent.removeMonitor(localEvents) }
         if let outsideEvents { NSEvent.removeMonitor(outsideEvents) }
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
     }
 
     func show() {
+        // 總開關關閉＝Island 視窗根本不出現，計時器與 notice host 也一併停掉。
+        guard TatwoIslandSettings.isEnabled else { hide(); return }
+        IslandNotice.shared.hostAvailable = true
         updateOverlayFrame()
         panel.orderFrontRegardless()
         guard pointerTimer == nil else { return }
@@ -264,6 +415,20 @@ final class TatwoIslandShellController {
         timer.tolerance = 0.03
         RunLoop.main.add(timer, forMode: .common)
         pointerTimer = timer
+    }
+
+    /// 關閉：收走視窗、停掉輪詢計時器，並交回 notice 的備援呈現路徑。
+    func hide() {
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        IslandNotice.shared.hostAvailable = false
+        panel.orderOut(nil)
+    }
+
+    /// 開關打開就原地復原（含新的尺寸），關閉就收掉。
+    private func applySettings() {
+        guard TatwoIslandSettings.isEnabled else { hide(); return }
+        show()
     }
 
     private func reconcilePointer() {
@@ -328,6 +493,7 @@ final class TatwoIslandShellPanel: NSPanel {
 struct TatwoIslandShellView: View {
     @ObservedObject var state: TatwoIslandShellState
     @ObservedObject private var notice = IslandNotice.shared
+    @ObservedObject private var settings = TatwoIslandSettings.shared
 
     var body: some View {
         GeometryReader { proxy in
@@ -337,6 +503,7 @@ struct TatwoIslandShellView: View {
                         progress: state.expansionProgress,
                         overlaySize: proxy.size,
                         glassIsInteractive: state.isExpanded,
+                        style: settings.style,
                         onHover: state.setPointerInside
                     )
                     .opacity(state.isExpanded && notice.current != nil ? 0 : 1)
@@ -356,17 +523,20 @@ struct TatwoIslandShellSurface: View, @MainActor Animatable {
     var progress: CGFloat
     let overlaySize: NSSize
     let glassIsInteractive: Bool
+    let style: TatwoIslandSettings.Style
     let onHover: (Bool) -> Void
 
     init(
         progress: CGFloat,
         overlaySize: NSSize,
         glassIsInteractive: Bool = true,
+        style: TatwoIslandSettings.Style = .classic,
         onHover: @escaping (Bool) -> Void
     ) {
         self.progress = progress
         self.overlaySize = overlaySize
         self.glassIsInteractive = glassIsInteractive
+        self.style = style
         self.onHover = onHover
     }
 
@@ -386,23 +556,27 @@ struct TatwoIslandShellSurface: View, @MainActor Animatable {
         ZStack {
             // 黑 notch 是玻璃後方的內容，不是最後蓋在玻璃上的實色貼片。
             // 先畫黑塊，讓下方唯一的系統玻璃直接對它做模糊與折射。
-            TatwoIslandNotchBlackPaint(
-                progress: progress,
-                shellSize: geometry.shellSize
-            )
-                .clipShape(shellShape)
-                .allowsHitTesting(false)
+            // W105 風格「純玻璃」整層不畫；「實心黑」則改為不開玻璃（見底板）。
+            if style != .glass {
+                TatwoIslandNotchBlackPaint(
+                    progress: progress,
+                    shellSize: geometry.shellSize
+                )
+                    .clipShape(shellShape)
+                    .allowsHitTesting(false)
+            }
             // 底板只有一個。不裁切：系統玻璃的外投影本來就落在造型之外，
             // 一裁就會被切成一條沿底邊的白帶。
             TatwoIslandBaseplate(
                 shellShape: shellShape,
                 cornerRadius: geometry.bottomCornerRadius,
-                glassIsInteractive: glassIsInteractive
+                glassIsInteractive: glassIsInteractive,
+                glassEnabled: style != .solid
             )
             // 系統玻璃的 hover 能量有自己的退場時間。收合時用同一個黑 notch
             // 在玻璃上方同步補回實黑，讓「恢復正常」跟 0.22 秒幾何動畫一起完成；
             // 展開穩態 opacity 為 0，直接不掛進渲染樹，省一層 compositing。
-            if collapsedRecoveryOpacity > 0 {
+            if collapsedRecoveryOpacity > 0, style != .glass {
                 TatwoIslandNotchBlackPaint(
                     progress: progress,
                     shellSize: geometry.shellSize
@@ -607,10 +781,12 @@ private struct TatwoIslandBaseplate: View {
     let shellShape: TatwoIslandShellShape
     let cornerRadius: CGFloat
     let glassIsInteractive: Bool
+    /// W105 風格「實心黑」把玻璃整層關掉，只留黑瀏海。
+    var glassEnabled: Bool = true
 
     @ViewBuilder
     var body: some View {
-        if #available(macOS 26.0, *) {
+        if #available(macOS 26.0, *), glassEnabled {
             // 保留透明 carrier，避免極低白色填色仍被系統材質放大成偏白底板。
             // 收合目標一成立就關掉 interactive hover 能量；材質本身仍保留，
             // 黑 notch 也仍在玻璃下方，只是不再等待系統高光慢慢退場。

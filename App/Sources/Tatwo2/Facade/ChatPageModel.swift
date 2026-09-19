@@ -84,7 +84,11 @@ final class ChatPageModel: ObservableObject {
     }() {
         didSet {
             if mode != oldValue {
-                ComputerUseController.shared.stop()
+                // 全權下操作 TATWO OS 自己時，切換模式本身就是被操作的動作之一，不能因此收回授權
+                // （否則 Browser／CLI 等模式永遠測不到）。操作其他 App 的授權照舊一離開聊天就收回。
+                if !(permissionPreset == .fullAccess && ComputerUseController.shared.isOperatingSelf()) {
+                    ComputerUseController.shared.stop()
+                }
                 BrowserAgentBridge.shared.revokeRequests()
             }
         }
@@ -95,7 +99,10 @@ final class ChatPageModel: ObservableObject {
     @Published var selectedThreadID: UUID? {
         didSet {
             if selectedThreadID != oldValue {
-                ComputerUseController.shared.stop(owner: oldValue)
+                // 同切換模式：全權下操作 TATWO OS 自己時，點別條討論串也是被操作的動作之一，不因此收回授權。
+                if !(permissionPreset == .fullAccess && ComputerUseController.shared.isOperatingSelf(owner: oldValue)) {
+                    ComputerUseController.shared.stop(owner: oldValue)
+                }
                 BrowserAgentBridge.shared.revokeRequests()
             }
             if selectedThreadID != oldValue {
@@ -199,8 +206,8 @@ final class ChatPageModel: ObservableObject {
     @Published var devices: [DeviceRecord] = []
     @Published var remoteSessions: [RemoteDeviceSession] = []
     @Published var remoteSidebarSections: [RemoteSidebarSection] = []
-    /// W98：請側欄展開「專案」區的訊號（每次 +1）；不存狀態、不做別的事。
-    @Published var sidebarProjectsExpandRequest = 0
+    /// W98d：請側欄展開並捲到某台設備區塊的訊號（同一台再按一次也會動，靠 nonce）；不存狀態、不做別的事。
+    @Published var sidebarDeviceFocus: SidebarDeviceFocus?
     @Published var selectedRemote: (deviceID: String, threadID: UUID)? {
         didSet {
             if selectedRemote?.deviceID != oldValue?.deviceID || selectedRemote?.threadID != oldValue?.threadID {
@@ -210,6 +217,8 @@ final class ChatPageModel: ObservableObject {
             }
         }
     }
+    /// W100：按了遠端設備但還沒連上時記在這裡，背景連上就自動進遠端模式。
+    private var pendingRemoteEntryDeviceID: String?
     @Published var pairingWindow: (code: String, expiresAt: Date)?
     @Published var pairingListenAddress: String?
     /// 設定頁「設備」卡用：加入主機的結果（設定頁看不到輸入框的 hint）。
@@ -564,6 +573,14 @@ final class ChatPageModel: ObservableObject {
         isLive ? (activeConversationEngine?.transcript(for: selectedThreadID) ?? []) : fixture.messages + fixtureExtraMessages
     }
 
+    /// W100：遠端逐字稿還在背景拉（或這台還沒連上）時，對話區顯示「連線中…」而不是空白。
+    var isRemoteTranscriptLoading: Bool {
+        guard isLive, selectedRemote != nil, let session = activeRemoteSession else { return false }
+        guard let remote = session.engine else { return true }
+        return remote.isTranscriptLoading(selectedThreadID)
+            && remote.transcript(for: selectedThreadID).isEmpty
+    }
+
     private var activeRemoteSession: RemoteDeviceSession? {
         guard let deviceID = selectedRemote?.deviceID else { return nil }
         return remoteSessions.first { $0.device.id == deviceID }
@@ -600,6 +617,7 @@ final class ChatPageModel: ObservableObject {
             session.onUpdate = { [weak self, weak session] in
                 guard let self, let session else { return }
                 self.scheduleRemoteSidebarProjection()
+                self.completePendingRemoteEntry(session)
                 guard self.selectedRemote?.deviceID == session.device.id else { return }
                 self.isRunning = session.engine?.isRunning(self.selectedThreadID) ?? false
                 self.refreshIssueLists()
@@ -1498,7 +1516,9 @@ final class ChatPageModel: ObservableObject {
     private func computerUseScope(_ caller: UUID) -> String? {
         // First vertical slice is a user-owned local Chat, not a delegated room
         // or a background Bot. Space/other routes remain explicitly unverified.
-        guard isLive, mode == .chat, selectedRemote == nil, selectedThreadID == caller,
+        // 開始一定要在聊天模式；已經在操作 TATWO OS 自己（全權）時，模式被它自己切走不算離開情境。
+        let selfOperated = permissionPreset == .fullAccess && ComputerUseController.shared.isOperatingSelf(owner: caller)
+        guard isLive, mode == .chat || selfOperated, selectedRemote == nil, selectedThreadID == caller || selfOperated,
               let record = live?.threadRecord(caller), !record.isArchived,
               record.parentThreadID == nil, record.deviceID == nil,
               record.roomReadOnly != true, botIDForBridge(threadID: caller) == nil else { return nil }
@@ -1568,7 +1588,7 @@ final class ChatPageModel: ObservableObject {
     /// Validate the actual Chat entry, not only the MCP or the native input
     /// parser. Shape validation grants no permission and consumes no observation.
     nonisolated static func validateComputerToolParameters(_ method: String, params: [String: Any],
-                                                           caller: UUID) throws {
+                                                           caller: UUID, allowSelfTarget: Bool = false) throws {
         guard let rawCaller = params["callerThreadID"] as? String,
               UUID(uuidString: rawCaller) == caller else {
             throw ComputerUseFailure("computer_invalid_caller")
@@ -1600,7 +1620,7 @@ final class ChatPageModel: ObservableObject {
         default: throw ComputerUseFailure("computer_unknown_tool")
         }
         guard Set(params.keys).isSubset(of: allowed) else { throw ComputerUseFailure("computer_invalid_arguments") }
-        if method == "computer_start" { _ = try ComputerUseTarget.requested(params["bundleIdentifier"]) }
+        if method == "computer_start" { _ = try ComputerUseTarget.requested(params["bundleIdentifier"], allowSelf: allowSelfTarget) }
         if method == "computer_observe" || method == "computer_action" || method == "computer_batch" {
             guard let session = params["sessionID"] as? String, UUID(uuidString: session) != nil else {
                 throw ComputerUseFailure("computer_session_required")
@@ -1611,11 +1631,13 @@ final class ChatPageModel: ObservableObject {
     func performComputerTool(_ method: String, params: [String: Any], caller: UUID,
                              requestIsConnected: @escaping @Sendable () -> Bool) async throws -> [String: Any] {
         guard let scope = computerUseScope(caller) else { throw ComputerUseFailure("computer_local_chat_required") }
-        try Self.validateComputerToolParameters(method, params: params, caller: caller)
+        try Self.validateComputerToolParameters(method, params: params, caller: caller,
+                                                allowSelfTarget: permissionPreset == .fullAccess)
         guard let record = live?.threadRecord(caller) else { throw ComputerUseFailure("computer_local_chat_required") }
         let workdir = record.cwdOverride ?? live?.projectRecord(record.projectID)?.workdir ?? NSHomeDirectory()
         return try await ComputerUseController.shared.perform(method, params: params, caller: caller, scope: scope,
                                                               workspace: URL(fileURLWithPath: workdir, isDirectory: true),
+                                                              allowSelfTarget: permissionPreset == .fullAccess,
                                                               requestIsConnected: requestIsConnected) { [weak self] in
             self?.computerUseScope(caller) == scope && requestIsConnected()
         }
@@ -1882,6 +1904,8 @@ final class ChatPageModel: ObservableObject {
         devices = rows
         return rows
     }
+    /// W100：還沒連上就不在主執行緒等 SSH。改成背景連線＋顯示「正在連線」，
+    /// 連上後由 `completePendingRemoteEntry` 自動進遠端模式。
     @discardableResult
     func enterRemoteMode(_ device: DeviceRecord) -> Bool {
         guard isLive else {
@@ -1892,19 +1916,38 @@ final class ChatPageModel: ObservableObject {
             devices = deviceRegistry.list()
             configureRemoteSessions()
         }
-        guard let session = remoteSessions.first(where: { $0.device.id == device.id }),
-              (session.engine != nil || session.connectNow()),
-              let threadID = session.engine?.doc.selectedThreadID
-                ?? session.document.projects.lazy.flatMap(\.threads).first?.id
-        else {
+        guard let session = remoteSessions.first(where: { $0.device.id == device.id }) else {
             flashComposerHint("遠端設備 \(device.name) 尚未連上")
             return false
         }
-        return selectRemote(deviceID: device.id, threadID: threadID)
+        if session.engine != nil,
+           let threadID = session.engine?.doc.selectedThreadID
+            ?? session.document.projects.lazy.flatMap(\.threads).first?.id {
+            pendingRemoteEntryDeviceID = nil
+            return selectRemote(deviceID: device.id, threadID: threadID)
+        }
+        pendingRemoteEntryDeviceID = device.id
+        session.start()
+        flashComposerHint("正在連線 \(device.name)…")
+        return false
     }
 
-    /// W98：設備頁按「遠端設備專案」時，請側欄把「專案」區展開（展開狀態是側欄的 @State，靠這個訊號同步）。
-    func requestSidebarProjectsExpanded() { sidebarProjectsExpandRequest += 1 }
+    /// 背景連線完成後，把當初按下的那台自動帶進遠端模式。
+    private func completePendingRemoteEntry(_ session: RemoteDeviceSession) {
+        guard pendingRemoteEntryDeviceID == session.device.id,
+              let engine = session.engine,
+              let threadID = engine.doc.selectedThreadID
+                ?? session.document.projects.lazy.flatMap(\.threads).first?.id
+        else { return }
+        pendingRemoteEntryDeviceID = nil
+        _ = selectRemote(deviceID: session.device.id, threadID: threadID)
+    }
+
+    /// W98d：設備頁按「遠端設備專案」時，請側欄把那台設備的區塊展開並捲過去（展開狀態是側欄的
+    /// @State，靠這個訊號同步）；只帶路，不自己進遠端模式。
+    func requestSidebarDeviceSection(_ deviceID: String) {
+        sidebarDeviceFocus = SidebarDeviceFocus(deviceID: deviceID, nonce: (sidebarDeviceFocus?.nonce ?? 0) + 1)
+    }
 
     func exitRemoteMode() {
         guard selectedRemote != nil else { return }
@@ -1950,7 +1993,11 @@ final class ChatPageModel: ObservableObject {
     }
 
     @discardableResult
-    func pushThreadToDevice(_ threadID: UUID, _ deviceID: String) -> UUID? {
+    func pushThreadToDevice(
+        _ threadID: UUID,
+        _ deviceID: String,
+        completion: (@MainActor (UUID?) -> Void)? = nil
+    ) -> UUID? {
         guard
             let localLive,
             let source = localLive.threadRecord(threadID),
@@ -1959,6 +2006,7 @@ final class ChatPageModel: ObservableObject {
             let remote = session.engine
         else {
             flashComposerHint("併回失敗：本機討論串或遠端設備不可用")
+            completion?(nil)
             return nil
         }
         let systemText = "已併回 \(session.device.name)，來源：\(source.title)"
@@ -1968,11 +2016,15 @@ final class ChatPageModel: ObservableObject {
             role: "system",
             text: systemText,
             createdAt: Date()))
+        let deviceName = session.device.name
+        let projectName = project.name
+        let workdir = source.cwdOverride ?? project.workdir
+        let candidates: [RemoteThreadTransfer.Candidate]
+        var paths: [String]
         do {
-            let workdir = source.cwdOverride ?? project.workdir
-            let candidates = try RemoteThreadTransfer.candidates(
+            candidates = try RemoteThreadTransfer.candidates(
                 threadID: threadID, artifactsRoot: localLive.turnArtifacts.root, workdir: workdir)
-            var paths = candidates.filter(\.automatic).map(\.path)
+            paths = candidates.filter(\.automatic).map(\.path)
             let uncertain = candidates.filter { !$0.automatic }
             if !uncertain.isEmpty {
                 let alert = NSAlert()
@@ -1987,67 +2039,116 @@ final class ChatPageModel: ObservableObject {
                 let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: min(300, stack.frame.height)))
                 scroll.hasVerticalScroller = true; scroll.documentView = stack
                 alert.accessoryView = scroll
-                guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+                guard alert.runModal() == .alertFirstButtonReturn else {
+                    completion?(nil)
+                    return nil
+                }
                 paths += zip(uncertain, buttons).filter { $0.1.state == .on }.map { $0.0.path }
             }
-            var baselines: [String: String] = [:]
-            if !paths.isEmpty {
-                let original = try RemoteThreadTransfer.sourceBaselines(in: workdir, paths: paths)
-                let response = try session.link.call(method: "push_thread", params: [
-                    "phase": "baseline", "projectName": project.name, "paths": paths,
-                ])
-                guard let peer = response["baselines"] as? [String: String] else { throw RemoteHostLinkError.invalidResponse }
-                let conflicts = paths.filter { peer[$0] == nil || peer[$0] != original[$0] }
-                guard conflicts.isEmpty else { throw RemoteThreadTransfer.TransferError.conflicts(conflicts) }
-                baselines = peer
-            }
-            let observed = Dictionary(uniqueKeysWithValues: candidates.compactMap { candidate in
-                candidate.observedSHA256.map { (candidate.path, $0) }
-            })
-            let files = try RemoteThreadTransfer.changedFiles(
-                in: workdir, paths: paths, baselines: baselines, observedHashes: observed)
-            let remoteThreadID = try remote.pushThread(
-                projectName: project.name,
-                title: source.title,
-                messages: messages,
-                files: files)
-            localLive.appendSystemMessage(
-                threadID: threadID,
-                text: systemText,
-                status: "info|設備搬移")
-            flashComposerHint("已併回 \(session.device.name)")
-            return remoteThreadID
         } catch {
-            flashComposerHint("併回 \(session.device.name) 失敗：\(error.localizedDescription)")
+            flashComposerHint("併回 \(deviceName) 失敗：\(error.localizedDescription)")
+            completion?(nil)
             return nil
         }
+        let observed = Dictionary(uniqueKeysWithValues: candidates.compactMap { candidate in
+            candidate.observedSHA256.map { (candidate.path, $0) }
+        })
+        // W100：baseline 比對與 push RPC 都會等 SSH，一律在背景跑；主執行緒只收結果。
+        let link = session.link
+        let selected = paths
+        flashComposerHint("正在併回 \(deviceName)…")
+        Task { @MainActor [weak self] in
+            let prepared = await Task.detached(priority: .userInitiated) {
+                Result { () throws -> [RemoteThreadTransferFile] in
+                    var baselines: [String: String] = [:]
+                    if !selected.isEmpty {
+                        let original = try RemoteThreadTransfer.sourceBaselines(in: workdir, paths: selected)
+                        let response = try link.call(method: "push_thread", params: [
+                            "phase": "baseline", "projectName": projectName, "paths": selected,
+                        ])
+                        guard let peer = response["baselines"] as? [String: String] else { throw RemoteHostLinkError.invalidResponse }
+                        let conflicts = selected.filter { peer[$0] == nil || peer[$0] != original[$0] }
+                        guard conflicts.isEmpty else { throw RemoteThreadTransfer.TransferError.conflicts(conflicts) }
+                        baselines = peer
+                    }
+                    return try RemoteThreadTransfer.changedFiles(
+                        in: workdir, paths: selected, baselines: baselines, observedHashes: observed)
+                }
+            }.value
+            guard let self else { return }
+            guard case .success(let files) = prepared else {
+                if case .failure(let error) = prepared {
+                    self.flashComposerHint("併回 \(deviceName) 失敗：\(error.localizedDescription)")
+                }
+                completion?(nil)
+                return
+            }
+            remote.pushThread(
+                projectName: projectName,
+                title: source.title,
+                messages: messages,
+                files: files
+            ) { [weak self] outcome in
+                guard let self else { return }
+                switch outcome {
+                case .success(let remoteThreadID):
+                    localLive.appendSystemMessage(
+                        threadID: threadID,
+                        text: systemText,
+                        status: "info|設備搬移")
+                    self.flashComposerHint("已併回 \(deviceName)")
+                    completion?(remoteThreadID)
+                case .failure(let error):
+                    self.flashComposerHint("併回 \(deviceName) 失敗：\(error.localizedDescription)")
+                    completion?(nil)
+                }
+            }
+        }
+        return nil
     }
 
     @discardableResult
-    func pullThreadFromDevice(_ deviceID: String, _ remoteThreadID: UUID) -> UUID? {
+    func pullThreadFromDevice(
+        _ deviceID: String,
+        _ remoteThreadID: UUID,
+        completion: (@MainActor (UUID?) -> Void)? = nil
+    ) -> UUID? {
         guard
             let localLive,
             let session = remoteSessions.first(where: { $0.device.id == deviceID }),
             let remote = session.engine
         else {
             flashComposerHint("拉到這台失敗：遠端設備不可用")
+            completion?(nil)
             return nil
         }
-        do {
-            let transfer = try remote.pullThread(threadID: remoteThreadID)
-            let localThreadID = try localLive.importTransferredThread(
-                projectName: transfer.projectName,
-                title: transfer.title,
-                messages: transfer.messages,
-                files: transfer.files)
-            localLive.appendSystemMessage(threadID: localThreadID, text: "已拉到這台，來源：\(transfer.title)（\(session.device.name)）", status: "info|設備搬移")
-            selectLocalThread(localThreadID)
-            flashComposerHint("已拉到這台，來源：\(transfer.title)")
-            return localThreadID
-        } catch {
-            flashComposerHint("拉到這台失敗：\(error.localizedDescription)")
-            return nil
+        // W100：pull 是網路動作，走背景 RPC；主執行緒只在完成回呼裡寫入本機。
+        let deviceName = session.device.name
+        flashComposerHint("正在拉到這台…")
+        remote.pullThread(threadID: remoteThreadID) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .failure(let error):
+                self.flashComposerHint("拉到這台失敗：\(error.localizedDescription)")
+                completion?(nil)
+            case .success(let transfer):
+                do {
+                    let localThreadID = try localLive.importTransferredThread(
+                        projectName: transfer.projectName,
+                        title: transfer.title,
+                        messages: transfer.messages,
+                        files: transfer.files)
+                    localLive.appendSystemMessage(threadID: localThreadID, text: "已拉到這台，來源：\(transfer.title)（\(deviceName)）", status: "info|設備搬移")
+                    self.selectLocalThread(localThreadID)
+                    self.flashComposerHint("已拉到這台，來源：\(transfer.title)")
+                    completion?(localThreadID)
+                } catch {
+                    self.flashComposerHint("拉到這台失敗：\(error.localizedDescription)")
+                    completion?(nil)
+                }
+            }
         }
+        return nil
     }
 
     @discardableResult
@@ -2467,6 +2568,14 @@ final class ChatPageModel: ObservableObject {
     func isEngineDisabled(_ kind: ClaudeSidecar.Kind) -> Bool { disabledEngines.contains(kind.rawValue) }
 
     /// 模型登入頁的額度條：跟首頁額度卡同一個來源（Claude／OpenAI 走訂閱 API，Grok 只有 App 自己的記錄）。
+    /// 模型登入頁「允許讀取額度…」：只有這裡會讓 macOS 跳鑰匙圈授權視窗（W106）。
+    func authorizeClaudeQuotaRead() {
+        let paths = engineLogin.paths
+        Task { [weak self] in
+            if await ClaudeCredentialStore.authorizeInteractively(paths: paths) { self?.refreshEngineQuotas() }
+        }
+    }
+
     func refreshEngineQuotas() {
         let providers = [
             UsageProviderStatus(id: "claude", displayName: "Claude", status: .installed, cachePolicy: "", liveRefreshPolicy: "", quotaLabel: ""),
@@ -2832,12 +2941,14 @@ final class ChatPageModel: ObservableObject {
             selectLocalThread(localLive.newThread(in: nil))
             return
         }
-        guard isLive, let activeLive = activeConversationEngine else { return }
-        let newID = activeLive.newThread(in: selectedThreadProject?.id)
-        if let deviceID = selectedRemote?.deviceID {
-            selectedRemote = (deviceID, newID)
+        // W100：遠端建立討論串走背景，拿到主機回的 ID 之後才選取（選取方式與改版前相同）。
+        guard isLive, let deviceID = selectedRemote?.deviceID,
+              let remote = activeRemoteSession?.engine else { return }
+        remote.newThread(in: selectedThreadProject?.id, title: "新聊天") { [weak self] (newID: UUID?) in
+            guard let self, let newID else { return }
+            self.selectedRemote = (deviceID, newID)
+            self.selectedThreadID = newID
         }
-        selectedThreadID = newID
     }
     func threadActivityDate(_ thread: TatwoNativeChatThread) -> Date {
         localLive?.activityDate(thread.id) ?? .distantPast

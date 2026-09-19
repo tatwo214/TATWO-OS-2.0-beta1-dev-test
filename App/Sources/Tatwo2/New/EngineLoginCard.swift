@@ -6,6 +6,8 @@ struct EngineLoginCard: View {
     @ObservedObject var model: ChatPageModel
     @State private var loginInput = ""
     @State private var confirmResetCredit = false
+    /// 在設定面板裡才有；其他嵌入處不顯示「完成」。
+    var onClose: (() -> Void)? = nil
 
     private let kinds: [ClaudeSidecar.Kind] = [.codex, .claude, .grok]
 
@@ -18,6 +20,10 @@ struct EngineLoginCard: View {
                 Button("重新檢查") { model.refreshEngineLogins(); model.refreshEngineQuotas() }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                if let onClose {
+                    Button("完成") { onClose() }
+                        .buttonStyle(.bordered).controlSize(.small).keyboardShortcut(.cancelAction)
+                }
             }
 
             VStack(spacing: 0) {
@@ -141,6 +147,11 @@ struct EngineLoginCard: View {
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
+                    // W106：鑰匙圈授權只能由使用者自己觸發；按了才會出現 macOS 的授權視窗，選「永遠允許」即可。
+                    if kind == .claude, detail?.note == ClaudeCredentialStore.accessDeniedReason {
+                        Button("允許讀取額度…") { model.authorizeClaudeQuotaRead() }
+                        .buttonStyle(.link).font(.caption)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

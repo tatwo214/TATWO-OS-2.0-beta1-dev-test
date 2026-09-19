@@ -29,6 +29,8 @@ final class BrowserWorkSpaceStore: ObservableObject {
         focusMode = !opening
     }
     @Published var searchFocusRequest = 0
+    /// 面板重新掛載時 `.task(id:)` 會重跑；已處理過的請求不能再展開一次網址列（設定頁關掉後網址列自己彈出來）。
+    var consumedSearchFocusRequest = 0
     @Published private(set) var downloads = [
         Download(id: 0, name: "工作筆記.pdf", size: "2.4 MB", time: "今天 10:30"),
         Download(id: 1, name: "參考圖片.png", size: "840 KB", time: "昨天 16:20"),
@@ -40,6 +42,14 @@ final class BrowserWorkSpaceStore: ObservableObject {
         selectedSpaceID = id
         if !selectedSpace.isSessionSpace { lastWorkSpaceID = spaceIDs[id] }
         refresh()
+    }
+    private(set) var threadScoped = false // 聊天旁（/goal 102 G1）：每條討論串一組分頁＝以討論串 UUID 命名的 space（同一個 runtime／profile，登入共用）；隔離前留下的分頁收進第一條打開面板的討論串。
+    func selectThreadSpace(_ threadID: UUID) {
+        let name = "thread:" + threadID.uuidString
+        let space = registry.spaces.first { $0.name == name && !$0.isSessionSpace } ?? registry.addSpace(name: name)
+        let strays = registry.spaces.filter { !$0.isSessionSpace && !$0.name.hasPrefix("thread:") }
+        for tab in strays.flatMap({ registry.tabs(ownedBy: .workSpace(spaceID: $0.id)) }) { registry.move(tab.id, to: .workSpace(spaceID: space.id)) }
+        threadScoped = true; refresh(); selectSpace(spaceKey(space.id))
     }
     func addSpace() {
         let space = registry.addSpace(name: "空間 \(spaces.count)")
@@ -396,13 +406,30 @@ final class BrowserWorkSpaceStore: ObservableObject {
 
 struct BrowserWorkSpaceDesignView: View {
     @ObservedObject var store: BrowserWorkSpaceStore
-    @ObservedObject private var runtime = BrowserWorkSpaceRuntime.shared
+    var onClose: (() -> Void)? = nil
+    init(store: BrowserWorkSpaceStore, onClose: (() -> Void)? = nil,
+         runtime: BrowserWorkSpaceRuntime? = nil) {
+        _store = ObservedObject(wrappedValue: store)
+        self.onClose = onClose
+        _runtime = ObservedObject(wrappedValue: runtime ?? BrowserWorkSpaceRuntime.shared)
+    }
+    @State var embeddedSidebarPresented = false
+    @State private var embeddedToolbarHovered = false
+    @State var embeddedToolsHovered = false
+    @State var embeddedToolsPinned = false
+    @State var embeddedToolsPanelHovered = false
+    private var embeddedToolbarVisible: Bool {
+        embeddedToolbarHovered || embeddedToolsHovered || embeddedToolsPinned || addressFocused || addressExpansionRequested || findPresented
+            || embeddedSidebarPresented || extensionsPresented || diagnosticsPresented || loginHelpPresented
+    }
+    @ObservedObject var runtime: BrowserWorkSpaceRuntime
     @FocusState private var addressFocused: Bool
     @State private var addressExpansionRequested = false
-    @State private var diagnosticsPresented = false
-    @State private var loginHelpPresented = false
+    @State var diagnosticsPresented = false
+    @State var loginHelpPresented = false
     @State private var browserFocused = false
-    @State private var extensionsPresented = false
+    @State private var addressEditing = false
+    @State var extensionsPresented = false
     @State private var findPresented = false
     @State private var findFocusRequest = 0
     @State private var shortcutMap = BrowserGeneralSettings.load().shortcuts
@@ -423,13 +450,24 @@ struct BrowserWorkSpaceDesignView: View {
     private var shadowColor: Color { LiquidGlassTokens.browserShadowColor }
 
     var body: some View {
-        VStack(spacing: BrowserOmniboxMetrics.zero) {
-            workspaceToolbar
-                .zIndex(BrowserOmniboxMetrics.chromeZIndex)
-            Group {
-                if EmbeddedBrowserEnginePolicy.current != .chromiumCEF { BrowserEngineUnavailablePlaceholder() }
-                else if store.selectedSpace.isSessionSpace { sessionContent }
-                else { browserContent }
+        Group {
+            if onClose != nil {
+                // PR4c（使用者 09-18 實機：「chat 分頁按鈕一直有問題」）：聊天旁的頂列不再浮在 CEF
+                // 之上靠 hover 才出現，改成跟獨立 Browser 一樣固定坐在網頁上方的一列；
+                // 命中路徑與獨立 Browser 完全相同（那邊實機是好的），不再依賴 CEF 容器讓位。
+                VStack(spacing: BrowserOmniboxMetrics.zero) {
+                    // 使用者 09-19：「pr 設計的頂部霧面漸淡遺失」。頂列仍固定坐在網頁上方（命中可靠），
+                    // 玻璃底往下多畫一段漸淡，疊在網頁最上緣；那一段不吃點擊。
+                    workspaceToolbar
+                        .background { BrowserFloatingToolbarBackdrop() }
+                        .zIndex(BrowserOmniboxMetrics.chromeZIndex)
+                    browserPageContent
+                }
+            } else {
+                VStack(spacing: BrowserOmniboxMetrics.zero) {
+                    workspaceToolbar.zIndex(BrowserOmniboxMetrics.chromeZIndex)
+                    browserPageContent
+                }
             }
         }
             .background(palette.canvasBase)
@@ -447,6 +485,12 @@ struct BrowserWorkSpaceDesignView: View {
                 shortcutMap = BrowserGeneralSettings.load().shortcuts
             }
             .overlay { if tabSearchPresented { tabSearchOverlay } }
+            .popover(isPresented: $embeddedSidebarPresented) {
+                BrowserWorkSpaceSidebarList(store: store)
+                    .frame(width: BrowserChatChromeMetrics.sidebarPopoverWidth,
+                        height: BrowserChatChromeMetrics.sidebarPopoverHeight)
+                    .padding(BrowserChatChromeMetrics.sidebarPopoverPadding)
+            }
             .sheet(isPresented: $diagnosticsPresented) { BrowserDiagnosticsView() }
             .sheet(isPresented: $extensionsPresented) { BrowserExtensionsView() }
             .sheet(isPresented: $loginHelpPresented) { BrowserLoginHelpView(currentURL: store.selectedTab.url) }
@@ -463,7 +507,8 @@ struct BrowserWorkSpaceDesignView: View {
             .onChange(of: store.selectedTab.url) { _, _ in if focusedField != .search && !addressFocused { restoreAddress() } }
             .onAppear { restoreAddress() }
             .task(id: store.searchFocusRequest) {
-                guard store.searchFocusRequest > 0 else { return }
+                guard store.searchFocusRequest > store.consumedSearchFocusRequest else { return }
+                store.consumedSearchFocusRequest = store.searchFocusRequest
                 let requestedTab = store.selectedRegistryID
                 let previousFindRequest = findFocusRequest
                 addressFocused = false; focusedField = nil
@@ -477,15 +522,23 @@ struct BrowserWorkSpaceDesignView: View {
                 if visible { addressFocused = false; focusedField = nil }
             }
             .onExitCommand { tabSearchPresented = false; focusedField = nil; restoreAddress() }
-            .background(BrowserDailyFocusScope(focused: $browserFocused, acceptsWindowResponder: true))
+            // 聊天旁的 chrome 不是整個視窗，first responder 落在聊天那邊時不該接瀏覽器的鍵。
+            .background(BrowserDailyFocusScope(focused: $browserFocused, acceptsWindowResponder: onClose == nil))
             .background {
-                BrowserDailyNavigationControls(focused: browserFocused && !store.bookmarkEditorActive && store.annotationTab == nil && !store.importPresented && !tabSearchPresented && !diagnosticsPresented && !extensionsPresented && !loginHelpPresented,
+                BrowserDailyNavigationControls(focused: browserFocused && shortcutsUnobstructed,
                     shortcutSerial: runtime.shortcutSerial, shortcutKind: runtime.shortcutKind,
                     hasTab: store.selectedRegistryID != nil, editingAddress: addressFocused || focusedField != nil,
                     url: runtime.navigationState.urlString, findPresented: $findPresented,
                     onCommand: send, onReopen: store.reopenClosedTab, onTabNumber: store.selectTabNumber,
-                    onAction: performBrowserAction)
+                    onAction: performBrowserAction,
+                    surfaceOwnsShortcuts: onClose == nil && shortcutsUnobstructed)
             }
+    }
+
+    @ViewBuilder private var browserPageContent: some View {
+        if EmbeddedBrowserEnginePolicy.current != .chromiumCEF { BrowserEngineUnavailablePlaceholder() }
+        else if store.selectedSpace.isSessionSpace { sessionContent }
+        else { browserContent }
     }
 
     private var sessionContent: some View {
@@ -545,7 +598,7 @@ struct BrowserWorkSpaceDesignView: View {
 
     }
 
-    private func send(_ action: EmbeddedBrowserCommand.Action) {
+    func send(_ action: EmbeddedBrowserCommand.Action) {
         commandTabID = store.selectedRegistryID
         command = EmbeddedBrowserCommand(action: action)
     }
@@ -572,67 +625,27 @@ struct BrowserWorkSpaceDesignView: View {
     private var workspaceToolbar: some View {
         VStack(spacing: BrowserOmniboxMetrics.zero) {
             HStack(spacing: BrowserOmniboxMetrics.controlGap) {
-                if store.focusMode {
+                if store.focusMode && onClose == nil {
                     Color.clear.frame(width: WindowChromeMetrics.trafficLightSafeWidth)
                 }
-                BrowserSidebarControls(store: store)
+                if onClose == nil { BrowserSidebarControls(store: store) }
                 EmbeddedBrowserToolbar(addressText: $query, addressFieldFocused: $addressFocused,
                     state: runtime.navigationTabID == store.selectedRegistryID ? runtime.navigationState : .blank,
                     enabled: store.canAddTab, onSubmit: submitSearch, onCommand: send,
                     openTabs: store.tabs.map { BrowserAddressSuggestion(id: String($0.id), title: $0.title, url: $0.url) },
                     onSelectTab: { if let id = Int($0) { store.select(id) } }, expansionRequest: $addressExpansionRequested,
-                    showsAddress: !store.showsStartPage)
-                Menu {
-                    Button("在網頁中尋找…") { performBrowserAction(.findInPage) }
-                    Button("列印…") { send(.printPage) }
-                    Button("存成 PDF 並用系統預覽開啟") { send(.printPDF) }
-                    if runtime.navigationTabID == store.selectedRegistryID && runtime.navigationState.isPDF {
-                        Button("下載 PDF 並用系統預覽開啟") { send(.openPDF) }
-                    }
-                    Button("登入協助…") { loginHelpPresented = true }
-                    Button("重設此網站的多檔下載權限") { send(.resetDownloadPermission) }
-                    Divider()
-                    Button("搜尋分頁…", action: openTabSearch)
-                    Button(store.focusMode ? "展開側欄" : "收合側欄", action: store.toggleSidebar)
-                    Divider()
-                    Button("關閉目前分頁") { store.close(store.selectedID) }
-                    Button("重新開啟關閉的分頁", action: store.reopenClosedTab).disabled(!store.canReopenClosedTab)
-                    Button("復原刪除的書籤", action: store.undoBookmarkDeletion).disabled(store.lastRemovedBookmark == nil)
-                    Button("診斷…") { diagnosticsPresented = true }
-                    Button("新增 space", action: store.addSpace)
-                    Button("從其他瀏覽器導入…", action: store.requestImport)
-                    Divider()
-                    Button("擴充功能…") { extensionsPresented = true }
-                    Menu("工作區") {
-                        ForEach(ChatRunMode.visibleChatTabs) { mode in
-                            Button(mode.displayName) {
-                                NotificationCenter.default.post(name: .tatwoChatSelectMode, object: mode.rawValue)
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .accessibilityLabel("瀏覽器功能")
-                Button { extensionsPresented = true } label: {
-                    Image(systemName: "puzzlepiece.extension")
-                        .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
-                }.buttonStyle(.plain).accessibilityLabel("管理擴充功能")
-                Button { store.showAnnotations(store.selectedID) } label: {
-                    Image(systemName: "note.text")
-                        .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
-                }
-                .buttonStyle(.plain).disabled(store.selectedRegistryID == nil)
-                .help("註解").accessibilityLabel("註解").fixedSize()
+                    showsAddress: !store.showsStartPage, compactChrome: onClose != nil, isEditing: $addressEditing)
+                    .fixedSize(horizontal: onClose != nil && !addressEditing, vertical: false) // 聊天旁：導覽鈕＋連結鈕，其餘給分頁列
+                if onClose != nil && !addressEditing { embeddedTabStrip }
+                if onClose == nil { newTabButton }
+                if onClose == nil { browserActionsButton }
+                if onClose == nil { auxiliaryBrowserControls } else { embeddedToolsExpander }
             }
             .font(.system(size: BrowserOmniboxMetrics.iconSize))
             .foregroundStyle(LiquidGlassTokens.browserOmniboxInk)
             .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
-            .frame(height: BrowserOmniboxMetrics.toolbarHeight)
-            .background(palette.canvasBase)
-            .background(NonWindowDraggingView())
+            .frame(height: onClose == nil ? BrowserOmniboxMetrics.toolbarHeight : BrowserChatChromeMetrics.toolbarHeight)
+            .background { if onClose == nil { palette.canvasBase } }
             .zIndex(BrowserOmniboxMetrics.chromeZIndex)
             BrowserNavigationProgress(tabID: store.selectedRegistryID,
                 state: runtime.navigationTabID == store.selectedRegistryID ? runtime.navigationState : .blank)
@@ -642,6 +655,20 @@ struct BrowserWorkSpaceDesignView: View {
                     .id(store.selectedRegistryID)
             }
         }
+        // 整條 chrome（工具列＋進度條＋尋找列）共用一層命中層：擋掉標題列帶的拖視窗，
+        // 並在它真的接受點擊時，才要求下面的 CEF 容器讓位。
+        .background(BrowserChromeHitLayer(isActive: chromeOwnsHits))
+    }
+
+    /// 獨立 Browser 的 chrome 一直在；聊天旁的浮動工具列只有顯示時才吃點擊，
+    /// 隱藏時要讓點擊照常落到網頁上，不能停在「誰都收不到」的空窗。
+    /// PR4c：兩種 chrome 都固定在網頁上方，一律擁有自己的點擊（擋標題列帶拖視窗）。
+    private var chromeOwnsHits: Bool { true }
+
+    /// 有面板／編輯器擋在前面時，瀏覽器不該再吃鍵盤快捷鍵。
+    private var shortcutsUnobstructed: Bool {
+        !store.bookmarkEditorActive && store.annotationTab == nil && !store.importPresented
+            && !tabSearchPresented && !diagnosticsPresented && !extensionsPresented && !loginHelpPresented
     }
 
     private var browserContent: some View {
@@ -649,7 +676,7 @@ struct BrowserWorkSpaceDesignView: View {
             if store.showsStartPage { page }
             else if let tabID = store.selectedRegistryID, let spaceID = store.currentSpaceUUID {
                 BrowserWorkSpaceCEFSurface(tabID: tabID, spaceID: spaceID, command: commandTabID == tabID ? command : nil,
-                    onPopup: { store.openPopup(spaceID: $0, url: $1) })
+                    onPopup: { store.openPopup(spaceID: $0, url: $1) }, runtime: runtime)
             } else { page }
         }
         .overlay(alignment: .bottom) {
@@ -657,7 +684,7 @@ struct BrowserWorkSpaceDesignView: View {
         }
     }
 
-    private func performBrowserAction(_ action: BrowserAction) {
+    func performBrowserAction(_ action: BrowserAction) {
         switch action {
         case .newTab: if store.canAddTab { store.addTab(); store.searchFocusRequest += 1 }
         case .closeTab: store.close(store.selectedID)
@@ -742,7 +769,7 @@ struct BrowserWorkSpaceDesignView: View {
     }
 
     // MARK: - Tab search (only existing local tabs)
-    private func openTabSearch() {
+    func openTabSearch() {
         tabSearch = ""; searchIndex = 0; tabSearchPresented = true; focusedField = .tabSearch
     }
     private var tabSearchOverlay: some View {
@@ -896,7 +923,7 @@ struct BrowserWorkSpaceSidebarList: View {
                     Button("診斷…") { diagnosticsPresented = true }
                 }
             }
-            spaceControls
+            if !store.threadScoped { spaceControls } // 聊天旁的分頁組跟著討論串走，不給手動切
         }
         .frame(maxHeight: .infinity)
         .sheet(isPresented: $diagnosticsPresented) { BrowserDiagnosticsView() }

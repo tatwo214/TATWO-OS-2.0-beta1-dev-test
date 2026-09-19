@@ -214,7 +214,7 @@ struct TatwoSettingsPage: View {
                     BrowserDiagnosticsView(registry: model.browserTabRegistry)
                 }
         case .modelAccess:
-            EngineLoginCard(model: model)
+            EngineLoginCard(model: model, onClose: onClose)
         case .tatwoIsland:
             tatwoIslandContent
         case .computerUse:
@@ -504,45 +504,8 @@ struct TatwoSettingsPage: View {
     }
 
     private var tatwoIslandContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Tatwo Island")
-                        .font(.title3.bold())
-                    Text("Island 設定開關預留區")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("完成") { onClose() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(LiquidGlassTokens.brandAccent)
-                    .keyboardShortcut(.defaultAction)
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(spacing: 10) {
-                Image(systemName: "capsule")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(LiquidGlassTokens.brandAccent)
-                Text("目前沒有設定項目")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("之後 Tatwo Island 的開關、尺寸、顯示規則與互動偏好會集中在這裡。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .frame(maxWidth: 360)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Tatwo Island 設定空白分頁")
-
-            Spacer(minLength: 0)
-        }
-        .padding(22)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // W105：總開關、黑瀏海／玻璃兩組尺寸、風格都在這一頁（呈現方式同 Computer Use）。
+        TatwoIslandSettingsView(onClose: onClose)
     }
 
     private var modelAccessContent: some View {

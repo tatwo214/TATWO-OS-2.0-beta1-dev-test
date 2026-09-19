@@ -40,7 +40,9 @@ final class ComputerUseSession: @unchecked Sendable {
         }
     }
 
-    private let lock = NSLock()
+    // /goal 101：操作 TATWO OS 自己時，`dispatch` 裡的 AXPress 是同行程同步執行，被按的按鈕若會收回授權
+    // （例如切換模式 → stop()）就會在同一條執行緒再次進鎖。非遞迴鎖在這裡是永久死結（.014 sample 實證）。
+    private let lock = NSRecursiveLock()
     private var epoch: UInt64 = 0
     private var grant: Grant?
     /// After the operated App dies mid-session its grant is cleared; for a short window afterwards a

@@ -462,20 +462,61 @@ final class InAppUpdater: ObservableObject {
             ?? fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Application Support/TATWO OS/Updater", isDirectory: true)
         network.pathUpdateHandler = { [weak self] path in
-            let allowed = path.status == .satisfied && path.isExpensive == false && !path.isConstrained
+            let unmeteredPath = path.status == .satisfied && path.isExpensive == false && !path.isConstrained
+            let satisfied = path.status == .satisfied
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.unmetered = allowed
-                if !allowed && !self.manualDownload && self.phase == .starting {
-                    self.preparationReason = "已找到 \(self.pendingCandidate?.tag ?? "新版")，等 Wi‑Fi 再自動下載"
-                    self.download?.cancel()
-                }
-                if allowed, let candidate = self.pendingCandidate {
-                    self.prefetch(to: candidate.tag, repository: candidate.repository)
-                }
+                self?.applyNetworkPath(satisfied: satisfied, unmeteredPath: unmeteredPath)
             }
         }
         network.start(queue: DispatchQueue(label: "tatwo.update.network"))
+    }
+
+    /// W87b-1：設定 › App 更新的「允許計量網路自動下載」（預設關，存既有的 UserDefaults）。
+    var allowsMeteredAutomaticDownload: Bool {
+        UserDefaults.standard.bool(forKey: UpdateNetworkPolicy.allowMeteredKey)
+    }
+    /// 最後一次 `NWPath` 讀數；狀態文字與閘門都由它推導，不另存一份。
+    private var pathSatisfied = false
+    private var pathMetered = false
+
+    /// 更新卡要顯示的網路狀態：ready／metered_blocked／paused／offline。
+    var networkState: String {
+        UpdateNetworkPolicy.state(satisfied: pathSatisfied, metered: pathMetered,
+                                  allowMetered: allowsMeteredAutomaticDownload,
+                                  manual: manualDownload, downloading: phase == .starting)
+    }
+    var networkNotice: String? { UpdateNetworkPolicy.notice(networkState) }
+
+    /// W87b-1／2：計量網路要看得見；路徑變動只暫停，取消只剩使用者主動或候選被取代。
+    private func applyNetworkPath(satisfied: Bool, unmeteredPath: Bool) {
+        objectWillChange.send() // networkState 由下列儲存值推導，變更要通知更新卡。
+        pathSatisfied = satisfied
+        pathMetered = satisfied && !unmeteredPath
+        let allowed = UpdateNetworkPolicy.allowsAutomaticDownload(
+            satisfied: satisfied, metered: pathMetered, allowMetered: allowsMeteredAutomaticDownload)
+        unmetered = allowed
+        if !allowed && !self.manualDownload && self.phase == .starting {
+            self.preparationReason = "已找到 \(self.pendingCandidate?.tag ?? "新版")，等 Wi‑Fi 再自動下載"
+        }
+        // 進行中的預抓改成暫停：parts 與 resume 檔留著，路徑回來後只補缺的段。
+        UpdateTransferGate.shared.setOpen(allowed || manualDownload)
+        if allowed, let candidate = pendingCandidate {
+            prefetch(to: candidate.tag, repository: candidate.repository)
+        }
+    }
+
+    /// W87b-1：使用者按「現在就下載」＝這個候選版本無視計量跑一次預抓。
+    func downloadNowIgnoringMetering(to tag: String, repository: String) {
+        objectWillChange.send()
+        manualDownload = true
+        UpdateTransferGate.shared.setOpen(true)
+        prefetch(to: tag, repository: repository, force: true)
+    }
+
+    /// W87b-1：開關打開就照非計量處理，等待中的候選立刻續跑。
+    func setAllowsMeteredAutomaticDownload(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: UpdateNetworkPolicy.allowMeteredKey)
+        applyNetworkPath(satisfied: pathSatisfied, unmeteredPath: pathSatisfied && !pathMetered)
     }
 
     private var runID = UUID().uuidString
@@ -923,6 +964,7 @@ final class InAppUpdater: ObservableObject {
                 // Interrupted candidates stay in peer-key; checksum-rejected downloads are removed on exit.
             }
             try Task.checkCancellation()
+            await UpdateTransferGate.shared.wait() // W87b-2：暫停時不開新的對外傳輸
             let report: @Sendable (Int64, Int64) -> Void = { [weak self] written, total in
                 Task { @MainActor in
                     guard let self, self.downloadID == id, self.phase == .starting else { return }
@@ -1020,6 +1062,51 @@ final class InAppUpdater: ObservableObject {
     }
 
     // PARALLEL-DOWNLOAD-BEGIN
+    /// W87b-2：路徑變動＝暫停，不是取消。等待期間不發請求、不丟 parts、不消耗重試次數。
+    private final class UpdateTransferGate: @unchecked Sendable {
+        static let shared = UpdateTransferGate()
+        private let lock = NSLock()
+        private var isOpen = true
+        private var waiting: [UUID: CheckedContinuation<Void, Never>] = [:]
+        private var released: Set<UUID> = []
+
+        var isPaused: Bool { lock.withLock { !isOpen } }
+
+        func setOpen(_ open: Bool) {
+            let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                isOpen = open
+                guard open else { return [] }
+                released.removeAll()
+                defer { waiting.removeAll() }
+                return Array(waiting.values)
+            }
+            pending.forEach { $0.resume() }
+        }
+
+        /// 暫停時停在這裡；被取消時立刻放行，交給呼叫端的 checkCancellation 處理。
+        func wait() async {
+            guard isPaused, !Task.isCancelled else { return }
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    let proceed = lock.withLock { () -> Bool in
+                        if isOpen || released.remove(id) != nil { return true }
+                        waiting[id] = continuation
+                        return false
+                    }
+                    if proceed { continuation.resume() }
+                }
+            } onCancel: {
+                let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                    if let waiter = waiting.removeValue(forKey: id) { return waiter }
+                    released.insert(id) // 取消早於登記：讓接著登記的那次直接放行。
+                    return nil
+                }
+                waiter?.resume()
+            }
+        }
+    }
+
     /// Bounded, disk-backed ranges: never materialize a runtime archive in RAM.
     private enum UpdateParallelDownload {
         static func digest(_ file: URL) throws -> String {
@@ -1031,6 +1118,7 @@ final class InAppUpdater: ObservableObject {
 
         static func download(request: URLRequest, destination: URL, size: Int64, expected: String,
                              verification: @escaping @Sendable (TimeInterval) -> Void = { _ in },
+                             gate: UpdateTransferGate = .shared,
                              report: @escaping @Sendable (Int64, Int64) -> Void) async throws -> Int {
             func checkedDigest() throws -> String {
                 let started = ProcessInfo.processInfo.systemUptime
@@ -1042,7 +1130,8 @@ final class InAppUpdater: ObservableObject {
             if size >= 20_000_000, count > 1 {
                 var joined = false
                 do {
-                    try await ranges(request: request, destination: destination, size: size, count: count, report: report)
+                    try await ranges(request: request, destination: destination, size: size, count: count,
+                                     gate: gate, report: report)
                     joined = true
                 } catch {
                     try Task.checkCancellation()
@@ -1075,7 +1164,9 @@ final class InAppUpdater: ObservableObject {
         }
 
         private static func ranges(request: URLRequest, destination: URL, size: Int64, count: Int,
+                                   gate: UpdateTransferGate = .shared,
                                    report: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+            await gate.wait() // W87b-2：暫停時連 HEAD 都不發，恢復後才重新握手
             let session = URLSession(configuration: .ephemeral)
             defer { session.invalidateAndCancel() }
             var head = request; head.httpMethod = "HEAD"; head.timeoutInterval = 60
@@ -1109,18 +1200,23 @@ final class InAppUpdater: ObservableObject {
                         var ranged = rangeRequest
                         ranged.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
                         ranged.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
-                        for attempt in 0..<3 {
-                            do {
-                                _ = try await UpdateDownloadProgress(destination: part, rebase: { _, _ in }) { bytes, _ in
-                                    progress.update(index, bytes: min(end - start + 1, max(0, bytes)))
-                                }.download(request: ranged)
-                                guard (try fm.attributesOfItem(atPath: part.path)[.size] as? NSNumber)?.int64Value == end - start + 1
-                                else { throw URLError(.badServerResponse) }
-                                return
-                            } catch {
-                                try Task.checkCancellation()
-                                try? fm.removeItem(at: part)
-                                if attempt == 2 { throw error }
+                        // W87b-2：暫停不算重試；閘門重開後同一段從自己的 resume 位元組續傳。
+                        while true {
+                            await gate.wait()
+                            for attempt in 0..<3 {
+                                do {
+                                    _ = try await UpdateDownloadProgress(destination: part, rebase: { _, _ in }) { bytes, _ in
+                                        progress.update(index, bytes: min(end - start + 1, max(0, bytes)))
+                                    }.download(request: ranged)
+                                    guard (try fm.attributesOfItem(atPath: part.path)[.size] as? NSNumber)?.int64Value == end - start + 1
+                                    else { throw URLError(.badServerResponse) }
+                                    return
+                                } catch {
+                                    try Task.checkCancellation()
+                                    try? fm.removeItem(at: part)
+                                    guard !gate.isPaused else { break } // 路徑變動：回去等，不消耗重試
+                                    if attempt == 2 { throw error }
+                                }
                             }
                         }
                     }
@@ -1415,6 +1511,41 @@ final class InAppUpdater: ObservableObject {
     }
     // UPDATE-HELPER-END
 }
+/// W87b-1／2：計量網路與暫停狀態的單一判斷來源（更新卡與測試都讀這裡）。
+enum UpdateNetworkPolicy {
+    static let allowMeteredKey = "update-allow-metered"
+    static let ready = "ready"
+    static let offline = "offline"
+    static let meteredBlocked = "metered_blocked"
+    static let paused = "paused"
+    static let meteredText = "目前網路被視為計量，未自動下載"
+    static let pausedText = "網路變動，已暫停下載，保留已下載的片段"
+    static let downloadNowLabel = "現在就下載"
+    static let allowMeteredLabel = "允許計量網路自動下載"
+
+    /// 計量（expensive／constrained）網路只有開了設定才自動下載。
+    static func allowsAutomaticDownload(satisfied: Bool, metered: Bool, allowMetered: Bool) -> Bool {
+        satisfied && (!metered || allowMetered)
+    }
+
+    /// manual＝使用者按過「現在就下載」，這個候選版本一次性放行。
+    static func state(satisfied: Bool, metered: Bool, allowMetered: Bool,
+                      manual: Bool, downloading: Bool) -> String {
+        if allowsAutomaticDownload(satisfied: satisfied, metered: metered, allowMetered: allowMetered)
+            || (manual && satisfied) { return ready }
+        if downloading { return paused }
+        return satisfied ? meteredBlocked : offline
+    }
+
+    static func notice(_ state: String) -> String? {
+        switch state {
+        case meteredBlocked: return meteredText
+        case paused: return pausedText
+        default: return nil
+        }
+    }
+}
+
 enum UpdateMarkState {
     static func title(phase: InAppUpdater.Phase, progress: Double?, userStarted: Bool) -> String {
         if case .failed = phase { return "更新失敗" }

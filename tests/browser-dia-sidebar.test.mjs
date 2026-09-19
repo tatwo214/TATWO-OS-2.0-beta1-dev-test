@@ -143,7 +143,8 @@ test('single control shares navigation hit-size and icon tokens', () => {
 
 test('collapsed sidebar restore and menu use the same explicit toggle', () => {
   const toolbar = section(design, 'private var workspaceToolbar:', 'private var browserContent:');
+  const chrome = read(app + 'Browser/BrowserWorkSpaceEmbeddedChrome.swift');
   assert.match(toolbar, /BrowserSidebarControls\(store: store\)/);
-  assert.match(toolbar, /Button\(store.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
-  assert.doesNotMatch(toolbar, /disabled\(store.sidebarPinned\)/);
+  assert.match(chrome, /Button\(store.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
+  assert.doesNotMatch(toolbar + chrome, /disabled\(store.sidebarPinned\)/);
 });

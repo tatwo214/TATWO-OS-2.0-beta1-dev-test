@@ -27,7 +27,30 @@ struct ChatProjectHoverTrackingView: NSViewRepresentable {
         var passthrough = true
         private var trackingAreaRef: NSTrackingArea?
         private var localMonitor: Any?
+        /// 這一塊自己的 inside，不是整條 rail 的狀態。
         private var isHovering = false
+        /// 同一個視窗裡所有 reveal／retention／exit 區塊共用一個狀態機：rail 的開合
+        /// 只看「指標是否在任何一塊裡面」的聯集。單一區塊各自回報會互相蓋掉——指標從
+        /// retention 層移進 exit 區時，兩塊都會發話，最後寫入的那個 false 就把已經
+        /// 展開的 rail 收掉，這就是使用者看到的「一直退掉」。
+        private static let zones = NSHashTable<TrackingView>.weakObjects()
+        private var publishScheduled = false
+
+        private static func pointerIsInsideAnyZone(of window: NSWindow) -> Bool {
+            zones.allObjects.contains { zone in
+                zone.isHovering && zone.window === window && !zone.isHiddenOrHasHiddenAncestor
+            }
+        }
+
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            Self.zones.add(self)
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            Self.zones.add(self)
+        }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
             // Hover tracking only. Do not eat clicks, text selection, or scrolls
@@ -107,10 +130,25 @@ struct ChatProjectHoverTrackingView: NSViewRepresentable {
             setHovering(bounds.contains(point))
         }
 
+        /// 這一塊的 inside 變了就重算聯集並發布。只在邊界變化時發話，指標在同一塊裡
+        /// 移動不會每次 mouseMoved 都寫 SwiftUI 狀態。
         private func setHovering(_ hovering: Bool) {
             guard hovering != isHovering else { return }
             isHovering = hovering
-            onHover?(hovering)
+            publishUnion()
+        }
+
+        /// 排到下一輪 run loop 才發布：local monitor 比視窗事件派送早跑，SwiftUI 自己
+        /// 掛在側欄上的 .onHover 會在同一個事件的稍後回報單一區塊的 false。聯集必須是
+        /// 最後寫入的那一個，否則整條 rail 又被那個 false 收掉。
+        private func publishUnion() {
+            guard !publishScheduled, let window else { return }
+            publishScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.publishScheduled = false
+                self.onHover?(Self.pointerIsInsideAnyZone(of: window))
+            }
         }
     }
 }

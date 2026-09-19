@@ -215,59 +215,80 @@ extension ChatPage {
                 // 2026-09-11 使用者：搜尋縮窄，跟分頁條一樣在側欄內再內縮 12pt。
                 .padding(.horizontal, 12)
 
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        if model.isLoadingStore {
-                            chatStoreLoadingRows
-                        } else {
-                            projectSidebarSectionHeader
+                // W98d：設備頁的「遠端設備專案」要捲到那台的區塊，所以整個捲動區包一層 ScrollViewReader。
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            if model.isLoadingStore {
+                                chatStoreLoadingRows
+                            } else {
+                                projectSidebarSectionHeader
 
-                            if projectsSectionExpanded {
-                                if !model.filteredProjects.isEmpty {
-                                    ForEach(model.filteredProjects) { project in
-                                        projectSection(project)
+                                if projectsSectionExpanded {
+                                    if !model.filteredProjects.isEmpty {
+                                        ForEach(model.filteredProjects) { project in
+                                            projectSection(project)
+                                        }
+                                    } else {
+                                        emptySidebarText("尚無專案")
+                                            .padding(.horizontal, 4)
                                     }
-                                } else {
-                                    emptySidebarText("尚無專案")
-                                        .padding(.horizontal, 4)
                                 }
-                                // W98（使用者 2026-09-18 裁決）：本機專案之後，每台已配對設備各一個「遠端設備（名稱）」項目。
+
+                                // W98d（使用者 2026-09-18 裁決「要像圈起來的大分類」）：每台已配對設備是跟
+                                // 「專案」「聊天」同一層的區塊，排在專案之後、聊天之前。
                                 ForEach(model.devices) { device in
-                                    remoteDeviceProjectRow(device)
+                                    RemoteDeviceSidebarSection(
+                                        model: model,
+                                        deviceID: device.id,
+                                        deviceName: device.name,
+                                        iconName: RemoteDevicePresentation.icon(device),
+                                        isOnline: RemoteDevicePresentation.isOnline(device, sections: model.remoteSidebarSections))
+                                        .id(RemoteDeviceSidebarSection.anchorID(device.id))
                                 }
-                                // W98b：設備清單暫時追不上工作階段時，沒有對應項目的那幾台才照舊各列一段（fallback）。
-                                RemoteDevicesSidebarSections(model: model)   // 2.0：已配對設備各一段（New/RemoteDevicesSidebarSections.swift）
-                            }
+                                // 設備清單暫時追不上工作階段時，沒有對應設備的那幾台也要有自己的區塊（fallback）。
+                                ForEach(unmatchedRemoteSections) { section in
+                                    RemoteDeviceSidebarSection(
+                                        model: model,
+                                        deviceID: section.deviceID,
+                                        deviceName: section.deviceName,
+                                        iconName: "laptopcomputer",
+                                        isOnline: section.isOnline)
+                                        .id(RemoteDeviceSidebarSection.anchorID(section.deviceID))
+                                }
 
-                            chatSidebarSectionHeader
+                                chatSidebarSectionHeader
 
-                            if chatsSectionExpanded {
-                                if !model.pinnedThreadRefs.isEmpty {
-                                    ForEach(model.pinnedThreadRefs) { item in
-                                        threadRow(project: item.project, thread: item.thread, context: .pinned)
+                                if chatsSectionExpanded {
+                                    if !model.pinnedThreadRefs.isEmpty {
+                                        ForEach(model.pinnedThreadRefs) { item in
+                                            threadRow(project: item.project, thread: item.thread, context: .pinned)
+                                        }
                                     }
-                                }
 
-                                ForEach(ChatSidebarThreadTreeRow.rows(model.sidebarStandaloneThreads)) { row in
-                                    threadRow(project: nil, thread: row.thread,
-                                              context: row.depth == 0 ? .standalone : .subthread)
-                                        .padding(.leading, CGFloat(min(row.depth, 6)) * 16)
-                                }
+                                    ForEach(ChatSidebarThreadTreeRow.rows(model.sidebarStandaloneThreads)) { row in
+                                        threadRow(project: nil, thread: row.thread,
+                                                  context: row.depth == 0 ? .standalone : .subthread)
+                                            .padding(.leading, CGFloat(min(row.depth, 6)) * 16)
+                                    }
 
-                                if model.sidebarStandaloneThreads.isEmpty && model.pinnedThreadRefs.isEmpty {
-                                    emptySidebarText("尚無聊天")
-                                        .padding(.horizontal, 4)
+                                    if model.sidebarStandaloneThreads.isEmpty && model.pinnedThreadRefs.isEmpty {
+                                        emptySidebarText("尚無聊天")
+                                            .padding(.horizontal, 4)
+                                    }
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .scrollIndicators(.hidden)
-                // W98：設備頁按「遠端設備專案」時把「專案」區打開（展開狀態留在側欄這邊）。
-                .onReceive(model.$sidebarProjectsExpandRequest) { request in
-                    guard request > 0, !projectsSectionExpanded else { return }
-                    withAnimation(.easeInOut(duration: 0.12)) { projectsSectionExpanded = true }
+                    .scrollIndicators(.hidden)
+                    // W98d：設備頁按「遠端設備專案」時捲到那台的區塊（展開由區塊自己接同一個訊號）。
+                    .onReceive(model.$sidebarDeviceFocus) { focus in
+                        guard let focus else { return }
+                        withAnimation(.easeInOut(duration: 0.12)) {
+                            proxy.scrollTo(RemoteDeviceSidebarSection.anchorID(focus.deviceID), anchor: .top)
+                        }
+                    }
                 }
 
                 workspaceSidebarFooter
@@ -277,9 +298,11 @@ extension ChatPage {
         .ignoresSafeArea(.container, edges: [.top, .bottom])
     }
 
-    /// W98：側欄「專案」區的遠端設備項目（W98b 改成可展開列，見 `RemoteDeviceProjectRow`）。
-    func remoteDeviceProjectRow(_ device: DeviceRecord) -> some View {
-        RemoteDeviceProjectRow(model: model, device: device)
+    /// W98d：`model.devices` 裡找不到的遠端工作階段（設備清單暫時追不上時），也各給一個區塊。
+    var unmatchedRemoteSections: [RemoteSidebarSection] {
+        model.remoteSidebarSections.filter { section in
+            !model.devices.contains { $0.id == section.deviceID }
+        }
     }
 
     var workspaceSidebarFooter: some View {
@@ -1506,65 +1529,3 @@ extension ChatPage {
 
 }
 
-/// W98：側欄「專案」區的遠端設備項目。列本身點了＝進那台的遠端模式（`enterRemoteMode`，行為沒改，只是換入口）；
-/// 點回本機任一討論串或「回到本機」就會離開（`selectLocalThread` 已清掉 selectedRemote）。
-/// W98b：左邊 chevron 只管展開／收合（不進遠端模式），展開後的子層沿用原本
-/// `RemoteDevicesSidebarSections` 的內容（專案→討論串、「這台還沒有專案」、離線時間），文字一字不改。
-/// 展開狀態只在這個 View 裡，不持久化、預設收合。
-struct RemoteDeviceProjectRow: View {
-    @ObservedObject var model: ChatPageModel
-    let device: DeviceRecord
-    @State private var isExpanded = false
-
-    var body: some View {
-        let section = model.remoteSidebarSections.first { $0.deviceID == device.id }
-        let isOnline = RemoteDevicePresentation.isOnline(device, sections: model.remoteSidebarSections)
-        let isActive = model.remoteMode?.id == device.id
-        LazyVStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 0) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.12)) { isExpanded.toggle() }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .black))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 20, height: 36)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "收起這台的專案" : "展開這台的專案")
-                .accessibilityLabel(isExpanded ? "收起遠端設備內容" : "展開遠端設備內容")
-
-                Button {
-                    _ = model.enterRemoteMode(device)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: RemoteDevicePresentation.icon(device))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 12)
-                        Text("遠端設備（\(device.name)）" + (isOnline ? "" : "・離線"))
-                            .font(ChatTypography.sidebarProject)
-                            .lineLimit(1)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 36)
-                    .opacity(isOnline ? 1 : 0.55)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .background(isActive ? LiquidGlassTokens.brandAccent.opacity(0.14) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .chatMenuRowHover()
-                .help(isOnline ? "在「\(device.name)」上工作" : "「\(device.name)」目前離線，點了會再試一次連線")
-                .accessibilityIdentifier("chat-sidebar-remote-device")
-            }
-
-            if isExpanded, let section {
-                RemoteDeviceSectionContent(model: model, section: section)
-            }
-        }
-    }
-}

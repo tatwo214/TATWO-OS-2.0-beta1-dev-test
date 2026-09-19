@@ -72,20 +72,31 @@ struct BrowserDailyNavigationControls: View {
     let onReopen: () -> Void
     let onTabNumber: (Int) -> Void
     var onAction: (BrowserAction) -> Void = { _ in }
+    /// 獨立 Browser work space：整個視窗就是瀏覽器，不需要等 CEF 拿到 first responder
+    /// 才肯收「開新分頁」這種不綁分頁的鍵。聊天旁維持嚴格的 focus 判定，才不會從
+    /// 聊天輸入框手上把 ⌘T 搶走。
+    var surfaceOwnsShortcuts = false
     @State private var map = BrowserGeneralSettings.load().shortcuts
+    /// 沒被瀏覽器消化的 ⌘T 會離開瀏覽器的範圍交給 AppKit／responder chain 處理，
+    /// 使用者看到的就是「跳視窗」而不是左列多一個分頁。
+    private func claims(_ action: BrowserAction) -> Bool {
+        if !hasTab && action.requiresTab { return false }
+        if focused { return true }
+        return surfaceOwnsShortcuts && !action.requiresTab && !editingAddress
+    }
     var body: some View {
         Group {
             ForEach(BrowserAction.allCases, id: \.self) { action in
                 ForEach(Array(map.combos(for: action).enumerated()), id: \.offset) { index, combo in
                     Button("") { perform(action, number: index + 1) }
                         .keyboardShortcut(combo.equivalent, modifiers: combo.eventModifiers)
-                        .disabled(!hasTab && action.requiresTab)
+                        .disabled(!claims(action))
                 }
             }
             Button("") { onCommand(.stopLoading) }.keyboardShortcut(.escape, modifiers: [])
-                .disabled(!hasTab || editingAddress || findPresented || NSApp.keyWindow?.firstResponder is NSTextInputClient)
+                .disabled(!focused || !hasTab || editingAddress || findPresented || NSApp.keyWindow?.firstResponder is NSTextInputClient)
         }
-        .disabled(!focused).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         .onReceive(NotificationCenter.default.publisher(for: BrowserShortcutMap.changed)) { _ in
             map = BrowserGeneralSettings.load().shortcuts
         }

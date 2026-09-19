@@ -1,6 +1,6 @@
-Source commit: b899d68c1505db5a7362e33aa0a905238dfe9a29
+Source commit: 397d855a0204479ce6e16418fed405e5942f110c
 Source worktree: clean
-Files: 1675
+Files: 1696
 .gitignore
 App/Sources/Tatwo2/Bot/BotPage.swift
 App/Sources/Tatwo2/Bot/BotPageState.swift
@@ -26,6 +26,7 @@ App/Sources/Tatwo2/Browser/BrowserExtensionsView.swift
 App/Sources/Tatwo2/Browser/BrowserExternalLoginPolicy.swift
 App/Sources/Tatwo2/Browser/BrowserExternalURLQueue.swift
 App/Sources/Tatwo2/Browser/BrowserFavoritesStrip.swift
+App/Sources/Tatwo2/Browser/BrowserFloatingToolsPanel.swift
 App/Sources/Tatwo2/Browser/BrowserGeneralSettings.swift
 App/Sources/Tatwo2/Browser/BrowserHumanInteraction.swift
 App/Sources/Tatwo2/Browser/BrowserLoginHelpView.swift
@@ -52,12 +53,15 @@ App/Sources/Tatwo2/Browser/BrowserShortcutsSettingsView.swift
 App/Sources/Tatwo2/Browser/BrowserSidebarControls.swift
 App/Sources/Tatwo2/Browser/BrowserTabRegistry.swift
 App/Sources/Tatwo2/Browser/BrowserTabRow.swift
+App/Sources/Tatwo2/Browser/BrowserToolbarGlass.swift
 App/Sources/Tatwo2/Browser/BrowserWebFeatures.swift
 App/Sources/Tatwo2/Browser/BrowserWorkSpaceCEFSurface.swift
 App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift
+App/Sources/Tatwo2/Browser/BrowserWorkSpaceEmbeddedChrome.swift
 App/Sources/Tatwo2/Browser/BrowserWorkSpaceLifecycle.swift
 App/Sources/Tatwo2/Browser/BrowserWorkSpaceLifecycleModifier.swift
 App/Sources/Tatwo2/Browser/BrowserWorkSpacePolicies.swift
+App/Sources/Tatwo2/Browser/ChatBrowserDownloadsView.swift
 App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift
 App/Sources/Tatwo2/Browser/Diagnostics/BrowserDiagnostics.swift
 App/Sources/Tatwo2/Browser/Diagnostics/BrowserDiagnosticsAudit.swift
@@ -101,6 +105,7 @@ App/Sources/Tatwo2/Chat/CLICommandHistory.swift
 App/Sources/Tatwo2/Chat/ChatAttachmentImageLoader.swift
 App/Sources/Tatwo2/Chat/ChatAttachmentImageViews.swift
 App/Sources/Tatwo2/Chat/ChatAttachmentPreviewSurface.swift
+App/Sources/Tatwo2/Chat/ChatBrowserDivider.swift
 App/Sources/Tatwo2/Chat/ChatComposerChrome.swift
 App/Sources/Tatwo2/Chat/ChatComposerSuggestionCatalog.swift
 App/Sources/Tatwo2/Chat/ChatHistoryMinimap.swift
@@ -203,6 +208,7 @@ App/Sources/Tatwo2/Facade/ChatNativeGoalAcceptance.swift
 App/Sources/Tatwo2/Facade/ChatPageModel+Retry.swift
 App/Sources/Tatwo2/Facade/ChatPageModel.swift
 App/Sources/Tatwo2/Facade/ChatSteeringAcceptance.swift
+App/Sources/Tatwo2/Facade/ClaudeCredentialStore.swift
 App/Sources/Tatwo2/Facade/DeviceDispatch.swift
 App/Sources/Tatwo2/Facade/DeviceIdentity.swift
 App/Sources/Tatwo2/Facade/DeviceInbox.swift
@@ -277,6 +283,7 @@ App/Sources/Tatwo2/Facade/RemoteLiveEngine.swift
 App/Sources/Tatwo2/Facade/RuleGenerator.swift
 App/Sources/Tatwo2/Facade/RuleTranslators.swift
 App/Sources/Tatwo2/Facade/RunTask.swift
+App/Sources/Tatwo2/Facade/SSHHostPin.swift
 App/Sources/Tatwo2/Facade/StreamingAppendAcceptance.swift
 App/Sources/Tatwo2/Facade/Tatwo2PlumbingStubs.swift
 App/Sources/Tatwo2/Facade/TatwoEntry.swift
@@ -285,6 +292,7 @@ App/Sources/Tatwo2/Facade/TatwoSkillsDirectoryCatalog.swift
 App/Sources/Tatwo2/Facade/TurnArtifacts.swift
 App/Sources/Tatwo2/Facade/TurnArtifactsGit.swift
 App/Sources/Tatwo2/Facade/TurnLifecycleAcceptance.swift
+App/Sources/Tatwo2/Facade/UIProbe.swift
 App/Sources/Tatwo2/Facade/UsageSource.swift
 App/Sources/Tatwo2/Facade/WorkflowStubs.swift
 App/Sources/Tatwo2/Fixture/BotFixture.swift
@@ -349,6 +357,7 @@ App/Sources/Tatwo2/New/PocketAdAssistantSettingsView.swift
 App/Sources/Tatwo2/New/PocketCatalogPresentation.swift
 App/Sources/Tatwo2/New/PocketSettingsView.swift
 App/Sources/Tatwo2/New/RemoteDevicesSidebarSections.swift
+App/Sources/Tatwo2/New/TatwoIslandSettingsView.swift
 App/Sources/Tatwo2/New/UpdateAvailableCard.swift
 App/Sources/Tatwo2/Onboarding/ManagedRulesRemoval.swift
 App/Sources/Tatwo2/Onboarding/OSOnboarding.swift
@@ -422,6 +431,8 @@ App/Tests/Tatwo2Tests/BotStudioStateTests.swift
 App/Tests/Tatwo2Tests/BrowserAgentRequestTests.swift
 App/Tests/Tatwo2Tests/BrowserNativeInputTests.swift
 App/Tests/Tatwo2Tests/BrowserStagingLoopbackTests.swift
+App/Tests/Tatwo2Tests/BrowserTerminationReentrancyTests.swift
+App/Tests/Tatwo2Tests/ChatBrowserInspectorLayoutTests.swift
 App/Tests/Tatwo2Tests/ChatCompactPreviewSnapshotTests.swift
 App/Tests/Tatwo2Tests/ChatSlashRailKeyboardTests.swift
 App/Tests/Tatwo2Tests/ComputerUseChatEntryTests.swift
@@ -1245,6 +1256,7 @@ install.sh
 os.md
 public/README.md
 public/install.sh
+scripts/browser-perf-note.md
 scripts/browser-perf.sh
 scripts/browser-pump-probe.mjs
 scripts/browser-pump-probe.sh
@@ -1270,12 +1282,14 @@ scripts/public-safety-allow.txt
 scripts/public-safety-scan.mjs
 scripts/published-release-cache.py
 scripts/rooms/build-room.sh
+scripts/rooms/cu-selftest.py
 scripts/rooms/functional-check.py
 scripts/rooms/gate-template.sh
 scripts/rooms/install-candidate.sh
 scripts/rooms/job-runner.sh
 scripts/rooms/make-offline-release.py
 scripts/rooms/quit-tatwo.sh
+scripts/rooms/realclick.py
 scripts/rooms/terminal-run.sh
 scripts/rooms/thrice-candidate-full.sh
 scripts/run-r1-debug.sh
@@ -1434,6 +1448,7 @@ tests/browser-actor-policy.test.mjs
 tests/browser-address-controls.test.mjs
 tests/browser-ai-vault.test.mjs
 tests/browser-chat-panel.test.mjs
+tests/browser-chat-workspace-isolation.test.mjs
 tests/browser-daily-nav.test.mjs
 tests/browser-default-browser.test.mjs
 tests/browser-dia-chrome.test.mjs
@@ -1634,6 +1649,9 @@ tests/tatwo2-readonly-dispatch.test.mjs
 tests/tatwo2-scroll-follow.test.mjs
 tests/tatwo2-sidebar-regression.test.mjs
 tests/update-channels.test.mjs
+tests/w100-remote-nohang.test.mjs
+tests/w105-island-settings.test.mjs
+tests/w106-claude-quota.test.mjs
 tests/w28-audit.test.mjs
 tests/w29a-update-fixes.test.mjs
 tests/w29b-ux-fixes.test.mjs
@@ -1663,12 +1681,15 @@ tests/w85-cef-local-source.test.mjs
 tests/w85-media-fallback.test.mjs
 tests/w86-favorites.test.mjs
 tests/w87a-download-speed.test.mjs
+tests/w87b-update-ux.test.mjs
 tests/w89-space-from-zero.test.mjs
 tests/w90-empty-state.test.mjs
 tests/w91-remote-endpoints.test.mjs
 tests/w91b-fingerprints.test.mjs
+tests/w91c-hostkey-pin.test.mjs
 tests/w95-job-queue.test.mjs
 tests/w96-skills-shipping.test.mjs
+tests/w97-browser-perf.test.mjs
 tests/w98-devices-page.test.mjs
 tests/w99-cef-ceiling.test.mjs
 tests/webmcp-runtime.test.mjs

@@ -489,11 +489,17 @@ struct EmbeddedBrowserToolbar: View {
     // Consume an explicit request from the existing browser shortcut action.
     var expansionRequest: Binding<Bool> = .constant(false)
     var showsAddress = true
+    var compactChrome = false
+    /// 聊天旁（compact）：編輯網址時直接在頂列展開成一個輸入欄，不再用浮在網頁上方的面板。
+    /// 浮動面板在聊天旁拿不到鍵盤焦點（.014 自測：焦點落到左側欄搜尋、送出不換頁）；
+    /// 外層用這個值把分頁列讓出來。
+    var isEditing: Binding<Bool> = .constant(false)
     // 提示只能顯示使用者實際綁定的快捷鍵。⌘L 是系統保留鍵且不在 defaults 裡，
     // 寫死「⌘L 編輯」等於向使用者宣告一個按下去沒反應的功能。
     @State private var addressShortcutHint: String? = EmbeddedBrowserToolbar.focusAddressHint()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isExpanded = false
+    @State private var copied = false
     @State private var history: [BrowserHistoryEntry] = []
     @State private var searchSettings = BrowserGeneralSettings()
     @State private var selection = -1
@@ -530,9 +536,28 @@ struct EmbeddedBrowserToolbar: View {
             control("chevron.left", "上一頁", enabled && state.canGoBack, .goBack)
             control("chevron.right", "下一頁", enabled && state.canGoForward, .goForward)
             control(state.isLoading ? "xmark" : "arrow.clockwise", state.isLoading ? "停止載入" : "重新載入", enabled && showsAddress, state.isLoading ? .stopLoading : .reload)
-            if showsAddress {
+            if showsAddress && compactChrome && isExpanded {
+                addressField
+                    .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
+                    .background(BrowserOmniboxDismissMonitor { dismissEditor(.focusLost) })
+            } else if showsAddress && compactChrome {
+                // 使用者 09-19：聊天旁不要一長串網址，改成一顆連結鈕，點了複製這個分頁的網址；要改網址走右鍵或快捷鍵。
+                Button(action: copyAddress) {
+                    Image(systemName: copied ? "checkmark" : "link").font(.system(size: BrowserOmniboxMetrics.iconSize))
+                        .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!enabled || (state.urlString ?? "").isEmpty)
+                .help("複製此分頁網址；右鍵可編輯網址")
+                .accessibilityLabel(copied ? "已複製網址" : "複製網址").accessibilityIdentifier("browser.omnibox.copy")
+                .contextMenu {
+                    Button("複製網址", action: copyAddress)
+                    Button("編輯網址…", action: expandEditor)
+                }
+            } else if showsAddress {
                 Button(action: expandEditor) {
                     HStack(spacing: BrowserOmniboxMetrics.controlGap) {
+                        // 獨立 Browser：顯示網域（不放放大鏡）；聊天旁走上面的連結鈕。
                         Text(BrowserOmniboxPresentation.domain(for: state.urlString))
                             .font(.system(size: BrowserOmniboxMetrics.domainFontSize))
                             .lineLimit(1).truncationMode(.middle)
@@ -552,16 +577,22 @@ struct EmbeddedBrowserToolbar: View {
         .foregroundStyle(LiquidGlassTokens.browserOmniboxInk)
         .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
         .frame(height: BrowserOmniboxMetrics.collapsedHeight)
-        .background(NonWindowDraggingView())
+        // 命中層本身不吃事件（mouse-down 沿 responder chain 回到 SwiftUI），但它讓
+        // AppKit 知道這塊不是拖視窗區。聊天旁的 chrome 由外層浮動工具列統一登記，
+        // 這裡只負責獨立 Browser 自己那條導覽列。
+        .background(BrowserChromeHitLayer())
         .accessibilityIdentifier("browser-navigation-bar")
-        .overlay(alignment: .top) {
-            if showsAddress && isExpanded {
+        .overlay(alignment: compactChrome ? .topLeading : .top) {
+            if showsAddress && isExpanded && !compactChrome {
                 editorPanel
+                    .background(BrowserChromeHitLayer())
+                    .frame(width: compactChrome ? 280 : nil)
                     .offset(y: BrowserOmniboxMetrics.collapsedHeight + BrowserOmniboxMetrics.panelGap)
                     .transition(reduceMotion ? .identity : .move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(reduceMotion ? nil : .easeInOut(duration: BrowserOmniboxMetrics.expansionDuration), value: isExpanded)
+        .onChange(of: isExpanded) { _, expanded in isEditing.wrappedValue = expanded && compactChrome }
         .onChange(of: expansionRequest.wrappedValue, initial: true) { _, requested in
             guard requested else { return }
             expansionRequest.wrappedValue = false
@@ -592,34 +623,39 @@ struct EmbeddedBrowserToolbar: View {
         }
     }
 
+    private var addressField: some View {
+        TextField("搜尋或輸入網址", text: $addressText)
+            .textFieldStyle(.plain)
+            .font(.system(size: BrowserOmniboxMetrics.editorFontSize, design: .monospaced))
+            .focused(addressFieldFocused)
+            .frame(height: BrowserOmniboxMetrics.expandedFieldHeight)
+            .onSubmit {
+                if choices.indices.contains(selection) { choose(choices[selection]) }
+                else {
+                    isExpanded = BrowserOmniboxPresentation.isExpanded(after: .submit)
+                    onSubmit()
+                    addressFieldFocused.wrappedValue = false
+                }
+            }
+            .onMoveCommand { direction in
+                guard !choices.isEmpty, !compactChrome else { return } // 聊天旁的行內輸入欄沒有建議清單
+                if direction == .down { selection = min(selection + 1, choices.count - 1) }
+                if direction == .up { selection = max(0, selection - 1) }
+            }
+            .onChange(of: addressText) { _, _ in selection = -1 }
+            .onExitCommand {
+                addressText = state.urlString ?? ""
+                dismissEditor(.escape)
+            }
+            .accessibilityLabel("網址").accessibilityIdentifier("browser.omnibox")
+            .disabled(!enabled)
+            // 欄位剛掛上去的那一輪還不在視窗的 key-view 迴圈裡，同步要焦點會無聲失敗（焦點留在原處）。
+            .onAppear { DispatchQueue.main.async { addressFieldFocused.wrappedValue = true } }
+    }
+
     private var editorPanel: some View {
         VStack(alignment: .leading, spacing: BrowserOmniboxMetrics.panelGap) {
-            TextField("搜尋或輸入網址", text: $addressText)
-                .textFieldStyle(.plain)
-                .font(.system(size: BrowserOmniboxMetrics.editorFontSize, design: .monospaced))
-                .focused(addressFieldFocused)
-                .frame(height: BrowserOmniboxMetrics.expandedFieldHeight)
-                .onSubmit {
-                    if choices.indices.contains(selection) { choose(choices[selection]) }
-                    else {
-                        isExpanded = BrowserOmniboxPresentation.isExpanded(after: .submit)
-                        onSubmit()
-                        addressFieldFocused.wrappedValue = false
-                    }
-                }
-                .onMoveCommand { direction in
-                    guard !choices.isEmpty else { return }
-                    if direction == .down { selection = min(selection + 1, choices.count - 1) }
-                    if direction == .up { selection = max(0, selection - 1) }
-                }
-                .onChange(of: addressText) { _, _ in selection = -1 }
-                .onExitCommand {
-                    addressText = state.urlString ?? ""
-                    dismissEditor(.escape)
-                }
-                .accessibilityLabel("網址").accessibilityIdentifier("browser.omnibox")
-                .disabled(!enabled)
-                .onAppear { addressFieldFocused.wrappedValue = true }
+            addressField
             Text(editHint)
                 .font(.system(size: BrowserOmniboxMetrics.hintFontSize))
                 .foregroundStyle(LiquidGlassTokens.browserOmniboxMutedInk)
@@ -655,6 +691,14 @@ struct EmbeddedBrowserToolbar: View {
         .fixedSize(horizontal: false, vertical: true)
         .modifier(BrowserOmniboxGlass(cornerRadius: BrowserOmniboxMetrics.panelRadius))
         .background(BrowserOmniboxDismissMonitor { dismissEditor(.focusLost) })
+    }
+
+    private func copyAddress() {
+        guard let url = state.urlString, !url.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
     }
 
     private func expandEditor() {

@@ -10,14 +10,17 @@ struct ComputerUseTarget: Equatable, Sendable {
         "com.apple.securityagent"
     ]
 
-    static func requested(_ value: Any?, ownIdentifier: String? = Bundle.main.bundleIdentifier) throws -> Self {
+    /// `allowSelf`：使用者 2026-09-18 裁決——聊天在「全權」預設時，Computer Use 可以操作 TATWO OS 自己
+    /// （自測、自我操作）。其他預設維持拒絕；密碼管理／系統設定類 App 任何預設都拒絕。
+    static func requested(_ value: Any?, ownIdentifier: String? = Bundle.main.bundleIdentifier,
+                          allowSelf: Bool = false) throws -> Self {
         guard let id = value as? String, !id.isEmpty, id.utf8.count <= 255,
               id.range(of: "^[A-Za-z0-9][A-Za-z0-9.-]*$", options: .regularExpression) != nil else {
             throw ComputerUseFailure("computer_invalid_bundle_identifier")
         }
         let normalized = id.lowercased()
-        guard !normalized.hasPrefix("ai.tatwo.tatwo2"), normalized != ownIdentifier?.lowercased(),
-              !deniedIdentifiers.contains(normalized) else {
+        let isSelf = normalized.hasPrefix("ai.tatwo.tatwo2") || normalized == ownIdentifier?.lowercased()
+        guard !deniedIdentifiers.contains(normalized), !isSelf || allowSelf else {
             throw ComputerUseFailure("computer_target_denied")
         }
         return Self(bundleIdentifier: id)

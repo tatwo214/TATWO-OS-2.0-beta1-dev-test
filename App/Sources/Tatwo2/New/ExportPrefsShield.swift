@@ -15,8 +15,15 @@ enum ExportPrefsShield {
         "tatwo.cli.visibleProjectIDs": "",
         "tatwo.chat.browserPanelWidth": 480.0,
         "tatwo.chat.browserOverlayOpen": false,
+        "tatwo.chat.dockedBrowserWidth": 0.0,
+        "chat.sharedBrowserPanelWidth": 0.0,
         "tatwo.plugins.selectedTab": "skills",
         "tatwo2.note.stage": 1,
+        // W105 Island 設定：匯出一律用出廠外觀（總開關開、兩組尺寸 1.0、經典風格）。
+        "tatwo.island.enabled": true,
+        "tatwo.island.notchScale": 1.0,
+        "tatwo.island.glassScale": 1.0,
+        "tatwo.island.style": "classic",
     ]
 
     static func isExportProcess(_ env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

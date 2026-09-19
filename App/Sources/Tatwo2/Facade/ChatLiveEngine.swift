@@ -833,7 +833,19 @@ final class ChatLiveEngine: LiveEngineAPI {
         guard sidecars[threadID] != nil,
               runningThreads.contains(threadID) || (pauseGoal != false &&
                 (pendingGoalControls[threadID] != nil || threadRecord(threadID)?.nativeGoal?.status == "active")) else { return }
-        if runningThreads.contains(threadID) { stoppingThreads.insert(threadID) }
+        // 使用者 09-19：「目前遇到終止不了」。中斷只是請求；引擎卡在工具呼叫或根本沒在聽時永遠等不到結束事件。
+        // 再按一次＝立刻強制結束；否則給引擎 5 秒自己收尾，逾時一樣強制結束。
+        if stoppingThreads.contains(threadID) { forceStop(threadID); return }
+        if runningThreads.contains(threadID) {
+            stoppingThreads.insert(threadID)
+            let stoppedTurn = turnID[threadID]
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                // 只收當初按終止的那一輪；這 5 秒內若已正常結束又開了新一輪，不能誤殺新的。
+                guard let self, self.turnID[threadID] == stoppedTurn else { return }
+                self.forceStop(threadID)
+            }
+        }
         sidecars[threadID]?.interrupt(pauseGoal: pauseGoal)
         // Sending interrupt is not confirmation. Reuse the existing running
         // state until the engine emits its terminal event; no timer or poller.
@@ -841,6 +853,25 @@ final class ChatLiveEngine: LiveEngineAPI {
             update(threadID, rid) { $0.status = "writing|正在停止" }
         }
         persist()
+    }
+
+    /// 引擎沒有回報結束時的保底：本地把這一輪收掉、結束那個 sidecar；下一句會重新啟動引擎並接回同一段對話。
+    private func forceStop(_ threadID: UUID) {
+        guard stoppingThreads.contains(threadID), runningThreads.contains(threadID) else { return }
+        if let rid = streamingRowID[threadID] { update(threadID, rid) { $0.status = "cancelled|已終止" } }
+        streamingRowID[threadID] = nil
+        currentNativeGoals.remove(threadID)
+        finishGoalControl(threadID, accepted: false, message: "這一輪已強制終止，目標操作結果待確認")
+        finishSteer(threadID, accepted: false, message: "這一輪已強制終止，請先確認插話是否送達", unknown: true)
+        indexTurnArtifacts(threadID)
+        runningThreads.remove(threadID); stoppingThreads.remove(threadID); remoteHandles.remove(threadID)
+        if let sidecar = sidecars[threadID] {
+            sidecar.onEvent = nil   // 之後的 closed 事件不能再動到這條討論串（可能已經換了新的 sidecar）
+            sidecar.terminate()
+        }
+        sidecars[threadID] = nil
+        persist()
+        notifyTurnComplete(threadID, succeeded: false)
     }
 
     func shutdownAll() {
@@ -1016,6 +1047,8 @@ final class ChatLiveEngine: LiveEngineAPI {
                 if line.contains("ERROR") { line = "引擎回報錯誤：" + (line.split(separator: " ", maxSplits: 3).last.map(String.init) ?? line) }
                 else { return }
             }
+            // Node 自己的執行期警告（`(node:1234) [CODE] Warning: …`、`(Use \`node --trace-warnings\` …)`）不是給使用者看的。
+            if line.range(of: #"^\(node:\d+\)|^\(Use `node --trace"#, options: .regularExpression) != nil { return }
             if !line.isEmpty { onHint?(String(line.prefix(120))) }
         case .error(let s):
             appendSystem(threadID, s, status: "error|sidecar")

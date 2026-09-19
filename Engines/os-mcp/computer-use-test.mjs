@@ -82,7 +82,8 @@ try {
     }
     for (const args of [{}, { bundleIdentifier: true }, { bundleIdentifier: 'bad/id' },
       { bundleIdentifier: 'org.example.App', fileName: 'old.txt' }, { bundleIdentifier: 'org.example.App', callerThreadID: owner },
-      ...['ai.tatwo.tatwo2', 'ai.tatwo.tatwo2.test', 'com.apple.keychainaccess', 'com.apple.Passwords',
+      // W102b：TATWO 自己由 App 依權限預設裁決，sidecar 不再預先擋；這裡只驗永遠禁止的那幾類。
+      ...['com.apple.keychainaccess', 'com.apple.Passwords',
         'com.1password.1password', 'com.agilebits.onepassword7', 'com.bitwarden.desktop',
         'com.apple.systempreferences', 'com.apple.SecurityAgent'].map(bundleIdentifier => ({ bundleIdentifier }))]) {
       await call('computer_start', args, false);

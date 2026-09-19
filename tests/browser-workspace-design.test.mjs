@@ -14,6 +14,8 @@ const design = expandBrowserMetrics(read('App/Sources/Tatwo2/Browser/BrowserWork
 const registrySources = ['Browser/TatwoBrowserLaneCore.swift', 'Browser/BrowserTabRegistry.swift', 'Browser/BrowserDailyNavigationPolicy.swift'].map(p => join(root, 'App/Sources/Tatwo2', p));
 const constants = read('App/Sources/Tatwo2/Chat/ChatPageConstants.swift');
 const panels = read('App/Sources/Tatwo2/Chat/ChatPage+Panels.swift');
+// PR #4：聊天旁 compact chrome 與共用控制項的獨立檔（設計檔 1300 行上限不放寬）。
+const chrome = expandBrowserMetrics(read('App/Sources/Tatwo2/Browser/BrowserWorkSpaceEmbeddedChrome.swift'));
 const controller = read('App/Sources/Tatwo2/Space/SpaceWorkspaceController.swift');
 function section(source, start, end) {
   const from = source.indexOf(start);
@@ -75,7 +77,11 @@ test('browser rejoins the shared chat sidebar shell and footer with no private s
   assert.match(host, /let workspaceOwnsSidebar = model\.mode == \.bot\n/);
   assert.match(host, /isChatProjectRailPinned \|\| model.mode == \.browser/);
   assert.match(host, /&& \(model.mode != \.browser \|\| ChatRunMode.browserPreviewEnabled\)/);
-  assert.match(host, /@StateObject var browserWorkSpaceStore = BrowserWorkSpaceStore\(\)/);
+  // PR #4：獨立 Browser 綁 app 層 registry，聊天旁的 inspector 另有自己的 registry 與 runtime。
+  assert.match(host, /@StateObject var browserWorkSpaceStore: BrowserWorkSpaceStore/);
+  assert.match(host, /_browserWorkSpaceStore = StateObject\(wrappedValue: BrowserWorkSpaceStore\(registry: model.browserTabRegistry\)\)/);
+  assert.match(host, /BrowserTabRegistry.chatInspectorRegistry\(source: model.browserTabRegistry\)/);
+  assert.match(host, /BrowserWorkSpaceRuntime.forChat\("chat-browser-inspector", registry: chatRegistry,\s*adoptsWorkSpaceTabs: true\)/);
   assert.match(browser, /contextMenu[\s\S]*?ForEach\(ChatRunMode.visibleChatTabs\)/);
   const controls = section(panels, "func rightPanelControlStrip", "if showsThreadControls");
   assert.match(controls, /if model.mode != \.browser \{\s*Button/);
@@ -140,9 +146,9 @@ test('Search keeps its centered geometry without fake installed extension icons'
   assert.match(page, /\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
   assert.doesNotMatch(page, /extensionStrip/);
   assert.doesNotMatch(design, /ForEach\(\["文A", "S"\]/);
-  assert.match(design, /Button \{ extensionsPresented = true \} label:/);
+  assert.match(design + chrome, /Button \{ extensionsPresented = true \} label:/);
   assert.match(design, /sheet\(isPresented: \$extensionsPresented\)/);
-  assert.match(design, /puzzlepiece.extension/);
+  assert.match(design + chrome, /puzzlepiece.extension/);
   assert.match(design, /TextField\("Search", text: \$query\).font\(.system\(size: 14.5\)\)/);
   assert.match(design, /magnifyingglass"\).font\(.system\(size: 16\)/);
   assert.match(design, /padding\(.top, 13\).padding\(.horizontal, 14\).padding\(.bottom, 11\)/);
@@ -403,6 +409,7 @@ struct BrowserWorkSpaceCEFSurface: View {
     let spaceID: UUID
     let command: EmbeddedBrowserCommand?
     let onPopup: (UUID, URL) -> Void
+    var runtime: BrowserWorkSpaceRuntime? = nil
     var body: some View { Color.clear }
 }
 ${modeStubs}
@@ -464,6 +471,9 @@ extension View {
     join(root, 'App/Sources/Tatwo2/Browser/BrowserSidebarControls.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserExtensionsView.swift'),
     join(root, 'App/Sources/Tatwo2/Shell/WorkspaceSpaceControls.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserToolbarGlass.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceEmbeddedChrome.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserFloatingToolsPanel.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift')];
   run('swiftc', ['-typecheck', ...viewSources]);
   if (process.env.W54_BROWSER_UI_EVIDENCE_DIR) {

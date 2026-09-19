@@ -124,7 +124,9 @@ struct RemoteEngineSync {
         let localEngines = enginesDirectory()
         let key = "\(ref.id)|\(ref.sshTarget)|\(ref.sshPort)|engines-v2"
         stamps[key] = try deployIfNeeded(source: localEngines, previousHash: stamps[key]) {
-            for command in plannedCommands(ref: ref, localEngines: localEngines, destination: .production) {
+            // 缺主機金鑰指紋就在真的要 ssh／rsync 之前擋掉（訊息：請重新配對），不會退回 TOFU。
+            let pin = try SSHHostPin.make(deviceID: ref.id, name: ref.name)
+            for command in plannedCommands(ref: ref, localEngines: localEngines, destination: .production, pin: pin) {
                 try run(executable: command[0], arguments: Array(command.dropFirst()))
             }
         }
@@ -188,13 +190,14 @@ struct RemoteEngineSync {
     }
 
     /// 純函式：只算 argv，不執行。目的地必須是 ValidatedRemoteDestination（不接受 raw 字串）。
-    static func plannedCommands(ref: RemoteDeviceRef, localEngines: URL, destination: ValidatedRemoteDestination) -> [[String]] {
+    /// W91c：主機金鑰一律 pin（`SSHHostPin`）。pin 省略＝fixture 擷取，帶的是「空 known_hosts」形狀，連不上。
+    static func plannedCommands(ref: RemoteDeviceRef, localEngines: URL, destination: ValidatedRemoteDestination,
+                                pin: SSHHostPin? = nil) -> [[String]] {
         let expandHome = destination.origin == .production
-        let mkdir = ["/usr/bin/ssh"] + sshPrefix(ref) + ["/bin/mkdir", "-p", remoteShellQuote(destination.remoteDirectory, expandHome: expandHome)]
+        let mkdir = ["/usr/bin/ssh"] + sshPrefix(ref, pin: pin) + ["/bin/mkdir", "-p", remoteShellQuote(destination.remoteDirectory, expandHome: expandHome)]
         var rsyncArguments = ["/usr/bin/rsync", "-az", "--checksum", "--delete"]
-        if ref.sshPort != 22 {
-            rsyncArguments += ["-e", "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -p \(ref.sshPort)"]
-        }
+        // pin 檔要跟著 rsync 的 ssh 走，所以 -e 不再只有非 22 埠才帶。
+        rsyncArguments += ["-e", (["ssh"] + SSHHostPin.options(pin) + ["-o", "ConnectTimeout=8", "-p", String(ref.sshPort)]).joined(separator: " ")]
         let remoteDir = destination.remoteDirectory.hasSuffix("/") ? destination.remoteDirectory : destination.remoteDirectory + "/"
         rsyncArguments += [
             localEngines.path.hasSuffix("/") ? localEngines.path : localEngines.path + "/",
@@ -218,10 +221,8 @@ struct RemoteEngineSync {
             .deletingLastPathComponent()
     }
 
-    private static func sshPrefix(_ ref: RemoteDeviceRef) -> [String] {
-        [
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=accept-new",
+    private static func sshPrefix(_ ref: RemoteDeviceRef, pin: SSHHostPin?) -> [String] {
+        SSHHostPin.options(pin) + [
             "-o", "ConnectTimeout=8",
             "-p", String(ref.sshPort),
             ref.sshTarget,

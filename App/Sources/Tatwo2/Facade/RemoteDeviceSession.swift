@@ -366,6 +366,11 @@ enum RemoteThreadTransfer {
     }
 }
 
+/// W100：跨執行緒把連線結果帶回主執行緒的小盒子（只在 `connectNow()` 的 semaphore 期間被一邊寫一邊讀）。
+private final class RemoteConnectBox: @unchecked Sendable {
+    var value: Result<[String: Any], Error>?
+}
+
 @MainActor
 final class RemoteDeviceSession: ObservableObject {
     enum State: Equatable, Sendable {
@@ -391,6 +396,9 @@ final class RemoteDeviceSession: ObservableObject {
     private var retryDelay: TimeInterval = 30
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    /// W100：連線一定在這條佇列上跑，主執行緒不自己呼叫 `RemoteHostLink`。
+    private static let connectQueue = DispatchQueue(
+        label: "ai.tatwo.tatwo2.remote-session-connect", qos: .userInitiated)
 
     init(
         device: DeviceRecord,
@@ -427,6 +435,8 @@ final class RemoteDeviceSession: ObservableObject {
         }
     }
 
+    /// 同步連線：只給無介面的驗收 harness（PARALLELTEST／REMOTEUITEST）用。
+    /// W100：SSH 一律在背景佇列跑（`RemoteHostLink` 禁止主執行緒進入），有介面的路徑請改用 `start()`。
     @discardableResult
     func connectNow() -> Bool {
         if engine != nil { return true }
@@ -436,13 +446,27 @@ final class RemoteDeviceSession: ObservableObject {
         retryTask = nil
         state = .connecting
         onUpdate?()
-        do {
-            try link.connect(device: device)
-            let initial = try link.call(method: "get_document", params: [:])
+        let link = self.link
+        let device = self.device
+        let box = RemoteConnectBox()
+        let done = DispatchSemaphore(value: 0)
+        Self.connectQueue.async {
+            box.value = Result { () throws -> [String: Any] in
+                try link.connect(device: device)
+                return try link.call(method: "get_document", params: [:])
+            }
+            done.signal()
+        }
+        done.wait()
+        switch box.value {
+        case .success(let initial)?:
             installConnectedEngine(initial: initial)
             return true
-        } catch {
+        case .failure(let error)?:
             markOffline(error: error)
+            return false
+        case nil:
+            markOffline(error: RemoteHostLinkError.invalidResponse)
             return false
         }
     }

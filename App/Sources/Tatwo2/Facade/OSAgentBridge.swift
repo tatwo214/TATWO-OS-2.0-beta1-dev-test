@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreFoundation
 import Darwin
@@ -468,6 +469,23 @@ final class OSAgentBridge: @unchecked Sendable {
                      "error": item.error ?? NSNull() as Any]
                 }
             ]
+        case "app_terminate_for_update":
+            // W103：只接受本機 os.sock（同使用者）且明示 reason=update；用途是候選安裝的無人值守退出。
+            guard Set(params.keys).isSubset(of: ["reason"]), params["reason"] as? String == "update" else {
+                throw BridgeError.invalidParams
+            }
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)   // 先讓這個 RPC 的回應送出去
+                TatwoTerminationCoordinator.bypassNextConfirmation = true
+                NSApplication.shared.terminate(nil)
+            }
+            return ["terminating": true]
+        case "ui_probe":
+            // /goal 101 自測探針（UIProbe.swift）：只在「全權」時可用。
+            return try onMainThrowing { [weak self] in
+                guard self?.model?.permissionPreset == .fullAccess else { throw BridgeError.invalidParams }
+                return UIProbe.run(params)
+            }
         case "whoami":
             var result: [String: Any] = try onMainThrowing { [weak self] in
                 guard let model = self?.model, let live = model.live, let owner,

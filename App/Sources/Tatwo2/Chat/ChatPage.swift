@@ -7,9 +7,12 @@ import UniformTypeIdentifiers
 import Darwin
 
 struct ChatPage: View {
-    @StateObject var browserWorkSpaceStore = BrowserWorkSpaceStore()
+    /// Standalone Browser mode keeps the app-wide workspace registry.
+    @StateObject var browserWorkSpaceStore: BrowserWorkSpaceStore
+    /// Chat's inspector owns a separate registry and CEF profile.
+    @StateObject private var chatBrowserWorkSpaceStore: BrowserWorkSpaceStore
+    private let chatBrowserRuntime: BrowserWorkSpaceRuntime
     @State var islandFooterHovering = false
-    @StateObject var islandExceptionsCount = IslandExceptionsCount()
     @State var globalNoteOpen = ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil && ["1", "2"].contains(ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_GLOBAL_NOTE"] ?? "")
     @Environment(\.tatwoSurfaceKind) var surface
     @ObservedObject var model: ChatPageModel
@@ -29,6 +32,9 @@ struct ChatPage: View {
     @State var tabDesignPhilosophyHoverGeneration = 0
     @State var tabDesignPhilosophyCloseWorkItem: DispatchWorkItem?
     @State var isChatProjectRailHovering = false
+    @State var toolboxHovered = false
+    @State var toolboxPanelHovered = false
+    @State var toolboxPinned = false
     @State var chatProjectPointerInside = false
     /// 2026-08-23 使用者：終端縮小後要有展開鈕才能回去（460 ⇄ 全高）。
     @State var expandedCLITabIDs: Set<UUID> = []
@@ -120,7 +126,22 @@ struct ChatPage: View {
     @State var planInspectorPresented = false
     // 瀏覽器改用原生 inspector 承載（使用者 2026-09-01：「Plan 模式的拖拽
     // 表現非常好…照搬」）——系統邊緣拖拽、無把手、內容跟比例、頂部由系統管。
-    @State var browserInspectorPresented = false
+    /// PR4e：聊天旁瀏覽器每次啟動預設收合，不記住上次開著（使用者 09-18：「開啟 OS 預設會開啟 chat 網頁 我不喜歡」）。
+    /// 聊天旁瀏覽器的開合跟著討論串走（/goal 102 G1）：A 串開著不代表 B 串也開。
+    @State var browserInspectorOpenThreads: Set<UUID> = []
+    static let noThreadBrowserKey = UUID(uuidString: "00000000-0000-0000-0000-0000000000B0")!
+    var chatBrowserThreadKey: UUID { model.selectedThreadID ?? Self.noThreadBrowserKey }
+    var browserInspectorPresented: Bool {
+        get { browserInspectorOpenThreads.contains(chatBrowserThreadKey) }
+        nonmutating set {
+            if newValue { browserInspectorOpenThreads.insert(chatBrowserThreadKey) }
+            else { browserInspectorOpenThreads.remove(chatBrowserThreadKey) }
+        }
+    }
+    func syncChatBrowserToThread() {
+        chatBrowserWorkSpaceStore.selectThreadSpace(chatBrowserThreadKey)
+        if browserInspectorPresented && chatBrowserWorkSpaceStore.tabs.isEmpty { chatBrowserWorkSpaceStore.addTab() }
+    }
     let snapshotMenu = ChatSnapshotMenu.current
     private let exportRequestedWidth = Double(ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_WIDTH"] ?? "") ?? Double.greatestFiniteMagnitude
     let chatProjectRailEdgeGuardWidth: CGFloat = 10
@@ -156,9 +177,72 @@ struct ChatPage: View {
         _rightPanelPreference = rightPanelPreference
         _isRightPanelOpen = isRightPanelOpen
         _model = ObservedObject(wrappedValue: model)
+        _browserWorkSpaceStore = StateObject(wrappedValue: BrowserWorkSpaceStore(registry: model.browserTabRegistry))
+        let chatRegistry = BrowserTabRegistry.chatInspectorRegistry(source: model.browserTabRegistry)
+        _chatBrowserWorkSpaceStore = StateObject(wrappedValue: BrowserWorkSpaceStore(registry: chatRegistry))
+        chatBrowserRuntime = BrowserWorkSpaceRuntime.forChat("chat-browser-inspector", registry: chatRegistry,
+            adoptsWorkSpaceTabs: true)
     }
 
+    @AppStorage("chat.sharedBrowserPanelWidth") private var sharedBrowserPanelWidth = 0.0
+    /// 給視窗 band 的拖曳區讓位用（AppShell）：並排面板實際佔的寬度，沒開或改成下方面板時是 0。
+    @AppStorage("tatwo.chat.dockedBrowserWidth") private var dockedBrowserWidthSignal = 0.0
+    @State private var sharedBrowserDragStart: CGFloat?
+
     var body: some View {
+        GeometryReader { proxy in
+            let layout = ChatBrowserInspectorLayout.resolve(windowWidth: proxy.size.width)
+            // /goal 101 G5：CEF 是原生 NSView，會壓在所有 SwiftUI 浮層之上；設定頁是蓋滿工作區的 SwiftUI overlay，
+            // 聊天旁瀏覽器開著時會把它擠成半截又壓住。設定頁開著就讓瀏覽器面板讓位（狀態保留，關掉設定自動回來）。
+            let visible = browserInspectorPresented && model.mode == .chat && !showSettingsPage
+            let width = layout.clampedWidth(CGFloat(sharedBrowserPanelWidth))
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    workspaceBody.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if visible && layout.canDock {
+                        ChatBrowserDivider(
+                            onStart: { sharedBrowserDragStart = width },
+                            onDrag: { delta in
+                                sharedBrowserPanelWidth = Double(layout.clampedWidth((sharedBrowserDragStart ?? width) - delta))
+                            },
+                            onEnd: { sharedBrowserDragStart = nil })
+                            .frame(width: 10)
+                            .padding(.horizontal, -(10 - ChatBrowserInspectorLayout.dividerWidth) / 2)
+                            .frame(width: ChatBrowserInspectorLayout.dividerWidth)
+                            .zIndex(10)
+                        browserInspectorContent.frame(width: width)
+                    }
+                }
+                if visible && !layout.canDock {
+                    Divider()
+                    browserInspectorContent
+                        .frame(height: ChatBrowserInspectorLayout.compactPanelHeight(windowHeight: proxy.size.height))
+                }
+            }
+            .onChange(of: visible && layout.canDock ? Double(width + ChatBrowserInspectorLayout.dividerWidth) : 0, initial: true) { _, docked in
+                dockedBrowserWidthSignal = docked
+            }
+        }
+        .onChange(of: model.mode) { _, mode in
+            if mode == .browser {
+                browserInspectorPresented = false
+                if rightPanelContent == .browser { rightPanelContent = .none }
+            }
+        }
+    }
+
+    private var browserInspectorContent: some View {
+        BrowserWorkSpaceDesignView(store: chatBrowserWorkSpaceStore,
+            onClose: { browserInspectorPresented = false }, runtime: chatBrowserRuntime)
+            // 打開面板時沒有任何分頁就給一個新分頁（這是聊天旁自己的 registry，不會弄髒獨立 Browser）。
+            .onAppear { syncChatBrowserToThread() }
+            .onChange(of: model.selectedThreadID) { _, _ in syncChatBrowserToThread() }
+            .id(chatBrowserThreadKey)
+            // 這裡刻意不掛 BrowserWorkSpaceLifecycleModifier：它會把「目前選的分頁」寫進獨立 Browser 的
+            // settings.json、也會把外部連結佇列吃進來，兩件事都是污染獨立 Browser（/goal 101 G9）。
+    }
+
+    private var workspaceBody: some View {
         VStack(spacing: isPanel ? 10 : 0) {
             if isPanel {
                 topChrome
@@ -213,7 +297,9 @@ struct ChatPage: View {
                     // below 760 mid-click and made the whole rail vanish before
                     // the click landed. Window width doesn't change on selection,
                     // so the rail now stays put while you click into it.
-                    && layoutWidth >= 760
+                    // 聊天旁並排瀏覽器會把這裡的 layoutWidth 吃掉一大塊（使用者 09-19：瀏覽器開著時左側滑不出來）；
+                    // 門檻看的是整個視窗，所以把並排面板的寬度加回去。
+                    && layoutWidth + CGFloat(dockedBrowserWidthSignal) >= 760
                 let layoutPolicy = ChatLayoutPolicy.resolve(
                     layoutWidth: chatCanvasWidth,
                     railPinned: showSidebar,
@@ -477,13 +563,6 @@ struct ChatPage: View {
                 onPRSubmit: model.submitActivePRPlan,
                 onPRDiscuss: model.returnActivePRToDiscussion)
                 .id(model.activePlanArtifact?.planID)
-        }
-        .inspector(isPresented: $browserInspectorPresented) {
-            EmbeddedBrowserView(
-                sessionID: model.selectedThreadID?.uuidString.lowercased(),
-                model: model,
-                agentControllable: true)
-                .inspectorColumnWidth(min: 420, ideal: 640, max: 960)
         }
         .onAppear {
             model.updateGatewayLiveStatus(gatewayLiveStatus)

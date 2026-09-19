@@ -45,6 +45,12 @@ extension ChatPage {
         } else if model.selectedThreadID == nil {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.isRemoteTranscriptLoading {
+            // W100：遠端逐字稿在背景拉，第一次沒有快取時顯示「連線中…」而不是空白。
+            ProgressView("連線中…")
+                .controlSize(.small)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             transcript(contentMaxWidth: contentMaxWidth)
         }
@@ -336,6 +342,13 @@ extension ChatPage {
                             scrollToLatest(
                                 using: proxy,
                                 viewportHeight: viewport.size.height)
+                        }
+                        .onChange(of: viewport.size.width) { _, _ in
+                            // Docking a browser reflows LazyVStack without changing
+                            // message IDs. Keep the latest anchor visible, but never
+                            // pull a reader away from intentionally scrolled history.
+                            guard followState.shouldAutoScrollOnContentChange else { return }
+                            scrollToLatest(using: proxy, viewportHeight: viewport.size.height)
                         }
                         .onChange(of: selectedSessionReference) { _, _ in
                             followState.jumpToLatest()

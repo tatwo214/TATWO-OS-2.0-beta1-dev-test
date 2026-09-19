@@ -167,6 +167,9 @@ final class RemoteHostLink: @unchecked Sendable {
     }
 
     func call(method: String, params: [String: Any] = [:]) throws -> [String: Any] {
+        // W100 設計約束（DEBUG／RELEASE 都留）：這條路會等 SSH，主執行緒一律不准走。
+        // 畫面要的資料請走 RemoteLiveEngine 的快取＋背景刷新。
+        dispatchPrecondition(condition: .notOnQueue(.main))
         lock.lock()
         defer { lock.unlock() }
         do {
@@ -179,6 +182,8 @@ final class RemoteHostLink: @unchecked Sendable {
 
     /// Only transport establishment retries. Never replay a mutating RPC on another endpoint.
     private func establishLocked(_ device: DeviceRecord, sshReady: () -> Void = {}) throws {
+        // W100：建隧道會起 ssh 子行程並等它，主執行緒一律不准走。
+        dispatchPrecondition(condition: .notOnQueue(.main))
         // No route (including LAN) may turn a paired record back into TOFU.
         try prepareHostPin(device)
         // Sessions may predate an endpoint edit. Reload routes, never silently replace
@@ -271,6 +276,8 @@ final class RemoteHostLink: @unchecked Sendable {
     }
 
     private func sshHome(_ device: DeviceRecord) throws -> String {
+        // W100：這裡最久可以等 8 秒（endpointDeadline），主執行緒一律不准走。
+        dispatchPrecondition(condition: .notOnQueue(.main))
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = try sshBaseArguments(device) + [sshDestination(device), "echo $HOME"]

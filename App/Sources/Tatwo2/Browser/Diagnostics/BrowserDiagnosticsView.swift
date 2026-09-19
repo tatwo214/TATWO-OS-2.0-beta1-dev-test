@@ -28,6 +28,8 @@ struct BrowserDiagnosticsView: View {
                         Text(BrowserProcessHealth.codecLimitation)
                         Text(BrowserProcessHealth.touchIDLimitation)
                         Text("第一個 lease → 引擎 ready：\(diagnostics.report.startupText)")
+                        Text(BrowserAccessibilityTreeState.stateText)
+                        Text(BrowserAccessibilityTreeState.scopeText).foregroundStyle(.secondary)
                         Text("背景睡眠門檻：\(diagnostics.report.sleepText)")
                         Text("記憶體警告：\(String(format: "%.0f", diagnostics.report.memoryWarningMB)) MB")
                     }
@@ -109,6 +111,25 @@ struct BrowserDiagnosticsView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(diagnostics.report.text, forType: .string)
     }
+}
+
+/// W97. Mirrors `CEFAccessibilityTreeReason()` in `TatwoCEFBridge.mm`: the same
+/// inputs, read here only to report them. The bridge decides per browser, so
+/// this row describes what the next created browser will get.
+@MainActor
+enum BrowserAccessibilityTreeState {
+    static var stateText: String {
+        switch ProcessInfo.processInfo.environment["TATWO_CEF_FORCE_AX"] {
+        case "1": return "無障礙樹：開（原因：環境變數 TATWO_CEF_FORCE_AX=1）"
+        case "0": return "無障礙樹：關（原因：環境變數 TATWO_CEF_FORCE_AX=0）"
+        default: break
+        }
+        return NSWorkspace.shared.isVoiceOverEnabled
+            ? "無障礙樹：開（原因：VoiceOver）"
+            : "無障礙樹：關（原因：未偵測到輔助工具）"
+    }
+
+    static let scopeText = "執行中開關 VoiceOver 不是即時的：之後新建的分頁才跟上，既有分頁要重開分頁或睡眠喚醒；只偵測 VoiceOver，其他輔助工具請設 TATWO_CEF_FORCE_AX=1"
 }
 
 private struct BrowserDiagnosticsCard<Content: View>: View {

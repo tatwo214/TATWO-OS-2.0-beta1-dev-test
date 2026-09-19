@@ -9,14 +9,25 @@ final class TatwoTerminationCoordinator {
     private let present: Presenter
     private let schedule: Scheduler
     private(set) var confirmationPending = false
+    /// W103：本機 os.sock 的 `app_terminate_for_update` 要求「為了安裝更新而退出」時設為 true，
+    /// 下一次終止請求跳過確認框（只用一次）。候選安裝才不必每次請使用者按「結束」。
+    static var bypassNextConfirmation = false
 
     init(present: Presenter? = nil, schedule: Scheduler? = nil) {
         self.present = present ?? Self.presentNativeConfirmation
-        self.schedule = schedule ?? { action in DispatchQueue.main.async(execute: action) }
+        // CEF can invoke terminate from inside a main-queue message-pump block.
+        // AppKit then runs a nested event loop waiting for terminateLater.
+        // Another main-queue block cannot execute until the outer block returns.
+        // A run-loop source remains serviceable during that nested wait.
+        self.schedule = schedule ?? { action in
+            RunLoop.main.perform(inModes: [.common, .modalPanel, .eventTracking], block: action)
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+        }
     }
 
     func request(requiresConfirmation: Bool, window: NSWindow?, reply: @escaping (Bool) -> Void) -> NSApplication.TerminateReply {
         guard !confirmationPending else { return .terminateLater }
+        if Self.bypassNextConfirmation { Self.bypassNextConfirmation = false; return .terminateNow }
         guard requiresConfirmation else { return .terminateNow }
         confirmationPending = true
         schedule { [weak self, weak window] in

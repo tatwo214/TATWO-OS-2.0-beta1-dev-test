@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 /// 模型登入頁每家一份的完整額度：訂閱等級、到期日、各個時窗（5 小時／週／Opus 週…）用量與重置時間、購買的點數。
 /// 來源全部是各家官方（OpenAI 走 codex app-server 的 account/rateLimits/read；Anthropic 走 OAuth usage）；Grok 官方沒有接口。
@@ -147,19 +146,19 @@ enum EngineQuotaFetcher {
 
     // MARK: Anthropic（OAuth usage）
 
-    static func anthropic(paths: EnginePaths) -> EngineQuotaDetail {
+    static func anthropic(paths: EnginePaths, environment: [String: String] = ProcessInfo.processInfo.environment) -> EngineQuotaDetail {
         var detail = EngineQuotaDetail.empty
-        // 獨立資料夾的 Keychain 項目：服務名 = "Claude Code-credentials-" + sha256(設定夾路徑) 前 8 碼；沒有就退回主 CLI 的
-        let suffix = String(SHA256.hash(data: Data(paths.claudeConfigDirectory.path.utf8)).map { String(format: "%02x", $0) }.joined().prefix(8))
-        let creds = keychainJSON(service: "Claude Code-credentials-\(suffix)") ?? keychainJSON(service: "Claude Code-credentials")
-        let oauth = creds?["claudeAiOauth"] as? [String: Any]
-        if let tier = oauth?["rateLimitTier"] as? String ?? accountField(paths, "organizationRateLimitTier") as? String {
-            detail.tierLabel = tierLabel(tier, subscription: oauth?["subscriptionType"] as? String)
-        } else if let sub = oauth?["subscriptionType"] as? String { detail.tierLabel = sub.capitalized }
+        // W106：憑證一律經 ClaudeCredentialStore 取得——跟聊天 sidecar 同一個 Keychain namespace，
+        // 而且沒登入／讀不到／過期分開講，不再一律回「要登入後才讀得到」。
+        let outcome = ClaudeCredentialStore.load(paths: paths, environment: environment)
+        let credential = try? outcome.get()
+        if let tier = credential?.rateLimitTier ?? accountField(paths, "organizationRateLimitTier") as? String {
+            detail.tierLabel = tierLabel(tier, subscription: credential?.subscriptionType)
+        } else if let sub = credential?.subscriptionType { detail.tierLabel = sub.capitalized }
         if let created = accountField(paths, "subscriptionCreatedAt") as? String { detail.subscribedAt = isoDate(created) }
         if let email = accountField(paths, "emailAddress") as? String { detail.accountLabel = email }
-        guard let token = oauth?["accessToken"] as? String, !token.isEmpty else {
-            detail.note = "Anthropic 額度要登入後才讀得到"
+        guard let token = credential?.accessToken, !token.isEmpty else {
+            if case .failure(let failure) = outcome { detail.note = failure.reason }
             return detail
         }
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
@@ -175,7 +174,10 @@ enum EngineQuotaFetcher {
         }.resume()
         _ = sem.wait(timeout: .now() + 10)
         guard status == 200, let payload else {
-            detail.note = status == 401 ? "Anthropic 的登入過期了，重新登入一次" : "Anthropic 官方額度讀不到（HTTP \(status)）"
+            // 401 只代表這份 token 被拒；Claude 還能聊天就不是登入的問題，不要一律叫人重登。
+            detail.note = status == 401
+                ? "Anthropic 回 401（這份憑證被拒絕）；Claude 還能聊天就不是登入問題，聊天也不能用才需要重新登入"
+                : "Anthropic 官方額度讀不到（HTTP \(status)）"
             return detail
         }
         let labels: [(String, String)] = [
@@ -219,18 +221,6 @@ enum EngineQuotaFetcher {
                let account = json["oauthAccount"] as? [String: Any], let value = account[key] { return value }
         }
         return nil
-    }
-
-    private static func keychainJSON(service: String) -> [String: Any]? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // MARK: Grok

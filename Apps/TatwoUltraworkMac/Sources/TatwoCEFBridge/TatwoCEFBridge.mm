@@ -4156,6 +4156,43 @@ bool TatwoWebMCPBindingHandler::Execute(
   return false;
 }
 
+#pragma mark - W97 Accessibility tree on demand
+// A "complete" AX tree (inline text boxes included) is rebuilt on every page
+// load and costs every tab, so build it only when something actually reads it.
+// Reasons are mirrored by the browser diagnostics row; keep the two in sync.
+enum class AccessibilityTreeReason {
+  kEnvironmentForced,
+  kEnvironmentDisabled,
+  kVoiceOver,
+  kNoAssistiveClient,
+};
+
+AccessibilityTreeReason CEFAccessibilityTreeReason() {
+  // Measurement/debug override: 1 forces the tree on, 0 forces it off.
+  const char *forced = getenv("TATWO_CEF_FORCE_AX");
+  if (forced && strcmp(forced, "1") == 0) {
+    return AccessibilityTreeReason::kEnvironmentForced;
+  }
+  if (forced && strcmp(forced, "0") == 0) {
+    return AccessibilityTreeReason::kEnvironmentDisabled;
+  }
+  // NSWorkspace is the documented, KVO-observable VoiceOver signal and needs no
+  // entitlement. AXIsProcessTrusted only reports our own AX-client permission
+  // (it is true for an app that automates others, with no reader present), and
+  // com.apple.universalaccess belongs to another app's preference domain.
+  if ([[NSWorkspace sharedWorkspace] isVoiceOverEnabled]) {
+    return AccessibilityTreeReason::kVoiceOver;
+  }
+  return AccessibilityTreeReason::kNoAssistiveClient;
+}
+
+bool CEFAccessibilityTreeEnabled() {
+  const AccessibilityTreeReason reason = CEFAccessibilityTreeReason();
+  return reason == AccessibilityTreeReason::kEnvironmentForced ||
+         reason == AccessibilityTreeReason::kVoiceOver;
+}
+#pragma mark - W97 end
+
 class TatwoBrowserProcessApp final : public CefApp,
                                      public CefBrowserProcessHandler {
  public:
@@ -4197,7 +4234,12 @@ class TatwoBrowserProcessApp final : public CefApp,
     // is revealed. CEF SetAccessibilityState alone sets a transient mode that
     // this recomputation replaces. "complete" installs a process scope without
     // pretending that a screen reader is active; tab DOM/focus are untouched.
-    command_line->AppendSwitchWithValue("force-renderer-accessibility", "complete");
+    // W97: that scope is only worth its per-load cost when a reader is present.
+    // The browser process is created once, so VoiceOver turned on later reaches
+    // renderers through SetAccessibilityState, not through this switch.
+    if (CEFAccessibilityTreeEnabled()) {
+      command_line->AppendSwitchWithValue("force-renderer-accessibility", "complete");
+    }
     command_line->AppendSwitch("disable-background-networking");
     command_line->AppendSwitch("disable-breakpad");
     command_line->AppendSwitch("disable-component-update");
@@ -7950,7 +7992,12 @@ void TatwoClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
       state->creation_pending = false;
       // Windowed CEF supplies the native AX tree only when accessibility is
       // enabled. This exposes real web roles/text to VoiceOver and macOS tools.
-      browser->GetHost()->SetAccessibilityState(STATE_ENABLED);
+      // W97: re-read per browser, so VoiceOver switched on mid-session reaches
+      // every browser created afterwards. Left unset otherwise: STATE_DEFAULT
+      // is what CEF already holds, and setting it again would be a no-op write.
+      if (CEFAccessibilityTreeEnabled()) {
+        browser->GetHost()->SetAccessibilityState(STATE_ENABLED);
+      }
       state->pending_error = nil;
       state->phase = TatwoCEFBrowserPhaseLoading;
       state->is_loading = true;
@@ -9902,8 +9949,11 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
       state->client->pdf_print_pending_) { completion(nil); return; }
   // mkdtemp reserves a private directory, so another process cannot preplant the file.
   NSString *pattern = [NSTemporaryDirectory() stringByAppendingPathComponent:@"browser-print-XXXXXX"];
-  std::vector<char> buffer(pattern.fileSystemRepresentation,
-                           pattern.fileSystemRepresentation + strlen(pattern.fileSystemRepresentation) + 1);
+  // NSString may return a different conversion buffer on each call. Both
+  // iterators must refer to the same allocation (otherwise vector can abort).
+  const char *patternBytes = pattern.fileSystemRepresentation;
+  if (!patternBytes) { completion(nil); return; }
+  std::vector<char> buffer(patternBytes, patternBytes + strlen(patternBytes) + 1);
   char *directory = mkdtemp(buffer.data());
   if (!directory) { completion(nil); return; }
   NSString *path = [[NSString stringWithUTF8String:directory] stringByAppendingPathComponent:@"page.pdf"];

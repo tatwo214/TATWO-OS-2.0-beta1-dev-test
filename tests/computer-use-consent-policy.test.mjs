@@ -66,7 +66,9 @@ test('both starts resolve before asking, gate monitors, and keep TCC checks', ()
     assert.match(body, /if policy == \.askOncePerSession && !reuse \{\s*consent = try await confirmConsent/);
     assert.match(body, /if policy.clearOnHumanInput \{ installInputMonitors\(for: grant\) \}/);
     assert.equal((body.match(/installInputMonitors\(/g) ?? []).length, 1);
-    assert.match(body, /AXIsProcessTrusted\(\), CGPreflightScreenCaptureAccess\(\)/);
+    // /goal 101：start() 把兩個系統權限拆成各自的錯誤碼；兩個檢查都要在，寫在同一行或分開都算。
+    assert.match(body, /AXIsProcessTrusted\(\)/);
+    assert.match(body, /CGPreflightScreenCaptureAccess\(\)/);
     assert.match(body, /expiresAt: \.greatestFiniteMagnitude/);
     assert.match(body, /reserveConsent\(caller: caller, epoch: switchEpoch\)/);
     assert.match(body, /consentPolicyProvider\(caller\) == policy/);
@@ -125,3 +127,23 @@ guard let run = suite.testRun, run.executionCount == ${count}, run.totalFailureC
   assert.equal(run.status, 0, run.stdout + run.stderr);
   process.stdout.write(`Existing ComputerUseSession XCTest: ${count} tests PASS\n`);
 });
+
+test('/goal 101: self-targeted AX work runs on the main thread, other Apps stay off it', () => {
+  const source = read(app + 'New/ComputerUseController.swift');
+  assert.match(source, /static func run<T>\(pid: Int32,[^\n]*\) async throws -> T \{\s*if pid == ProcessInfo\.processInfo\.processIdentifier \{\s*return try await MainActor\.run/);
+  // The helper is the only place allowed to detach AX work.
+  assert.equal((source.match(/Task\.detached/g) ?? []).length, 1);
+  assert.ok((source.match(/ComputerUseNative\.run\(pid: grant\.pid\)/g) ?? []).length >= 6);
+});
+
+test('/goal 101: operating TATWO OS itself never deadlocks the grant lock and survives its own mode switch', () => {
+  assert.match(read(app + 'New/ComputerUseSession.swift'), /private let lock = NSRecursiveLock\(\)/);
+  const model = read(app + 'Facade/ChatPageModel.swift');
+  // Starting still requires Chat mode; only an already self-operating full-access session keeps its scope.
+  assert.match(model, /let selfOperated = permissionPreset == \.fullAccess && ComputerUseController\.shared\.isOperatingSelf\(owner: caller\)/);
+  assert.match(model, /guard isLive, mode == \.chat \|\| selfOperated, selectedRemote == nil, selectedThreadID == caller \|\| selfOperated,/);
+  assert.match(model, /isOperatingSelf\(owner: oldValue\)\) \{\s*ComputerUseController\.shared\.stop\(owner: oldValue\)/);
+  assert.match(model, /if !\(permissionPreset == \.fullAccess && ComputerUseController\.shared\.isOperatingSelf\(\)\) \{\s*ComputerUseController\.shared\.stop\(\)/);
+  assert.match(read(app + 'New/ComputerUseController.swift'), /return granted\.pid == ProcessInfo\.processInfo\.processIdentifier/);
+});
+

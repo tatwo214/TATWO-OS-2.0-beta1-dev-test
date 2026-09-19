@@ -127,6 +127,22 @@ enum UpdateReleaseRevalidation {
 }
 // UPDATE-TRANSPORT-END
 
+/// W87b-3：App 前台或背景執行中每 6 小時檢查一次。時間用單調時鐘（systemUptime），
+/// 不加 launchd／背景喚醒；機器睡著的時間不計入。
+enum UpdateCheckSchedule {
+    static let launchDelayNanoseconds: UInt64 = 30 * 1_000_000_000
+    static let intervalNanoseconds: UInt64 = 6 * 60 * 60 * 1_000_000_000
+    /// 每 5 分鐘醒一次比對單調時鐘，長睡眠被系統延後也補得回來。
+    static let tickNanoseconds: UInt64 = 300 * 1_000_000_000
+    static var interval: TimeInterval { TimeInterval(intervalNanoseconds) / 1_000_000_000 }
+
+    /// last＝上次檢查時的單調時鐘讀數；nil＝啟動後還沒檢查過（啟動那次維持）。
+    static func isDue(now: TimeInterval, last: TimeInterval?, interval: TimeInterval = interval) -> Bool {
+        guard let last else { return true }
+        return now < last || now - last >= interval
+    }
+}
+
 @MainActor
 final class GitHubReleaseUpdateChecker: ObservableObject {
     struct Release: Decodable, Equatable {
@@ -176,10 +192,16 @@ final class GitHubReleaseUpdateChecker: ObservableObject {
         guard schedule == nil else { return }
         schedule = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                // 啟動那次維持；之後由單調時鐘決定是否到期，不靠一次 6 小時的長睡眠。
+                try await Task.sleep(nanoseconds: UpdateCheckSchedule.launchDelayNanoseconds)
+                var lastCheck: TimeInterval?
                 while !Task.isCancelled {
-                    await self?.check()
-                    try await Task.sleep(nanoseconds: 6 * 60 * 60 * 1_000_000_000)
+                    guard let self else { return }
+                    if UpdateCheckSchedule.isDue(now: ProcessInfo.processInfo.systemUptime, last: lastCheck) {
+                        await self.check()
+                        lastCheck = ProcessInfo.processInfo.systemUptime
+                    }
+                    try await Task.sleep(nanoseconds: UpdateCheckSchedule.tickNanoseconds)
                 }
             } catch { /* cancellation on app termination */ }
         }

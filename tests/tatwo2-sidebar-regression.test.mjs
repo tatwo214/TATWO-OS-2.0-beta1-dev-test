@@ -161,6 +161,17 @@ final class RecordingEngine {
     func activityDate(_ id: UUID) -> Date { dates[id] ?? .distantPast }
     func setExpanded(_ id: UUID, _ expanded: Bool) { expansions.append((id, expanded)) }
     func newThread(in id: UUID?) -> UUID { creations.append(id); return newID }
+    // W100：遠端建立討論串改成背景＋完成回呼；stub 直接同步回呼，行為與斷言不變。
+    func newThread(in id: UUID?, title: String, completion: @escaping (UUID?) -> Void) {
+        creations.append(id)
+        completion(newID)
+    }
+}
+/// W100：newChat() 的遠端分支經 activeRemoteSession?.engine 拿到遠端引擎；
+/// 這個 stub 讓它指回同一個 RecordingEngine，斷言照舊看 activeConversationEngine。
+final class RemoteSessionStub {
+    let engine: RecordingEngine?
+    init(_ engine: RecordingEngine?) { self.engine = engine }
 }
 final class Model {
     var document = Document()
@@ -168,6 +179,7 @@ final class Model {
     var isLive = true
     var localLive: RecordingEngine? = RecordingEngine()
     var activeConversationEngine: RecordingEngine? = RecordingEngine()
+    var activeRemoteSession: RemoteSessionStub? { RemoteSessionStub(activeConversationEngine) }
     var selectedRemote: (deviceID: String, threadID: UUID)? = ("remote", UUID())
     var selectedThreadID: UUID?
     var selectedThreadProject: TatwoNativeChatProject?

@@ -47,7 +47,13 @@ enum UsageSource {
             let sevenDay = remaining(usage.sevenDay.utilization)
             return LiveQuotaDisplay(id: provider.id, displayName: provider.displayName, planLabel: "CLAUDE", status: .installed, statusText: "live", caption: "5小時 / 7天 live 用量", permissionLabel: "Claude OAuth", sourceBadge: "Claude live", remainingPercent: fiveHour, primaryRemainingPercent: fiveHour, secondaryRemainingPercent: sevenDay, primaryResetAt: usage.fiveHour.resetsAt, secondaryResetAt: usage.sevenDay.resetsAt, resetCreditsAvailable: nil, resetCreditsExpiresAt: nil, resetCreditExpiryDates: [])
         } catch let error as ClaudeOAuthUsageError {
-            return unavailable(provider, status: error == .unauthorized ? "需重新登入" : "執行環境不可用", caption: error.fallbackReason)
+            let status: String
+            switch error {
+            case .unauthorized: status = "需重新登入"
+            case .tokenMissing: status = "需登入"
+            default: status = "額度讀不到"
+            }
+            return unavailable(provider, status: status, caption: error.fallbackReason)
         } catch {
             return unavailable(provider, status: "執行環境不可用", caption: "尚無即時用量")
         }
@@ -82,8 +88,9 @@ struct ClaudeOAuthUsage: Sendable, Equatable {
 }
 
 enum ClaudeOAuthUsageError: Error, Sendable, Equatable {
-    case keychainDenied, tokenMissing, unauthorized, network, invalidResponse, httpStatus(Int)
-    var fallbackReason: String { switch self { case .keychainDenied: "Keychain 存取遭拒"; case .tokenMissing: "找不到 OAuth token"; case .unauthorized: "OAuth token 已過期（401）"; case .network: "網路不可用"; case .invalidResponse: "回應解析失敗"; case .httpStatus(let value): "服務回應 HTTP \(value)" } }
+    case keychainDenied, tokenMissing, tokenExpired(Date?), unauthorized, network, invalidResponse, httpStatus(Int)
+    // W106：「Keychain 裡那份憑證過期」與「Anthropic 回 401」是兩件事，措辭不可互相冒充。
+    var fallbackReason: String { switch self { case .keychainDenied: "Keychain 存取遭拒"; case .tokenMissing: "找不到 OAuth token"; case .tokenExpired(let date): ClaudeCredentialStore.Failure.expired(date).reason; case .unauthorized: "Anthropic 回 401（這份憑證被拒絕）"; case .network: "網路不可用"; case .invalidResponse: "回應解析失敗"; case .httpStatus(let value): "服務回應 HTTP \(value)" } }
 }
 
 protocol ClaudeOAuthUsageQuerying: Sendable { func queryUsage() async throws -> ClaudeOAuthUsage }
@@ -107,20 +114,14 @@ final class ClaudeOAuthUsageClient: ClaudeOAuthUsageQuerying, @unchecked Sendabl
     }
 
     private func accessToken() throws -> String {
-        let process = Process(); let output = Pipe(); let error = Pipe(); let done = DispatchSemaphore(value: 0)
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-a", NSUserName(), "-w", "-s", "Claude Code-credentials"]
-        process.standardOutput = output; process.standardError = error; process.terminationHandler = { _ in done.signal() }
-        do { try process.run() } catch { throw ClaudeOAuthUsageError.keychainDenied }
-        guard done.wait(timeout: .now() + 6) == .success else { process.terminate(); throw ClaudeOAuthUsageError.keychainDenied }
-        guard process.terminationStatus == 0 else {
-            let diagnostic = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.lowercased() ?? ""
-            throw diagnostic.contains("item could not be found") ? ClaudeOAuthUsageError.tokenMissing : ClaudeOAuthUsageError.keychainDenied
+        // W106：跟聊天 sidecar 讀同一份憑證（ClaudeCredentialStore），不再自己起 security CLI 子程序（打包後會踩 Keychain ACL），
+        // 也不再把「過期」講成「要重新登入」。
+        switch ClaudeCredentialStore.load(paths: EnginePaths()) {
+        case .success(let credential): return credential.accessToken
+        case .failure(.noCredential): throw ClaudeOAuthUsageError.tokenMissing
+        case .failure(.accessDenied): throw ClaudeOAuthUsageError.keychainDenied
+        case .failure(.expired(let date)): throw ClaudeOAuthUsageError.tokenExpired(date)
         }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        struct Credentials: Decodable { struct OAuth: Decodable { let accessToken: String }; let claudeAiOauth: OAuth }
-        guard let credential = try? JSONDecoder().decode(Credentials.self, from: data), !credential.claudeAiOauth.accessToken.isEmpty else { throw ClaudeOAuthUsageError.invalidResponse }
-        return credential.claudeAiOauth.accessToken
     }
 
     private func date(_ raw: String?) -> Date? { guard let raw else { return nil }; return ISO8601DateFormatter().date(from: raw) }

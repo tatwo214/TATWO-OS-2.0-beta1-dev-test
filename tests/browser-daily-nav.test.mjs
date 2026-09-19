@@ -14,13 +14,30 @@ test('W57a shortcuts are mounted in human Browser/chat-browser only and gated by
   // Standard defaults and custom bindings share the same focus-scoped map.
   assert.match(controls, /map\.combos\(for: action\)/);
   assert.match(controls, /keyboardShortcut\(combo\.equivalent, modifiers: combo\.eventModifiers\)/);
-  assert.match(controls, /\.disabled\(!focused\)/);
+  // PR4b：仍以本地 focus 為主（`focused` 一律成立即可收鍵），另外允許獨立 Browser
+  // work space 在整個視窗就是瀏覽器時，收「不綁分頁」的鍵（⌘T 等）。沒被收下的 ⌘T
+  // 會離開瀏覽器範圍交給 AppKit，使用者看到的就是跳視窗而不是左列新增分頁。
+  assert.match(controls, /private func claims\(_ action: BrowserAction\) -> Bool \{[\s\S]*?if focused \{ return true \}[\s\S]*?return surfaceOwnsShortcuts && !action.requiresTab && !editingAddress/);
+  assert.match(controls, /\.disabled\(!claims\(action\)\)/);
+  assert.match(controls, /keyboardShortcut\(\.escape, modifiers: \[\]\)\s*\.disabled\(!focused \|\|/);
   assert.match(controls, /window\.isKeyWindow/);
   assert.match(controls, /bounds\.contains/);
   assert.doesNotMatch(controls, /addLocalMonitorForEvents|addGlobalMonitorForEvents/);
   const design = read(b+'BrowserWorkSpaceDesignView.swift');
   const body = design.slice(design.indexOf('var body: some View'),design.indexOf('private var sessionContent:'));
   assert.match(body, /BrowserDailyNavigationControls\(focused: browserFocused/);
+  // 只有獨立 Browser work space 有這個放寬；聊天旁維持嚴格 focus，不跟聊天輸入搶 ⌘T。
+  assert.match(body, /surfaceOwnsShortcuts: onClose == nil && shortcutsUnobstructed/);
+  assert.match(body, /acceptsWindowResponder: onClose == nil/);
+  assert.match(design, /case \.newTab: if store.canAddTab \{ store.addTab\(\); store.searchFocusRequest \+= 1 \}/);
+  assert.match(design, /func addTab\(url: URL\? = nil\) \{[\s\S]*?registry.openTab\(owner: \.workSpace\(spaceID: spaceID\), url: url\)\s*selectedID = tabKey\(tab.id\)/);
+  // ⌘T 的整條路徑上沒有任何開視窗的 API。
+  for (const path of ['BrowserDailyNavigationControls.swift', 'BrowserShortcuts.swift',
+    'BrowserWorkSpaceDesignView.swift', 'BrowserWorkSpaceEmbeddedChrome.swift', 'EmbeddedBrowserView.swift']) {
+    assert.doesNotMatch(read(b + path), /openWindow|NSWindow\(contentRect|makeKeyAndOrderFront/, path);
+  }
+  // Work OS 視窗本身也關掉系統的視窗分頁，⌘T 不會變成「新增視窗分頁」。
+  assert.match(read('App/Sources/Tatwo2/Shell/AppShell.swift'), /window.tabbingMode = .disallowed/);
   assert.doesNotMatch(design.replace(body,''), /BrowserDailyNavigationControls\(/);
   const chat = read(b+'EmbeddedBrowserView.swift');
   assert.match(chat.slice(chat.indexOf('private struct ChatBrowserPanel:')), /BrowserDailyNavigationControls\(focused: browserFocused/);
