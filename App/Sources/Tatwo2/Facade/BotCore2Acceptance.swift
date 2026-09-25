@@ -44,6 +44,9 @@ enum BotCore2Acceptance {
             let input = Pipe(), output = Pipe()
             p.standardInput = input; p.standardOutput = output; p.standardError = output
             try p.run()
+            // W178：本機 socket 只信登記過的程序；這支 MCP 是自測自己開的，送出請求前先登記。
+            try check("mcp_helper_registered", OSSocketCaller.registerHelper(p.processIdentifier))
+            defer { OSSocketCaller.unregisterHelper(p.processIdentifier) }
             try input.fileHandleForWriting.write(contentsOf: Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bot_state_get","arguments":{}}}"#.utf8) + Data([10]))
             try input.fileHandleForWriting.close()
             let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)

@@ -26,6 +26,11 @@ try { const text = process.env.TATWO2_MCP_CONFIG ?? flag('--mcp-config', undefin
 let resume = flag('--resume', undefined);
 let model = flag('--model', undefined);
 const permissionMode = flag('--permission-mode', 'default');
+// Grok 無頭模式沒辦法停下來問使用者，只能「全部自動核准」。所以只在代我核准與完整存取權下執行；
+// 要求核准（default）與其他模式一律不執行，免得使用者選了「要求核准」卻被全部自動放行。
+const GROK_AUTO_APPROVE_MODES = new Set(['acceptEdits', 'bypassPermissions']);
+const grokRunsInThisMode = GROK_AUTO_APPROVE_MODES.has(permissionMode);
+const GROK_ASK_FIRST_MESSAGE = 'Grok 沒辦法每一步停下來問你，所以在「要求核准」下不會執行。要用 Grok，請把這個對話的權限改成「代我核准」或「完整存取權」，或改用 Claude／Codex。';
 const systemPrompt = flag('--system-prompt', undefined);
 
 const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -228,6 +233,11 @@ function preparePrompt(command) {
 }
 
 async function runTurn(command) {
+  if (!grokRunsInThisMode) {
+    emit({ ev: 'error', message: GROK_ASK_FIRST_MESSAGE, ...(command.uuid ? { client_turn_id: command.uuid } : {}) });
+    sdk({ type: 'result', subtype: 'error', is_error: true, result: GROK_ASK_FIRST_MESSAGE, session_id: resume ?? '' });
+    return;
+  }
   let prompt;
   try { prompt = preparePrompt(command); }
   catch {
@@ -386,7 +396,7 @@ rl.on('line', (line) => {
       else model = command.model ? String(command.model) : undefined;
       break;
     case 'permission':
-      emit({ ev: 'error', message: `unknown permission id ${command.id ?? ''}; Grok runs with --always-approve` });
+      emit({ ev: 'error', message: `unknown permission id ${command.id ?? ''}; Grok only runs with --always-approve (approve-for-me or full access)` });
       break;
     case 'close':
       closing = true;
@@ -408,5 +418,4 @@ rl.on('close', () => {
 process.on('SIGTERM', () => { closing = true; interruptActive(); if (!active) emitClosedAndExit(); });
 process.on('SIGINT', () => { closing = true; interruptActive(); if (!active) emitClosedAndExit(); });
 
-// permissionMode is accepted for protocol compatibility; this room explicitly requires --always-approve.
-void permissionMode;
+// Turns run only in approve-for-me or full access (see GROK_AUTO_APPROVE_MODES); ask-first refuses before spawning Grok.

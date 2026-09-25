@@ -221,7 +221,12 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
             try check(try JSONDecoder().decode(UltraworkRoleConfiguration.self,
                       from: JSONEncoder().encode(custom)) == custom, "role configuration roundtrip")
         case "pairing":
-            let hostEnv = ["TATWO_OS_ROOT": ea.root.path, "TATWO2_PAIRING_HOST": "127.0.0.1"]
+            // W178：主機用配對碼證明自己的主機金鑰（合成公鑰），加入端掃到的必須是同一把。
+            let hostKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx w76-host"
+            let hostKeyPub = root.appendingPathComponent("w76-host-key.pub")
+            try (hostKeyLine + "\n").write(to: hostKeyPub, atomically: true, encoding: .utf8)
+            let hostEnv = ["TATWO_OS_ROOT": ea.root.path, "TATWO2_PAIRING_HOST": "127.0.0.1",
+                           "TATWO2_SSH_HOST_KEY_PUB": hostKeyPub.path]
             let clientEnv = ["TATWO_OS_ROOT": eb.root.path]
             let hr = registry(root, "host-live"), cr = registry(root, "client-live")
             let hostStore = try DeviceIdentityStore.forLocalDevice(entry: ea, pairedDeviceID: a, name: "Host")
@@ -230,8 +235,8 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
             defer { host.cancelPairingWindow() }
             let client = DevicePairingClient(
                 registry: cr, privateKeyURL: root.appendingPathComponent("ssh/id_ed25519"),
-                environment: clientEnv, sshVerifier: { _ in true },
-                hostFingerprintResolver: { _ in "SHA256:synthetic-host" })
+                environment: clientEnv, sshVerifier: { _, _, _ in true },
+                hostKeyResolver: { _ in hostKeyLine })
             func pair() throws -> DeviceRecord {
                 let window = try host.startPairingWindow()
                 let port = Int(window.listenAddress.split(separator: ":").last!)!
@@ -290,7 +295,7 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
   execFileSync('swiftc', [
     '-swift-version', '5', '-parse-as-library', '-num-threads', '2',
     ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingCode', 'DevicePairingStubs',
-      'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
+      'DevicePairingAuth', 'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
     join(app, 'Chat/UltraworkRoleConfiguration.swift'), join(root, 'Reader.swift'),
     driver, '-o', outputBinary,
   ], { encoding: 'utf8', timeout: 180_000 });

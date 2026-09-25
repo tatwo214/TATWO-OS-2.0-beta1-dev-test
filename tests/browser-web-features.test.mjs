@@ -18,7 +18,7 @@ function slice(start, end) {
   return bridge.slice(a, b);
 }
 
-test('W57d four native handler surfaces, reduced Chrome 151 UA and unavailable ABI', () => {
+test('W57d four native handler surfaces, reduced Chrome 154 UA and unavailable ABI', () => {
   // CefPrintHandler is Linux-only; macOS uses Print plus CefPdfPrintCallback for fallback.
   for (const name of ['CefDialogHandler', 'CefDisplayHandler', 'CefKeyboardHandler', 'CefPdfPrintCallback',
     'OnFileDialog', 'OnFullscreenModeChange', 'OnPreKeyEvent', 'OnPdfPrintFinished']) {
@@ -26,8 +26,8 @@ test('W57d four native handler surfaces, reduced Chrome 151 UA and unavailable A
   }
   assert.match(bridge, /GetDialogHandler\(\) override \{ return this; \}/);
   assert.match(bridge, /CefString\(&settings\.user_agent\)\.FromASCII\(W57dUserAgent\(\)\)/);
-  assert.match(bridge, /Chrome\/151\.0\.0\.0 Safari\/537\.36/);
-  assert.match(bridge, /static_assert\(CHROME_VERSION_MAJOR == 151/);
+  assert.match(bridge, /Chrome\/154\.0\.0\.0 Safari\/537\.36/);
+  assert.match(bridge, /static_assert\(CHROME_VERSION_MAJOR == 154/);
   for (const method of ['cancelWebFeatures', 'exitContentFullscreen', 'printPage',
     'printToPDFWithCompletion', 'downloadCurrentPDFWithCompletion']) {
     assert.ok(read(native + 'include/TatwoCEFBridge.h').includes(method), method);

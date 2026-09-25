@@ -66,13 +66,13 @@
 #include "include/views/cef_browser_view_delegate.h"
 #include "include/views/cef_window.h"
 #include "include/views/cef_window_delegate.h"
-// Pure, deliberately reduced Chrome UA for the pinned Chromium 151 runtime.
+// Pure, deliberately reduced Chrome UA for the pinned Chromium 154 runtime.
 // This is compatibility metadata, not a promise that an identity provider accepts CEF.
 constexpr const char *W57dUserAgent() {
   return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36";
 }
-static_assert(CHROME_VERSION_MAJOR == 151, "Review W57d UA when upgrading Chromium");
+static_assert(CHROME_VERSION_MAJOR == 154, "Review W57d UA when upgrading Chromium");
 namespace { void W57dInvalidate(TatwoCEFBrowserView *view); }
 #pragma mark - W57d End
 

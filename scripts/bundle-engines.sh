@@ -4,7 +4,7 @@ set -euo pipefail
 
 NODE_VERSION="24.20.0"
 CODEX_VERSION="0.153.2"
-GITHUB_MCP_VERSION="1.0.5"
+GITHUB_MCP_VERSION="1.1.2"
 CACHE_ROOT="${TATWO2_ENGINE_CACHE:-$HOME/Library/Application Support/tatwo2/engine-cache}"
 
 if [[ $# -ne 1 ]]; then
@@ -79,21 +79,20 @@ GITHUB_MCP_ARCHIVE="$CACHE_ROOT/github-mcp-server_${GITHUB_MCP_VERSION}_Darwin_a
 GITHUB_MCP_CHECKSUMS="$CACHE_ROOT/github-mcp-server_${GITHUB_MCP_VERSION}_checksums.txt"
 if [[ ! -x "$GITHUB_MCP_CACHE/github-mcp-server" ]]; then
   mkdir -p "$GITHUB_MCP_CACHE"
+  # W178：這段在 if 條件裡，bash 會忽略 set -e，所以每一步都明寫 || exit；雜湊直接拿存下來的檔案算
+  # （清單裡的檔名不帶版本號，舊寫法 shasum -c 找不到檔案卻照樣往下解壓）。
   if (
-    set -e
     base="https://github.com/github/github-mcp-server/releases/download/v${GITHUB_MCP_VERSION}"
-    curl --fail --location --retry 3 "$base/$GITHUB_MCP_ARCHIVE_NAME" --output "$GITHUB_MCP_ARCHIVE"
+    curl --fail --location --retry 3 "$base/$GITHUB_MCP_ARCHIVE_NAME" --output "$GITHUB_MCP_ARCHIVE" || exit 1
     curl --fail --location --retry 3 \
       "$base/github-mcp-server_${GITHUB_MCP_VERSION}_checksums.txt" \
-      --output "$GITHUB_MCP_CHECKSUMS"
-    expected="$(awk -v file="$GITHUB_MCP_ARCHIVE_NAME" '$2 == file { print }' "$GITHUB_MCP_CHECKSUMS")"
-    [[ -n "$expected" ]]
-    (
-      cd "$CACHE_ROOT"
-      printf '%s\n' "$expected" | shasum -a 256 -c -
-    )
-    tar -xzf "$GITHUB_MCP_ARCHIVE" -C "$GITHUB_MCP_CACHE"
-    chmod +x "$GITHUB_MCP_CACHE/github-mcp-server"
+      --output "$GITHUB_MCP_CHECKSUMS" || exit 1
+    expected="$(awk -v file="$GITHUB_MCP_ARCHIVE_NAME" '$2 == file { print $1 }' "$GITHUB_MCP_CHECKSUMS")"
+    actual="$(shasum -a 256 "$GITHUB_MCP_ARCHIVE" | awk '{ print $1 }')"
+    [[ -n "$expected" && "$actual" == "$expected" ]] || {
+      echo "github-mcp-server v${GITHUB_MCP_VERSION} 雜湊不符（清單 ${expected:-無}，實得 $actual）" >&2; exit 1; }
+    tar -xzf "$GITHUB_MCP_ARCHIVE" -C "$GITHUB_MCP_CACHE" || exit 1
+    chmod +x "$GITHUB_MCP_CACHE/github-mcp-server" || exit 1
   ); then
     :
   else

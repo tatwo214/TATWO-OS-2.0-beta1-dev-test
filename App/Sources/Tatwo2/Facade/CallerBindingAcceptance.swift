@@ -50,6 +50,16 @@ enum CallerBindingAcceptance {
             if let caller { params["callerThreadID"] = caller.uuidString }
             return try bridge.callForSelfTest(method: method, params: params)
         }
+        // W178：背景指令在完整存取權以外要使用者點頭；這個測試模擬「拒絕」一次，其餘模擬「允許」。
+        let backgroundGate = await MainActor.run {
+            OSAgentBridge.BackgroundCommandGate.resolve(user: model.permissionPreset, bot: nil, readOnly: false)
+        }
+        if backgroundGate == .ask {
+            bridge.backgroundCommandApprover = { _, _, _ in false }
+            do { _ = try call("run_background", ["cmd": "printf declined", "cwd": path], caller: a); throw NSError(domain: "declined-ran", code: 1) }
+            catch { try check("background_declined_by_user", String(describing: error) == "background_command_declined_by_user") }
+        }
+        bridge.backgroundCommandApprover = { _, _, _ in true }
         let first = try call("run_background", ["cmd": "printf caller-test", "cwd": path, "requestKey": "same"], caller: a)
         let job = first["jobID"] as! String
         await MainActor.run { model.selectedThreadID = b }

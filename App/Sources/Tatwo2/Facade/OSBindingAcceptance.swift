@@ -222,6 +222,9 @@ enum OSBindingAcceptance {
                 let input = Pipe(), output = Pipe()
                 p.standardInput = input; p.standardOutput = output; p.standardError = FileHandle.standardError
                 try p.run()
+                // W178：本機 socket 只信登記過的程序；這支 MCP 是自測自己開的，送出第一個請求前先登記。
+                check("MCP 子程序登記成自己人", OSSocketCaller.registerHelper(p.processIdentifier))
+                defer { OSSocketCaller.unregisterHelper(p.processIdentifier) }
                 let lines = [
                     #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
                     #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"os_binding_status","arguments":{}}}"#,

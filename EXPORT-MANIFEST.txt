@@ -1,6 +1,6 @@
-Source commit: 66e59827652178e49a8159b4b496af644d56d76b
+Source commit: 55c476ef74f597fce914c3647b1defbb99d11706
 Source worktree: clean
-Files: 1757
+Files: 1761
 .gitignore
 App/Sources/Tatwo2/Bot/BotPage.swift
 App/Sources/Tatwo2/Bot/BotPageState.swift
@@ -227,6 +227,7 @@ App/Sources/Tatwo2/Facade/ClaudeCredentialStore.swift
 App/Sources/Tatwo2/Facade/DeviceDispatch.swift
 App/Sources/Tatwo2/Facade/DeviceIdentity.swift
 App/Sources/Tatwo2/Facade/DeviceInbox.swift
+App/Sources/Tatwo2/Facade/DevicePairingAuth.swift
 App/Sources/Tatwo2/Facade/DevicePairingClient.swift
 App/Sources/Tatwo2/Facade/DevicePairingCode.swift
 App/Sources/Tatwo2/Facade/DevicePairingHost.swift
@@ -278,6 +279,7 @@ App/Sources/Tatwo2/Facade/OSBindingAcceptance.swift
 App/Sources/Tatwo2/Facade/OSBindingPreview.swift
 App/Sources/Tatwo2/Facade/OSBindingPreviewModel.swift
 App/Sources/Tatwo2/Facade/OSDocuments.swift
+App/Sources/Tatwo2/Facade/OSSocketCaller.swift
 App/Sources/Tatwo2/Facade/OSUpstream.swift
 App/Sources/Tatwo2/Facade/OSUpstreamBinding.swift
 App/Sources/Tatwo2/Facade/OSUpstreamLineDiff.swift
@@ -453,6 +455,7 @@ App/Sources/Tatwo2/TAP/ChatGPTPages.swift
 App/Sources/Tatwo2/TAP/ChatGPTSpace.swift
 App/Sources/Tatwo2/TAP/ChatGPTTap.swift
 App/Sources/Tatwo2/TAP/TAP.swift
+App/Sources/Tatwo2/TAP/TapRemoteFetch.swift
 App/Sources/Tatwo2/TAP/TapSettingsView.swift
 App/Sources/Tatwo2/TAP/TapWebPod.swift
 App/Sources/Tatwo2/Tatwo2App.swift
@@ -1712,6 +1715,7 @@ tests/w172-protected-media.test.mjs
 tests/w175-current-models.test.mjs
 tests/w176-spotify-connect.test.mjs
 tests/w177-chatgpt-space.test.mjs
+tests/w178-security.test.mjs
 tests/w28-audit.test.mjs
 tests/w29a-update-fixes.test.mjs
 tests/w29b-ux-fixes.test.mjs

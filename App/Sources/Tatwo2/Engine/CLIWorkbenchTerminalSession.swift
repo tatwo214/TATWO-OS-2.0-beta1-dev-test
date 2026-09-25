@@ -151,11 +151,12 @@ final class CLIWorkbenchTerminalSession {
             catch { self?.error = error.localizedDescription; self?.onChange?() }
         }
     }
-    func sendLineAwaited(_ text: String) async throws {
+    func sendLineAwaited(_ text: String, confirm: (() throws -> Void)? = nil,
+                         enterPrecondition: (() throws -> Void)? = nil) async throws {
         await waitUntilReady()
         reconcile(try await runtime.list().first { $0.name == CLITmuxRuntime.name(id) })
         guard isRunning else { throw NSError(domain: "CLI", code: 10, userInfo: [NSLocalizedDescriptionKey: "程序已結束或尚未接回"]) }
-        try await runtime.sendLine(text, to: id)
+        try await runtime.sendLine(text, to: id, confirm: confirm, enterPrecondition: enterPrecondition)
     }
     @discardableResult func resize(columns: Int, rows: Int) -> Bool {
         lastSize = (columns, rows)

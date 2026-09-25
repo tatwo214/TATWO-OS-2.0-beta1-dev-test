@@ -383,7 +383,7 @@ function handleApproval(message) {
 }
 
 // app-server 還會發這些「要人回答」的請求；不回答會整輪卡死（2026-09-03 測試 1 抓到）。
-// 代我核准模式下：權限提升＝照要求給、工具問問題＝選第一個選項、MCP 表單＝取消；其餘未知請求回錯誤讓它不要空等。
+// 權限提升只有完整存取權直接給，其餘交 App 決定；工具問問題＝選第一個選項、MCP 表單＝走 App 權限流程；其餘未知請求回錯誤讓它不要空等。
 // 依表單 schema 組出「同意」的內容：布林＝true、選項＝偏好 allow/approve/yes 否則第一個、文字＝空字串。
 function elicitationAcceptContent(params) {
   const schema = params.requestedSchema;
@@ -411,8 +411,23 @@ function configuredMCPNamesFromToml() {
 function handleOtherServerRequest(message) {
   const { method, params = {} } = message;
   if (method === 'item/permissions/requestApproval') {
-    emit({ ev: 'error', message: `sol 要求額外權限（${JSON.stringify(params.permissions ?? {})}）${params.reason ? '：' + params.reason : ''}，已依「代我核准」放行（本輪）` });
-    writeJSON({ id: message.id, result: { permissions: params.permissions ?? {}, scope: 'turn' } });
+    const requested = params.permissions ?? {};
+    // 只有「完整存取權」直接放行；要求核准與代我核准都交給 App 的權限流程（要求核准＝問使用者）。
+    if (permissionMode === 'bypassPermissions') {
+      emit({ ev: 'error', message: `sol 要求額外權限（${JSON.stringify(requested)}）${params.reason ? '：' + params.reason : ''}，已依「完整存取權」放行（本輪）` });
+      writeJSON({ id: message.id, result: { permissions: requested, scope: 'turn' } });
+      return true;
+    }
+    const protocolID = String(message.id);
+    approvals.set(protocolID, { rpcID: message.id, method, content: requested });
+    emit({
+      ev: 'permission_request',
+      id: protocolID,
+      tool: 'Permissions',
+      input: { permissions: requested, reason: params.reason ?? '' },
+      title: '允許這一輪使用額外權限？',
+      description: params.reason ?? undefined,
+    });
     return true;
   }
   if (method === 'item/tool/requestUserInput') {
@@ -814,6 +829,10 @@ function replyPermission(command) {
     writeJSON({ id: pending.rpcID, result: command.allow
       ? { action: 'accept', content: pending.content ?? {} }
       : { action: 'decline', content: null } });
+    return;
+  }
+  if (pending.method === 'item/permissions/requestApproval') {
+    writeJSON({ id: pending.rpcID, result: { permissions: command.allow ? pending.content ?? {} : {}, scope: 'turn' } });
     return;
   }
   const decision = command.allow ? 'accept' : 'decline';

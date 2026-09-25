@@ -18,6 +18,8 @@ final class BackgroundJobManager: @unchecked Sendable {
         var requestKey: String? = nil
         var stopRequested: Bool? = nil
         var terminationSignal: Int32? = nil
+        /// W178：啟動當下的時間（本機 socket 認人用；舊紀錄沒有這欄就不算）。
+        var startTime: UInt64? = nil
 
         var completionStatus: String {
             if state == "unknown" { return "info|背景工作狀態未知" }
@@ -68,7 +70,31 @@ final class BackgroundJobManager: @unchecked Sendable {
 
     deinit { timer?.cancel() }
 
-    func run(command: String, cwd: String, title: String, threadID: UUID, requestKey: String? = nil) throws -> Record {
+    /// W178：還在跑的背景工作 pid 對到哪條對話（本機 socket 用來綁定呼叫者）。
+    func runningProcessOwners() -> [pid_t: (thread: UUID, startTime: UInt64)] {
+        queue.sync {
+            var owners: [pid_t: (thread: UUID, startTime: UInt64)] = [:]
+            for record in records.values where record.state == "running" && record.pid > 0 {
+                if let startTime = record.startTime { owners[record.pid] = (record.threadID, startTime) }
+            }
+            return owners
+        }
+    }
+
+    /// 同一條對話、同一個 requestKey 在 10 分鐘內已經開過的工作（重試不再開新的，也不必再問一次使用者）。
+    func existing(threadID: UUID, requestKey: String?) -> Record? {
+        guard let requestKey, !requestKey.isEmpty else { return nil }
+        return queue.sync {
+            records.values.first {
+                $0.threadID == threadID && $0.requestKey == requestKey && Date().timeIntervalSince($0.startedAt) >= 0
+                    && Date().timeIntervalSince($0.startedAt) < 600
+            }
+        }
+    }
+
+    /// `beforeSpawn`：真正開程序前（在 manager 佇列裡）最後確認一次；丟錯就不開、不留紀錄。不可在裡面等主執行緒。
+    func run(command: String, cwd: String, title: String, threadID: UUID, requestKey: String? = nil,
+             beforeSpawn: (() throws -> Void)? = nil) throws -> Record {
         try queue.sync {
             if let requestKey {
                 guard !requestKey.isEmpty, requestKey.utf8.count <= 256 else {
@@ -108,16 +134,20 @@ final class BackgroundJobManager: @unchecked Sendable {
                     self.notify(current)
                 }
             }
-            do { try process.run() }
-            catch {
+            do {
+                try beforeSpawn?()
+                try process.run()
+            } catch {
                 process.terminationHandler = nil
                 log.closeFile()
+                try? FileManager.default.removeItem(at: logURL) // 程序沒開成，剛建的空記錄檔不留
                 throw error
             }
             _ = setpgid(process.processIdentifier, process.processIdentifier)
             var record = Record(jobID: id, pid: process.processIdentifier, title: title, command: command, cwd: cwd,
                                 logPath: logURL.path, threadID: threadID, startedAt: Date(), state: "running", exitCode: nil)
             record.requestKey = requestKey
+            record.startTime = OSSocketCaller.processStartTime(process.processIdentifier)
             records[id] = record
             processes[id] = process
             persist()

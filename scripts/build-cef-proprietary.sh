@@ -62,8 +62,9 @@ fi
 export GN_DEFINES="proprietary_codecs=true ffmpeg_branding=Chrome is_official_build=true chrome_pgo_phase=$PGO_PHASE enable_dsyms=false"
 ARGS=("--download-dir=$WORK" "--branch=$BRANCH" "--checkout=$REVISION"
   "--chromium-checkout=refs/tags/$CHROMIUM" "--arm64-build" "--no-debug-build"
-  "--minimal-distrib-only" "--no-distrib-archive" "--build-target=cefclient"
+  "--minimal-distrib-only" "--no-distrib-archive" "--no-distrib-symbols" "--build-target=cefclient"
   "--no-release-tests" "--force-build" "${PGO_ARGS[@]+"${PGO_ARGS[@]}"}")
+# --no-distrib-symbols：GN 關了 enable_dsyms，沒有 dSYM；不帶這個 make_distrib 會在最後找不到 dSYM 而失敗（W178 踩過）。
 # --build-target=cefclient: make_distrib takes the framework from cefclient.app/Contents/Frameworks；
 # 只編 cefsimple 會得到「No Release build files」空 distrib。clang-format 由 depot_tools 提供（PATH 已含）。
 # --force-build: a previous interrupted run leaves src/out and recorded hashes, and

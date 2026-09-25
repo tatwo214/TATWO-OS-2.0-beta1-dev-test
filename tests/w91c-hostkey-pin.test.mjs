@@ -29,8 +29,14 @@ test('W91c: 三處 ssh／rsync 只吃主機金鑰 pin，沒有放寬旋鈕', () 
   // rsync 的 -e 也要帶同一份 pin（不能只有 ssh 那條被收緊）。
   assert.match(source('Facade/RemoteEngineSync.swift'), /"-e", \(\["ssh"\] \+ SSHHostPin\.options\(pin\)/);
   assert.match(source('Facade/PeerUpdateSource.swift'), /"-e", \(\["\/usr\/bin\/ssh"\] \+ options\(offer\.device, pin: pin\)\)/);
-  // 配對第一步（keyscan 後才 pin）不在本單範圍，必須原樣保留。
-  assert.ok(source('Facade/DevicePairingClient.swift').includes(`StrictHostKeyChecking=${relaxed}`));
+  // W178：配對第一次 SSH 也改成只信配對碼證明過的主機金鑰（一次性 known_hosts＋StrictHostKeyChecking=yes），
+  // 不再 accept-new，也不共用多工連線或其他金鑰來源。
+  const pairing = source('Facade/DevicePairingClient.swift');
+  assert.ok(!pairing.includes(relaxed), 'DevicePairingClient 仍有放寬的 host key 檢查');
+  assert.ok(!pairing.includes(disabled), 'DevicePairingClient 關掉了 host key 檢查');
+  for (const option of ['StrictHostKeyChecking=yes', 'ControlPath=none', 'KnownHostsCommand=none', 'VerifyHostKeyDNS=no']) {
+    assert.ok(pairing.includes(option), option);
+  }
   // W100 的主佇列斷言不得被動到。
   assert.equal(source('Facade/RemoteHostLink.swift').split('dispatchPrecondition(condition: .notOnQueue(.main))').length - 1, 3);
 });

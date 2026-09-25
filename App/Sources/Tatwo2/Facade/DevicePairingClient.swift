@@ -4,7 +4,11 @@ import Network
 
 final class DevicePairingClient: @unchecked Sendable {
     private struct PairRequest: Codable {
-        let code: String
+        // W178 v2：配對碼不上網路（code 只留給舊版欄位解碼），改帶 nonce＋HMAC。
+        var v: Int?
+        var code: String?
+        var nonce: String?
+        var mac: String?
         let publicKey: String
         let name: String
         var user: String?      // 副機自己的登入名，主機記名單用（2026-09-05 真雙機抓到兩邊都記成自己）
@@ -26,6 +30,7 @@ final class DevicePairingClient: @unchecked Sendable {
         // 客戶端金鑰讓加入端之後能驗主機送來的 RPC 簽章。
         var hostKeyFingerprint: String?
         var clientKeyFingerprint: String?
+        var mac: String?
     }
 
     private final class ReplyBox: @unchecked Sendable {
@@ -54,6 +59,9 @@ final class DevicePairingClient: @unchecked Sendable {
         case pairingRejected(String)
         case sshVerificationFailed
         case hostFingerprintUnavailable
+        case responseUnauthenticated
+        case hostKeyMismatch
+        case unsafePeerAccount
 
         var errorDescription: String? {
             switch self {
@@ -63,9 +71,28 @@ final class DevicePairingClient: @unchecked Sendable {
             case .publicKeyUnreadable: "ssh_public_key_unreadable"
             case .connectionTimedOut: "pairing_connection_timed_out"
             case .responseInvalid: "pairing_response_invalid"
-            case let .pairingRejected(reason): "pairing_rejected:\(reason)"
+            case let .pairingRejected(reason): Self.rejectionText(reason)
             case .sshVerificationFailed: "ssh_batch_mode_verification_failed"
             case .hostFingerprintUnavailable: "ssh_host_fingerprint_unavailable"
+            case .responseUnauthenticated:
+                "pairing_response_unauthenticated：對方的回覆沒有通過配對碼驗證，可能有人在中間攔截，已停止配對"
+            case .hostKeyMismatch:
+                "ssh_host_key_mismatch：掃到的主機金鑰跟對方用配對碼證明的不一樣，可能有人在中間攔截，已停止配對"
+            case .unsafePeerAccount:
+                "pairing_peer_account_invalid：對方回報的登入名稱含有不允許的字元，已停止配對"
+            }
+        }
+
+        private static func rejectionText(_ reason: String) -> String {
+            switch reason {
+            case "pairing_protocol_outdated":
+                "pairing_rejected:pairing_protocol_outdated：另一台的 TATWO OS 版本不同，兩台都更新到最新版後重開配對窗"
+            case "pairing_code_mismatch":
+                "pairing_rejected:pairing_code_mismatch：配對碼不對"
+            case "bad_request":
+                "pairing_rejected:bad_request：另一台可能還是舊版 TATWO OS，兩台都更新到最新版後重開配對窗"
+            default:
+                "pairing_rejected:\(reason)"
             }
         }
     }
@@ -74,16 +101,17 @@ final class DevicePairingClient: @unchecked Sendable {
     private let entry: TatwoEntry
     private let environment: [String: String]
     private let privateKeyURL: URL
-    private let sshVerifier: (String) -> Bool
-    private let hostFingerprintResolver: (String) -> String?
+    private let sshVerifier: (_ user: String, _ host: String, _ hostKey: String) -> Bool
+    /// 回主機的 ed25519 公鑰（`ssh-ed25519 <base64>`）；配對時比對對方用配對碼證明的指紋，第一次 SSH 也只信這一把。
+    private let hostKeyResolver: (String) -> String?
     private let queue = DispatchQueue(label: "ai.tatwo.tatwo2.device-pairing-client")
 
     init(
         registry: DeviceRegistry? = nil,
         privateKeyURL: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        sshVerifier: ((String) -> Bool)? = nil,
-        hostFingerprintResolver: ((String) -> String?)? = nil
+        sshVerifier: ((_ user: String, _ host: String, _ hostKey: String) -> Bool)? = nil,
+        hostKeyResolver: ((String) -> String?)? = nil
     ) {
         self.registry = registry ?? DeviceRegistry(environment: environment)
         self.entry = TatwoEntry(environment: environment)
@@ -93,15 +121,15 @@ final class DevicePairingClient: @unchecked Sendable {
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519")
         self.privateKeyURL = resolvedPrivateKeyURL
         self.sshVerifier = sshVerifier ?? {
-            Self.verifySSH(host: $0, privateKeyURL: resolvedPrivateKeyURL, environment: environment)
+            Self.verifySSH(user: $0, host: $1, hostKey: $2, privateKeyURL: resolvedPrivateKeyURL, environment: environment)
         }
-        self.hostFingerprintResolver = hostFingerprintResolver ?? Self.resolveHostFingerprint
+        self.hostKeyResolver = hostKeyResolver ?? Self.resolveHostKey
     }
 
     @discardableResult
     func pair(host: String, port: Int, code: String, name: String) throws -> DeviceRecord {
         let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanHost.isEmpty, !cleanHost.contains(where: \.isWhitespace) else {
+        guard DevicePairingAuth.isSafeSSHHost(cleanHost) else {
             throw ClientError.invalidHost
         }
         guard (1...65_535).contains(port), let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
@@ -110,11 +138,20 @@ final class DevicePairingClient: @unchecked Sendable {
         let publicKey = try ensurePublicKey()
         // A first pairing adopts the host-issued UUID; an already identified device keeps it.
         let local = try DeviceIdentityStore.readLocal(entry: entry)
-        let request = PairRequest(
-            code: code.uppercased(), publicKey: publicKey, name: name, user: NSUserName(),
+        let nonce = DevicePairingAuth.makeNonce()
+        guard let key = DevicePairingAuth.key(code: code, nonce: nonce) else {
+            throw ClientError.responseInvalid
+        }
+        var request = PairRequest(
+            v: DevicePairingAuth.protocolVersion, nonce: nonce,
+            publicKey: publicKey, name: name, user: NSUserName(),
             deviceID: local?.deviceID,
             clientKeyFingerprint: try? DeviceRegistry.fingerprint(publicKey: publicKey),
             hostKeyFingerprint: DeviceRegistry.localHostKeyFingerprint(environment: environment))
+        request.mac = DevicePairingAuth.mac(key: key, label: "request", fields: DevicePairingAuth.requestFields(
+            nonce: nonce, publicKey: request.publicKey, name: request.name, user: request.user,
+            deviceID: request.deviceID, clientKeyFingerprint: request.clientKeyFingerprint,
+            hostKeyFingerprint: request.hostKeyFingerprint))
         var payload = try JSONEncoder().encode(request)
         payload.append(0x0A)
 
@@ -155,9 +192,18 @@ final class DevicePairingClient: @unchecked Sendable {
         case let .failure(error): throw error
         case .none: throw ClientError.responseInvalid
         }
+        let authenticated = DevicePairingAuth.verify(
+            mac: response.mac, key: key, label: "response", fields: DevicePairingAuth.responseFields(
+                nonce: nonce, ok: response.ok, deviceID: response.deviceID, hostName: response.hostName,
+                hostUser: response.hostUser, hostDeviceID: response.hostDeviceID,
+                hostKeyFingerprint: response.hostKeyFingerprint,
+                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason))
         guard response.ok else {
+            // 拒絕不一定帶得出驗證（配對碼打錯時雙方金鑰不同）；只拿來顯示原因，不採信任何其他欄位。
             throw ClientError.pairingRejected(response.reason ?? "unknown")
         }
+        // 成功回覆必須通過配對碼驗證；否則登入名、主機金鑰指紋都可能是中間人塞的。
+        guard authenticated else { throw ClientError.responseUnauthenticated }
         // Older hosts (before W76) do not return hostDeviceID. Accept that during the
         // two-device upgrade window: derive a stable per-host ID instead of failing pairing.
         guard let deviceID = response.deviceID, let hostName = response.hostName else {
@@ -173,16 +219,22 @@ final class DevicePairingClient: @unchecked Sendable {
             throw ClientError.responseInvalid
         }
         let hostUser = response.hostUser ?? NSUserName()
-        guard sshVerifier("\(hostUser)@\(cleanHost)") else {
-            throw ClientError.sshVerificationFailed
+        guard DevicePairingAuth.isSafeSSHUser(hostUser) else {
+            throw ClientError.unsafePeerAccount
         }
-        guard let fingerprint = hostFingerprintResolver(cleanHost) else {
+        // W178：主機用配對碼證明了自己的主機金鑰指紋；實際掃到的必須一模一樣才 pin，不一樣就停。
+        guard let declaredHostKey = response.hostKeyFingerprint, declaredHostKey.hasPrefix("SHA256:"),
+              let scannedKey = hostKeyResolver(cleanHost),
+              let fingerprint = try? DeviceRegistry.fingerprint(publicKey: scannedKey)
+        else {
             throw ClientError.hostFingerprintUnavailable
         }
-        // pin 住的永遠是這裡實際掃到的主機金鑰（跟分流前同一個值）。主機自報的那把只當佐證：
-        // 一致就把來源記成 pairing，不一致（例如 sshd 用的不是預設 host key）就記成 ssh_keyscan，
-        // 不會改掉 pin 的值，也不會因為對方自報而多信任什麼。
-        let hostKeySource = response.hostKeyFingerprint == fingerprint ? "pairing" : "ssh_keyscan"
+        guard fingerprint == declaredHostKey else { throw ClientError.hostKeyMismatch }
+        // 第一次 SSH 也只信這把已證明的金鑰：掃描之後才換端點的中間人，登入會直接失敗。
+        guard sshVerifier(hostUser, cleanHost, scannedKey) else {
+            throw ClientError.sshVerificationFailed
+        }
+        let hostKeySource = "pairing"
         // 主機的客戶端金鑰指紋只在格式正確時收下；收不到就留空，之後 RPC 照樣擋。
         let peerClientKey = response.clientKeyFingerprint.flatMap { $0.hasPrefix("SHA256:") ? $0 : nil }
         _ = try DeviceIdentityStore.forLocalDevice(entry: entry, pairedDeviceID: deviceID, name: name)
@@ -266,44 +318,105 @@ final class DevicePairingClient: @unchecked Sendable {
         reply.resolve(.success(response))
     }
 
-    private static func verifySSH(
-        host: String,
-        privateKeyURL: URL,
-        environment: [String: String]
-    ) -> Bool {
+    static let pairingHostKeyAlias = "tatwo-pairing-verify"
+
+    /// 第一次登入的 ssh 參數：只認一次性 known_hosts 裡那把已證明的金鑰（StrictHostKeyChecking=yes），
+    /// 登入名用 -l、主機放在 -- 之後。
+    static func verifyArguments(user: String, host: String, knownHostsPath: String, identityPath: String?) -> [String] {
+        // 路徑照 ssh_config 語法加引號；不共用既有的多工主連線，也不從 KnownHostsCommand／DNS 取其他金鑰。
+        let quoted = knownHostsPath.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         var arguments = [
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "UserKnownHostsFile=\"\(quoted)\"",
+            "-o", "GlobalKnownHostsFile=/dev/null",
+            "-o", "KnownHostsCommand=none",
+            "-o", "VerifyHostKeyDNS=no",
+            "-o", "UpdateHostKeys=no",
+            "-o", "HostKeyAlias=\(pairingHostKeyAlias)",
+            "-o", "CheckHostIP=no",
+            "-o", "HostKeyAlgorithms=ssh-ed25519",
         ]
-        if environment["TATWO2_SSH_KNOWN_HOSTS"] == nil {
-            arguments += ["-o", "StrictHostKeyChecking=accept-new"]   // 第一次連新主機不能卡在 host key 詢問
-        }
-        if let knownHosts = environment["TATWO2_SSH_KNOWN_HOSTS"], !knownHosts.isEmpty {
-            arguments += [
-                "-o", "StrictHostKeyChecking=yes",
-                "-o", "UserKnownHostsFile=\(knownHosts)",
-            ]
-        }
-        if environment["TATWO2_SSH_KEY_PATH"] != nil {
-            arguments += ["-i", privateKeyURL.path]
-        }
-        arguments += [host, "echo", "ok"]
-        let result = run(
-            executable: "/usr/bin/ssh",
-            arguments: arguments)
-        return result.status == 0 && result.output.split(whereSeparator: \.isNewline).contains("ok")
+        if let identityPath { arguments += ["-i", identityPath] }
+        return arguments + ["-l", user, "--", host, "echo", "ok"]
     }
 
-    private static func resolveHostFingerprint(host: String) -> String? {
+    private static func verifySSH(
+        user: String,
+        host: String,
+        hostKey: String,
+        privateKeyURL: URL,
+        environment: [String: String]
+    ) -> Bool {
+        guard let key = normalizedHostKey(hostKey) else { return false }
+        let temp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("tatwo-pair-known-\(UUID().uuidString)")
+        guard FileManager.default.createFile(
+            atPath: temp.path, contents: Data("\(pairingHostKeyAlias) \(key)\n".utf8),
+            attributes: [.posixPermissions: 0o600])
+        else { return false }
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let arguments = verifyArguments(
+            user: user, host: host, knownHostsPath: temp.path,
+            identityPath: environment["TATWO2_SSH_KEY_PATH"] != nil ? privateKeyURL.path : nil)
+        let result = run(executable: "/usr/bin/ssh", arguments: arguments)
+        guard result.status == 0, result.output.split(whereSeparator: \.isNewline).contains("ok") else { return false }
+        // 之後的連線（SSHHostPin）照指紋到 known_hosts 找金鑰；這把已經用配對碼證明過，才替使用者記下來。
+        return rememberHostKey(host: host, key: key, environment: environment)
+    }
+
+    /// `ssh-ed25519 <base64>`（去掉註解）；格式不對回 nil。
+    static func normalizedHostKey(_ value: String) -> String? {
+        let fields = value.split(whereSeparator: \.isWhitespace)
+        guard fields.count >= 2, fields[0] == "ssh-ed25519", Data(base64Encoded: String(fields[1])) != nil else { return nil }
+        return "\(fields[0]) \(fields[1])"
+    }
+
+    /// 把已證明的主機金鑰補進 known_hosts（已有同一把就不動；不刪、不改其他行）。
+    @discardableResult
+    static func rememberHostKey(host: String, key: String, environment: [String: String]) -> Bool {
+        guard let key = normalizedHostKey(key), let blob = key.split(separator: " ").last else { return false }
+        let path = environment["TATWO2_SSH_KNOWN_HOSTS"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? environment["TATWO2_KNOWN_HOSTS"].flatMap { $0.isEmpty ? nil : $0 }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/known_hosts").path
+        let existing = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        if existing.split(whereSeparator: \.isNewline).contains(where: { line in
+            line.split(whereSeparator: \.isWhitespace).dropFirst().first.map(String.init) == "ssh-ed25519"
+                && line.split(whereSeparator: \.isWhitespace).dropFirst(2).first.map(String.init) == String(blob)
+        }) { return true }
+        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let prefix = existing.isEmpty || existing.hasSuffix("\n") ? "" : "\n"
+        let line = Data((prefix + "\(host) \(key)\n").utf8)
+        if !FileManager.default.fileExists(atPath: path) {
+            return FileManager.default.createFile(atPath: path, contents: line, attributes: [.posixPermissions: 0o600])
+        }
+        guard let handle = FileHandle(forWritingAtPath: path) else { return false }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: line)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func resolveHostKey(host: String) -> String? {
         let result = run(
             executable: "/usr/bin/ssh-keyscan",
-            arguments: ["-T", "5", "-p", "22", host])
+            arguments: ["-T", "5", "-t", "ed25519", "-p", "22", "--", host])
         guard result.status == 0 || !result.output.isEmpty else { return nil }
         let keys = result.output.split(whereSeparator: \.isNewline).map(String.init)
         guard let line = keys.first(where: { $0.contains(" ssh-ed25519 ") }),
               let keyStart = line.range(of: "ssh-ed25519 ")
         else { return nil }
-        return try? DeviceRegistry.fingerprint(publicKey: String(line[keyStart.lowerBound...]))
+        return normalizedHostKey(String(line[keyStart.lowerBound...]))
     }
 
     private static func run(executable: String, arguments: [String]) -> (status: Int32, output: String) {

@@ -241,9 +241,11 @@ func reply(_ payload: [String: Any], port: Int) throws -> String {
         let host = DevicePairingHost(registry: hostRegistry, environment: hostEnvironment)
         defer { host.cancelPairingWindow() }
         let scanned = try fingerprint(hostHostKey)
+        // W178：加入端掃到的是整把主機公鑰，指紋要等於主機用配對碼證明的那把才 pin。
+        let scannedKey = try String(contentsOfFile: hostHostKey + ".pub", encoding: .utf8)
         let client = DevicePairingClient(registry: joinRegistry,
             privateKeyURL: URL(fileURLWithPath: joinClientKey), environment: joinEnvironment,
-            sshVerifier: { _ in true }, hostFingerprintResolver: { _ in scanned })
+            sshVerifier: { _, _, _ in true }, hostKeyResolver: { _ in scannedKey })
         var window = try host.startPairingWindow()
         var port = Int(window.listenAddress.split(separator: ":").last!)!
         let peer = try client.pair(host: "127.0.0.1", port: port, code: window.code, name: "Sample")
@@ -269,8 +271,14 @@ func reply(_ payload: [String: Any], port: Int) throws -> String {
         window = try host.startPairingWindow()
         port = Int(window.listenAddress.split(separator: ":").last!)!
         let publicKey = try String(contentsOfFile: joinClientKey + ".pub", encoding: .utf8)
-        let response = try reply(["code": window.code, "publicKey": publicKey, "name": "Demo",
-            "user": "fixture", "clientKeyFingerprint": "SHA256:" + String(repeating: "A", count: 43)],
+        // W178 v2：配對碼不上網路，請求用配對碼導出的金鑰簽；簽章正確但自報指紋不對，照樣不配對。
+        let nonce = DevicePairingAuth.makeNonce()
+        let declared = "SHA256:" + String(repeating: "A", count: 43)
+        let mac = DevicePairingAuth.mac(key: DevicePairingAuth.key(code: window.code, nonce: nonce)!, label: "request",
+            fields: DevicePairingAuth.requestFields(nonce: nonce, publicKey: publicKey, name: "Demo", user: "fixture",
+                deviceID: nil, clientKeyFingerprint: declared, hostKeyFingerprint: nil))
+        let response = try reply(["v": DevicePairingAuth.protocolVersion, "nonce": nonce, "mac": mac,
+            "publicKey": publicKey, "name": "Demo", "user": "fixture", "clientKeyFingerprint": declared],
             port: port)
         try check(response.contains("device_fingerprint_conflict"), "declared-client-fingerprint-must-match")
         try check(hostRegistry.list().count == 1, "rejected-pairing-adds-no-row")
@@ -283,7 +291,7 @@ func reply(_ payload: [String: Any], port: Int) throws -> String {
   const binary = join(root, 'driver');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
     ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingCode', 'DevicePairingStubs',
-      'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
+      'DevicePairingAuth', 'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
     join(app, 'Chat/UltraworkRoleConfiguration.swift'), join(root, 'Driver.swift'),
     '-o', binary], { encoding: 'utf8', timeout: 240_000 });
   const env = Object.fromEntries(Object.entries(process.env)

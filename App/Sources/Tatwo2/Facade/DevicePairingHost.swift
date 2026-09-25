@@ -1,10 +1,15 @@
+import CryptoKit
 import Darwin
 import Foundation
 import Network
 
 final class DevicePairingHost: @unchecked Sendable {
     private struct PairRequest: Codable {
-        let code: String
+        // W178 v2：加入端不送配對碼，改送 nonce＋HMAC；舊版加入端才會帶 code（明文）。
+        var v: Int?
+        var code: String?
+        var nonce: String?
+        var mac: String?
         let publicKey: String
         let name: String
         var user: String?
@@ -24,6 +29,13 @@ final class DevicePairingHost: @unchecked Sendable {
         // 本機自報的兩把公鑰指紋，讓加入端把主機／客戶端金鑰分開存。
         var hostKeyFingerprint: String?
         var clientKeyFingerprint: String?
+        var mac: String?
+    }
+
+    /// 這次配對請求導出的金鑰；回覆用它簽，加入端才分得出是不是主機本人回的。
+    private struct ReplyAuth {
+        let key: SymmetricKey
+        let nonce: String
     }
 
     private final class StartProbe: @unchecked Sendable {
@@ -213,11 +225,45 @@ final class DevicePairingHost: @unchecked Sendable {
             reject(connection, token: token, reason: "bad_request")
             return
         }
+        if let legacyCode = request.code {
+            // 舊版加入端把配對碼明文送上網路。拒絕；碼若是對的就視同外洩，直接關窗，兩台更新後重開。
+            stateLock.lock()
+            let exposed = activeToken == token && activeCode.map { Self.constantTimeEqual($0.seed, legacyCode.uppercased()) } == true
+            stateLock.unlock()
+            reject(connection, token: token, reason: "pairing_protocol_outdated", closeWindow: exposed)
+            return
+        }
+        guard request.v == DevicePairingAuth.protocolVersion,
+              let nonce = request.nonce, DevicePairingAuth.isValidNonce(nonce), request.mac != nil,
+              request.user.map(DevicePairingAuth.isSafeSSHUser) ?? true
+        else {
+            reject(connection, token: token, reason: "bad_request")
+            return
+        }
 
         stateLock.lock()
         guard activeToken == token, let record = activeCode else {
             stateLock.unlock()
             send(PairResponse(ok: false, reason: "pairing_window_closed"), to: connection)
+            return
+        }
+        stateLock.unlock()
+        // PBKDF2 在鎖外算（約 0.1 秒），算完再確認配對窗還是同一個。
+        guard let key = DevicePairingAuth.key(code: record.seed, nonce: nonce),
+              DevicePairingAuth.verify(mac: request.mac, key: key, label: "request", fields: DevicePairingAuth.requestFields(
+                  nonce: nonce, publicKey: request.publicKey, name: request.name, user: request.user,
+                  deviceID: request.deviceID, clientKeyFingerprint: request.clientKeyFingerprint,
+                  hostKeyFingerprint: request.hostKeyFingerprint))
+        else {
+            reject(connection, token: token, reason: "pairing_code_mismatch")
+            return
+        }
+        let auth = ReplyAuth(key: key, nonce: nonce)
+
+        stateLock.lock()
+        guard activeToken == token, activeCode == record else {
+            stateLock.unlock()
+            send(PairResponse(ok: false, reason: "pairing_window_closed"), to: connection, auth: auth)
             return
         }
         let local: DeviceIdentity
@@ -226,14 +272,14 @@ final class DevicePairingHost: @unchecked Sendable {
             else { throw DeviceIdentityError.identityConflict }
             local = identity
             activeCode = try TatwoDevicePairingCodeEngineV1.consume(
-                seed: request.code,
+                seed: record.seed,
                 record: record,
                 expectedPrimary: identity.primaryDeviceID ?? identity.deviceID,
                 expectedEpoch: UInt64(identity.epoch ?? 0))
             stateLock.unlock()
         } catch {
             stateLock.unlock()
-            reject(connection, token: token, reason: error.localizedDescription)
+            reject(connection, token: token, reason: error.localizedDescription, auth: auth)
             return
         }
 
@@ -282,32 +328,52 @@ final class DevicePairingHost: @unchecked Sendable {
                 hostDeviceID: local.deviceID,
                 hostKeyFingerprint: DeviceRegistry.localHostKeyFingerprint(environment: environment),
                 clientKeyFingerprint: DeviceRegistry.localClientKeyFingerprint(environment: environment))
-            send(response, to: connection) { [weak self] in
+            send(response, to: connection, auth: auth) { [weak self] in
                 self?.finishCurrentWindow(token: token)
             }
         } catch {
-            send(PairResponse(ok: false, reason: error.localizedDescription), to: connection) { [weak self] in
+            send(PairResponse(ok: false, reason: error.localizedDescription), to: connection, auth: auth) { [weak self] in
                 self?.finishCurrentWindow(token: token)
             }
         }
     }
 
-    private func reject(_ connection: NWConnection, token: UUID, reason: String) {
+    private func reject(
+        _ connection: NWConnection, token: UUID, reason: String,
+        closeWindow: Bool = false, auth: ReplyAuth? = nil
+    ) {
         stateLock.lock()
         guard activeToken == token else {
             stateLock.unlock()
-            send(PairResponse(ok: false, reason: "pairing_window_closed"), to: connection)
+            send(PairResponse(ok: false, reason: "pairing_window_closed"), to: connection, auth: auth)
             return
         }
         failedAttempts += 1
-        let shouldClose = failedAttempts >= 5
+        let shouldClose = closeWindow || failedAttempts >= 5
         stateLock.unlock()
-        send(PairResponse(ok: false, reason: reason), to: connection) { [weak self] in
+        send(PairResponse(ok: false, reason: reason), to: connection, auth: auth) { [weak self] in
             if shouldClose { self?.finishCurrentWindow(token: token) }
         }
     }
 
-    private func send(_ response: PairResponse, to connection: NWConnection, completion: (() -> Void)? = nil) {
+    private static func constantTimeEqual(_ lhs: String, _ rhs: String) -> Bool {
+        let a = Array(lhs.utf8), b = Array(rhs.utf8)
+        guard a.count == b.count else { return false }
+        return zip(a, b).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
+    }
+
+    private func send(
+        _ response: PairResponse, to connection: NWConnection, auth: ReplyAuth? = nil,
+        completion: (() -> Void)? = nil
+    ) {
+        var response = response
+        if let auth {
+            response.mac = DevicePairingAuth.mac(key: auth.key, label: "response", fields: DevicePairingAuth.responseFields(
+                nonce: auth.nonce, ok: response.ok, deviceID: response.deviceID, hostName: response.hostName,
+                hostUser: response.hostUser, hostDeviceID: response.hostDeviceID,
+                hostKeyFingerprint: response.hostKeyFingerprint,
+                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason))
+        }
         guard var data = try? JSONEncoder().encode(response) else {
             connection.cancel()
             completion?()

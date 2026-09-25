@@ -64,9 +64,12 @@ protocol LiveEngineAPI: AnyObject {
         deviceID: String?
     )
     func sidecarProcessID(threadID: UUID) -> Int32?
+    func sidecarProcessOwners() -> [pid_t: (thread: UUID, startTime: UInt64)]
 }
 
 extension LiveEngineAPI {
+    /// 遙控資料源沒有本機 sidecar。
+    func sidecarProcessOwners() -> [pid_t: (thread: UUID, startTime: UInt64)] { [:] }
     @discardableResult func send(threadID: UUID, text: String, model: String?, engine: ClaudeSidecar.Kind,
               systemPrompt: String?, attachments: [String]) -> Bool {
         return send(threadID: threadID, text: text, model: model, engine: engine,
@@ -1020,6 +1023,16 @@ final class ChatLiveEngine: LiveEngineAPI {
         sidecars[threadID]?.processIdentifier
     }
 
+    /// W178：目前每個 sidecar 的 pid 對到哪條討論串。本機 socket 用它認定呼叫的引擎屬於哪條對話，
+    /// 引擎（與它開的 MCP、工具程式）不能自稱是別條（例如完整存取權的）對話。
+    func sidecarProcessOwners() -> [pid_t: (thread: UUID, startTime: UInt64)] {
+        var owners: [pid_t: (thread: UUID, startTime: UInt64)] = [:]
+        for (thread, sidecar) in sidecars {
+            if let pid = sidecar.processIdentifier, let startTime = sidecar.processStartTime { owners[pid] = (thread, startTime) }
+        }
+        return owners
+    }
+
     private func handle(_ threadID: UUID, _ e: ClaudeSidecar.Event) {
         switch e {
         case .sdk(let m): handleSDK(threadID, m)
@@ -1042,8 +1055,9 @@ final class ChatLiveEngine: LiveEngineAPI {
             } else if botPreset == .approveForMe || botPreset == .fullAccess { botDecision = true }
             else { botDecision = nil }
             let automatic = (botPreset ?? userPermissionPreset)?.automaticallyApprovesTools ?? autoApprove
+            // 沒有人可以問（無 UI 的呼叫路徑）就拒絕，不預設放行。
             let allow = botDecision ?? (automatic ? true :
-                permissionDecider?(tool + (description.map { "：\($0)" } ?? ""), pretty) ?? true)
+                permissionDecider?(tool + (description.map { "：\($0)" } ?? ""), pretty) ?? false)
             sidecars[threadID]?.respondPermission(id: id, allow: allow)
             appendSystem(threadID, (allow ? "允許 " : "拒絕 ") + tool, status: "done|權限")
             }

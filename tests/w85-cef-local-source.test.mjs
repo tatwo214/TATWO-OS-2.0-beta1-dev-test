@@ -169,7 +169,8 @@ test('self-build defaults to a pin-exact plan, without creating files or calling
   assert.ok(output.includes(pin.archive));
   assert.match(output, /--arm64-build/);
   assert.match(output, /--minimal-distrib-only/);
-  assert.match(output, /--checkout=2384915/);
+  // CEF 版號的 +g 後面是 CEF commit（例如 154.0.28+g564dd6c → --checkout=564dd6c），跟著釘版走。
+  assert.ok(output.includes(`--checkout=${pin.cefVersion.match(/\+g([0-9a-f]+)/)[1]}`));
   assert.match(output, /proprietary_codecs=true ffmpeg_branding=Chrome is_official_build=true/);
   assert.doesNotMatch(result.stderr, /FORBIDDEN_SIDE_EFFECT/);
   assert.equal(fs.existsSync('/Volumes/Synthetic External/w85-output'), false);

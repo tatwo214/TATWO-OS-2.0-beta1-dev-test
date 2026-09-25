@@ -15,5 +15,5 @@ if [ $# -gt 0 ]; then
 fi
 echo "--- release build $H"; RC="$S/rooms/release-check"
 [ -d "$RC" ] || git -C "$R" worktree add -q --detach "$RC" "$B"
-git -C "$RC" checkout -q --detach "$B" && cd "$RC" && PATH="${TATWO_BUILD_PATH:-$HOME/.tatwo-build-deps/tmux/3.6a/bin:/opt/homebrew/bin}:$PATH" TMPDIR="${TATWO_SWIFT_TMPDIR:-/private/tmp/tatwo-swift/}" swift build -c release --product Tatwo2 --scratch-path "$S/build-cache/release-check" > "$S/tmp/release-$name.log" 2>&1; echo "release exit=$?"; grep -E "error:" "$S/tmp/release-$name.log" | head -5
+git -C "$RC" checkout -q --detach "$B" && cd "$RC" && PATH="${TATWO_BUILD_PATH:-$HOME/.tatwo-build-deps/tmux/3.6b/bin:/opt/homebrew/bin}:$PATH" TMPDIR="${TATWO_SWIFT_TMPDIR:-/private/tmp/tatwo-swift/}" swift build -c release --product Tatwo2 --scratch-path "$S/build-cache/release-check" > "$S/tmp/release-$name.log" 2>&1; echo "release exit=$?"; grep -E "error:" "$S/tmp/release-$name.log" | head -5
 echo DONE

@@ -36,6 +36,7 @@ final class ClaudeSidecar {
     var onEvent: ((Event) -> Void)?
 
     var processIdentifier: Int32? { isRunning ? child?.pid : nil }
+    var processStartTime: UInt64? { isRunning ? child?.startTime : nil }
 
     static func engineHomeRoot(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         // 與 EnginePaths 同一優先序：明給 TATWO2_ENGINES_ROOT 就用它（真引擎家測試），否則從 LIVE_ROOT 推，最後才是正式 App Support。
@@ -293,6 +294,8 @@ final class SidecarGroupedProcess {
 
     let pid: pid_t
     let pgid: pid_t
+    /// W178：啟動當下的時間，本機 socket 用來確認 pid 沒被別的程序重用。
+    let startTime: UInt64?
     private let stdin: FileHandle
     private let stdout: FileHandle
     private let stderr: FileHandle
@@ -304,6 +307,7 @@ final class SidecarGroupedProcess {
     private init(pid: pid_t, stdin: FileHandle, stdout: FileHandle, stderr: FileHandle) {
         self.pid = pid
         self.pgid = pid
+        self.startTime = OSSocketCaller.processStartTime(pid)
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr

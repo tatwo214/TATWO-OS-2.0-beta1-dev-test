@@ -1,8 +1,21 @@
 #!/usr/bin/env node
 // TATWO2_BROWSERTEST node 直連 probe；不經 MCP stdio。
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+
+// W178：App 登記完這支探針才建立檔案；之前連線會被當成外部程式。
+if (process.env.TATWO2_PROBE_READY_FILE) {
+  const deadline = Date.now() + 10_000;
+  while (!fs.existsSync(process.env.TATWO2_PROBE_READY_FILE) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  if (!fs.existsSync(process.env.TATWO2_PROBE_READY_FILE)) {
+    console.log('BROWSERTEST FAIL probe_not_registered');
+    process.exit(1);
+  }
+}
 const socketPath = process.env.TATWO2_BROWSER_SOCKET || path.join(os.homedir(), 'Library', 'Application Support', 'tatwo2', 'live', 'browser-v2.sock');
 let id = 1;
 function call(method, params = {}) {

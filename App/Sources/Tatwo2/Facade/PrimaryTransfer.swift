@@ -231,7 +231,7 @@ enum PrimaryTransfer {
         }
         let paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
             + ["/usr/bin", "/bin", "/opt/homebrew/bin", "/usr/local/bin",
-               FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".tatwo-build-deps/tmux/3.6a/bin").path]
+               FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".tatwo-build-deps/tmux/3.6b/bin").path]
         for tool in ["swift", "node", "npm", "git", "codesign", "xcrun", "hdiutil",
                      "python3", "curl", "tar", "ditto", "otool", "install_name_tool", "tmux"] {
             if !paths.contains(where: { FileManager.default.isExecutableFile(atPath: $0 + "/" + tool) }) {
@@ -240,8 +240,8 @@ enum PrimaryTransfer {
         }
         if let tmux = paths.map({ $0 + "/tmux" }).first(where: { FileManager.default.isExecutableFile(atPath: $0) }),
            let (code, data) = try? DeviceDispatch.run(tmux, ["-V"]),
-           code != 0 || String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "tmux 3.6a" {
-            result.missingDependencies.append("tmux 3.6a")
+           code != 0 || String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) != "tmux 3.6b" {
+            result.missingDependencies.append("tmux 3.6b")
         }
         if (try? DeviceDispatch.run("/usr/bin/xcrun", ["--find", "swift"]).0) != 0 {
             result.missingDependencies.append("Swift toolchain")

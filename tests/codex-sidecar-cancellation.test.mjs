@@ -22,7 +22,7 @@ const goalSnapshot = (status, extra = {}) => ({ threadId: 'thread-fixture', obje
 const goalEvents = f => f.events.filter(e => e.msg?.subtype === 'goal').map(e => e.msg);
 const goalRequests = f => f.requests.filter(r => r.method === 'thread/goal/set');
 
-async function fixture(t) {
+async function fixture(t, { args = [] } = {}) {
   const output = testScratch('codex-sidecar-cancellation-');
   await fs.mkdir(output, { recursive: true });
   const dir = await fs.mkdtemp(path.join(output, 'cancel-'));
@@ -34,7 +34,7 @@ async function fixture(t) {
   await fs.writeFile(path.join(dir, 'bin/codex'),
     `#!${process.execPath}\nrequire(${JSON.stringify(path.join(root, 'tests/fixtures/codex-cancellation-server.cjs'))});\n`,
     { mode: 0o700 });
-  const child = spawn(process.execPath, [path.join(root, 'Engines/codex-sidecar/sidecar.mjs'), '--cwd', dir], {
+  const child = spawn(process.execPath, [path.join(root, 'Engines/codex-sidecar/sidecar.mjs'), '--cwd', dir, ...args], {
     env: {
       PATH: `${dir}/bin:${path.dirname(process.execPath)}:/usr/bin:/bin`,
       HOME: path.join(dir, 'home'), CODEX_HOME: path.join(dir, 'home/.codex'),
@@ -704,4 +704,43 @@ test('stop declines pending and late approvals rather than authorizing more work
     params: { threadId: 'thread-fixture', turnId: 'native-old' } });
   await f.until(() => f.requests.some(r => r.id === 102 && r.result), 'MCP request cancelled');
   assert.equal(f.requests.find(r => r.id === 102 && r.result).result.action, 'cancel');
+});
+
+test('extra permission requests ask the App unless the thread has full access', { timeout: 10_000 }, async t => {
+  const f = await fixture(t);
+  await f.boot();
+  f.send('ask');
+  await f.until(() => f.startRequests().length === 1, 'turn start');
+  f.reply(f.startRequests()[0], { turn: { id: 'native-ask' } });
+  f.started('native-ask');
+  const permissions = { network: { enabled: true } };
+  f.native({ id: 200, method: 'item/permissions/requestApproval',
+    params: { threadId: 'thread-fixture', turnId: 'native-ask', permissions, reason: '要連網' } });
+  await f.until(() => f.events.some(e => e.ev === 'permission_request' && e.id === '200'), 'asks the App');
+  await f.barrier();
+  assert.ok(!f.requests.some(r => r.id === 200 && r.result), 'no automatic grant before the user answers');
+  f.command({ op: 'permission', id: '200', allow: false });
+  await f.until(() => f.requests.some(r => r.id === 200 && r.result), 'declined');
+  assert.deepEqual(f.requests.find(r => r.id === 200 && r.result).result, { permissions: {}, scope: 'turn' });
+  f.native({ id: 201, method: 'item/permissions/requestApproval',
+    params: { threadId: 'thread-fixture', turnId: 'native-ask', permissions } });
+  await f.until(() => f.events.some(e => e.ev === 'permission_request' && e.id === '201'), 'asks again');
+  f.command({ op: 'permission', id: '201', allow: true });
+  await f.until(() => f.requests.some(r => r.id === 201 && r.result), 'granted after approval');
+  assert.deepEqual(f.requests.find(r => r.id === 201 && r.result).result, { permissions, scope: 'turn' });
+});
+
+test('full access grants extra permissions without asking', { timeout: 10_000 }, async t => {
+  const f = await fixture(t, { args: ['--permission-mode', 'bypassPermissions'] });
+  await f.boot();
+  f.send('full');
+  await f.until(() => f.startRequests().length === 1, 'turn start');
+  f.reply(f.startRequests()[0], { turn: { id: 'native-full' } });
+  f.started('native-full');
+  const permissions = { network: { enabled: true } };
+  f.native({ id: 300, method: 'item/permissions/requestApproval',
+    params: { threadId: 'thread-fixture', turnId: 'native-full', permissions } });
+  await f.until(() => f.requests.some(r => r.id === 300 && r.result), 'granted');
+  assert.deepEqual(f.requests.find(r => r.id === 300 && r.result).result, { permissions, scope: 'turn' });
+  assert.ok(!f.events.some(e => e.ev === 'permission_request' && e.id === '300'));
 });

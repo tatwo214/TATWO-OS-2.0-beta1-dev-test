@@ -337,7 +337,12 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
     /// 外掛動作；要登入那個 App 時回傳網頁版的授權網址。
     func pluginAction(id: String, action: String, enabled: Bool = true) async throws -> URL? {
         let data = try await request("pluginAction", ["pluginID": id, "action": action, "enabled": enabled]) as? [String: Any] ?? [:]
-        return (data["authURL"] as? String).flatMap(URL.init(string:))
+        guard let raw = data["authURL"] as? String else { return nil }
+        // W178：只把 https 網址交給系統打開；file:、自訂協定可能直接啟動本機程式。
+        guard let url = URL(string: raw), url.scheme?.lowercased() == "https", url.host?.isEmpty == false else {
+            throw TapError.remote("授權網址不是 https，已擋下")
+        }
+        return url
     }
 
     func sites() async throws -> [TapSite] {
@@ -411,22 +416,22 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         return ((data["live"] as? Bool) ?? false, data["conversationID"] as? String)
     }
 
-    /// 外部小圖（外掛圖示、頭像）：不落地的連線、只放記憶體。
+    /// 外部小圖（外掛圖示、頭像）：不落地的連線、只放記憶體；只連公開網際網路（W178）。
     func remoteImage(_ url: URL) async -> Data? {
-        guard url.scheme == "https", let result = try? await Self.imageSession.data(from: url),
-              (result.1 as? HTTPURLResponse)?.statusCode == 200, result.0.count < 4 * 1024 * 1024 else { return nil }
-        return result.0
+        try? await TapRemoteFetch.fetch(url, maxBytes: 4 * 1024 * 1024, session: Self.imageSession)
     }
 
-    /// Pod 回的檔案：同網域的已經是 base64；外部網址（有簽章、會過期）用不落地的連線下載。
+    /// Pod 回的檔案：同網域的已經是 base64；外部網址（有簽章、會過期）用不落地的連線下載，只連公開網際網路（W178）。
     private static func bytes(from data: [String: Any]) async throws -> Data {
         if let base64 = data["base64"] as? String, let bytes = Data(base64Encoded: base64) { return bytes }
         guard let string = data["url"] as? String, let url = URL(string: string), url.scheme == "https" else {
             throw TapError.remote("拿不到檔案")
         }
-        let (bytes, response) = try await imageSession.data(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw TapError.remote("下載失敗") }
-        return bytes
+        do {
+            return try await TapRemoteFetch.fetch(url, maxBytes: 512 * 1024 * 1024, session: imageSession)
+        } catch let failure as TapRemoteFetch.Failure {
+            throw TapError.remote(failure.localizedDescription)
+        }
     }
 
     private static let imageSession: URLSession = {

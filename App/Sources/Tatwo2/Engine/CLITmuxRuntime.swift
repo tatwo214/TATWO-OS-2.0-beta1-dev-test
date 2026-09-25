@@ -20,6 +20,12 @@ final class CLITmuxRuntime: @unchecked Sendable {
     let configuration: String
     private let root: URL
     private let queue = DispatchQueue(label: "tatwo.cli.tmux", qos: .userInitiated)
+    /// W178：同一個分頁的送出一次只跑一個（清空、貼上、Enter 不會被另一次送出插隊）。
+    private let sendLock = NSLock()
+    private var sendTails: [UUID: (generation: Int, task: Task<Void, Never>)] = [:]
+    private var sendGeneration = 0
+    /// 還在排隊或送出中的分頁數（自測用）。
+    var pendingSendChains: Int { sendLock.withLock { sendTails.count } }
     private var configured = false
 
     init(root: URL, executable: String) {
@@ -74,10 +80,12 @@ final class CLITmuxRuntime: @unchecked Sendable {
         configured = true
     }
 
-    func run(_ args: [String], input: Data? = nil) async throws -> Result {
+    /// `precondition`：輪到這個指令、真正開 tmux 之前在佇列裡執行；丟錯就不執行（W178 按 Enter 那一刻的最後確認）。
+    func run(_ args: [String], input: Data? = nil, precondition: (() throws -> Void)? = nil) async throws -> Result {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
                 do {
+                    try precondition?()
                     try configure()
                     let process = Process(), output = Pipe(), stdin = Pipe()
                     process.executableURL = URL(fileURLWithPath: executable)
@@ -115,8 +123,8 @@ final class CLITmuxRuntime: @unchecked Sendable {
 
     func create(id: UUID, launch: TatwoNativeTerminalLaunch) async throws {
         let result = try await run(["-V"])
-        guard result.status == 0, result.text.trimmingCharacters(in: .whitespacesAndNewlines) == "tmux 3.6a" else {
-            throw NSError(domain: "CLI", code: 2, userInfo: [NSLocalizedDescriptionKey: "需要隨 App 打包的 tmux 3.6a"])
+        guard result.status == 0, result.text.trimmingCharacters(in: .whitespacesAndNewlines) == "tmux 3.6b" else {
+            throw NSError(domain: "CLI", code: 2, userInfo: [NSLocalizedDescriptionKey: "需要隨 App 打包的 tmux 3.6b"])
         }
         var args = ["new-session", "-d", "-s", Self.name(id), "-c", launch.workingDirectory.path,
                     "-x", "120", "-y", "40"]
@@ -169,8 +177,40 @@ final class CLITmuxRuntime: @unchecked Sendable {
             throw NSError(domain: "CLI", code: 11, userInfo: [NSLocalizedDescriptionKey: result.text])
         }
     }
-    func sendLine(_ text: String, to id: UUID) async throws {
+    /// W178（AI 代送）：`confirm` 在清空輸入列與貼上之前、按 Enter 之前各跑一次（權限與期限）；丟錯就不送，
+    /// 已貼上的那一行清掉。先清空輸入列（Ctrl-E 到行尾、Ctrl-U 往前清），按下 Enter 執行的才會是核准的那一行。
+    /// `enterPrecondition` 在 tmux 佇列裡、真正送 Enter 的那一刻再跑一次（只看期限與連線，不等主執行緒）。
+    /// 同一個分頁的送出排成一個接一個，兩次送出的清空、貼上、Enter 不會交錯。
+    func sendLine(_ text: String, to id: UUID, confirm: (() throws -> Void)? = nil,
+                  enterPrecondition: (() throws -> Void)? = nil) async throws {
+        let task: Task<Void, Error> = sendLock.withLock {
+            let previous = sendTails[id]?.task
+            sendGeneration += 1
+            let generation = sendGeneration
+            let task = Task<Void, Error> {
+                await previous?.value
+                try await self.sendLineNow(text, to: id, confirm: confirm, enterPrecondition: enterPrecondition)
+            }
+            // 排在最後的那一個送完就把這個分頁的紀錄清掉；後面又有人排進來（世代不同）就留給它。
+            sendTails[id] = (generation, Task { [weak self] in
+                _ = try? await task.value
+                guard let self else { return }
+                self.sendLock.withLock { if self.sendTails[id]?.generation == generation { self.sendTails[id] = nil } }
+            })
+            return task
+        }
+        try await task.value
+    }
+
+    private func sendLineNow(_ text: String, to id: UUID, confirm: (() throws -> Void)?,
+                             enterPrecondition: (() throws -> Void)?) async throws {
         let target = Self.name(id)
+        if let confirm {
+            try confirm()
+            // 先到行尾再往前清（bash、zsh 預設按鍵會清掉整行；其他程式照它自己的按鍵設定），游標在行中間也不留尾巴。
+            let cleared = try await run(["send-keys", "-t", target, "C-e", "C-u"])
+            guard cleared.status == 0 else { throw NSError(domain: "CLI", code: 12) }
+        }
         // Literal UTF-8 via a private tmux buffer; text can never become a tmux option or shell argument.
         let buffer = "input-" + UUID().uuidString.lowercased()
         let loaded = try await run(["load-buffer", "-b", buffer, "-"], input: Data(text.utf8))
@@ -180,7 +220,18 @@ final class CLITmuxRuntime: @unchecked Sendable {
             _ = try? await run(["delete-buffer", "-b", buffer])
             throw NSError(domain: "CLI", code: 7)
         }
-        let entered = try await run(["send-keys", "-t", target, "Enter"])
+        if let confirm {
+            do { try confirm() } catch {
+                _ = try? await run(["send-keys", "-t", target, "C-e", "C-u"])
+                throw error
+            }
+        }
+        let entered: Result
+        do { entered = try await run(["send-keys", "-t", target, "Enter"], precondition: enterPrecondition) }
+        catch {
+            if confirm != nil { _ = try? await run(["send-keys", "-t", target, "C-e", "C-u"]) }
+            throw error
+        }
         guard entered.status == 0 else { throw NSError(domain: "CLI", code: 8) }
     }
     func terminate(_ id: UUID) async throws {

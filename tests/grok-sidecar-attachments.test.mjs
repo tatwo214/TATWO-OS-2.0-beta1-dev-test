@@ -32,7 +32,7 @@ function screenshot() {
     chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))]);
 }
 
-async function fixture(t, { hold = false, missingBinary = false } = {}) {
+async function fixture(t, { hold = false, missingBinary = false, permissionMode = 'acceptEdits' } = {}) {
   const output = testScratch('grok-sidecar-attachments-');
   await fs.mkdir(output, { recursive: true });
   const root = await fs.mkdtemp(path.join(output, 'grok-attachments.'));
@@ -70,6 +70,7 @@ setTimeout(() => {
   const child = spawn(process.execPath, [
     path.join(repo, 'Engines/grok-sidecar/sidecar.mjs'), '--cwd', root,
     '--model', 'fixture-model', '--system-prompt', 'fixture rules',
+    ...(permissionMode ? ['--permission-mode', permissionMode] : []),
   ], {
     // No inherited auth, MCP, provider or real home settings.
     env: { HOME: root, TMPDIR: tmp, PATH: '/usr/bin:/bin',
@@ -221,3 +222,19 @@ for (const op of ['interrupt', 'close']) {
     if (op === 'close') await f.exit;
   });
 }
+
+test('ask-first refuses before spawning Grok; approve-for-me and full access run with --always-approve', { timeout: 10_000 }, async t => {
+  for (const permissionMode of [null, 'default']) {
+    const f = await fixture(t, { permissionMode });
+    const result = await f.turn({ text: '你好' });
+    assert.equal(result.is_error, true);
+    assert.match(result.result, /要求核准/);
+    assert.deepEqual(await f.records(), [], 'Grok must not be spawned when it cannot ask first');
+  }
+  for (const permissionMode of ['acceptEdits', 'bypassPermissions']) {
+    const f = await fixture(t, { permissionMode });
+    assert.equal((await f.turn({ text: '你好' })).is_error, false);
+    const [record] = await f.records();
+    assert.ok(record.args.includes('--always-approve'), permissionMode);
+  }
+});

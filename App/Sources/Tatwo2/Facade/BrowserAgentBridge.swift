@@ -262,12 +262,19 @@ final class BrowserAgentBridge: @unchecked Sendable {
         while true {
             let client = accept(fd, nil, nil)
             if client < 0 { continue }
-            autoreleasepool { handle(clientFD: client) }
+            autoreleasepool { handle(clientFD: client, caller: OSSocketCaller.classify(fd: client)) }
         }
     }
 
-    private func handle(clientFD: Int32) {
+    private func handle(clientFD: Int32, caller: OSSocketCaller) {
         let handle = FileHandle(fileDescriptor: clientFD, closeOnDealloc: true)
+        // W178：瀏覽器工具會讀頁面、操作已登入的網站；只給 TATWO OS 自己與它開出來的程式（遙控只轉 os.sock，不轉這裡）。
+        guard caller.isLocalApp else {
+            var timeout = timeval(tv_sec: 2, tv_usec: 0)
+            _ = setsockopt(clientFD, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            write(["id": NSNull(), "ok": false, "error": "caller_not_trusted"], to: handle)
+            return
+        }
         // One newline-delimited request, not an unbounded wait for client EOF.
         // A connected but silent peer must not freeze every later browser tool.
         var timeout = timeval(tv_sec: 2, tv_usec: 0)
@@ -311,6 +318,11 @@ final class BrowserAgentBridge: @unchecked Sendable {
             return
         }
         let params = request["params"] as? [String: Any] ?? [:]
+        // W178：引擎只能以自己那條對話的身分操作瀏覽器。
+        guard OSAgentBridge.callerThreadMatches(bound: caller.boundThread, params: params) else {
+            write(["id": id, "ok": false, "error": "caller_thread_mismatch"], to: handle)
+            return
+        }
         let response: [String: Any]
         do {
             let caller = try BrowserAgentRequest.caller(from: params)

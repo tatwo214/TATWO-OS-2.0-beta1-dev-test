@@ -19,7 +19,7 @@ def run(*args):
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
 source = Path(run("/usr/bin/which", "tmux")).resolve()
-assert run(str(source), "-V") == "tmux 3.6a", "reference frozen: do not silently change tmux"
+assert run(str(source), "-V") == "tmux 3.6b", "reference frozen: do not silently change tmux"
 origins = {}
 
 def stage(origin, target):
@@ -60,12 +60,12 @@ for target in [binary] + [lib / name for name in sorted(seen)]:
     dependencies = run("/usr/bin/otool", "-L", str(target))
     assert "/opt/homebrew/" not in dependencies, "runtime is not relocatable"
     run("/usr/bin/codesign", "--force", "--sign", "-", str(target))
-assert run(str(binary), "-V") == "tmux 3.6a"
+assert run(str(binary), "-V") == "tmux 3.6b"
 wrapper = runtime / "bin/grok-isolated"
 shutil.copyfile(repo / "scripts/tatwo2-grok-cli.sh", wrapper)
 wrapper.chmod(0o755)
 manifest = {
-    "tmux": "3.6a", "SwiftTerm": "1.19.0", "originalSHA256": origins,
+    "tmux": "3.6b", "SwiftTerm": "1.19.0", "originalSHA256": origins,
     "bundledSHA256": {
         str(path.relative_to(runtime)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in [binary, wrapper] + [lib / name for name in sorted(seen)] +
@@ -73,5 +73,5 @@ manifest = {
     },
 }
 (runtime / "cli-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-print("CLI runtime: tmux 3.6a, relocatable dylibs, licenses, isolated Grok launcher")
+print("CLI runtime: tmux 3.6b, relocatable dylibs, licenses, isolated Grok launcher")
 PY

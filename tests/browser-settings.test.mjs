@@ -109,7 +109,7 @@ test('swiftc: settings round-trip, engine URLs, policy reload, metadata and Nets
       precondition(BrowserGeneralSettings.load(from: url) == defaults)
       precondition(BrowserRuntimeVersion.load(from: [url]) == "未知")
       let metadata = URL(fileURLWithPath: CommandLine.arguments[2])
-      precondition(BrowserRuntimeVersion.load(from: [url, metadata]) == "CEF 151.3.24 / Chromium 151.0.7922.174")
+      precondition(BrowserRuntimeVersion.load(from: [url, metadata]) == "CEF 154.0.28 / Chromium 154.0.8037.58")
       let registry = BrowserTabRegistry()
       let bookmark = BrowserBookmark(id: UUID(), url: URL(string: "https://example.com/?a=1&b=2")!, title: "<Title> & Test")
       let folder = BrowserFolder(id: UUID(), name: "Folder", bookmarks: [bookmark])

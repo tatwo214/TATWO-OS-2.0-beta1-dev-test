@@ -29,6 +29,10 @@ final class OSAgentBridge: @unchecked Sendable {
         botTestLibrary = library
         queue.async { [weak self] in self?.listen() }
     }
+    /// W178 安全自測：在 TATWO2_OS_SOCKET 開真的 listener（不接 model），給測試從外部行程連進來驗呼叫者檢查。
+    func startSecurityTestListener() {
+        queue.async { [weak self] in self?.listen() }
+    }
     /// Owned real-library acceptance seam; does not start or replace a socket.
     static func botCoreTestBridge(library: BotLibrary) -> OSAgentBridge {
         let bridge = OSAgentBridge()
@@ -58,6 +62,12 @@ final class OSAgentBridge: @unchecked Sendable {
     }
 
     private let queue = DispatchQueue(label: "ai.tatwo.tatwo2.os-agent", qos: .userInitiated)
+    // W178：接連線的迴圈不再自己讀請求。每條連線在 reader 佇列限時限量讀完，再排進 handler 佇列一次處理一個，
+    // 一個不送完也不關的連線卡不住其他呼叫。
+    private let readerQueue = DispatchQueue(label: "ai.tatwo.tatwo2.os-agent.reader", qos: .userInitiated, attributes: .concurrent)
+    private let handlerQueue = DispatchQueue(label: "ai.tatwo.tatwo2.os-agent.handler", qos: .userInitiated)
+    // 一條連線從讀、排隊、處理到寫回都占一格；滿了就回 busy，排隊的請求與 FD 不會無限累積。
+    private let connectionSlots = DispatchSemaphore(value: 16)
     private let computerQueue = DispatchQueue(label: "ai.tatwo.tatwo2.computer", qos: .userInitiated, attributes: .concurrent)
     private let computerSlots = DispatchSemaphore(value: 2)
     private let stateLock = NSLock()
@@ -80,12 +90,15 @@ final class OSAgentBridge: @unchecked Sendable {
         return bridge
     }
 
-    private func jobsCaller(_ params: [String: Any]) throws -> (id: UUID, source: String) {
+    private func jobsCaller(_ params: [String: Any], bound: UUID? = nil) throws -> (id: UUID, source: String) {
         let id: UUID
         let source: String
         if let raw = params["callerThreadID"] {
             guard let text = raw as? String, let parsed = UUID(uuidString: text) else { throw BridgeError.invalidParams }
             id = parsed; source = "caller"
+        } else if let bound {
+            // W178：綁定對話的引擎沒帶就用它自己的對話，不退回「目前選中的對話」。
+            id = bound; source = "caller"
         } else {
             if jobsTestArtifacts != nil { throw BridgeError.noParentThread }
             guard let selected = onMain({ [weak self] in self?.model?.selectedThreadID }) else { throw BridgeError.noParentThread }
@@ -105,8 +118,25 @@ final class OSAgentBridge: @unchecked Sendable {
 
     private init() {}
 
+    /// W178：本機 socket 認人用的程序根——每個 sidecar 屬於哪條對話、每個背景工作屬於哪條對話。
+    private func installProcessRoots() {
+        OSSocketCaller.rootsProvider = { [weak self] in
+            guard let self else { return [:] }
+            var roots: [pid_t: OSSocketCaller.RootEntry] = [:]
+            let engines: [pid_t: (thread: UUID, startTime: UInt64)] = self.onMain { [weak self] in
+                self?.model?.live?.sidecarProcessOwners() ?? [:]
+            }
+            for (pid, owner) in engines { roots[pid] = .init(root: .engine(owner.thread), startTime: owner.startTime) }
+            for (pid, owner) in self.backgroundJobs?.runningProcessOwners() ?? [:] {
+                roots[pid] = .init(root: .job(owner.thread), startTime: owner.startTime)
+            }
+            return roots
+        }
+    }
+
     @MainActor func configureCallerTest(model: ChatPageModel, manager: BackgroundJobManager) {
         self.model = model
+        installProcessRoots()
         ComputerUseController.shared.consentPolicyProvider = { [weak model] caller in
             guard let model, let thread = model.live?.threadRecord(caller) else { return .askOncePerSession }
             return .resolve(user: model.permissionPreset, bot: thread.botPermissionPreset,
@@ -144,6 +174,7 @@ final class OSAgentBridge: @unchecked Sendable {
             EngineLinks.scan().map { DeviceStatusEngine(id: $0.id, name: $0.name, state: "\($0.state)") }
         }
         EntryBackup.shared.pushIfEnabled()
+        installProcessRoots()
         ComputerUseController.shared.consentPolicyProvider = { [weak model] caller in
             guard let model, let thread = model.live?.threadRecord(caller) else { return .askOncePerSession }
             return .resolve(user: model.permissionPreset, bot: thread.botPermissionPreset,
@@ -215,21 +246,127 @@ final class OSAgentBridge: @unchecked Sendable {
         fputs("os_agent_bridge_socket=\(path)\n", stderr)
         while true {
             let client = accept(fd, nil, nil)
-            if client >= 0 {
-                // cli_open may fork before this request returns; otherwise Node waits for the shell to close its inherited socket.
-                _ = fcntl(client, F_SETFD, FD_CLOEXEC)
-                // 客戶端提早斷線時，寫回應不可以讓整個 App 吃 SIGPIPE 死掉（實機驗收 2026-09-04 踩到）
-                var on: Int32 = 1
-                _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
-            }
             if client < 0 { continue }
-            autoreleasepool { handle(clientFD: client) }
+            // cli_open may fork before this request returns; otherwise Node waits for the shell to close its inherited socket.
+            _ = fcntl(client, F_SETFD, FD_CLOEXEC)
+            // 客戶端提早斷線時，寫回應不可以讓整個 App 吃 SIGPIPE 死掉（實機驗收 2026-09-04 踩到）
+            var on: Int32 = 1
+            _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            var receiveTimeout = timeval(tv_sec: 10, tv_usec: 0)
+            var sendTimeout = timeval(tv_sec: 30, tv_usec: 0)
+            _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
+            _ = setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+            // 連線當下就認人：之後對方換掉或結束也不影響這次判斷。
+            let acceptedAt = ProcessInfo.processInfo.systemUptime
+            let caller = OSSocketCaller.classify(fd: client)
+            guard connectionSlots.wait(timeout: .now()) == .success else {
+                let busy = FileHandle(fileDescriptor: client, closeOnDealloc: true)
+                write(["id": NSNull(), "ok": false, "error": "os_bridge_busy"], to: busy)
+                continue
+            }
+            let release: @Sendable () -> Void = { [connectionSlots] in connectionSlots.signal() }
+            readerQueue.async { [self] in
+                let input = Self.readRequest(client)
+                handlerQueue.async { [self] in
+                    autoreleasepool {
+                        handle(clientFD: client, input: input, caller: caller, acceptedAt: acceptedAt, release: release)
+                    }
+                }
+            }
         }
     }
 
-    private func handle(clientFD: Int32) {
+    /// 只讀第一行（請求只用第一行）；送完關寫端的舊客戶端照樣相容。每次讀最多等 10 秒、整體 30 秒、上限 16 MB。
+    static func readRequest(_ fd: Int32, limit: Int = 16 * 1024 * 1024, deadline seconds: TimeInterval = 30) -> Data? {
+        var input = Data()
+        var chunk = [UInt8](repeating: 0, count: 65_536)
+        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        while ProcessInfo.processInfo.systemUptime < deadline {
+            // 每次最多等 10 秒，也不超過剩下的整體期限。
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            var timeout = timeval(tv_sec: Int(min(10, max(1, remaining.rounded(.up)))), tv_usec: 0)
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            let count = recv(fd, &chunk, chunk.count, 0)
+            if count > 0 {
+                input.append(contentsOf: chunk.prefix(count))
+                if let newline = input.firstIndex(of: 0x0A) {
+                    return newline <= limit ? input.prefix(upTo: newline) : nil
+                }
+                if input.count > limit { return nil }
+                continue
+            }
+            if count == 0 { return input }
+            if errno == EINTR { continue }
+            return nil
+        }
+        return nil
+    }
+
+    /// W178：不是 TATWO OS 自己人（見 OSSocketCaller）也能用的方法——只回狀態、只成為待核准的提案，
+    /// 或本來就要設備簽章。其餘會讀對話、送訊息、操作電腦、讓 App 結束的方法一律要自己人。
+    static let untrustedCallerMethods: Set<String> = [
+        "device_status", "dispatch_wake", "user_remember",
+        "dispatch_fetch", "dispatch_ack", "document_propose", "document_inspect", "inbox_target", "inbox_receive",
+        "memory_propose", "memory_list", "memory_decide",
+    ]
+
+    /// 隔離的 staging 實例（乾淨安裝閘門、測試）裡沒有使用者的真資料：外部程式可以讀這幾個唯讀方法來驗空狀態。
+    /// 會操作電腦、執行指令、送訊息的方法在 staging 也一樣擋（同一個簽章的 App 帶著系統權限）。
+    static let stagingReadOnlyMethods: Set<String> = ["list_devices", "get_document", "bot_list", "os_binding_status"]
+
+    /// 系統 sshd 轉進來（已配對設備遙控、派發）只能用遙控畫面實際會用到的方法；電腦操作、終端機、背景指令、
+    /// 讓 App 結束一律不給——SSH 金鑰只證明是能登入這台的人，不代表要借 App 的系統權限。
+    static let sshForwardMethods: Set<String> = [
+        "get_document", "transcript", "new_thread", "send_message", "send_message_with_options", "stop_thread",
+        "push_thread", "pull_thread", "list_rooms", "stop_room", "stop_all_rooms", "background_list",
+        "background_status", "artifacts_list", "os_binding_status", "bot_list", "bot_pending_list", "whoami",
+        "list_devices", "select_thread",
+    ]
+
+    static func allowsUntrustedCaller(method: String, params: [String: Any], staging: Bool = false) -> Bool {
+        if untrustedCallerMethods.contains(method) { return true }
+        if staging && stagingReadOnlyMethods.contains(method) { return true }
+        // 施工工作：帶設備簽章的才算（DeviceDispatch.authenticate 驗章）；沒簽章的本機呼叫會轉發給主設備，只給自己人。
+        if method == "job_submit" || method == "job_status" {
+            return params["signature"] is String && params["body"] is String
+        }
+        return false
+    }
+
+    static func allows(caller: OSSocketCaller, method: String, params: [String: Any], staging: Bool) -> Bool {
+        switch caller {
+        case .app, .engine, .job, .helper:
+            return true
+        case .ssh:
+            return sshForwardMethods.contains(method) || allowsUntrustedCaller(method: method, params: params, staging: staging)
+        case .other:
+            return allowsUntrustedCaller(method: method, params: params, staging: staging)
+        }
+    }
+
+    /// 只有隔離根在暫存目錄（/private/tmp、/private/var/folders）而且整組隔離設定有效，才算 staging 實例；
+    /// 正式 App 就算被帶了 staging 變數冷啟動，只要根目錄不在暫存區，這四個唯讀方法照樣不對外。
+    private static let isStagingInstance: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        guard NativeStagingIsolation.isEnabled(environment),
+              NativeStagingIsolation.validationError(environment) == nil,
+              let root = environment["TATWO_STAGING_ROOT"] else { return false }
+        // 用 realpath 取真實路徑（Foundation 的 resolvingSymlinksInPath 會把 /private 拿掉）。
+        guard let pointer = realpath(root, nil) else { return false }
+        defer { free(pointer) }
+        let resolved = String(cString: pointer)
+        return resolved.hasPrefix("/private/tmp/") || resolved.hasPrefix("/private/var/folders/")
+    }()
+
+    private func handle(clientFD: Int32, input: Data?, caller: OSSocketCaller, acceptedAt: TimeInterval,
+                        release: @escaping @Sendable () -> Void) {
+        var releaseOnReturn = true
+        defer { if releaseOnReturn { release() } }
         let handle = FileHandle(fileDescriptor: clientFD, closeOnDealloc: true)
-        let input = (try? handle.readToEnd()) ?? Data()
+        guard let input else {
+            write(["id": NSNull(), "ok": false, "error": "request_incomplete_or_too_large"], to: handle)
+            return
+        }
         guard let line = String(data: input, encoding: .utf8)?
             .split(whereSeparator: \.isNewline).first,
               let data = String(line).data(using: .utf8),
@@ -238,12 +375,34 @@ final class OSAgentBridge: @unchecked Sendable {
             write(["id": NSNull(), "ok": false, "error": "bad_request"], to: handle)
             return
         }
-        let id = request["id"] ?? NSNull()
+        // 回應會原樣帶回 id：只收短字串、數字或 null，免得一個超大 id 把回寫卡住。
+        let rawID = request["id"] ?? NSNull()
+        let id: Any
+        if rawID is NSNull || rawID is NSNumber || (rawID as? String).map({ $0.utf8.count <= 256 }) == true {
+            id = rawID
+        } else {
+            write(["id": NSNull(), "ok": false, "error": "bad_request_id"], to: handle)
+            return
+        }
         guard let method = request["method"] as? String else {
             write(["id": id, "ok": false, "error": "missing_method"], to: handle)
             return
         }
         let params = request["params"] as? [String: Any] ?? [:]
+        guard Self.allows(caller: caller, method: method, params: params, staging: Self.isStagingInstance) else {
+            write(["id": id, "ok": false, "error": "caller_not_trusted",
+                   "message": "這個方法只接受 TATWO OS 裡的 AI 引擎，或經 SSH 轉進來的已配對設備"], to: handle)
+            return
+        }
+        // W178：引擎與背景指令只能以自己那條對話的身分呼叫（連線當下就綁定，不看之後的程序家族）。
+        guard Self.callerThreadMatches(bound: caller.boundThread, params: params) else {
+            write(["id": id, "ok": false, "error": "caller_thread_mismatch"], to: handle)
+            return
+        }
+        let context = RequestContext(
+            boundThread: caller.boundThread,
+            approvalDeadline: acceptedAt + Self.approvalWindow,
+            clientAlive: { ComputerUseConnection.isAlive(handle.fileDescriptor) })
         if method == "computer_stop" {
             // Revocation must not compete with capture/action slots. Caller and
             // current scope still pass through the same native validation.
@@ -251,10 +410,28 @@ final class OSAgentBridge: @unchecked Sendable {
                 ComputerUseConnection.isAlive(handle.fileDescriptor)
             }
             do {
-                let result = try perform(method: method, params: params, computerConnection: connected)
+                let result = try perform(method: method, params: params, computerConnection: connected, context: context)
                 write(["id": id, "ok": true, "result": result], to: handle)
             } catch {
                 write(["id": id, "ok": false, "error": (error as? LocalizedError)?.errorDescription ?? String(describing: error)], to: handle)
+            }
+            return
+        }
+        if Self.approvalMethods.contains(method) {
+            // 可能要等使用者在 Island 點頭（最多 40 秒），不能佔住一次只處理一個請求的佇列。
+            guard backgroundApprovalSlots.wait(timeout: .now()) == .success else {
+                write(["id": id, "ok": false, "error": "background_approval_busy"], to: handle)
+                return
+            }
+            releaseOnReturn = false
+            backgroundApprovalQueue.async { [self, handle] in
+                defer { backgroundApprovalSlots.signal(); release() }
+                do {
+                    let result = try perform(method: method, params: params, context: context)
+                    write(["id": id, "ok": true, "result": result], to: handle)
+                } catch {
+                    write(["id": id, "ok": false, "error": String(describing: error)], to: handle)
+                }
             }
             return
         }
@@ -265,13 +442,14 @@ final class OSAgentBridge: @unchecked Sendable {
                 write(["id": id, "ok": false, "error": "computer_busy"], to: handle)
                 return
             }
+            releaseOnReturn = false
             computerQueue.async { [self, handle] in
-                defer { computerSlots.signal() }
+                defer { computerSlots.signal(); release() }
                 let connected: @Sendable () -> Bool = {
                     ComputerUseConnection.isAlive(handle.fileDescriptor)
                 }
                 do {
-                    let result = try perform(method: method, params: params, computerConnection: connected)
+                    let result = try perform(method: method, params: params, computerConnection: connected, context: context)
                     write(["id": id, "ok": true, "result": result], to: handle)
                 } catch {
                     write(["id": id, "ok": false, "error": (error as? LocalizedError)?.errorDescription ?? String(describing: error)], to: handle)
@@ -281,7 +459,7 @@ final class OSAgentBridge: @unchecked Sendable {
         }
         let response: [String: Any]
         do {
-            response = ["id": id, "ok": true, "result": try perform(method: method, params: params)]
+            response = ["id": id, "ok": true, "result": try perform(method: method, params: params, context: context)]
         } catch {
             response = ["id": id, "ok": false, "error": String(describing: error)]
         }
@@ -299,29 +477,176 @@ final class OSAgentBridge: @unchecked Sendable {
 
     private enum BridgeError: Error, CustomStringConvertible {
         case invalidParams, noParentThread, remoteAccessDisabled, unsupportedMethod
+        case backgroundCommandReadOnly, backgroundCommandDeclined, backgroundCommandNeedsApproval
+        case callerThreadMismatch, cliSessionNotOwned
+        case backgroundCommandApprovalExpired, backgroundCommandCallerGone
+        case commandTextRejected(String)
         var description: String {
             switch self {
             case .invalidParams: "invalid_params"
             case .noParentThread: "no_parent_thread_selected"
             case .remoteAccessDisabled: "remote_access_disabled_no_paired_devices"
             case .unsupportedMethod: "unsupported_method"
+            case .backgroundCommandReadOnly: "background_command_not_allowed_read_only"
+            case .backgroundCommandDeclined: "background_command_declined_by_user"
+            case .backgroundCommandNeedsApproval: "background_command_needs_approval"
+            case .callerThreadMismatch: "caller_thread_mismatch"
+            case .cliSessionNotOwned: "cli_session_not_owned_by_caller"
+            case .backgroundCommandApprovalExpired: "background_command_approval_expired"
+            case .backgroundCommandCallerGone: "background_command_caller_disconnected"
+            case .commandTextRejected(let reason): reason
             }
         }
     }
 
+    /// W178：背景指令不受引擎沙盒限制，所以照對話的權限決定：完整存取權直接跑、唯讀副審一律拒絕、其他每一次都先問使用者。
+    enum BackgroundCommandGate: Equatable {
+        case run, ask, deny
+
+        static func resolve(user: TatwoPermissionPreset?, bot: TatwoPermissionPreset?, readOnly: Bool) -> Self {
+            guard !readOnly else { return .deny }
+            let effective = bot == .configFile ? user : (bot ?? user)
+            return effective == .fullAccess ? .run : .ask
+        }
+    }
+
+    /// 要問使用者時怎麼問。正式 App 走 Island（沒有 Island 時是對話視窗上的確認框）；只在行程內可換（測試用），沒有環境變數開關。
+    /// 40 秒內沒按就當拒絕——比 OS MCP 的 45 秒逾時短，引擎一定拿得到明確結果，不會「晚按允許卻已回報失敗」。
+    var backgroundCommandApprover: @Sendable (_ title: String, _ detail: String, _ timeout: TimeInterval) async -> Bool = {
+        title, detail, timeout in
+        await IslandNotice.shared.ask(title: title, detail: detail, allowLabel: "允許執行", timeout: timeout,
+                                      fullTextRequired: true) == .allow
+    }
+
+    /// 要給使用者核准的指令文字上限：再長就看不完，請 AI 縮短或寫成腳本檔。
+    static let approvalTextLimit = 2000
+
+    /// 指令文字能不能拿去給人核准／送進終端機：不能含看不見或會改變顯示順序的字元（使用者看到的必須就是要執行的）；
+    /// 單行（終端機分頁）連換行、Tab、ESC 這些控制字元都不行——貼上時就會被當成按鍵執行。
+    static func approvalTextProblem(_ text: String, singleLine: Bool) -> String? {
+        guard text.unicodeScalars.count <= approvalTextLimit else { return "command_too_long_for_approval" }
+        for scalar in text.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .control:
+                if !singleLine && (scalar == "\n" || scalar == "\t") { continue }
+                return singleLine ? "cli_send_single_line_without_control_characters" : "command_has_control_characters"
+            case .format, .lineSeparator, .paragraphSeparator:
+                return "command_has_invisible_characters"
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// 從接到連線起算的核准期限；比 OS MCP 的 45 秒逾時短，排隊的時間也算在內。
+    static let approvalWindow: TimeInterval = 40
+
+    /// 一次請求的呼叫者資訊：綁定的對話、核准期限、呼叫端是否還連著。
+    struct RequestContext {
+        var boundThread: UUID?
+        var approvalDeadline: TimeInterval?
+        var clientAlive: (@Sendable () -> Bool)?
+    }
+
+    /// 綁定對話的呼叫者若自帶 callerThreadID（或舊別名 _threadID），必須跟綁定的一樣。
+    static func callerThreadMatches(bound: UUID?, params: [String: Any]) -> Bool {
+        guard let bound else { return true }
+        for key in ["callerThreadID", "_threadID"] {
+            guard let supplied = params[key] else { continue }
+            guard (supplied as? String).flatMap(UUID.init(uuidString:)) == bound else { return false }
+        }
+        return true
+    }
+
+    /// 可能要等使用者點頭、不在序列佇列上處理的方法（都是 App 代為執行指令的入口）。
+    static let approvalMethods: Set<String> = ["run_background", "cli_open", "cli_send"]
+
+    /// 照這條對話的權限決定能不能代它執行指令：完整存取權直接過、唯讀副審拒絕、其他每次問使用者。
+    private func commandGate(owner: UUID?) -> BackgroundCommandGate? {
+        onMain { [weak self] in
+            guard let model = self?.model, let live = model.live, let owner,
+                  let thread = live.threadRecord(owner) else { return nil }
+            return BackgroundCommandGate.resolve(user: model.permissionPreset, bot: thread.botPermissionPreset,
+                                                 readOnly: thread.roomReadOnly == true)
+        }
+    }
+
+    /// 真正執行前的最後確認：沒過期、呼叫端還連著。
+    private func ensureStillWanted(_ context: RequestContext) throws {
+        if let deadline = context.approvalDeadline, ProcessInfo.processInfo.systemUptime >= deadline {
+            throw BridgeError.backgroundCommandApprovalExpired
+        }
+        guard context.clientAlive?() ?? true else { throw BridgeError.backgroundCommandCallerGone }
+    }
+
+    /// 真正執行前（開分頁、按 Enter、開背景程序）最後一次：沒過期、呼叫端還連著、對話還在且不是唯讀；
+    /// 原本完整存取權不用問、等待期間被改成要問的，這次不執行（請它重新要求，才會問使用者）。
+    private func ensureExecutable(owner: UUID?, approvedUnder: BackgroundCommandGate, context: RequestContext) throws {
+        try ensureStillWanted(context)
+        guard let current = commandGate(owner: owner), current != .deny else { throw BridgeError.backgroundCommandReadOnly }
+        if approvedUnder == .run && current != .run { throw BridgeError.backgroundCommandNeedsApproval }
+        // 讀權限要等主執行緒；等完再看一次期限與連線。
+        try ensureStillWanted(context)
+    }
+
+    /// 回傳這次是在哪種權限下放行的（完整存取權直接過＝.run；使用者點了允許＝.ask）。
+    @discardableResult
+    /// `shown`：要給人看的各段文字（指令、位置），逐段檢查；沒給就檢查整個 detail。
+    private func requireCommandApproval(owner: UUID?, title: String, detail: String,
+                                        shown: [(text: String, singleLine: Bool)]? = nil,
+                                        context: RequestContext) throws -> BackgroundCommandGate {
+        guard let gate = commandGate(owner: owner) else { throw BridgeError.noParentThread }
+        switch gate {
+        case .run:
+            try ensureStillWanted(context)
+            return .run
+        case .deny:
+            throw BridgeError.backgroundCommandReadOnly
+        case .ask:
+            // 使用者看到的必須就是要執行的：太長或含看不見的字元就不問，直接退回給 AI。
+            for part in shown ?? [(detail, false)] {
+                if let problem = Self.approvalTextProblem(part.text, singleLine: part.singleLine) {
+                    throw BridgeError.commandTextRejected(problem)
+                }
+            }
+            // 主執行緒不能卡著等人點（Island 的按鈕也在主執行緒）；os.sock 的呼叫都在背景佇列，只有自測會從主執行緒來。
+            guard !Thread.isMainThread else { throw BridgeError.backgroundCommandNeedsApproval }
+            let deadline = context.approvalDeadline ?? (ProcessInfo.processInfo.systemUptime + Self.approvalWindow)
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining >= 2 else { throw BridgeError.backgroundCommandApprovalExpired }
+            let approver = backgroundCommandApprover
+            guard try awaitBot({ await approver(title, detail, remaining) }) else { throw BridgeError.backgroundCommandDeclined }
+            // 點了允許之後再確認一次：沒過期、呼叫端還連著、對話還在而且權限沒在等待期間被改成唯讀。
+            guard ProcessInfo.processInfo.systemUptime < deadline else { throw BridgeError.backgroundCommandApprovalExpired }
+            guard context.clientAlive?() ?? true else { throw BridgeError.backgroundCommandCallerGone }
+            guard let latest = commandGate(owner: owner), latest != .deny else { throw BridgeError.backgroundCommandReadOnly }
+            return .ask
+        }
+    }
+    private let backgroundApprovalQueue = DispatchQueue(
+        label: "ai.tatwo.tatwo2.os-agent.background-approval", qos: .userInitiated, attributes: .concurrent)
+    private let backgroundApprovalSlots = DispatchSemaphore(value: 4)
+
     private static let ownedMethods: Set<String> = [
         "whoami", "run_background", "background_status", "stop_background", "dispatch_rooms",
-        "list_rooms", "stop_room", "stop_all_rooms", "merge_reports", "reclaim_room", "cli_open", "os_binding_status"
+        "list_rooms", "stop_room", "stop_all_rooms", "merge_reports", "reclaim_room", "cli_open", "os_binding_status",
+        "cli_send", "cli_tail", "cli_close",
     ]
 
     private func perform(method: String, params: [String: Any],
-                         computerConnection: (@Sendable () -> Bool)? = nil) throws -> [String: Any] {
+                         computerConnection: (@Sendable () -> Bool)? = nil,
+                         context: RequestContext = RequestContext()) throws -> [String: Any] {
         var resolved = params
+        guard Self.callerThreadMatches(bound: context.boundThread, params: params) else { throw BridgeError.callerThreadMismatch }
         if Self.ownedMethods.contains(method) {
             let owner: UUID
             if let supplied = params["callerThreadID"] {
                 guard let raw = supplied as? String, let id = UUID(uuidString: raw) else { throw BridgeError.invalidParams }
                 owner = id
+            } else if let bound = context.boundThread {
+                // W178：引擎沒帶就用它綁定的對話，不退回「目前選中的對話」。
+                owner = bound
             } else {
                 guard let selected = onMain({ [weak self] in self?.model?.selectedThreadID }) else { throw BridgeError.noParentThread }
                 owner = selected
@@ -331,15 +656,16 @@ final class OSAgentBridge: @unchecked Sendable {
                 guard onMain({ [weak self] in self?.model?.live?.threadRecord(owner) != nil }) else { throw BridgeError.invalidParams }
             }
             resolved["callerThreadID"] = owner.uuidString
-            var result = try performResolved(method: method, params: resolved)
+            var result = try performResolved(method: method, params: resolved, context: context)
             result["ownerSource"] = params["callerThreadID"] == nil ? "selected" : "caller"
             return result
         }
-        return try performResolved(method: method, params: params, computerConnection: computerConnection)
+        return try performResolved(method: method, params: params, computerConnection: computerConnection, context: context)
     }
 
     private func performResolved(method: String, params: [String: Any],
-                                 computerConnection: (@Sendable () -> Bool)? = nil) throws -> [String: Any] {
+                                 computerConnection: (@Sendable () -> Bool)? = nil,
+                                 context: RequestContext = RequestContext()) throws -> [String: Any] {
         let owner = (params["callerThreadID"] as? String).flatMap(UUID.init(uuidString:))
         if Self.remoteMethods.contains(method) {
             let allowed = onMain { [weak self] in
@@ -461,6 +787,7 @@ final class OSAgentBridge: @unchecked Sendable {
                 ]]
             }
             let callerThread = ((params["callerThreadID"] ?? params["_threadID"]) as? String).flatMap(UUID.init(uuidString:))
+                ?? context.boundThread
             let boundID: String? = callerThread.flatMap { thread in
                 onMain { [weak self] in self?.model?.botIDForBridge(threadID: thread) }
                     ?? library.snapshot.sessions.first(where: { $0.value.contains(where: { $0.threadID == thread.uuidString }) })?.key
@@ -566,8 +893,13 @@ final class OSAgentBridge: @unchecked Sendable {
             var isDirectory: ObjCBool = false
             guard let cwd = params["cwd"] as? String, cwd.hasPrefix("/"),
                   FileManager.default.fileExists(atPath: cwd, isDirectory: &isDirectory), isDirectory.boolValue else { throw BridgeError.invalidParams }
+            // W178：終端機分頁跟背景指令一樣不受引擎沙盒限制，照同一個權限閘門。
+            let approved = try requireCommandApproval(owner: owner, title: "允許 AI 開一個終端機分頁？", detail: "位置：" + cwd,
+                                                      shown: [(cwd, true)], context: context)
             return try onMainThrowing { [weak self] in
-                guard let model = self?.model else { throw BridgeError.invalidParams }
+                guard let self, let model = self.model else { throw BridgeError.invalidParams }
+                // 等主執行緒的時間也算：開分頁前最後確認一次（期限、呼叫端、權限）。
+                try self.ensureExecutable(owner: owner, approvedUnder: approved, context: context)
                 guard let id = model.openCLITab(engine: .generic, workdir: cwd, callerThreadID: owner) else { throw BridgeError.invalidParams }
                 if let title = params["title"] as? String { model.renameCLITab(id, title: title) }
                 return ["id": id.uuidString, "readWith": "cli_tail"]
@@ -577,7 +909,17 @@ final class OSAgentBridge: @unchecked Sendable {
             let cliModel: ChatPageModel = try onMainThrowing { [weak self] in
                 guard let model = self?.model, model.cliSessionStore?.sessions.contains(where: { $0.id == id }) == true
                 else { throw BridgeError.invalidParams }
+                // W178：只能碰自己這條對話開的終端機分頁，不能往別條對話（或使用者自己）的分頁送指令。
+                guard let owner, model.cliTabOwner[id] == owner else { throw BridgeError.cliSessionNotOwned }
                 return model
+            }
+            var approved: BackgroundCommandGate = .run
+            if method == "cli_send" {
+                guard let text = params["text"] as? String else { throw BridgeError.invalidParams }
+                // 一次只送一行：換行、Tab、ESC 等控制字元貼上時就會被當按鍵執行，繞過最後的確認。
+                if let problem = Self.approvalTextProblem(text, singleLine: true) { throw BridgeError.commandTextRejected(problem) }
+                approved = try requireCommandApproval(owner: owner, title: "允許 AI 在終端機執行這一行？", detail: text,
+                                                      context: context)
             }
             return try awaitBot {
                 if method == "cli_tail" {
@@ -588,7 +930,13 @@ final class OSAgentBridge: @unchecked Sendable {
                 if method == "cli_send" {
                     guard let text = params["text"] as? String,
                           let session = await cliModel.cliTabPTYSession(for: id) else { throw BridgeError.invalidParams }
-                    try await session.sendLineAwaited(text)
+                    // 等 CLI 分頁準備好、tmux 排隊的時間也算：清空輸入列與貼上之前、按 Enter 之前各確認一次（期限、呼叫端、權限）；
+                    // Enter 在 tmux 佇列裡真正送出的那一刻再看一次期限與連線（不等主執行緒）。
+                    try await session.sendLineAwaited(text, confirm: {
+                        try self.ensureExecutable(owner: owner, approvedUnder: approved, context: context)
+                    }, enterPrecondition: {
+                        try self.ensureStillWanted(context)
+                    })
                     return Self.cliSendReceipt(id: raw)
                 }
                 try await cliModel.terminateCLIWorkbenchPane(id)
@@ -885,22 +1233,33 @@ final class OSAgentBridge: @unchecked Sendable {
             }
         case "run_background":
             guard params["requestKey"] == nil || params["requestKey"] is String, let command = params["cmd"] as? String else { throw BridgeError.invalidParams }
-            let context: (UUID, String)? = onMain { [weak self] in
+            let target: (UUID, String)? = onMain { [weak self] in
                 guard let model = self?.model, let live = model.live, let threadID = owner,
                       let thread = live.threadRecord(threadID) else { return nil }
                 let cwd = (params["cwd"] as? String) ?? thread.cwdOverride ?? live.projectRecord(thread.projectID)?.workdir ?? NSHomeDirectory()
                 return (threadID, cwd)
             }
-            guard let context else { throw BridgeError.noParentThread }
+            guard let target else { throw BridgeError.noParentThread }
             guard let manager = backgroundJobs else { throw BridgeError.unsupportedMethod }
+            if let repeated = manager.existing(threadID: target.0, requestKey: params["requestKey"] as? String) {
+                return manager.response(repeated)
+            }
+            let place = (target.1 as NSString).abbreviatingWithTildeInPath
+            let approved = try requireCommandApproval(owner: target.0, title: "允許 AI 在背景執行這個指令？",
+                                                      detail: command + "\n位置：" + place,
+                                                      shown: [(command, false), (place, true)], context: context)
             let title = (params["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return manager.response(try manager.run(command: command, cwd: context.1, title: title?.isEmpty == false ? title! : command, threadID: context.0, requestKey: params["requestKey"] as? String))
+            try ensureExecutable(owner: target.0, approvedUnder: approved, context: context)
+            // 排隊、建記錄檔的時間也算：manager 真正開程序前再看一次期限與連線（不等主執行緒，避免互等）。
+            return manager.response(try manager.run(command: command, cwd: target.1, title: title?.isEmpty == false ? title! : command,
+                                                    threadID: target.0, requestKey: params["requestKey"] as? String,
+                                                    beforeSpawn: { [context] in try self.ensureStillWanted(context) }))
         case "background_list":
-            let caller = try jobsCaller(params)
+            let caller = try jobsCaller(params, bound: context.boundThread)
             guard let manager = backgroundJobs else { throw BridgeError.unsupportedMethod }
             return ["jobs": manager.list(threadID: caller.id), "ownerSource": caller.source]
         case "artifacts_list":
-            let caller = try jobsCaller(params)
+            let caller = try jobsCaller(params, bound: context.boundThread)
             if let raw = params["turnID"], !(raw is String) { throw BridgeError.invalidParams }
             let turn = params["turnID"] as? String
             guard turn == nil || (turn!.utf8.count <= 1024 && !turn!.isEmpty) else { throw BridgeError.invalidParams }

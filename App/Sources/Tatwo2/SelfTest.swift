@@ -381,6 +381,7 @@ enum SelfTest {
         if ProcessInfo.processInfo.environment["TATWO2_PAIRCLIENT"] != nil { runPairClient(); return }
         if ProcessInfo.processInfo.environment["TATWO2_REMOTEPROBE"] != nil { runRemoteProbe(); return }
         if ProcessInfo.processInfo.environment["TATWO2_PAIRTEST"] == "1" { runPairTest(); return }
+        if ProcessInfo.processInfo.environment["TATWO2_SECURITYTEST"] == "1" { runSecurityTest(); return }
         guard ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "1" else { return }
         let store = T2ThreadStore()
         var t = T2ChatThread(); t.title = "selftest"; t.cwd = "/tmp/tatwo2-fixture/tatwo2"
@@ -2563,13 +2564,26 @@ extension SelfTest {
             process.arguments = ["node", probeURL.path]
             var childEnvironment = ProcessInfo.processInfo.environment
             childEnvironment["TATWO2_BROWSER_SOCKET"] = socketPath
+            // W178：探針等 App 把它登記成自己人之後才連線（本機 socket 在連線當下認人）。
+            let readyFile = NSTemporaryDirectory() + "tatwo2-browsertest-ready-" + UUID().uuidString
+            childEnvironment["TATWO2_PROBE_READY_FILE"] = readyFile
             process.environment = childEnvironment
             let output = Pipe()
             process.standardOutput = output
             process.standardError = output
             do {
                 try process.run()
+                // W178：本機 socket 只信登記過的程序；這支探針是自測自己開的。登記成功才建 ready 檔讓它連線。
+                if OSSocketCaller.registerHelper(process.processIdentifier) {
+                    if !FileManager.default.createFile(atPath: readyFile, contents: Data()) {
+                        print("BROWSERTEST FAIL probe_ready_file_unwritable")
+                    }
+                } else {
+                    print("BROWSERTEST FAIL probe_helper_registration")
+                }
                 process.waitUntilExit()
+                OSSocketCaller.unregisterHelper(process.processIdentifier)
+                try? FileManager.default.removeItem(atPath: readyFile)
                 let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 await MainActor.run {
                     print(text, terminator: text.hasSuffix("\n") ? "" : "\n")
@@ -3013,9 +3027,14 @@ extension SelfTest {
             if !passed { failed = true }
         }
 
+        // W178：背景指令非完整存取權要點頭；這裡模擬使用者允許，並在背景佇列呼叫（跟 os.sock 一樣）。
+        bridge.backgroundCommandApprover = { _, _, _ in true }
+        func runBackground(_ params: [String: Any]) async throws -> [String: Any] {
+            try await Task.detached { try bridge.callForSelfTest(method: "run_background", params: params) }.value
+        }
         Task { @MainActor in
             do {
-                let first = try bridge.callForSelfTest(method: "run_background", params: ["cmd": "sleep 2; echo done", "title": "短工作"])
+                let first = try await runBackground(["cmd": "sleep 2; echo done", "title": "短工作"])
                 guard let firstID = first["jobID"] as? String else { throw NSError(domain: "BGTEST", code: 1) }
                 let initial = try bridge.callForSelfTest(method: "background_status", params: ["jobID": firstID])
                 check("先 running", initial["state"] as? String == "running", "state=\(initial["state"] ?? "nil") pid=\(initial["pid"] ?? "nil")")
@@ -3031,7 +3050,7 @@ extension SelfTest {
                 let notified = live.transcript(for: threadID).contains { $0.role == .system && $0.text.contains("短工作") && $0.text.contains("exit=0") }
                 check("討論串完成通知", notified, "systemMessages=\(live.transcript(for: threadID).filter { $0.role == .system }.count)")
 
-                let long = try bridge.callForSelfTest(method: "run_background", params: ["cmd": "sleep 300", "title": "長工作"])
+                let long = try await runBackground(["cmd": "sleep 300", "title": "長工作"])
                 guard let longID = long["jobID"] as? String else { throw NSError(domain: "BGTEST", code: 2) }
                 let stopStart = Date()
                 var stopped = try bridge.callForSelfTest(method: "stop_background", params: ["jobID": longID])
@@ -4214,11 +4233,19 @@ extension SelfTest {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         let preservedLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRESERVEDPAIRTESTLINE keep-this-line"
         try? (preservedLine + "\n").write(to: authorizedKeys, atomically: true, encoding: .utf8)
+        // W178：主機用配對碼證明自己的主機金鑰；測試用合成公鑰（不是真的 sshd 金鑰）。
+        let hostKeyPub = base.appendingPathComponent("host-ssh/ssh_host_ed25519_key.pub")
+        let hostKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx pairtest-host"
+        try? FileManager.default.createDirectory(
+            at: hostKeyPub.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? (hostKeyLine + "\n").write(to: hostKeyPub, atomically: true, encoding: .utf8)
+        let hostKeyFingerprint = (try? DeviceRegistry.fingerprint(publicKey: hostKeyLine)) ?? "SHA256:missing"
         let hostEnvironment = [
             "TATWO_OS_ROOT": base.appendingPathComponent("host-entry").path,
             "TATWO2_LIVE_ROOT": hostRoot.path,
             "TATWO2_AUTHORIZED_KEYS": authorizedKeys.path,
             "TATWO2_PAIRING_HOST": "127.0.0.1",
+            "TATWO2_SSH_HOST_KEY_PUB": hostKeyPub.path,
         ]
         let clientEnvironment = [
             "TATWO_OS_ROOT": base.appendingPathComponent("client-entry").path,
@@ -4236,14 +4263,14 @@ extension SelfTest {
             registry: clientRegistry,
             privateKeyURL: clientKey,
             environment: clientEnvironment,
-            sshVerifier: { _ in true },
-            hostFingerprintResolver: { _ in "SHA256:synthetic-host" })
+            sshVerifier: { _, _, _ in true },
+            hostKeyResolver: { _ in hostKeyLine })
         let generatedKeyClient = DevicePairingClient(
             registry: clientRegistry,
             privateKeyURL: generatedClientKey,
             environment: generatedKeyEnvironment,
-            sshVerifier: { _ in true },
-            hostFingerprintResolver: { _ in "SHA256:synthetic-host" })
+            sshVerifier: { _, _, _ in true },
+            hostKeyResolver: { _ in hostKeyLine })
         var failed = false
         func check(_ item: String, _ passed: Bool, _ evidence: String) {
             print("PAIRTEST \(passed ? "PASS" : "FAIL") \(item) — \(evidence)")
@@ -4328,8 +4355,171 @@ extension SelfTest {
         } catch {
             check("執行", false, "error=\(oneLine(error))")
         }
+
+        // W178：配對碼不上網路、中間人換不掉金鑰、對方送來的登入名與主機金鑰都要驗。
+        let attackerKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUFUVEFDS0VSLUtFWS1GSVhUVVJFLTAx attacker"
+        let otherHostKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULU9USEVSLUhPU1QtS0VZLUZJWFRVUkUx other-host"
+        func v2Request(code: String, publicKey: String, sendPublicKey: String? = nil) -> [String: Any] {
+            let nonce = DevicePairingAuth.makeNonce()
+            let key = DevicePairingAuth.key(code: code, nonce: nonce)!
+            let mac = DevicePairingAuth.mac(key: key, label: "request", fields: DevicePairingAuth.requestFields(
+                nonce: nonce, publicKey: publicKey, name: "Pairtest Attacker", user: "fixture", deviceID: nil,
+                clientKeyFingerprint: nil, hostKeyFingerprint: nil))
+            return ["v": DevicePairingAuth.protocolVersion, "nonce": nonce, "mac": mac,
+                    "publicKey": sendPublicKey ?? publicKey, "name": "Pairtest Attacker", "user": "fixture"]
+        }
+        let mitmHost = DevicePairingHost(registry: hostRegistry, environment: hostEnvironment)
+        let authorizedBefore = (try? String(contentsOf: authorizedKeys, encoding: .utf8)) ?? ""
+        do {
+            let window = try mitmHost.startPairingWindow()
+            let port = Int(window.listenAddress.split(separator: ":").last ?? "") ?? 0
+            let replacement = window.code.first == "A" ? "B" : "A"
+            let guessed = rawPairExchange(port: port, object: v2Request(
+                code: replacement + window.code.dropFirst(), publicKey: attackerKey))
+            check("不知道配對碼就換不進金鑰", guessed?["ok"] as? Bool == false
+                && guessed?["reason"] as? String == "pairing_code_mismatch", "reply=\(guessed ?? [:])")
+            let swapped = rawPairExchange(port: port, object: v2Request(
+                code: window.code, publicKey: preservedLine, sendPublicKey: attackerKey))
+            check("簽過之後換掉公鑰會被拒", swapped?["ok"] as? Bool == false
+                && swapped?["reason"] as? String == "pairing_code_mismatch", "reply=\(swapped ?? [:])")
+            let legacy = rawPairExchange(port: port, object: [
+                "code": window.code, "publicKey": attackerKey, "name": "Legacy Client", "user": "fixture"])
+            check("舊版明文配對碼被拒", legacy?["ok"] as? Bool == false
+                && legacy?["reason"] as? String == "pairing_protocol_outdated", "reply=\(legacy ?? [:])")
+            let afterLegacy = rawPairExchange(port: port, object: v2Request(code: window.code, publicKey: attackerKey))
+            check("明文碼外洩後配對窗立刻關閉", afterLegacy == nil
+                || afterLegacy?["reason"] as? String == "pairing_window_closed", "reply=\(afterLegacy ?? [:])")
+            let authorizedAfter = (try? String(contentsOf: authorizedKeys, encoding: .utf8)) ?? ""
+            check("攻擊請求沒有新增任何授權", authorizedAfter == authorizedBefore
+                && !authorizedAfter.contains("AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUFUVEFDS0VSLUtFWS1GSVhUVVJFLTAx"),
+                "unchanged=\(authorizedAfter == authorizedBefore)")
+            mitmHost.cancelPairingWindow()
+        } catch {
+            check("中間人測試執行", false, "error=\(oneLine(error))")
+        }
+
+        func fakeHostReply(_ request: [String: Any], code: String, hostUser: String, hostKey: String,
+                           signed: Bool) -> [String: Any] {
+            let nonce = request["nonce"] as? String ?? ""
+            var reply: [String: Any] = [
+                "ok": true, "deviceID": UUID().uuidString.lowercased(), "hostName": "Pairtest Fake Host",
+                "hostUser": hostUser, "hostDeviceID": UUID().uuidString.lowercased(), "hostKeyFingerprint": hostKey]
+            if signed, let key = DevicePairingAuth.key(code: code, nonce: nonce) {
+                reply["mac"] = DevicePairingAuth.mac(key: key, label: "response", fields: DevicePairingAuth.responseFields(
+                    nonce: nonce, ok: true, deviceID: reply["deviceID"] as? String, hostName: "Pairtest Fake Host",
+                    hostUser: hostUser, hostDeviceID: reply["hostDeviceID"] as? String, hostKeyFingerprint: hostKey,
+                    clientKeyFingerprint: nil, reason: nil))
+            }
+            return reply
+        }
+        let fakeCode = "PAIR78"
+        let otherHostFingerprint = (try? DeviceRegistry.fingerprint(publicKey: otherHostKey)) ?? "SHA256:other"
+        let fakeCases: [(label: String, hostUser: String, hostKey: String, signed: Bool, expected: String)] = [
+            ("主機回覆沒有配對碼驗證就不採信", "fixture", hostKeyFingerprint, false, "pairing_response_unauthenticated"),
+            ("對方登入名夾帶 ssh 選項被擋", "-oProxyCommand=touch pairtest-pwned", hostKeyFingerprint, true,
+             "pairing_peer_account_invalid"),
+            ("掃到的主機金鑰跟對方證明的不同就停", "fixture", otherHostFingerprint, true, "ssh_host_key_mismatch"),
+        ]
+        for fake in fakeCases {
+            var sshCalls = 0
+            let fakeClient = DevicePairingClient(
+                registry: DeviceRegistry(environment: generatedKeyEnvironment),
+                privateKeyURL: generatedClientKey,
+                environment: generatedKeyEnvironment,
+                sshVerifier: { _, _, _ in sshCalls += 1; return true },
+                hostKeyResolver: { _ in hostKeyLine })
+            guard let port = fakePairHost(respond: { request in
+                fakeHostReply(request, code: fakeCode, hostUser: fake.hostUser, hostKey: fake.hostKey, signed: fake.signed)
+            }) else {
+                check(fake.label, false, "fake host unavailable")
+                continue
+            }
+            do {
+                _ = try fakeClient.pair(host: "127.0.0.1", port: port, code: fakeCode, name: "Pairtest Client")
+                check(fake.label, false, "fake host unexpectedly accepted")
+            } catch {
+                check(fake.label, oneLine(error).hasPrefix(fake.expected) && sshCalls == 0,
+                      "error=\(oneLine(error)) sshCalls=\(sshCalls)")
+            }
+        }
+        check("配對碼金鑰導出約需 0.05～2 秒", {
+            let started = Date()
+            _ = DevicePairingAuth.key(code: "ABC123", nonce: DevicePairingAuth.makeNonce())
+            let elapsed = Date().timeIntervalSince(started)
+            return elapsed > 0.05 && elapsed < 2
+        }(), "iterations=\(DevicePairingAuth.iterations)")
+
         print(failed ? "PAIRTEST FAILED" : "PAIRTEST ALL PASS")
         exit(failed ? 1 : 0)
+    }
+
+    /// 送一行 JSON 到本機配對埠、讀回一行（測試用，只連 127.0.0.1）。
+    private static func rawPairExchange(port: Int, object: [String: Any]) -> [String: Any]? {
+        guard port > 0, var line = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        line.append(0x0A)
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var timeout = timeval(tv_sec: 10, tv_usec: 0)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard connected == 0 else { return nil }
+        _ = line.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        return readPairLine(fd)
+    }
+
+    /// 假主機：只接一個連線，照 `respond` 回一行後關掉。回傳監聽埠。
+    private static func fakePairHost(respond: @escaping ([String: Any]) -> [String: Any]) -> Int? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(fd, 1) == 0 else { close(fd); return nil }
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) }
+        }
+        let port = Int(UInt16(bigEndian: address.sin_port))
+        Thread.detachNewThread {
+            defer { close(fd) }
+            let client = accept(fd, nil, nil)
+            guard client >= 0 else { return }
+            defer { close(client) }
+            let request = readPairLine(client) ?? [:]
+            guard var reply = try? JSONSerialization.data(withJSONObject: respond(request)) else { return }
+            reply.append(0x0A)
+            _ = reply.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+        }
+        return port
+    }
+
+    private static func readPairLine(_ fd: Int32) -> [String: Any]? {
+        var received = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while !received.contains(0x0A), received.count < 65_536 {
+            let count = read(fd, &buffer, buffer.count)
+            if count <= 0 { break }
+            received.append(contentsOf: buffer[0..<count])
+        }
+        let body = received.split(separator: 0x0A).first.map { Data($0) } ?? received
+        return (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
     }
 }
 
@@ -5071,6 +5261,9 @@ extension SelfTest {
                 process.environment = environment
                 let input = Pipe(); let output = Pipe(); process.standardInput = input; process.standardOutput = output; process.standardError = output
                 try process.run()
+                // W178：本機 socket 只信登記過的程序；這支 MCP 是自測自己開的，送出請求前先登記。
+                try check("stdio_helper_registered", OSSocketCaller.registerHelper(process.processIdentifier))
+                defer { OSSocketCaller.unregisterHelper(process.processIdentifier) }
                 let requests: [[String: Any]] = [
                     ["jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": ["name": "bot_list", "arguments": [:]]],
                     ["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": ["name": "bot_state_update", "arguments": ["currentTask": "stdio-task"]]],
@@ -5437,5 +5630,331 @@ extension SelfTest {
         withoutCapacity.removeValue(forKey: "capacity")
         let legacy = try DeviceStatusSnapshot.decode(withoutCapacity)
         try check("device-status-without-capacity-still-decodes", legacy.capacity.map { _ in false } ?? true)
+    }
+}
+
+extension SelfTest {
+    /// TATWO2_SECURITYTEST=1（W178）：配對字串白名單、ChatGPT 外部網址、os.sock 呼叫者判斷與限時讀取、背景指令閘門；
+    /// 最後在 TATWO2_OS_SOCKET 開真的 listener，等外部測試行程（不是這個 App 開的）連進來驗「不是自己人就擋」，
+    /// 看到 TATWO2_SECURITYTEST_DONE 檔案才結束。
+    @MainActor static func runSecurityTest() {
+        let env = ProcessInfo.processInfo.environment
+        var failed = false
+        func check(_ item: String, _ passed: Bool, _ evidence: String = "") {
+            print("SECURITYTEST \(passed ? "PASS" : "FAIL") \(item)\(evidence.isEmpty ? "" : " — " + evidence)")
+            if !passed { failed = true }
+        }
+        for user in ["sampleuser", "fixture.user-1", "_svc"] { check("登入名允許 \(user)", DevicePairingAuth.isSafeSSHUser(user)) }
+        for user in ["-oProxyCommand=touch x", "a b", "user@host", "", "使用者", "a;b", String(repeating: "a", count: 65)] {
+            check("登入名擋下 \(user.prefix(24))", !DevicePairingAuth.isSafeSSHUser(user))
+        }
+        for host in ["192.0.2.10", "sample.local", "fe80::1%en0", "device-1", "example.com"] {
+            check("主機名允許 \(host)", DevicePairingAuth.isSafeSSHHost(host))
+        }
+        for host in ["-oProxyCommand=x", "host name", "a;b", "a$(b)", "", "host/x"] {
+            check("主機名擋下 \(host)", !DevicePairingAuth.isSafeSSHHost(host))
+        }
+
+        let blockedURLs = ["http://8.8.8.8/a.png", "https://user:pw@8.8.8.8/", "https://8.8.8.8:8443/",
+                           "https://127.0.0.1/", "https://10.1.2.3/", "https://172.16.0.1/", "https://192.168.1.1/",
+                           "https://169.254.169.254/latest", "https://100.64.0.1/", "https://0.0.0.0/", "https://224.0.0.1/",
+                           "https://[::1]/", "https://[fe80::1]/", "https://[fd00::1]/", "https://[::ffff:192.168.1.1]/",
+                           "https://[64:ff9b::a00:1]/", "https://printer.local/", "https://localhost/", "file:///etc/hosts",
+                           "https://2130706433/", "https://0x7f000001/", "https://127.1/", "https://0177.1/",
+                           "https://[fec0::1]/", "https://[2001:db8::1]/", "https://[2002:c0a8:101::1]/",
+                           "https://[2001:0:4136:e378::1]/", "https://[3fff::1]/", "https://[100::1]/"]
+        let allowedURLs = ["https://8.8.8.8/a.png", "https://[2606:4700:4700::1111]/", "https://1.1.1.1:443/x"]
+        let semaphore = DispatchSemaphore(value: 0)
+        var urlResults: [(String, Bool)] = []
+        Task.detached {
+            for raw in blockedURLs + allowedURLs {
+                let allowed = await URL(string: raw).asyncMap { await TapRemoteFetch.isAllowed($0) } ?? false
+                urlResults.append((raw, allowed))
+            }
+            semaphore.signal()
+        }
+        while semaphore.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        for (raw, allowed) in urlResults {
+            check((allowedURLs.contains(raw) ? "外部網址允許 " : "外部網址擋下 ") + raw, allowed == allowedURLs.contains(raw))
+        }
+
+        check("呼叫者：App 自己", OSSocketCaller.classify(pid: getpid(), roots: [:]) == .app)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        if (try? child.run()) != nil {
+            let pid = child.processIdentifier
+            let engineThread = UUID()
+            check("呼叫者：App 開的其他程式（沒登記）不算自己人",
+                  !OSSocketCaller.classify(pid: pid, roots: [:]).isTrusted, OSSocketCaller.classify(pid: pid, roots: [:]).label)
+            let start = OSSocketCaller.processStartTime(pid) ?? 0
+            check("呼叫者：登記過的引擎綁定那條對話", OSSocketCaller.classify(
+                pid: pid, roots: [pid: .init(root: .engine(engineThread), startTime: start)]) == .engine(engineThread))
+            check("呼叫者：登記過的背景工作綁定那條對話", OSSocketCaller.classify(
+                pid: pid, roots: [pid: .init(root: .job(engineThread), startTime: start)]).boundThread == engineThread)
+            check("呼叫者：pid 相同但啟動時間不同（pid 被重用）不算", !OSSocketCaller.classify(
+                pid: pid, roots: [pid: .init(root: .engine(engineThread), startTime: start + 1)]).isTrusted)
+            OSSocketCaller.registerHelper(pid)
+            check("呼叫者：行程內登記的探針", OSSocketCaller.classify(pid: pid, roots: OSSocketCaller.currentRoots()) == .helper)
+            OSSocketCaller.unregisterHelper(pid)
+            child.terminate()
+        } else {
+            check("呼叫者：App 開出來的程式", false, "spawn failed")
+        }
+        check("呼叫者：launchd 不是自己人", !OSSocketCaller.classify(pid: 1, roots: [:]).isTrusted)
+        let boundThread = UUID()
+        check("綁定對話：沒帶 callerThreadID 可以", OSAgentBridge.callerThreadMatches(bound: boundThread, params: [:]))
+        check("綁定對話：帶自己的可以", OSAgentBridge.callerThreadMatches(
+            bound: boundThread, params: ["callerThreadID": boundThread.uuidString]))
+        check("綁定對話：自稱別條對話被擋", !OSAgentBridge.callerThreadMatches(
+            bound: boundThread, params: ["callerThreadID": UUID().uuidString]))
+        check("綁定對話：亂填被擋", !OSAgentBridge.callerThreadMatches(bound: boundThread, params: ["callerThreadID": 42]))
+        check("綁定對話：舊別名 _threadID 自稱別條也擋", !OSAgentBridge.callerThreadMatches(
+            bound: boundThread, params: ["_threadID": UUID().uuidString]))
+
+        for method in ["device_status", "user_remember", "dispatch_fetch", "memory_decide"] {
+            check("外部可用 \(method)", OSAgentBridge.allowsUntrustedCaller(method: method, params: [:]))
+        }
+        for method in ["list_rooms", "send_message", "transcript", "get_document", "run_background", "computer_observe",
+                       "cli_open", "cli_send", "whoami", "ui_probe", "github_import_from_gh", "job_submit",
+                       "app_terminate_for_update"] {
+            check("外部擋下 \(method)", !OSAgentBridge.allowsUntrustedCaller(method: method, params: [:]))
+        }
+        check("staging 隔離實例：唯讀空狀態方法對外可讀", OSAgentBridge.allowsUntrustedCaller(
+            method: "get_document", params: [:], staging: true))
+        check("staging 隔離實例：電腦操作與指令照樣擋", ["computer_observe", "run_background", "cli_send", "send_message"]
+            .allSatisfy { !OSAgentBridge.allowsUntrustedCaller(method: $0, params: [:], staging: true) })
+        check("SSH 轉進來：遙控用的方法可用", ["get_document", "send_message", "transcript", "select_thread"]
+            .allSatisfy { OSAgentBridge.allows(caller: .ssh, method: $0, params: [:], staging: false) })
+        check("SSH 轉進來：電腦操作、終端機、背景指令、結束 App 一律不給",
+              ["computer_start", "computer_observe", "cli_open", "cli_send", "run_background", "ui_probe",
+               "app_terminate_for_update", "github_import_from_gh"]
+                .allSatisfy { !OSAgentBridge.allows(caller: .ssh, method: $0, params: [:], staging: false) })
+        check("root 以外的 sshd 不算 SSH 轉進來", OSSocketCaller.classify(pid: getpid(), roots: [:]) != .ssh)
+        check("已簽章的 job_submit 交給驗章", OSAgentBridge.allowsUntrustedCaller(
+            method: "job_submit", params: ["signature": "sig", "body": "{}"]))
+
+        typealias Gate = OSAgentBridge.BackgroundCommandGate
+        let gates: [(TatwoPermissionPreset?, TatwoPermissionPreset?, Bool, Gate)] = [
+            (.fullAccess, nil, false, .run), (.approveForMe, nil, false, .ask), (.askFirst, nil, false, .ask),
+            (.fullAccess, nil, true, .deny), (.approveForMe, .fullAccess, false, .run), (.fullAccess, .askFirst, false, .ask),
+            (.fullAccess, .configFile, false, .run), (nil, nil, false, .ask),
+        ]
+        for (user, bot, readOnly, expected) in gates {
+            let got = Gate.resolve(user: user, bot: bot, readOnly: readOnly)
+            check("背景指令閘門 user=\(user?.rawValue ?? "nil") bot=\(bot?.rawValue ?? "nil") readOnly=\(readOnly)", got == expected, "\(got)")
+        }
+
+        // W178 第六輪：給人核准的指令必須完整、如實；終端機一次只送一行。
+        let problem = OSAgentBridge.approvalTextProblem
+        check("指令文字：一般指令可以", problem("ls -la ~/proj && echo 完成", false) == nil
+              && problem("printf 'a\tb'\necho ok", false) == nil)
+        check("指令文字：終端機一行可以", problem("git status", true) == nil)
+        check("指令文字：終端機不收換行（貼上就會執行）", problem("echo a\nrm -rf x", true) != nil && problem("a\rb", true) != nil)
+        check("指令文字：終端機不收 Tab、ESC、DEL", problem("ls\t", true) != nil && problem("a\u{1b}[2Jb", true) != nil
+              && problem("a\u{7f}", true) != nil)
+        check("指令文字：CR 與 ESC 在背景指令也擋", problem("a\rb", false) != nil && problem("a\u{1b}b", false) != nil)
+        check("指令文字：雙向排版與零寬字元擋下", problem("echo safe\u{202E}fr- mr", false) != nil
+              && problem("a\u{200B}b", false) != nil && problem("a\u{2028}b", false) != nil && problem("a\u{2066}b", true) != nil)
+        check("指令文字：超過上限擋下", problem(String(repeating: "a", count: OSAgentBridge.approvalTextLimit + 1), false) != nil
+              && problem(String(repeating: "a", count: OSAgentBridge.approvalTextLimit), false) == nil)
+        check("完整內容視窗：看不見的字元顯示出來", IslandNotice.visibleText("a\u{202E}b\u{1b}c\nd\te") == "a\\u{202E}b\\u{1B}c\nd\te",
+              IslandNotice.visibleText("a\u{202E}b\u{1b}c"))
+        check("Island 一行：短指令放得下", IslandNoticeLine.fits("git status · 位置：~/proj"))
+        check("Island 一行：長指令、多行、看不見字元一律改成查看", !IslandNoticeLine.fits(String(repeating: "x", count: 80))
+              && !IslandNoticeLine.fits("a\nb") && !IslandNoticeLine.fits("a\u{202E}b") && !IslandNoticeLine.fits(""))
+        func summaryLine(_ detail: String) -> String? {
+            IslandNotice.Request(id: UUID(), kind: .ask, title: "t", detail: detail, allowLabel: "a", cancelLabel: "c",
+                                 deadline: Date()).summaryLine
+        }
+        check("Island 一行：指令與位置接成一行", summaryLine("ls\n位置：~/p") == "ls · 位置：~/p", summaryLine("ls\n位置：~/p") ?? "nil")
+        check("Island 一行：指令本身有換行就沒有一行版（一定要查看）", summaryLine("ls\nrm -rf x\n位置：~/p") == nil
+              && summaryLine("ls\n\n位置：~/p") == nil)
+        final class FullViewProbe { var shown: [String] = []; var decision: IslandNotice.Decision? }
+        let probe = FullViewProbe()
+        let fullViewNotice = IslandNotice(fallback: { _, _, done in done(.cancel); return nil }, holdOpen: { _ in },
+                                          fullView: { request, done in probe.shown.append(request.detail); done(.allow); return nil })
+        fullViewNotice.hostAvailable = true
+        let longDetail = String(repeating: "echo long ", count: 20) + "\n位置：~/proj"
+        Task { @MainActor in
+            probe.decision = await fullViewNotice.ask(title: "t", detail: longDetail, allowLabel: "允許執行", timeout: 5,
+                                                      fullTextRequired: true)
+        }
+        let fullViewUntil = Date().addingTimeInterval(3)
+        while fullViewNotice.current == nil, Date() < fullViewUntil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        let shownRequest = fullViewNotice.current
+        fullViewNotice.showFullText(id: UUID())
+        check("查看：不是目前這則就不開", probe.shown.isEmpty)
+        if let shownRequest { fullViewNotice.showFullText(id: shownRequest.id) }
+        while probe.decision == nil, Date() < fullViewUntil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        check("查看：開的是完整內容，在那裡按允許才算允許", probe.shown == [longDetail] && probe.decision == .allow
+              && shownRequest?.fullTextRequired == true, "\(probe.shown.count) \(String(describing: probe.decision))")
+        final class DualProbe {
+            var fallbacks = 0; var holds: [Bool] = []
+            var complete: ((IslandNotice.Decision) -> Void)?; var decision: IslandNotice.Decision?
+        }
+        let dual = DualProbe()
+        let dualNotice = IslandNotice(fallback: { _, _, _ in dual.fallbacks += 1; return nil }, holdOpen: { dual.holds.append($0) },
+                                      fullView: { _, done in dual.complete = done; return {} })
+        dualNotice.hostAvailable = true
+        Task { @MainActor in
+            dual.decision = await dualNotice.ask(title: "t", detail: longDetail, allowLabel: "允許執行", timeout: 5,
+                                                 fullTextRequired: true)
+        }
+        let dualUntil = Date().addingTimeInterval(3)
+        while dualNotice.current == nil, Date() < dualUntil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        if let request = dualNotice.current { dualNotice.showFullText(id: request.id) }
+        dualNotice.hostAvailable = false
+        let noSecondWindow = dual.fallbacks == 0 && dual.decision == nil && dual.holds.last == false
+        dual.complete?(.cancel)
+        while dual.decision == nil, Date() < dualUntil { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        check("查看開著時 Island 斷線：不疊開備援、放掉展開鎖，仍在查看視窗決定", noSecondWindow && dual.decision == .cancel,
+              "fallbacks=\(dual.fallbacks) holds=\(dual.holds) \(String(describing: dual.decision))")
+
+        let sheet = IslandNotice.fullTextAlert(IslandNotice.Request(
+            id: UUID(), kind: .ask, title: "t", detail: "a\u{202E}b\n位置：~/p", allowLabel: "允許執行", cancelLabel: "取消",
+            deadline: Date()))
+        let sheetText = ((sheet.accessoryView as? NSScrollView)?.documentView as? NSTextView)?.string
+        check("查看視窗：允許鍵不接 Return、Esc＝取消、內容可捲動且看得到隱藏字元",
+              sheet.buttons.first?.keyEquivalent == "" && sheet.buttons.last?.keyEquivalent == "\u{1b}"
+              && sheetText == "a\\u{202E}b\n位置：~/p", sheetText ?? "nil")
+
+        // 同一分頁兩次送出同時進來不交錯；貼上後確認失敗就清掉、不執行（真的 tmux 3.6b；PATH 裡沒有就註記未跑）。
+        let tmuxPath = (env["PATH"] ?? "").split(separator: ":").map { String($0) + "/tmux" }.first { path in
+            guard FileManager.default.isExecutableFile(atPath: path) else { return false }
+            let probe = Process(), pipe = Pipe()
+            probe.executableURL = URL(fileURLWithPath: path); probe.arguments = ["-V"]; probe.standardOutput = pipe
+            guard (try? probe.run()) != nil else { return false }
+            probe.waitUntilExit()
+            return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines) == "tmux 3.6b"
+        }
+        if let tmuxPath {
+            let cliRoot = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("w178-cli-" + UUID().uuidString.prefix(8))
+            try? FileManager.default.createDirectory(at: cliRoot, withIntermediateDirectories: true)
+            let received = cliRoot.appendingPathComponent("lines.txt")
+            let runtime = CLITmuxRuntime(root: cliRoot, executable: tmuxPath)
+            let pane = UUID()
+            final class CLIProbe: @unchecked Sendable { var lines: [String] = []; var error: String?; var confirms = 0 }
+            let cli = CLIProbe()
+            let cliDone = DispatchSemaphore(value: 0)
+            Task.detached {
+                do {
+                    try await runtime.create(id: pane, launch: TatwoNativeTerminalLaunch(
+                        executable: "/bin/sh",
+                        arguments: ["-c", "while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$0\"; done", received.path],
+                        workingDirectory: cliRoot))
+                    try await Task.sleep(nanoseconds: 400_000_000)
+                    let slow: () throws -> Void = { usleep(40_000) }
+                    async let first: Void = runtime.sendLine("echo A", to: pane, confirm: slow)
+                    async let second: Void = runtime.sendLine("echo B", to: pane, confirm: slow)
+                    _ = try await (first, second)
+                    do {
+                        try await runtime.sendLine("echo C", to: pane, confirm: {
+                            cli.confirms += 1
+                            if cli.confirms == 2 { throw CancellationError() }
+                        })
+                    } catch {}
+                    try await runtime.sendLine("echo D", to: pane, confirm: {})
+                    try await Task.sleep(nanoseconds: 600_000_000)
+                    cli.lines = ((try? String(contentsOf: received, encoding: .utf8)) ?? "")
+                        .split(separator: "\n").map(String.init)
+                    try? await runtime.terminate(pane)
+                } catch { cli.error = "\(error)" }
+                cliDone.signal()
+            }
+            while cliDone.wait(timeout: .now()) == .timedOut { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+            check("終端機：同一分頁兩次送出不交錯", cli.error == nil && Set(cli.lines.prefix(2)) == ["echo A", "echo B"],
+                  "\(cli.lines) \(cli.error ?? "")")
+            check("終端機：貼上後確認失敗就清掉、不執行，下一行也不會接上", cli.lines.count == 3 && cli.lines.last == "echo D",
+                  "\(cli.lines)")
+            let drainUntil = Date().addingTimeInterval(2)
+            while runtime.pendingSendChains > 0, Date() < drainUntil { usleep(20_000) }
+            check("終端機：送完之後排隊紀錄清空", runtime.pendingSendChains == 0, "\(runtime.pendingSendChains)")
+            try? FileManager.default.removeItem(at: cliRoot)
+        } else {
+            print("SECURITYTEST NOTE 終端機送出測試未跑：PATH 裡沒有 tmux 3.6b")
+        }
+
+        let verify = DevicePairingClient.verifyArguments(
+            user: "sampleuser", host: "192.0.2.10", knownHostsPath: "/tmp/k", identityPath: nil)
+        check("第一次 SSH 只信已證明的主機金鑰", verify.contains("StrictHostKeyChecking=yes")
+              && verify.contains("UserKnownHostsFile=\"/tmp/k\"") && verify.contains("ControlPath=none")
+              && verify.contains("KnownHostsCommand=none") && verify.contains("VerifyHostKeyDNS=no")
+              && !verify.joined(separator: " ").contains("accept-new")
+              && Array(verify.suffix(6)) == ["-l", "sampleuser", "--", "192.0.2.10", "echo", "ok"], verify.joined(separator: " "))
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent("w178-known-\(UUID().uuidString)")
+        try? "other.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPRESERVEDPAIRTESTLINE\n".write(to: knownHosts, atomically: true, encoding: .utf8)
+        let provenKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx pairtest-host"
+        let remembered = DevicePairingClient.rememberHostKey(
+            host: "192.0.2.10", key: provenKey, environment: ["TATWO2_SSH_KNOWN_HOSTS": knownHosts.path])
+        _ = DevicePairingClient.rememberHostKey(
+            host: "192.0.2.10", key: provenKey, environment: ["TATWO2_SSH_KNOWN_HOSTS": knownHosts.path])
+        let knownText = (try? String(contentsOf: knownHosts, encoding: .utf8)) ?? ""
+        check("已證明的主機金鑰只補一次、不動其他行", remembered
+              && knownText.components(separatedBy: "AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx").count == 2
+              && knownText.contains("other.example ssh-ed25519"), knownText.replacingOccurrences(of: "\n", with: " | "))
+        try? FileManager.default.removeItem(at: knownHosts)
+
+        func pair() -> (Int32, Int32)? {
+            var fds: [Int32] = [0, 0]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else { return nil }
+            var timeout = timeval(tv_sec: 1, tv_usec: 0)
+            _ = setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            return (fds[0], fds[1])
+        }
+        if let (reader, writer) = pair() {
+            _ = "abc\n{".withCString { Darwin.write(writer, $0, 5) }
+            let started = Date()
+            let line = OSAgentBridge.readRequest(reader, deadline: 5)
+            check("有換行就不必等對方關寫端", line == Data("abc".utf8) && Date().timeIntervalSince(started) < 1)
+            close(reader); close(writer)
+        }
+        if let (reader, writer) = pair() {
+            _ = "xyz".withCString { Darwin.write(writer, $0, 3) }
+            shutdown(writer, SHUT_WR)
+            check("舊客戶端送完關寫端照樣相容", OSAgentBridge.readRequest(reader, deadline: 5) == Data("xyz".utf8))
+            close(reader); close(writer)
+        }
+        if let (reader, writer) = pair() {
+            let started = Date()
+            let result = OSAgentBridge.readRequest(reader, deadline: 2)
+            let elapsed = Date().timeIntervalSince(started)
+            check("不送資料的連線會逾時放掉", result == nil && elapsed < 4, String(format: "%.1fs", elapsed))
+            close(reader); close(writer)
+        }
+        if let (reader, writer) = pair() {
+            let chunk = [UInt8](repeating: 0x41, count: 4096)
+            _ = chunk.withUnsafeBytes { Darwin.write(writer, $0.baseAddress, $0.count) }
+            check("超過上限不再讀", OSAgentBridge.readRequest(reader, limit: 1024, deadline: 5) == nil)
+            close(reader); close(writer)
+        }
+
+        guard let donePath = env["TATWO2_SECURITYTEST_DONE"], env["TATWO2_OS_SOCKET"] != nil else {
+            print(failed ? "SECURITYTEST FAILED" : "SECURITYTEST ALL PASS")
+            exit(failed ? 1 : 0)
+        }
+        OSAgentBridge.shared.startSecurityTestListener()
+        let socketPath = OSAgentBridge.resolveSocketPath()
+        let ready = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: socketPath), Date() < ready {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        check("測試 listener 已開", FileManager.default.fileExists(atPath: socketPath), socketPath)
+        print("SECURITYTEST SOCKET READY")
+        let deadline = Date().addingTimeInterval(90)
+        while !FileManager.default.fileExists(atPath: donePath), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        check("外部測試行程回報完成", FileManager.default.fileExists(atPath: donePath))
+        print(failed ? "SECURITYTEST FAILED" : "SECURITYTEST ALL PASS")
+        exit(failed ? 1 : 0)
+    }
+}
+
+private extension Optional {
+    func asyncMap<T>(_ transform: (Wrapped) async -> T) async -> T? {
+        guard let value = self else { return nil }
+        return await transform(value)
     }
 }

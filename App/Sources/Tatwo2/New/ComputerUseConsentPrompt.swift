@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Compatibility facade: existing Computer Use callers retain their Decision and cancellation API.
@@ -170,20 +171,51 @@ struct ComputerUseNoticeCard: View {
     }
 }
 
+/// W178：Island 卡片那一行放得下整段內容嗎（用卡片實際的字型量寬度；有換行、Tab 或看不見的字元就不算）。
+enum IslandNoticeLine {
+    @MainActor static func fits(_ text: String) -> Bool {
+        guard !text.isEmpty, !text.contains("\n"), !text.contains("\t"), IslandNotice.visibleText(text) == text else { return false }
+        let available = LiquidGlassTokens.islandNoticeWidth - LiquidGlassTokens.islandNoticeLeadingPadding
+            - LiquidGlassTokens.islandNoticeTrailingPadding - LiquidGlassTokens.islandNoticeColumnSpacing
+            - LiquidGlassTokens.islandNoticeButtonSize * 2 - LiquidGlassTokens.islandNoticeButtonSpacing
+        let font = NSFont.systemFont(ofSize: LiquidGlassTokens.islandNoticeDetailSize)
+        return (text as NSString).size(withAttributes: [.font: font]).width <= available * 0.92
+    }
+}
+
 struct ComputerUseConsentCard: View {
     let request: ComputerUseConsentPrompt.Request
 
+    /// 要看完整內容才能允許的請求（AI 代跑的指令）：那一行放得下就照常；放不下就不給允許鍵，只給「查看」。
+    private var needsFullView: Bool {
+        request.fullTextRequired && !(request.summaryLine.map(IslandNoticeLine.fits) ?? false)
+    }
+    private var line: String {
+        guard request.fullTextRequired else { return request.detail }
+        return needsFullView ? "內容較長，按眼睛看完整內容再決定" : request.summaryLine ?? ""
+    }
+
     var body: some View {
-        IslandNoticeCardLayout(title: request.title, detail: request.detail, info: request.kind == .info) {
+        IslandNoticeCardLayout(title: request.title, detail: line, info: request.kind == .info) {
             if request.kind != .info {
                 HStack(spacing: LiquidGlassTokens.islandNoticeButtonSpacing) {
-                    Button { IslandNotice.shared.resolve(.allow, id: request.id) } label: {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: LiquidGlassTokens.islandNoticeButtonFontSize, weight: .bold))
-                            .frame(width: LiquidGlassTokens.islandNoticeButtonSize, height: LiquidGlassTokens.islandNoticeButtonSize)
-                            .background(LiquidGlassTokens.islandNoticeAllowFill, in: Circle())
+                    if needsFullView {
+                        Button { IslandNotice.shared.showFullText(id: request.id) } label: {
+                            Image(systemName: "eye")
+                                .font(.system(size: LiquidGlassTokens.islandNoticeButtonFontSize, weight: .bold))
+                                .frame(width: LiquidGlassTokens.islandNoticeButtonSize, height: LiquidGlassTokens.islandNoticeButtonSize)
+                                .background(LiquidGlassTokens.islandNoticeButtonFill, in: Circle())
+                        }
+                        .buttonStyle(.plain).help("看完整內容再決定").accessibilityLabel("查看完整內容")
+                    } else {
+                        Button { IslandNotice.shared.resolve(.allow, id: request.id) } label: {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: LiquidGlassTokens.islandNoticeButtonFontSize, weight: .bold))
+                                .frame(width: LiquidGlassTokens.islandNoticeButtonSize, height: LiquidGlassTokens.islandNoticeButtonSize)
+                                .background(LiquidGlassTokens.islandNoticeAllowFill, in: Circle())
+                        }
+                        .buttonStyle(.plain).help(request.allowLabel).accessibilityLabel(request.allowLabel)
                     }
-                    .buttonStyle(.plain).help(request.allowLabel).accessibilityLabel(request.allowLabel)
                     Button { IslandNotice.shared.resolve(.cancel, id: request.id) } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: LiquidGlassTokens.islandNoticeButtonFontSize, weight: .bold))

@@ -6,7 +6,7 @@ set -uo pipefail
 B="$1"; shift || true
 E="${TATWO_ENTRY:-$HOME/AI/TATWO OS}"; REPO="${TATWO_REPO:-$E/tatwo2}"; S="${TATWO_STAGING:-$E/staging}"
 name="${B##*/}"; W="$S/rooms/build-$name"; export TMPDIR="$S/tmp/build-$name/"; mkdir -p "$TMPDIR"
-export PATH="${TATWO_BUILD_PATH:-$HOME/.tatwo-build-deps/tmux/3.6a/bin:/opt/homebrew/bin}:$PATH"
+export PATH="${TATWO_BUILD_PATH:-$HOME/.tatwo-build-deps/tmux/3.6b/bin:/opt/homebrew/bin}:$PATH"
 SWIFT_TMP="${TATWO_SWIFT_TMPDIR:-/private/tmp/tatwo-swift/}"; mkdir -p "$SWIFT_TMP"
 LOCK="$S/rooms/.build-lock"; waited=0
 until mkdir "$LOCK" 2>/dev/null; do
