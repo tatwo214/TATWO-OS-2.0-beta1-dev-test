@@ -1,0 +1,113 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const read = path => readFileSync(new URL(`../App/Sources/Tatwo2/${path}`, import.meta.url), 'utf8');
+const workspace = read('Browser/BrowserWorkSpaceDesignView.swift');
+const host = read('Chat/ChatPage.swift');
+const sidebar = read('Chat/ChatPage+Sidebar.swift');
+const header = workspace.split('private var workspaceToolbar: some View {')[1].split('private var browserContent:')[0];
+// PR #4：聊天旁 compact chrome 與共用控制項搬到獨立檔（BrowserWorkSpaceDesignView.swift 1300 行上限不放寬）。
+const chrome = read('Browser/BrowserWorkSpaceEmbeddedChrome.swift');
+
+test('collapsed Browser unmounts the entire rail, not a narrow empty Browser column', () => {
+  assert.match(host, /&& \(model.mode != \.browser \|\| !browserWorkSpaceStore.focusMode\)/);
+  assert.doesNotMatch(host + sidebar, /browserFocusWidth/);
+  // 獨立 Browser（onClose == nil）保留 W66 的側欄控制與紅綠燈讓位；聊天旁 chrome 不佔這段。
+  assert.match(header, /if onClose == nil \{ BrowserSidebarControls\(store: store\) \}/);
+  assert.match(header, /if store.focusMode && onClose == nil \{\s*Color.clear.frame\(width: WindowChromeMetrics.trafficLightSafeWidth\)/);
+  assert.match(chrome, /Menu\("工作區"\)/);
+  assert.match(chrome, /name: \.tatwoChatSelectMode, object: mode.rawValue/);
+});
+
+test('toolbar consumes real layout height above native page, including empty/session spaces', () => {
+  // W112（使用者 09-20：「網址列平時隱形讓網頁往上靠」）：獨立 Browser 的頂列改成浮層，平時不在、不佔版面高度。
+  assert.match(workspace, /ZStack\(alignment: \.top\) \{\s*browserPageContent[^\n]*\s*if chromeReveal\.revealed \{ workspaceToolbar/);
+  assert.match(workspace, /browserPageContent: some View \{[\s\S]*?else if store.selectedSpace.isSessionSpace/);
+  const content = workspace.split('private var browserContent: some View {')[1].split('func performBrowserAction')[0];
+  assert.doesNotMatch(content, /\.overlay\(alignment: \.top\)/);
+  assert.match(header, /\.frame\(height: onClose == nil \? BrowserOmniboxMetrics.toolbarHeight : BrowserChatChromeMetrics.toolbarHeight\)/);
+  assert.match(read('Chat/ChatPage+Panels.swift'), /BrowserWorkSpaceDesignView[\s\S]*?ignoresSafeArea\(\.container, edges: \.top\)/);
+  assert.match(read('Shell/AppShell.swift'), /if chatModel.mode != \.browser \{\s*TatwoWindowPageRail/);
+  assert.match(host, /if !isPanel && model.mode != \.browser/);
+});
+
+test('space title is text only, while native Menu remains accessible and functional', () => {
+  const menu = sidebar.split('private var browserSpaceMenu: some View {')[1].split('var chatSidebar:')[0];
+  assert.doesNotMatch(menu, /chevron|Capsule/);
+  assert.match(menu, /\.menuIndicator\(\.hidden\)/);
+  assert.match(menu, /Button\(space.name\)/);
+  assert.match(menu, /accessibilityIdentifier\("browser.spaceSwitcher"\)/);
+});
+
+test('Dia address chrome is left aligned with separate navigation controls, not a centered pill', () => {
+  const toolbar = read('Browser/EmbeddedBrowserToolbar.swift').split('struct EmbeddedBrowserToolbar: View')[1];
+  const collapsed = toolbar.split('Button(action: expandEditor)')[1].split('.overlay(alignment:')[0];
+  assert.match(collapsed, /alignment: \.leading/);
+  assert.doesNotMatch(collapsed, /BrowserOmniboxGlass|lock.fill|globe/);
+  assert.match(toolbar, /control\("chevron.left"/);
+  assert.match(toolbar, /control\("chevron.right"/);
+});
+
+test('fake installed-extension icons are absent; blocked execution is explicit', () => {
+  assert.doesNotMatch(workspace, /ForEach\(\["文A", "S"\]|private var extensionStrip/);
+  // W122：擴充面板改成工具列拼圖鈕的選單；已安裝清單只從本機 profile 讀（不把導入清單當已安裝）。
+  const menu = read('Browser/BrowserExtensionsMenu.swift');
+  assert.match(menu, /BrowserExtensionInventory\.cached\(/);   // W132：與工具列共用快取
+  assert.doesNotMatch(menu, /ForEach\(\["文A"/);
+});
+
+test('bottom space switcher cannot stretch vertically and float above the footer', () => {
+  const controls = workspace.split('private var spaceControls: some View {')[1].split('private var downloadsPopover:')[0];
+  assert.match(controls, /Color.clear.frame\(width: BrowserSidebarMetrics.footerControlSize, height: WorkspaceSpaceControlMetrics.cellHeight\)/);
+  assert.match(controls, /\}\s*\.frame\(height: WorkspaceSpaceControlMetrics.cellHeight\)\s*\.buttonStyle/);
+});
+
+test('focus and find lifecycle cover the persistent toolbar, not only the detachable page', () => {
+  const root = workspace.split('var body: some View {')[1].split('private var sessionContent:')[0];
+  assert.match(root, /BrowserDailyFocusScope\(focused: \$browserFocused, acceptsWindowResponder: onClose == nil\)/);
+  assert.match(root, /onChange\(of: store.selectedSpaceID\)[\s\S]*?findPresented = false/);
+  assert.match(root, /onChange\(of: store.selectedID\)[\s\S]*?findPresented = false/);
+});
+
+test('new and restored blank tabs retain the original centered search page', () => {
+  assert.match(workspace, /var showsStartPage: Bool \{ canAddTab && \(selectedRegistryID == nil \|\| selectedTab.url == "about:blank" \|\| selectedTab.url.isEmpty\) \}/);
+  const content = workspace.split('private var browserContent: some View {')[1].split('func performBrowserAction')[0];
+  assert.match(content, /if store.showsStartPage \{ page \}/);
+  assert.match(workspace, /store\.showsStartPage \? "" : store\.selectedTab\.url/);
+  assert.match(workspace, /if store.showsStartPage \{ store.navigateFromStartPage\(to: url\) \}/);
+  assert.match(workspace, /accessibilityIdentifier\("browser.startSearch"\)/);
+});
+
+test('centered search focus does not open the separate address popup', () => {
+  assert.doesNotMatch(workspace, /onChange\(of: focusedField\)[^\n]*addressExpansionRequested/);
+  assert.doesNotMatch(workspace, /onChange\(of: addressFocused\)[^\n]*focusedField/);
+  assert.match(header, /enabled: store.canAddTab/);
+});
+
+test('start page submission also navigates a previously cached blank CEF tab', () => {
+  const submit = workspace.split('private func submitSearch()')[1].split('// MARK: - Tab search')[0];
+  assert.match(submit, /if store.showsStartPage \{ store.navigateFromStartPage\(to: url\) \}\s*send\(\.load\(url\)\)/);
+});
+
+test('start page has only the central search; submitted pages expose the address bar', () => {
+  const toolbar = read('Browser/EmbeddedBrowserToolbar.swift');
+  assert.match(header, /showsAddress: !store.showsStartPage/);
+  assert.match(toolbar, /if showsAddress \{\s*Button\(action: expandEditor\)/);
+  assert.match(toolbar, /if showsAddress && isExpanded/);
+  assert.match(toolbar, /guard enabled && showsAddress else/);
+  assert.match(toolbar, /private func dismissEditor[^{]+\{\s*guard isExpanded else \{ return \}/);
+  assert.match(toolbar, /"重新載入", enabled && showsAddress/);
+  assert.match(toolbar, /onChange\(of: showsAddress\)[\s\S]*?isExpanded = false/);
+  assert.match(workspace, /case \.focusAddressBar: store.searchFocusRequest \+= 1/);
+  assert.match(workspace, /task\(id: store.searchFocusRequest\)[\s\S]*?if store.showsStartPage \{ focusedField = \.search \}\s*else \{ chromeReveal\.revealForFocus\(\); await Task\.yield\(\); addressExpansionRequested = true \}/);   // W112：頂列平時不在，先叫出來再聚焦
+});
+
+test('persistent toolbar follows the workspace theme instead of the native white control fill', () => {
+  // 只有獨立 Browser 的工具列自己鋪底；聊天旁浮動工具列靠 BrowserFloatingToolbarBackdrop。
+  // W112：獨立 Browser 的頂列也改用漸淡玻璃底（浮在網頁上），不再自己鋪不透明底。
+  assert.doesNotMatch(header, /\.background \{ if onClose == nil \{ palette.canvasBase \} \}/);
+  assert.match(workspace, /workspaceToolbar\.background \{ BrowserFloatingToolbarBackdrop\(\) \}\.transition\(\.opacity\)/);
+  assert.match(workspace, /\.background\(palette.canvasBase\)/);
+  assert.doesNotMatch(header, /controlBackgroundColor/);
+});

@@ -1,0 +1,99 @@
+import Foundation
+
+/// Bot 模式的 2.0 本地資料。只保存畫面與送訊息需要的欄位，不帶入 1.0 治理型別。
+struct BotStoreDocument: Codable, Equatable {
+    var spaces: [BotSpaceRecord]
+    var bots: [BotRecord]
+    var threadIDsByBotID: [String: UUID]
+}
+
+struct BotSpaceRecord: Codable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var density: String
+    var ownerBotID: String
+}
+
+struct BotRecord: Codable, Equatable, Identifiable {
+    var id: String
+    var name: String
+    var emoji: String
+    var role: String
+    var systemPrompt: String
+    var defaultEngine: String
+    var defaultModel: String?
+    var workdir: String
+    var parentBotID: String?
+    var spaceIDs: [String]
+    var isTemporary: Bool
+}
+
+/// Compatibility adapter. bots.json is migration input only, never written here.
+final class BotStore {
+    let library: BotLibrary
+    let url: URL
+    var document: BotStoreDocument {
+        let snapshot = library.snapshot
+        let interfaceThreads = Set(snapshot.spaceWorkspace.domains.values
+            .flatMap(\.interfaces).map(\.conversationID))
+        return BotStoreDocument(spaces: snapshot.spaces, bots: snapshot.bots.map { bot in
+            BotRecord(id: bot.id, name: bot.name, emoji: bot.emoji, role: bot.role,
+                systemPrompt: snapshot.instructions[bot.id] ?? "", defaultEngine: bot.engine,
+                defaultModel: bot.model, workdir: bot.workdir, parentBotID: bot.parentBotID,
+                spaceIDs: bot.spaceIDs, isTemporary: bot.isTemporary)
+        }, threadIDsByBotID: snapshot.sessions.reduce(into: [:]) { result, pair in
+            guard snapshot.loaded, snapshot.spaceWorkspaceError == nil else { return }
+            result[pair.key] = pair.value.last(where: {
+                guard let id = UUID(uuidString: $0.threadID) else { return false }
+                return !interfaceThreads.contains(id)
+            })
+                .flatMap { UUID(uuidString: $0.threadID) }
+        })
+    }
+    init(root: URL? = nil) {
+        let base = root ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support/tatwo2/live")
+        url = base.appendingPathComponent("bots")
+        library = BotLibrary(root: base)
+    }
+    /// 已載入的 library 直接包一層；不另開第二個 BotLibrary（同一個 root 兩個寫入佇列會打架）。
+    init(library: BotLibrary) {
+        self.library = library
+        url = library.root.appendingPathComponent("bots")
+    }
+    var spaces: [BotSpaceRecord] { document.spaces }
+    var bots: [BotRecord] { document.bots }
+    func bot(id: String) -> BotRecord? { bots.first { $0.id == id } }
+    func threadID(forBotID botID: String) -> UUID? { document.threadIDsByBotID[botID] }
+    func bind(threadID: UUID, toBotID botID: String) {
+        guard let bot = library.bot(id: botID) else { return }
+        Task { try? await library.recordSession(botID: botID, threadID: threadID.uuidString, engine: bot.engine) }
+    }
+    @discardableResult
+    func createBot(name: String, emoji: String = "🤖", role: String, systemPrompt: String,
+        defaultEngine: String = "claude", defaultModel: String? = nil, workdir: String = NSHomeDirectory(),
+        parentBotID: String? = nil, spaceIDs: [String] = [], isTemporary: Bool = false) async throws -> BotRecord {
+        let bot = BotLibraryRecord(id: "bot-" + UUID().uuidString.lowercased(), name: name, emoji: emoji,
+            role: role, engine: defaultEngine, model: defaultModel, workdir: workdir,
+            parentBotID: parentBotID, spaceIDs: spaceIDs, isTemporary: isTemporary)
+        _ = try await library.create(bot, instructions: systemPrompt)
+        return self.bot(id: bot.id)!
+    }
+    func updateBot(_ old: BotRecord) async throws {
+        guard var bot = library.bot(id: old.id) else { throw BotLibraryError.invalid("bot_not_found") }
+        bot.name = old.name; bot.emoji = old.emoji; bot.role = old.role; bot.engine = old.defaultEngine
+        bot.model = old.defaultModel; bot.workdir = old.workdir; bot.parentBotID = old.parentBotID
+        bot.spaceIDs = old.spaceIDs; bot.isTemporary = old.isTemporary
+        try await library.update(bot, instructions: old.systemPrompt)
+    }
+    /// ownerBotID 為 nil＝還沒有 bot 的領域（W160）；記錄存空字串，之後掛 bot 再補。
+    func createSpace(name: String, density: String, ownerBotID: String?) async throws -> BotSpaceRecord {
+        let space = BotSpaceRecord(id: "space-" + UUID().uuidString.lowercased(), name: name, density: density, ownerBotID: ownerBotID ?? "")
+        if let ownerBotID {
+            guard var bot = library.bot(id: ownerBotID) else { throw BotLibraryError.invalid("bot_not_found") }
+            bot.spaceIDs.append(space.id)
+            try await library.update(bot)
+        }
+        try await library.saveSpaces(spaces + [space])
+        return space
+    }
+}

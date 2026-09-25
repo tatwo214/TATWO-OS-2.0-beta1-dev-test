@@ -1,0 +1,90 @@
+import SwiftUI
+
+/// Pure row partition; no view state or workspace dependencies.
+enum WorkspaceModeRows {
+    static func layout(count: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        let rows = (count + 4) / 5
+        let perRow = (count + rows - 1) / rows
+        return stride(from: 0, to: count, by: perRow).map { min(perRow, count - $0) }
+    }
+
+    static func fontSize(count: Int) -> Double {
+        switch count {
+        case ...3: 12.5
+        case 4: 11.5
+        default: 10.5
+        }
+    }
+}
+
+/// Shared full-inner-width header for every workspace.
+struct WorkspaceSidebarModePicker: View {
+    let modes: [ChatRunMode]
+    let selection: ChatRunMode
+    let onSelect: (ChatRunMode) -> Void
+
+    var body: some View {
+        let rows = WorkspaceModeRows.layout(count: modes.count)
+        VStack(spacing: 5) {
+            ForEach(rows.indices, id: \.self) { row in
+                let start = rows.prefix(row).reduce(0, +)
+                HStack(spacing: 5) {
+                    ForEach(Array(modes[start..<(start + rows[row])])) { mode in
+                        modeButton(mode, count: rows[row])
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(4)
+        .chatGlassChip()
+        // Same outer inset as before W36 so Chat/CLI/Bot with ≤3 modes render exactly as today.
+        .padding(.horizontal, 12)
+    }
+
+    private func modeButton(_ mode: ChatRunMode, count: Int) -> some View {
+        let selected = selection == mode
+        return Button { onSelect(mode) } label: {
+            modeLabel(mode, count: count, selected: selected)
+                .foregroundStyle(selected ? Color.primary : Color.secondary.opacity(0.90))
+                .frame(maxWidth: .infinity)
+                .frame(height: 30)
+                .chatGlassChip(isSelected: selected)
+                .contentShape(RoundedRectangle(cornerRadius: LiquidGlassTokens.radiusChip,
+                                               style: LiquidGlassTokens.shapeStyle))
+        }
+        .buttonStyle(.plain)
+        .help(mode.subtitle)
+        .accessibilityLabel(mode.displayName)
+        .accessibilityIdentifier("workspace.mode.\(mode.rawValue)")
+    }
+
+    @ViewBuilder
+    private func modeLabel(_ mode: ChatRunMode, count: Int, selected: Bool) -> some View {
+        let size = WorkspaceModeRows.fontSize(count: count)
+        if let compact = Self.compactName(mode) {
+            // W177：「ChatGPT」在一列五格（每格約 32pt）時縮到 0.8 倍也放不下；放得下用全名，放不下才換短名，
+            // 不縮成看不清的小字，也不被截成「Chat…」。
+            ViewThatFits(in: .horizontal) {
+                Text(mode.displayName).font(ChatTypography.systemUI(size, weight: selected ? .bold : .semibold)).lineLimit(1)
+                if count >= 4 {
+                    Text(mode.displayName).font(ChatTypography.systemUI(size * 0.8, weight: selected ? .bold : .semibold)).lineLimit(1)
+                }
+                Text(compact).font(ChatTypography.systemUI(size, weight: selected ? .bold : .semibold)).lineLimit(1)
+            }
+        } else {
+            Text(mode.displayName)
+                .font(ChatTypography.systemUI(size, weight: selected ? .bold : .semibold))
+                .lineLimit(1)
+                // Declared sizes are 12.5 / 11.5 / 10.5 (≤3 / 4 / 5 per row). Only a
+                // four- or five-column row may shrink slightly further (SF "Browser" exceeds a
+                // 40pt chip at 10.5); chip height never changes.
+                .minimumScaleFactor(count >= 4 ? 0.8 : 1.0)
+        }
+    }
+
+    private static func compactName(_ mode: ChatRunMode) -> String? {
+        mode == .chatgpt ? "GPT" : nil
+    }
+}

@@ -1,0 +1,200 @@
+// Production UA/gates/callback methods; only CEF transport and native window are doubled.
+// No actual picker, network request, or user file is used.
+#import <Foundation/Foundation.h>
+#include <cassert>
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define CEF_REQUIRE_UI_THREAD() assert(NSThread.isMainThread)
+using CefString = std::string;
+template<class T> using CefRefPtr = T*;
+class CefBrowser {};
+enum FileDialogMode { FILE_DIALOG_OPEN, FILE_DIALOG_OPEN_MULTIPLE, FILE_DIALOG_OPEN_FOLDER,
+                      FILE_DIALOG_SAVE, FILE_DIALOG_NUM_VALUES };
+enum TatwoCEFBrowserActor { TatwoCEFBrowserActorAgent, TatwoCEFBrowserActorHuman };
+typedef void (^Reply)(NSArray<NSString *> *);
+@interface TatwoCEFBrowserView : NSObject
+@property TatwoCEFBrowserActor browserActor;
+@property BOOL agentControlled;
+@property BOOL isHiddenOrHasHiddenAncestor;
+@property BOOL inputCurrent;
+@property uint64_t navigationGeneration;
+@property NSObject *window;
+@property(copy) void (^onFileDialog)(NSInteger, NSString *, NSString *, NSArray<NSString *> *, BOOL, Reply);
+@end
+@implementation TatwoCEFBrowserView @end
+bool BrowserInputIsCurrent(TatwoCEFBrowserView *v, uint64_t g) {
+  return v.inputCurrent && v.navigationGeneration == g;
+}
+NSString *FromCefString(const CefString &s) { return [NSString stringWithUTF8String:s.c_str()]; }
+CefString ToCefString(NSString *s) { return s.UTF8String; }
+void ScheduleImmediateCEFMessagePumpWork(NSString *) {}
+class CefFileDialogCallback {
+ public:
+  int canceled = 0, continued = 0;
+  std::vector<CefString> selected;
+  void Cancel() { ++canceled; }
+  void Continue(const std::vector<CefString> &paths) { ++continued; selected = paths; }
+};
+class CefDownloadItem {
+ public:
+  uint32_t id=7;
+  bool complete=false, canceled=false, interrupted=false, valid=true;
+  std::string original="https://example.test/document?id=pdf", path;
+  bool IsValid() { return valid; }
+  bool IsComplete() { return complete; }
+  bool IsCanceled() { return canceled; }
+  bool IsInterrupted() { return interrupted; }
+  uint32_t GetId() { return id; }
+  CefString GetOriginalUrl() { return original; }
+  CefString GetFullPath() { return path; }
+};
+class TatwoClient {
+ public:
+  TatwoCEFBrowserView *owner_;
+  CefFileDialogCallback *file_dialog_callback_ = nullptr;
+  uint64_t web_features_serial_ = 0, file_dialog_serial_ = 0, pdf_download_request_serial_ = 0;
+  bool pdf_print_pending_ = false;
+  NSString *pdf_download_url_, *pdf_download_path_;
+  uint32_t pdf_download_id_=0;
+  void (^pdf_download_completion_)(NSString *) = nil;
+  void W57dCancel();
+  void W57dFinishPDFDownload(NSString*);
+  void W57dDownloadUpdate(CefDownloadItem*);
+  bool OnFileDialog(CefBrowser *, FileDialogMode, const CefString &, const CefString &,
+    const std::vector<CefString> &, const std::vector<CefString> &,
+    const std::vector<CefString> &, CefFileDialogCallback *);
+};
+// INSERT ua
+// INSERT current
+// INSERT cancel
+// INSERT dialog
+// INSERT pdfDownload
+
+int main() { @autoreleasepool {
+  const std::string ua = W57dUserAgent();
+  assert(ua == "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36");
+  assert(ua.find("TATWO") == std::string::npos && ua.find("CEF") == std::string::npos);
+  TatwoCEFBrowserView *view = [TatwoCEFBrowserView new];
+  view.window = [NSObject new]; view.inputCurrent = YES; view.navigationGeneration = 1;
+  view.browserActor = TatwoCEFBrowserActorHuman;
+  TatwoClient client; client.owner_ = view;
+  __block Reply reply;
+  __block int panels = 0;
+  __block BOOL multiple = NO;
+  view.onFileDialog = ^(NSInteger mode, NSString *title, NSString *path, NSArray *filters, BOOL multi, Reply cb) {
+    ++panels; reply = [cb copy]; multiple = multi;
+    assert([title isEqualToString:@"Fixture"]);
+    assert([path isEqualToString:@"/fixture/default.txt"]);
+    assert(([filters isEqualToArray:@[@".txt", @"image/*"]]));
+  };
+  auto request = [&](CefFileDialogCallback &cb, FileDialogMode mode = FILE_DIALOG_OPEN) {
+    return client.OnFileDialog(nullptr, mode, "Fixture", "/fixture/default.txt",
+                              {".txt", "image/*"}, {}, {}, &cb);
+  };
+  for (int denied = 0; denied < 6; ++denied) {
+    view.browserActor = denied == 0 ? TatwoCEFBrowserActorAgent : TatwoCEFBrowserActorHuman;
+    view.agentControlled = denied == 1;
+    view.isHiddenOrHasHiddenAncestor = denied == 2;
+    view.inputCurrent = denied != 3;
+    view.window = denied == 4 ? nil : [NSObject new];
+    CefFileDialogCallback cb;
+    assert(request(cb, denied == 5 ? FILE_DIALOG_NUM_VALUES : FILE_DIALOG_OPEN));
+    assert(cb.canceled == 1 && cb.continued == 0 && panels == 0);
+  }
+  view.browserActor = TatwoCEFBrowserActorHuman; view.agentControlled = NO;
+  view.isHiddenOrHasHiddenAncestor = NO; view.inputCurrent = YES; view.window = [NSObject new];
+  CefFileDialogCallback single;
+  assert(request(single) && !multiple && panels == 1);
+  Reply oldReply = reply;
+  CefFileDialogCallback overlap;
+  assert(request(overlap) && overlap.canceled == 1 && panels == 1);
+  reply(@[@"/fixture/a.txt"]);
+  assert(single.continued == 1 && single.canceled == 0 && single.selected.size() == 1);
+  oldReply(nil);
+  assert(single.continued == 1 && single.canceled == 0);
+  CefFileDialogCallback multi;
+  assert(request(multi, FILE_DIALOG_OPEN_MULTIPLE) && multiple);
+  oldReply(@[@"/fixture/stale.txt"]); // Must not consume the newer picker.
+  assert(multi.canceled == 0 && multi.continued == 0);
+  reply(@[@"/fixture/a.txt", @"/fixture/b.png"]);
+  assert(multi.continued == 1 && multi.selected.size() == 2);
+  for (NSArray *paths in @[@[], @[@"relative"], @[@"/fixture/a", @"/fixture/b"]]) {
+    CefFileDialogCallback bad;
+    assert(request(bad));
+    reply(paths);
+    assert(bad.canceled == 1 && bad.continued == 0);
+  }
+  for (int revoke = 0; revoke < 3; ++revoke) {
+    CefFileDialogCallback cb;
+    assert(request(cb));
+    if (revoke == 0) {
+      client.W57dCancel(); // close, hidden tab or agent takeover/recovery serial
+    } else if (revoke == 1) {
+      view.navigationGeneration = 2;
+    } else {
+      view.agentControlled = YES;
+    }
+    reply(@[@"/fixture/revoked.txt"]);
+    assert(cb.canceled == 1 && cb.continued == 0);
+    view.navigationGeneration = 1; view.agentControlled = NO;
+    reply(@[@"/fixture/still-revoked.txt"]);
+    assert(cb.canceled == 1 && cb.continued == 0);
+  }
+  for (FileDialogMode mode : {FILE_DIALOG_OPEN_FOLDER, FILE_DIALOG_SAVE}) {
+    CefFileDialogCallback cb;
+    assert(request(cb, mode) && !multiple);
+    reply(@[@"/fixture/selected"]);
+    assert(cb.continued == 1);
+  }
+  view.onFileDialog = nil;
+  CefFileDialogCallback missing;
+  assert(request(missing) && missing.canceled == 1);
+  // Actual production completion methods handle failures before destination
+  // selection, duplicate terminal events and callback reentrancy exactly once.
+  CefDownloadItem download;
+  int pdfReplies=0;
+  int *replyCount=&pdfReplies;
+  TatwoClient *active=&client;
+  auto beginPDF = [&] {
+    client.pdf_download_url_=FromCefString(download.original);
+    client.pdf_download_completion_=^(NSString *path) { assert(path==nil); ++*replyCount; };
+  };
+  beginPDF();
+  client.W57dDownloadUpdate(&download); // Pending is not a failure.
+  assert(pdfReplies==0 && client.pdf_download_completion_);
+  CefDownloadItem unrelated; unrelated.original="https://example.test/unrelated"; unrelated.interrupted=true;
+  client.W57dDownloadUpdate(&unrelated);
+  assert(pdfReplies==0 && client.pdf_download_completion_);
+  download.interrupted=true;
+  client.W57dDownloadUpdate(&download);
+  client.W57dDownloadUpdate(&download);
+  assert(pdfReplies==1 && !client.pdf_download_completion_ && !client.pdf_download_url_);
+  beginPDF();
+  client.W57dFinishPDFDownload(nil); // Destination reservation failed.
+  client.W57dFinishPDFDownload(nil);
+  assert(pdfReplies==2 && !client.pdf_download_completion_);
+  beginPDF();
+  client.pdf_download_completion_=^(NSString *path) {
+    assert(path==nil); ++*replyCount;
+    // Reentrant action may safely start another job after old state is consumed.
+    active->pdf_download_completion_=^(NSString*) { ++*replyCount; };
+    active->pdf_download_url_=@"https://example.test/retry";
+  };
+  client.W57dFinishPDFDownload(nil);
+  assert(pdfReplies==3 && [client.pdf_download_url_ isEqualToString:@"https://example.test/retry"]);
+  client.W57dFinishPDFDownload(nil);
+  assert(pdfReplies==4);
+  beginPDF(); client.pdf_download_path_=@"/fixture/reserved.pdf"; client.pdf_download_id_=7;
+  unrelated.id=8; unrelated.original=download.original;
+  client.W57dDownloadUpdate(&unrelated);
+  assert(pdfReplies==4 && client.pdf_download_completion_);
+  client.W57dDownloadUpdate(&download);
+  assert(pdfReplies==5 && !client.pdf_download_completion_);
+  puts("W57d PDF failure fixture passed: early failure/destination failure/duplicates/reentrancy/exact item");
+  puts("W57d UA and dialog fixture passed: agent/hidden/missing/revoked/duplicate/multiple/folder/save");
+} }

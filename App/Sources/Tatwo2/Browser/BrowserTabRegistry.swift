@@ -1,0 +1,910 @@
+import Foundation
+import Combine
+import AppKit
+
+// All browser surfaces share these records; engine/profile state stays outside the registry.
+enum BrowserTabOwner: Codable, Hashable {
+    case workSpace(spaceID: UUID)
+    case chatSession(sessionID: String)
+    case bot(botID: String)
+}
+
+struct BrowserTab: Codable, Identifiable, Equatable {
+    let id: UUID
+    var owner: BrowserTabOwner
+    var url: URL?
+    var title: String
+    var faviconPNG: Data?
+    var isPinned: Bool
+    var isSleeping: Bool
+    var lastActiveAt: Date
+    var createdAt: Date
+    var folderID: UUID? = nil
+    /// A saved row owns this tab even after navigation. URLs are not identities.
+    var bookmarkID: UUID? = nil
+    /// W112（使用者 2026-09-20：「珍藏點擊不會出現在下面分頁 只有新視窗會在下面展開 書籤也是一樣的邏輯」）：
+    /// 這個分頁屬於哪個珍藏；屬於珍藏的分頁住在珍藏格子上，不列在下面的分頁清單。舊檔沒有這欄。
+    var favoriteID: UUID? = nil
+    // W58: absent in old indexes means human. Never infer actor from who navigated last.
+    var isAgentTab: Bool? = nil
+    var usesAgentContext: Bool {
+        if case .workSpace = owner { return false }
+        return isAgentTab == true
+    }
+}
+
+struct BrowserSpace: Codable, Identifiable, Equatable {
+    let id: UUID
+    var name: String
+    var folders: [BrowserFolder]
+    var isSessionSpace: Bool
+    /// W112：空間顏色（`BrowserSpacePalette` 的代號）；舊檔沒有這欄。
+    var color: String? = nil
+}
+
+struct BrowserFolder: Codable, Identifiable, Equatable {
+    let id: UUID
+    var name: String
+    var bookmarks: [BrowserBookmark]
+}
+
+struct BrowserBookmark: Codable, Identifiable, Equatable {
+    let id: UUID
+    var url: URL
+    var title: String
+}
+
+struct BrowserFavorite: Codable, Identifiable, Equatable {
+    let id: UUID
+    var url: URL
+    var title: String
+    var faviconPNG: Data?
+    var order: Int
+}
+
+struct BrowserLaneSnapshot: Codable, Equatable {
+    var laneState: TatwoBrowserLaneState
+    var laneURLs: [String: URL]
+    var updatedAt: Date
+    var openURLs: [URL] { laneState.lanes.compactMap { laneURLs[$0.id.rawValue] } }
+}
+
+struct OpenBrowserSessionSummary: Identifiable {
+    let sessionID: String
+    let threadTitle: String
+    let projectName: String
+    let laneCount: Int
+    let urls: [URL]
+    let updatedAt: Date
+    var id: String { sessionID }
+}
+
+@MainActor
+final class BrowserTabRegistry: ObservableObject {
+    static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/TATWO OS/Browser/tabs.json")
+    static let shared = BrowserTabRegistry(storageURL: defaultURL)
+    /// Chat's embedded browser is a separate human workspace. PR4b：它從空的開始，
+    /// 不再抄獨立 Browser 的分頁，兩邊從第一次啟動就互不干擾。
+    static let chatInspectorURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.json")
+    /// PR #4 的一次性快照遷移留下的標記；只用來認出「這份 chat-tabs.json 是抄來的」。
+    static let chatInspectorMigrationURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.migrated-v1")
+    /// PR4b 清理只做一次，之後使用者在 Chat 瀏覽器裡開的分頁照常保留。
+    static let chatInspectorCleanupURL = defaultURL.deletingLastPathComponent()
+        .appendingPathComponent("chat-tabs.cleaned-pr4b")
+    static let sessionSpaceID = UUID(uuidString: "00000000-0000-0000-0000-000000000046")!
+    typealias TitleProvider = (String) -> (threadTitle: String, projectName: String)
+
+    @Published private(set) var spaces: [BrowserSpace] = []
+    @Published private(set) var tabs: [BrowserTab] = []
+    @Published private(set) var favorites: [BrowserFavorite] = []
+    /// Transient engine state; never persisted as a live load on the next launch.
+    private(set) var loadingTabIDs: Set<UUID> = []
+    struct ClosedTab: Equatable {
+        let url: URL?
+        let title: String
+        let owner: BrowserTabOwner
+        let folderID: UUID?
+        var bookmarkID: UUID? = nil
+        var isAgentTab: Bool? = nil
+    }
+    @Published private(set) var recentlyClosed: [ClosedTab] = []
+    private func rememberClosed(_ tab: BrowserTab) {
+        if case .bot = tab.owner { return }
+        recentlyClosed.append(ClosedTab(url: tab.url, title: tab.title, owner: tab.owner,
+                                       folderID: tab.folderID, bookmarkID: tab.bookmarkID, isAgentTab: tab.isAgentTab))
+        recentlyClosed = Array(recentlyClosed.suffix(10))
+    }
+    @discardableResult
+    func reopenClosedTab(owner: BrowserTabOwner? = nil) -> BrowserTab? {
+        guard let index = recentlyClosed.lastIndex(where: { (owner == nil || $0.owner == owner) && accepts($0.owner) }) else { return nil }
+        let record = recentlyClosed.remove(at: index)
+        let tab: BrowserTab
+        let existingBookmarkTab = record.bookmarkID.flatMap { id in
+            tabs.first { $0.owner == record.owner && $0.bookmarkID == id }
+        }
+        if let bookmarkID = record.bookmarkID, let folderID = record.folderID,
+           let bound = openBookmark(bookmarkID, folderID: folderID, owner: record.owner) {
+            tab = bound
+            if existingBookmarkTab == nil {
+                update(bound.id, url: record.url, title: record.title, favicon: nil)
+            }
+        } else {
+            tab = openTab(owner: record.owner, url: record.url, title: record.title, folderID: record.folderID,
+                          isAgentTab: record.isAgentTab == true)
+        }
+        select(tab.id)
+        return tabs.first { $0.id == tab.id }
+    }
+    @Published private(set) var persistenceError: String?
+    /// Post-mutation event: projections never read the old value from @Published's willSet.
+    let changes = PassthroughSubject<Void, Never>()
+    var titleProvider: TitleProvider
+
+    private struct LaneIdentity: Codable {
+        var sessionID: String
+        var rawID: String
+        var binding: TatwoBrowserLaneBinding
+    }
+    private struct SessionState: Codable {
+        var schemaVersion: Int
+        var maximumLaneCount: Int
+        var selectedLaneID: TatwoBrowserLaneID?
+        var updatedAt: Date
+    }
+    private struct StoredTab: Codable {
+        var tab: BrowserTab
+        var faviconFile: String?
+    }
+    private struct StoredFavorite: Codable {
+        var favorite: BrowserFavorite
+        var faviconFile: String?
+    }
+    private struct Document: Codable {
+        var schemaVersion = 1
+        var spaces: [BrowserSpace]
+        var tabs: [StoredTab]
+        var laneIdentities: [UUID: LaneIdentity]
+        var sessions: [String: SessionState]
+        var retiredLanes: [String: Set<String>]
+        var legacyImported: Bool
+        var bookmarksImported: Bool? = false
+        /// Lane raw IDs the embedded panel has already reported per session; only those may be
+        /// removed by a later snapshot. A tab moved into the session stays until the panel sees it.
+        var storedLaneIDs: [String: Set<String>]? = [:]
+        var codecNoticeTabIDs: Set<UUID>? = nil
+        var dismissedCodecHosts: Set<String>? = nil
+        var favorites: [StoredFavorite]? = nil
+    }
+    private struct LegacyDocument: Decodable {
+        var browserLanesBySession: [String: BrowserLaneSnapshot]
+    }
+    private var laneIdentities: [UUID: LaneIdentity] = [:]
+    private var sessions: [String: SessionState] = [:]
+    private var retiredLanes: [String: Set<String>] = [:]
+    private var storedLaneIDs: [String: Set<String>] = [:]
+    private var legacyImported = false
+    private var bookmarksImported = false
+    private var codecNoticeTabIDs: Set<UUID> = []
+    private var dismissedCodecHosts: Set<String> = []
+    private var pendingCodecHosts: Set<String> = []
+    private let storageURL: URL?
+    private var pendingSave: Task<Void, Never>?
+    private var writable = true
+    private var terminationObservation: AnyCancellable?
+
+    /// nil storage is deliberately ephemeral (fixtures/previews). No production data is touched.
+    /// The old implementation was memory-only. legacyURL accepts an explicitly supplied export;
+    /// the sibling filename is a compatibility inbox, not a claimed historical app location.
+    init(storageURL: URL? = nil, legacyURL: URL? = nil,
+         titleProvider: @escaping TitleProvider = { _ in ("（已不存在的討論串）", "") }) {
+        self.storageURL = storageURL
+        self.titleProvider = titleProvider
+        let exists = storageURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        if let storageURL, exists {
+            do {
+                let document = try JSONDecoder().decode(Document.self, from: Data(contentsOf: storageURL))
+                guard document.schemaVersion == 1,
+                      Set(document.spaces.map(\.id)).count == document.spaces.count,
+                      Set(document.tabs.map { $0.tab.id }).count == document.tabs.count,
+                      document.spaces.filter(\.isSessionSpace).count <= 1 else { throw CocoaError(.coderReadCorrupt) }
+                spaces = document.spaces
+                laneIdentities = document.laneIdentities
+                sessions = document.sessions
+                retiredLanes = document.retiredLanes
+                storedLaneIDs = document.storedLaneIDs ?? [:]
+                legacyImported = document.legacyImported
+                bookmarksImported = document.bookmarksImported ?? false
+                codecNoticeTabIDs = document.codecNoticeTabIDs ?? []
+                dismissedCodecHosts = document.dismissedCodecHosts ?? []
+                tabs = document.tabs.map { stored in
+                    var tab = stored.tab
+                    if stored.faviconFile == "\(tab.id.uuidString).png" {
+                        tab.faviconPNG = try? Data(contentsOf: storageURL.deletingLastPathComponent()
+                            .appendingPathComponent("favicons/\(tab.id.uuidString).png"))
+                    }
+                    return tab
+                }
+                var favoriteURLs = Set<String>()
+                var favoriteIDs = Set<UUID>()
+                favorites = (document.favorites ?? []).sorted { $0.favorite.order < $1.favorite.order }.compactMap { stored in
+                    var favorite = stored.favorite
+                    let key = Self.favoriteURLKey(favorite.url)
+                    guard !favoriteURLs.contains(key), !favoriteIDs.contains(favorite.id) else { return nil }
+                    favoriteURLs.insert(key)
+                    favoriteIDs.insert(favorite.id)
+                    let filename = "favorite-\(favorite.id.uuidString).png"
+                    if stored.faviconFile == filename {
+                        favorite.faviconPNG = try? Data(contentsOf: storageURL.deletingLastPathComponent()
+                            .appendingPathComponent("favicons/\(filename)"))
+                    }
+                    return favorite
+                }
+                for index in favorites.indices { favorites[index].order = index }
+            } catch {
+                writable = false // Never overwrite a corrupt or newer-schema document.
+                persistenceError = "Browser registry load failed: \(error.localizedDescription)"
+            }
+        }
+        if !spaces.contains(where: \.isSessionSpace) {
+            spaces.append(BrowserSpace(id: Self.sessionSpaceID, name: "Session space", folders: [], isSessionSpace: true))
+        }
+        if !exists && tabs.isEmpty && spaces.allSatisfy(\.isSessionSpace) {
+            spaces.insert(BrowserSpace(id: UUID(), name: "一般", folders: [BrowserFolder(id: UUID(), name: "新資料夾", bookmarks: [])], isSessionSpace: false), at: 0)
+        }
+        let inbox = legacyURL ?? storageURL?.deletingLastPathComponent().appendingPathComponent("browserLanesBySession.json")
+        if writable, let inbox, FileManager.default.fileExists(atPath: inbox.path) {
+            do { try migrateLegacy(at: inbox) }
+            catch { persistenceError = "Browser migration failed: \(error.localizedDescription)" }
+        }
+        if !exists && writable { changed() }
+        terminationObservation = NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                do { try self.flush() } catch { self.persistenceError = error.localizedDescription }
+            }
+    }
+
+    private static var chatInspectorRegistries: [ObjectIdentifier: BrowserTabRegistry] = [:]
+
+    /// ChatPage 是 struct，SwiftUI 每次重建都會重跑 init。每次都新建一個 registry
+    /// 會讓 StateObject 留住的第一個 store 和後來的 runtime 綁到不同物件，導覽狀態
+    /// 就寫到看不到的那一份；同一個來源 registry 只解析一次。
+    static func chatInspectorRegistry(source: BrowserTabRegistry) -> BrowserTabRegistry {
+        let key = ObjectIdentifier(source)
+        if let existing = chatInspectorRegistries[key] { return existing }
+        let created = makeChatInspectorRegistry(source: source)
+        chatInspectorRegistries[key] = created
+        return created
+    }
+
+    /// PR4b：Chat 旁瀏覽器一律從自己的空 registry 開始。PR #4 的「首次啟動快照遷移」
+    /// 會把獨立 Browser 的分頁整批抄過來，使用者看到的就是 X／OpenAI 出現在 Chat 裡；
+    /// 這裡直接不抄，來源 registry 依舊只讀不寫。
+    static func makeChatInspectorRegistry(source: BrowserTabRegistry,
+                                          store: URL = chatInspectorURL) -> BrowserTabRegistry {
+        discardMigratedChatInspectorStoreIfNeeded(store: store)
+        let registry = BrowserTabRegistry(storageURL: store)
+        // source 只用來確認呼叫端沒有把同一份 registry 當成來源；不讀它的分頁。
+        guard source !== registry else { return registry }
+        return registry
+    }
+
+    /// 升級時做一次：上一版遷移出來的 chat-tabs.json 整份移開。分頁沒有記錄「在哪一邊
+    /// 建立」，分不出來源就全部清成空的（Chat 瀏覽器開起來是一個新分頁），舊檔備份成
+    /// `chat-tabs.json.pre-pr4b`。獨立 Browser 的 tabs.json 完全不碰。
+    static func discardMigratedChatInspectorStoreIfNeeded(store: URL = chatInspectorURL,
+                                                          fileManager: FileManager = .default) {
+        let folder = store.deletingLastPathComponent()
+        let migrated = folder.appendingPathComponent(chatInspectorMigrationURL.lastPathComponent)
+        let cleaned = folder.appendingPathComponent(chatInspectorCleanupURL.lastPathComponent)
+        guard !fileManager.fileExists(atPath: cleaned.path) else { return }
+        if fileManager.fileExists(atPath: migrated.path) {
+            if fileManager.fileExists(atPath: store.path) {
+                let backup = store.appendingPathExtension("pre-pr4b")
+                try? fileManager.removeItem(at: backup)
+                try? fileManager.moveItem(at: store, to: backup)
+            }
+            try? fileManager.removeItem(at: migrated)
+        }
+        try? fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Data("pr4b\n".utf8).write(to: cleaned, options: .atomic)
+    }
+
+    func tabs(ownedBy owner: BrowserTabOwner) -> [BrowserTab] { tabs.filter { $0.owner == owner } }
+
+    /// Called only for a current human CEF page's boolean codec result.
+    /// Reserve before awaiting Island so duplicate callbacks cannot enqueue twice.
+    func reserveCodecNotice(tabID: UUID, url: URL) -> Bool {
+        guard let tab = tabs.first(where: { $0.id == tabID }),
+              tab.url == url, !tab.usesAgentContext,
+              let host = Self.codecNoticeHost(url),
+              !dismissedCodecHosts.contains(host),
+              !pendingCodecHosts.contains(host),
+              !codecNoticeTabIDs.contains(tabID) else { return false }
+        if case .bot = tab.owner { return false }
+        codecNoticeTabIDs.insert(tabID)
+        pendingCodecHosts.insert(host)
+        changed()
+        return true
+    }
+
+    func dismissCodecNotice(url: URL) {
+        guard let host = Self.codecNoticeHost(url) else { return }
+        dismissedCodecHosts.insert(host)
+        changed()
+    }
+
+    func finishCodecNotice(url: URL) {
+        guard let host = Self.codecNoticeHost(url) else { return }
+        pendingCodecHosts.remove(host)
+    }
+
+    private static func codecNoticeHost(_ url: URL) -> String? {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.user == nil, url.password == nil,
+              let host = url.host?.lowercased(), !host.isEmpty else { return nil }
+        return host
+    }
+    /// Public tab UUIDs differ from legacy chat lane IDs used by the CEF host.
+    /// Resolve only current records; a moved workspace tab uses its UUID.
+    func runtimeTabID(for id: UUID) -> String? {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return nil }
+        func key(_ tab: BrowserTab) -> String {
+            if case .chatSession = tab.owner { return laneIdentities[tab.id]?.rawID ?? tab.id.uuidString }
+            return tab.id.uuidString
+        }
+        let runtimeID = key(tab)
+        // Legacy imports can contain the same raw ID in different sessions.
+        // CEF callbacks only carry this ID: ambiguity must never select another chat's page.
+        guard !tabs.contains(where: { $0.id != id && key($0) == runtimeID }) else { return nil }
+        return runtimeID
+    }
+    private func accepts(_ owner: BrowserTabOwner) -> Bool {
+        if case let .workSpace(id) = owner { return spaces.contains { $0.id == id && !$0.isSessionSpace } }
+        return true
+    }
+    @discardableResult
+    func openTab(owner: BrowserTabOwner, url: URL? = nil, title: String = "新分頁", folderID: UUID? = nil,
+                 isAgentTab: Bool = false, bookmarkID: UUID? = nil) -> BrowserTab {
+        let now = Date()
+        let tab = BrowserTab(id: UUID(), owner: owner, url: url, title: title, isPinned: false,
+                             isSleeping: true, lastActiveAt: now, createdAt: now, folderID: folderID,
+                             bookmarkID: bookmarkID, isAgentTab: isAgentTab ? true : nil)
+        guard accepts(owner) else { return tab } // Session space is a read-only aggregate, never an owner.
+        if case let .chatSession(sessionID) = owner {
+            laneIdentities[tab.id] = LaneIdentity(sessionID: sessionID, rawID: tab.id.uuidString, binding: .unboundReadOnly)
+        }
+        tabs.append(tab)
+        changed()
+        return tab
+    }
+
+    @discardableResult
+    func openBookmark(_ id: UUID, folderID: UUID, owner: BrowserTabOwner) -> BrowserTab? {
+        guard let (s, f) = folderLocation(folderID), owner == .workSpace(spaceID: spaces[s].id),
+              let bookmark = spaces[s].folders[f].bookmarks.first(where: { $0.id == id }) else { return nil }
+        if let existing = tabs.first(where: { $0.owner == owner && $0.bookmarkID == id }) {
+            select(existing.id)
+            return existing
+        }
+        return openTab(owner: owner, url: bookmark.url, title: bookmark.title, folderID: folderID, bookmarkID: id)
+    }
+
+    func setLoading(_ id: UUID, _ loading: Bool) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        let changed = loading ? loadingTabIDs.insert(id).inserted : loadingTabIDs.remove(id) != nil
+        if changed { changes.send() }
+    }
+
+    /// AI navigation selects an isolated tab; it never converts the selected human tab.
+    func tabForAgentNavigation(ownedBy owner: BrowserTabOwner) -> BrowserTab? {
+        if case .workSpace = owner { return nil }
+        let tab = selectedTab(ownedBy: owner).flatMap { $0.usesAgentContext ? $0 : nil }
+            ?? tabs(ownedBy: owner).filter(\.usesAgentContext).max { $0.lastActiveAt < $1.lastActiveAt }
+            ?? openTab(owner: owner, title: "AI 分頁", isAgentTab: true)
+        select(tab.id)
+        return tab
+    }
+    func selectedTab(ownedBy owner: BrowserTabOwner) -> BrowserTab? {
+        let owned = tabs(ownedBy: owner)
+        if case let .chatSession(sessionID) = owner,
+           let selected = sessions[sessionID]?.selectedLaneID,
+           let tab = owned.first(where: { (laneIdentities[$0.id]?.rawID ?? $0.id.uuidString) == selected.rawValue }) {
+            return tab
+        }
+        return owned.max { $0.lastActiveAt < $1.lastActiveAt }
+    }
+
+    func select(_ id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        if case let .chatSession(sessionID) = tab.owner {
+            var state = sessions[sessionID] ?? SessionState(schemaVersion: 1, maximumLaneCount: 8,
+                selectedLaneID: nil, updatedAt: Date())
+            state.selectedLaneID = TatwoBrowserLaneID(rawValue: laneIdentities[id]?.rawID ?? id.uuidString)
+            state.updatedAt = Date()
+            sessions[sessionID] = state
+        }
+        touch(id)
+    }
+
+    func close(_ id: UUID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        rememberClosed(tab)
+        tabs.removeAll { $0.id == id }
+        loadingTabIDs.remove(id)
+        removeEmptySession(tab.owner)
+        changed()
+    }
+    func closeAll(ownedBy owner: BrowserTabOwner) {
+        for tab in tabs(ownedBy: owner) { rememberClosed(tab); loadingTabIDs.remove(tab.id) }
+        tabs.removeAll { $0.owner == owner }
+        if case let .chatSession(id) = owner { sessions.removeValue(forKey: id) }
+        changed()
+    }
+    func move(_ id: UUID, to owner: BrowserTabOwner) {
+        guard accepts(owner), let index = tabs.firstIndex(where: { $0.id == id }), tabs[index].owner != owner else { return }
+        // Moving a credential-bearing AI tab into a human space must not relabel its context.
+        if tabs[index].usesAgentContext, case .workSpace = owner { return }
+        let previous = tabs[index].owner
+        if case let .chatSession(sessionID) = previous {
+            retiredLanes[sessionID, default: []].insert(laneIdentities[id]?.rawID ?? id.uuidString)
+        }
+        // A goal binding belongs to its original chat, not to the destination session.
+        if case let .chatSession(sessionID) = owner {
+            laneIdentities[id] = LaneIdentity(sessionID: sessionID, rawID: id.uuidString, binding: .unboundReadOnly)
+        }
+        tabs[index].owner = owner
+        tabs[index].bookmarkID = nil
+        tabs[index].folderID = nil
+        removeEmptySession(previous)
+        changed()
+    }
+    private func removeEmptySession(_ owner: BrowserTabOwner) {
+        if case let .chatSession(id) = owner, tabs(ownedBy: owner).isEmpty { sessions.removeValue(forKey: id) }
+    }
+    func update(_ id: UUID, url: URL?, title: String, favicon: Data?) {
+        guard let tab = tabs.first(where: { $0.id == id }),
+              tab.url != url || tab.title != title || tab.faviconPNG != favicon else { return }
+        edit(id) { $0.url = url; $0.title = title; $0.faviconPNG = favicon }
+    }
+    func markSleeping(_ id: UUID, _ sleeping: Bool) {
+        if sleeping { loadingTabIDs.remove(id) }
+        edit(id) { $0.isSleeping = sleeping }
+    }
+    /// Disk records describe tabs, not live engine instances. Call once before any launch surface mounts.
+    func prepareForLaunch() {
+        for index in tabs.indices { tabs[index].isSleeping = true }
+        if !tabs.isEmpty { changed() }
+    }
+    func touch(_ id: UUID) { edit(id) { $0.lastActiveAt = Date() } }
+    func setPinned(_ id: UUID, _ pinned: Bool) { edit(id) { $0.isPinned = pinned } }
+
+    /// Favorites are URL shortcuts, not bookmark/tab identities. Queries remain significant.
+    nonisolated static func favoriteURLKey(_ url: URL) -> String {
+        guard var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        parts.fragment = nil
+        while parts.percentEncodedPath.hasSuffix("/") { parts.percentEncodedPath.removeLast() }
+        return parts.string ?? url.absoluteString
+    }
+
+    func favorite(for url: URL) -> BrowserFavorite? {
+        favorites.first { Self.favoriteURLKey($0.url) == Self.favoriteURLKey(url) }
+    }
+
+    @discardableResult
+    func addFavorite(url: URL, title: String, faviconPNG: Data? = nil) -> BrowserFavorite {
+        if let existing = favorite(for: url) { return existing }
+        let favorite = BrowserFavorite(id: UUID(), url: url, title: title,
+                                       faviconPNG: faviconPNG, order: favorites.count)
+        favorites.append(favorite)
+        changed()
+        return favorite
+    }
+
+    @discardableResult
+    func addFavorite(tabID: UUID) -> BrowserFavorite? {
+        guard let tab = tabs.first(where: { $0.id == tabID }), let url = tab.url else { return nil }
+        return addFavorite(url: url, title: tab.title, faviconPNG: tab.faviconPNG)
+    }
+
+    @discardableResult
+    func addFavorite(bookmarkID: UUID) -> BrowserFavorite? {
+        guard let bookmark = spaces.flatMap(\.folders).flatMap(\.bookmarks).first(where: { $0.id == bookmarkID }) else { return nil }
+        let icon = tabs.first { $0.bookmarkID == bookmarkID }?.faviconPNG
+            ?? tabs.first { $0.url.map(Self.favoriteURLKey) == Self.favoriteURLKey(bookmark.url) }?.faviconPNG
+        return addFavorite(url: bookmark.url, title: bookmark.title, faviconPNG: icon)
+    }
+
+    func removeFavorite(_ id: UUID) {
+        guard favorites.contains(where: { $0.id == id }) else { return }
+        favorites.removeAll { $0.id == id }
+        for index in favorites.indices { favorites[index].order = index }
+        for index in tabs.indices where tabs[index].favoriteID == id { tabs[index].favoriteID = nil }   // 還開著的分頁回到下面的清單，不關掉
+        changed()
+    }
+
+    /// Merge an exported snapshot without replacing tabs, folders or existing favorites.
+    @discardableResult
+    func importFavorites(_ incoming: [BrowserFavorite]) -> Int {
+        var added = 0
+        for value in incoming.sorted(by: { $0.order < $1.order }) where favorite(for: value.url) == nil {
+            let id = favorites.contains { $0.id == value.id } ? UUID() : value.id
+            favorites.append(BrowserFavorite(id: id, url: value.url, title: value.title,
+                                             faviconPNG: value.faviconPNG, order: favorites.count))
+            added += 1
+        }
+        if added > 0 { changed() }
+        return added
+    }
+
+    /// nil appends to the end; moving before itself is a no-op.
+    @discardableResult
+    func moveFavorite(_ id: UUID, before targetID: UUID?) -> Bool {
+        guard id != targetID, let source = favorites.firstIndex(where: { $0.id == id }),
+              targetID == nil || favorites.contains(where: { $0.id == targetID }) else { return false }
+        let favorite = favorites.remove(at: source)
+        let destination = targetID.flatMap { target in favorites.firstIndex { $0.id == target } } ?? favorites.count
+        favorites.insert(favorite, at: destination)
+        for index in favorites.indices { favorites[index].order = index }
+        changed()
+        return true
+    }
+
+    @discardableResult
+    func openFavorite(_ id: UUID, owner: BrowserTabOwner) -> BrowserTab? {
+        guard let favorite = favorites.first(where: { $0.id == id }) else { return nil }
+        let key = Self.favoriteURLKey(favorite.url)
+        // Prefer the current space, but do not duplicate a tab already open in another owner.
+        // 先找已經屬於這個珍藏的分頁（就算它已經導覽到別的網址，仍然是這個珍藏的分頁）。
+        let bound = tabs.filter { $0.favoriteID == id }
+        if let existing = bound.first(where: { $0.owner == owner }) ?? bound.first {
+            select(existing.id)
+            return existing
+        }
+        let matching = tabs.filter {
+            if case .bot = $0.owner { return false } // Bot rows have no selectable human surface.
+            return $0.bookmarkID == nil && $0.favoriteID == nil && $0.url.map(Self.favoriteURLKey) == key
+        }
+        if let existing = matching.first(where: { $0.owner == owner }) ?? matching.first {
+            edit(existing.id) { $0.favoriteID = id }   // 已經開著同一個網址：收進珍藏，不再列在下面
+            select(existing.id)
+            return tabs.first { $0.id == existing.id }
+        }
+        guard accepts(owner) else { return nil }
+        let tab = openTab(owner: owner, url: favorite.url, title: favorite.title)
+        edit(tab.id) { $0.favoriteID = id }
+        update(tab.id, url: favorite.url, title: favorite.title, favicon: favorite.faviconPNG)
+        return tabs.first { $0.id == tab.id }
+    }
+    private func edit(_ id: UUID, _ body: (inout BrowserTab) -> Void) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        body(&tabs[index]); changed()
+    }
+
+    @discardableResult
+    func addSpace(name: String) -> BrowserSpace {
+        let space = BrowserSpace(id: UUID(), name: name, folders: [], isSessionSpace: false)
+        spaces.append(space); changed(); return space
+    }
+    func renameSpace(_ id: UUID, to name: String) {
+        guard let i = spaces.firstIndex(where: { $0.id == id && !$0.isSessionSpace }),
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        spaces[i].name = name.trimmingCharacters(in: .whitespacesAndNewlines); changed()
+    }
+    func setSpaceColor(_ id: UUID, _ color: String?) {
+        guard let i = spaces.firstIndex(where: { $0.id == id && !$0.isSessionSpace }) else { return }
+        spaces[i].color = color; changed()
+    }
+    /// W112：刪除空間走封存——先把空間（資料夾、書籤）與當時開著的分頁網址寫到 tabs.json 旁的 archived-spaces/，寫成功才移除。
+    @discardableResult
+    func archiveAndRemoveSpace(_ id: UUID) -> URL? {
+        guard let space = spaces.first(where: { $0.id == id && !$0.isSessionSpace }),
+              spaces.filter({ !$0.isSessionSpace }).count > 1 else { return nil }   // 最後一個一般空間不給刪
+        struct Archive: Encodable { let archivedAt: Date; let space: BrowserSpace; let openTabs: [String] }
+        let open = tabs(ownedBy: .workSpace(spaceID: id)).compactMap { $0.url?.absoluteString }
+        var destination: URL?
+        if let storageURL {
+            let folder = storageURL.deletingLastPathComponent().appendingPathComponent("archived-spaces", isDirectory: true)
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+            let file = folder.appendingPathComponent("\(stamp)-\(id.uuidString).json")
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+            guard (try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)) != nil,
+                  let data = try? encoder.encode(Archive(archivedAt: Date(), space: space, openTabs: open)),
+                  (try? data.write(to: file, options: .atomic)) != nil else { return nil }
+            destination = file
+        }
+        removeSpace(id, closingTabs: true)
+        return destination
+    }
+    func removeSpace(_ id: UUID, closingTabs: Bool) {
+        guard spaces.contains(where: { $0.id == id && !$0.isSessionSpace }) else { return }
+        // With closingTabs=false preserve the space until its tabs have been moved by the caller.
+        guard closingTabs || tabs(ownedBy: .workSpace(spaceID: id)).isEmpty else { return }
+        tabs.removeAll { $0.owner == .workSpace(spaceID: id) }
+        spaces.removeAll { $0.id == id }; changed()
+    }
+    @discardableResult
+    func addFolder(spaceID: UUID, name: String = "新資料夾") -> BrowserFolder? {
+        guard let i = spaces.firstIndex(where: { $0.id == spaceID && !$0.isSessionSpace }) else { return nil }
+        let folder = BrowserFolder(id: UUID(), name: name, bookmarks: [])
+        spaces[i].folders.append(folder); changed(); return folder
+    }
+    private func folderLocation(_ id: UUID) -> (Int, Int)? {
+        for (s, space) in spaces.enumerated() where !space.isSessionSpace {
+            if let f = space.folders.firstIndex(where: { $0.id == id }) { return (s, f) }
+        }
+        return nil
+    }
+    /// W112：書籤右鍵改名。
+    func renameBookmark(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        for s in spaces.indices { for f in spaces[s].folders.indices {
+            if let b = spaces[s].folders[f].bookmarks.firstIndex(where: { $0.id == id }) { spaces[s].folders[f].bookmarks[b].title = name; changed(); return }
+        } }
+    }
+    func renameFolder(_ id: UUID, to name: String) {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, let (s, f) = folderLocation(id) else { return }
+        spaces[s].folders[f].name = name; changed()
+    }
+    @discardableResult
+    func addBookmark(folderID: UUID, url: URL, title: String) -> BrowserBookmark? {
+        guard let (s, f) = folderLocation(folderID) else { return nil }
+        let bookmark = BrowserBookmark(id: UUID(), url: url, title: title)
+        spaces[s].folders[f].bookmarks.append(bookmark); changed(); return bookmark
+    }
+    /// W115（自測 .013：分頁拖進資料夾後「複製了一份」，下面那一列還在）：存成書籤的那個分頁就歸這個書籤，搬進書籤列。
+    func bind(tab id: UUID, toBookmark bookmarkID: UUID, folderID: UUID) {
+        edit(id) { tab in
+            guard tab.bookmarkID == nil, tab.favoriteID == nil else { return }
+            tab.bookmarkID = bookmarkID; tab.folderID = folderID; tab.isPinned = false
+        }
+    }
+    func removeBookmark(_ id: UUID) {
+        for s in spaces.indices {
+            for f in spaces[s].folders.indices { spaces[s].folders[f].bookmarks.removeAll { $0.id == id } }
+        }
+        // Deleting a saved row keeps its open page, now as an ordinary tab.
+        for i in tabs.indices where tabs[i].bookmarkID == id { tabs[i].bookmarkID = nil }
+        changed()
+    }
+    @discardableResult
+    func moveTabToBookmark(tabID: UUID, folderID: UUID) -> Bool {
+        guard let tab = tabs.first(where: { $0.id == tabID }), let url = tab.url,
+              addBookmark(folderID: folderID, url: url, title: tab.title) != nil else { return false }
+        close(tabID); return true
+    }
+
+    var openSessions: [OpenBrowserSessionSummary] {
+        Set(tabs.compactMap { tab -> String? in
+            if case let .chatSession(id) = tab.owner { return id }; return nil
+        }).compactMap { id in
+            let owned = tabs(ownedBy: .chatSession(sessionID: id))
+            let urls = owned.compactMap(\.url)
+            guard !owned.isEmpty else { return nil }
+            let title = titleProvider(id)
+            return OpenBrowserSessionSummary(sessionID: id, threadTitle: title.threadTitle, projectName: title.projectName,
+                laneCount: owned.count, urls: urls, updatedAt: max(owned.map(\.lastActiveAt).max() ?? .distantPast, sessions[id]?.updatedAt ?? .distantPast))
+        }.sorted { $0.updatedAt == $1.updatedAt ? $0.sessionID < $1.sessionID : $0.updatedAt > $1.updatedAt }
+    }
+
+    var chatSessionIDs: Set<String> {
+        Set(sessions.keys).union(tabs.compactMap { if case let .chatSession(id) = $0.owner { return id }; return nil })
+    }
+    func laneSnapshot(for sessionID: String) -> BrowserLaneSnapshot? {
+        let owned = tabs(ownedBy: .chatSession(sessionID: sessionID))
+        guard !owned.isEmpty || sessions[sessionID] != nil else { return nil }
+        let state = sessions[sessionID]
+        let lanes = owned.map { tab in
+            TatwoBrowserLane(id: TatwoBrowserLaneID(rawValue: laneIdentities[tab.id]?.rawID ?? tab.id.uuidString),
+                binding: laneIdentities[tab.id]?.binding ?? .unboundReadOnly, title: tab.title, isPinned: tab.isPinned,
+                createdAt: tab.createdAt, lastActiveAt: tab.lastActiveAt)
+        }
+        let urls = Dictionary(uniqueKeysWithValues: zip(lanes, owned).compactMap { lane, tab in tab.url.map { (lane.id.rawValue, $0) } })
+        return BrowserLaneSnapshot(laneState: TatwoBrowserLaneState(schemaVersion: state?.schemaVersion ?? 1,
+            maximumLaneCount: max(state?.maximumLaneCount ?? 8, lanes.count), lanes: lanes, selectedLaneID: state?.selectedLaneID),
+            laneURLs: urls, updatedAt: max(state?.updatedAt ?? .distantPast, owned.map(\.lastActiveAt).max() ?? .distantPast))
+    }
+    func storeLanes(_ snapshot: BrowserLaneSnapshot, for sessionID: String) {
+        if let old = laneSnapshot(for: sessionID), old.laneState == snapshot.laneState, old.laneURLs == snapshot.laneURLs { return }
+        let owner = BrowserTabOwner.chatSession(sessionID: sessionID)
+        var replacement: [BrowserTab] = []
+        for lane in snapshot.laneState.lanes {
+            let known = laneIdentities.first { $0.value.sessionID == sessionID && $0.value.rawID == lane.id.rawValue }?.key
+                ?? tabs.first { $0.owner == owner && $0.id.uuidString == lane.id.rawValue }?.id
+            // Returning a tab to its original chat makes its identity valid again.
+            if retiredLanes[sessionID]?.contains(lane.id.rawValue) == true,
+               !tabs.contains(where: { $0.id == known && $0.owner == owner }) { continue }
+            // A stale embedded panel must not resurrect closed tabs or steal moved tabs back.
+            if let known, !tabs.contains(where: { $0.id == known && $0.owner == owner }) { continue }
+            let id = known ?? UUID()
+            let old = tabs.first { $0.id == id }
+            laneIdentities[id] = LaneIdentity(sessionID: sessionID, rawID: lane.id.rawValue, binding: lane.binding)
+            replacement.append(BrowserTab(id: id, owner: owner, url: snapshot.laneURLs[lane.id.rawValue], title: lane.title,
+                faviconPNG: old?.faviconPNG, isPinned: lane.isPinned, isSleeping: old?.isSleeping ?? false,
+                lastActiveAt: lane.lastActiveAt, createdAt: lane.createdAt, isAgentTab: old?.isAgentTab))
+        }
+        if replacement.isEmpty, !snapshot.laneState.lanes.isEmpty, tabs(ownedBy: owner).isEmpty { return }
+        // Tabs the panel never reported (e.g. moved in from another owner) are kept; the panel
+        // picks them up on its next laneSnapshot read and only then may close them.
+        let seen = storedLaneIDs[sessionID] ?? []
+        let replacementIDs = Set(replacement.map(\.id))
+        let kept = tabs.filter { tab in
+            tab.owner == owner && !replacementIDs.contains(tab.id)
+                && !seen.contains(laneIdentities[tab.id]?.rawID ?? tab.id.uuidString)
+        }
+        tabs.removeAll { $0.owner == owner }
+        tabs.append(contentsOf: replacement)
+        tabs.append(contentsOf: kept)
+        storedLaneIDs[sessionID] = Set(replacement.compactMap { laneIdentities[$0.id]?.rawID })
+        sessions[sessionID] = SessionState(schemaVersion: snapshot.laneState.schemaVersion,
+            maximumLaneCount: snapshot.laneState.maximumLaneCount, selectedLaneID: snapshot.laneState.selectedLaneID, updatedAt: snapshot.updatedAt)
+        changed()
+    }
+
+    private func changed() {
+        changes.send()
+        pendingSave?.cancel()
+        guard storageURL != nil, writable else { return }
+        pendingSave = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+            guard let self, let storageURL = self.storageURL else { return }
+            // Encode and write off the main actor; only the value snapshot is taken here.
+            let payload = self.savePayload()
+            let result = await Task.detached(priority: .utility) { () -> String? in
+                do { try Self.write(payload, to: storageURL); return nil }
+                catch { return error.localizedDescription }
+            }.value
+            self.persistenceError = result.map { "Browser registry save failed: \($0)" }
+        }
+    }
+    private struct SavePayload: Sendable {
+        var documentData: Data
+        var favicons: [(file: String, data: Data)]
+    }
+    private func savePayload() -> SavePayload {
+        var favicons: [(String, Data)] = []
+        let stored = tabs.map { tab -> StoredTab in
+            var copy = tab
+            copy.faviconPNG = nil
+            let filename = tab.faviconPNG.map { _ in "\(tab.id.uuidString).png" }
+            if let data = tab.faviconPNG, let filename { favicons.append((filename, data)) }
+            return StoredTab(tab: copy, faviconFile: filename)
+        }
+        let storedFavorites = favorites.map { favorite -> StoredFavorite in
+            var copy = favorite
+            copy.faviconPNG = nil
+            let filename = favorite.faviconPNG.map { _ in "favorite-\(favorite.id.uuidString).png" }
+            if let data = favorite.faviconPNG, let filename { favicons.append((filename, data)) }
+            return StoredFavorite(favorite: copy, faviconFile: filename)
+        }
+        let document = Document(spaces: spaces, tabs: stored, laneIdentities: laneIdentities, sessions: sessions,
+                                retiredLanes: retiredLanes, legacyImported: legacyImported, bookmarksImported: bookmarksImported, storedLaneIDs: storedLaneIDs,
+                                codecNoticeTabIDs: codecNoticeTabIDs.intersection(Set(tabs.map(\.id))),
+                                dismissedCodecHosts: dismissedCodecHosts, favorites: storedFavorites)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // Encoding a value type cannot fail here except for programmer error; surface it as empty data.
+        return SavePayload(documentData: (try? encoder.encode(document)) ?? Data(), favicons: favicons.map { (file: $0.0, data: $0.1) })
+    }
+    private nonisolated static func write(_ payload: SavePayload, to storageURL: URL) throws {
+        let directory = storageURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("favicons"), withIntermediateDirectories: true)
+        for favicon in payload.favicons {
+            try favicon.data.write(to: directory.appendingPathComponent("favicons/\(favicon.file)"), options: .atomic)
+        }
+        guard !payload.documentData.isEmpty else { throw CocoaError(.coderInvalidValue) }
+        try payload.documentData.write(to: storageURL, options: .atomic)
+    }
+    /// Synchronous durability barrier for migration, tests and app termination.
+    func flush() throws {
+        pendingSave?.cancel(); pendingSave = nil
+        guard let storageURL else { return }
+        guard writable else { throw CocoaError(.fileWriteNoPermission) }
+        try Self.write(savePayload(), to: storageURL)
+        persistenceError = nil
+    }
+    private struct LegacyBookmark: Decodable {
+        let id: UUID
+        let profileKey: UUID
+        let url: String
+        let title: String
+        let createdAt: Date
+    }
+
+    /// Called once startup has loaded thread titles. Commit before rename; a rename failure
+    /// can retry after restart without importing twice. Unknown profiles are never discarded.
+    func migrateLegacyBookmarks(at url: URL, sessionIDs: Set<String>) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard storageURL != nil, writable else { throw CocoaError(.fileWriteNoPermission) }
+        let backup = url.appendingPathExtension("migrated")
+        guard !FileManager.default.fileExists(atPath: backup.path) else { throw CocoaError(.fileWriteFileExists) }
+        if !bookmarksImported {
+            let data = try Data(contentsOf: url)
+            guard data.count <= 8 * 1024 * 1024 else { throw CocoaError(.coderReadCorrupt) }
+            let bookmarks = try JSONDecoder().decode([LegacyBookmark].self, from: data)
+            var profiles: [UUID: String] = [:]
+            for id in sessionIDs.union(chatSessionIDs).sorted() {
+                if let identity = TatwoBrowserProfileIdentity(sessionID: id) { profiles[identity.dataStoreIdentifier] = id }
+            }
+            guard Set(bookmarks.map(\.id)).count == bookmarks.count,
+                  bookmarks.allSatisfy({ profiles[$0.profileKey] != nil && URL(string: $0.url) != nil }) else {
+                throw CocoaError(.coderReadCorrupt)
+            }
+            let previousSpaces = spaces
+            if !bookmarks.isEmpty {
+                if !spaces.contains(where: { !$0.isSessionSpace }) { _ = addSpace(name: "一般") }
+                let index = spaces.firstIndex { !$0.isSessionSpace }!
+                for (profile, values) in Dictionary(grouping: bookmarks, by: \.profileKey).sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+                    let title = titleProvider(profiles[profile]!).threadTitle
+                    spaces[index].folders.append(BrowserFolder(id: UUID(), name: "chat 書籤 · \(title)",
+                        bookmarks: values.sorted { $0.createdAt < $1.createdAt }.map {
+                            BrowserBookmark(id: $0.id, url: URL(string: $0.url)!, title: $0.title)
+                        }))
+                }
+            }
+            bookmarksImported = true
+            do { try flush() }
+            catch { spaces = previousSpaces; bookmarksImported = false; throw error }
+            changes.send()
+        } else { try flush() }
+        try FileManager.default.moveItem(at: url, to: backup)
+    }
+
+    struct RemovedBookmark {
+        let bookmark: BrowserBookmark
+        let folderID: UUID
+        let index: Int
+        var boundTabIDs: Set<UUID> = []
+    }
+    func bookmarkRemoval(_ id: UUID) -> RemovedBookmark? {
+        for space in spaces where !space.isSessionSpace {
+            for folder in space.folders {
+                if let index = folder.bookmarks.firstIndex(where: { $0.id == id }) {
+                    return RemovedBookmark(bookmark: folder.bookmarks[index], folderID: folder.id, index: index,
+                        boundTabIDs: Set(tabs.filter { $0.bookmarkID == id && $0.owner == .workSpace(spaceID: space.id) }.map(\.id)))
+                }
+            }
+        }
+        return nil
+    }
+    @discardableResult
+    func restoreBookmark(_ removed: RemovedBookmark) -> Bool {
+        guard let (s, f) = folderLocation(removed.folderID), bookmarkRemoval(removed.bookmark.id) == nil else { return false }
+        spaces[s].folders[f].bookmarks.insert(removed.bookmark, at: min(removed.index, spaces[s].folders[f].bookmarks.count))
+        for i in tabs.indices where removed.boundTabIDs.contains(tabs[i].id)
+            && tabs[i].owner == .workSpace(spaceID: spaces[s].id) && tabs[i].bookmarkID == nil {
+            tabs[i].bookmarkID = removed.bookmark.id
+            tabs[i].folderID = removed.folderID
+        }
+        changed()
+        return true
+    }
+
+    func migrateLegacy(at url: URL) throws {
+        guard storageURL != nil, writable else { throw CocoaError(.fileWriteNoPermission) }
+        let backup = url.appendingPathExtension("migrated")
+        guard !FileManager.default.fileExists(atPath: backup.path) else { throw CocoaError(.fileWriteFileExists) }
+        if !legacyImported {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            let legacy: [String: BrowserLaneSnapshot]
+            if let wrapped = try? decoder.decode(LegacyDocument.self, from: data) { legacy = wrapped.browserLanesBySession }
+            else { legacy = try decoder.decode([String: BrowserLaneSnapshot].self, from: data) }
+            // An export must never silently replace (or be discarded over) newer live tabs.
+            for (id, snapshot) in legacy {
+                if let current = laneSnapshot(for: id), current != snapshot { throw CocoaError(.fileWriteFileExists) }
+            }
+            for (id, snapshot) in legacy where laneSnapshot(for: id) == nil { storeLanes(snapshot, for: id) }
+            guard legacy.allSatisfy({ laneSnapshot(for: $0.key) == $0.value }) else {
+                throw CocoaError(.fileWriteFileExists) // Retired identities require explicit reconciliation.
+            }
+            legacyImported = true
+        }
+        try flush() // Commit first; a failed rename is retried without reimporting on next launch.
+        try FileManager.default.moveItem(at: url, to: backup)
+    }
+}
