@@ -49,6 +49,7 @@ test('CLI workbench native fixture: layout, actions and fixed visual set', { tim
   const inputs = [
     'App/Sources/Tatwo2/Visual/TatwoTheme.swift',
     'App/Sources/Tatwo2/Visual/LiquidGlassTokens.swift',
+    'App/Sources/Tatwo2/Visual/WorkspaceSidebarMetrics.swift',
     ...files,
     'tests/fixtures/cli-workbench-checks.swift',
   ];

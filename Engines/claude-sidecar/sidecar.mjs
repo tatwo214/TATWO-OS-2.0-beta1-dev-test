@@ -1,6 +1,6 @@
 // tatwo2 Claude sidecar：一個常駐 Agent SDK session。
 // stdin 每行一個 JSON 指令，stdout 每行一個 JSON 事件。SDK 訊息原樣轉發（ev:"sdk"），不重造。
-//   in : {op:"send", text, uuid?} | {op:"permission", id, allow, message?} | {op:"interrupt"} | {op:"model", model} | {op:"close"}
+//   in : {op:"send", text, uuid?} | {op:"steer", text, uuid, targetTurnUUID, attachments?} | {op:"permission", id, allow, message?} | {op:"interrupt"} | {op:"model", model} | {op:"close"}
 //   out: {ev:"sdk", msg} | {ev:"permission_request", id, tool, input, title?, description?} | {ev:"error", message} | {ev:"closed"}
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import readline from 'node:readline';
@@ -62,6 +62,23 @@ async function* prompts() {
 }
 const push = (m) => { inbox.push(m); const w = wake; wake = null; w?.(); };
 
+let activeTurn;
+let stopping = false;
+const outstanding = new Set();
+const submitted = new Set();
+const steering = new Map();
+const acknowledge = (id, accepted, message, unknown = false) => {
+  const target = steering.get(id);
+  if (!target) return;
+  steering.delete(id);
+  emit({ ev: 'sdk', msg: { type: 'system', subtype: 'steer_result',
+    request_id: id, target_turn_id: target, accepted, message, unknown } });
+};
+const rejectSteer = (cmd, message) => emit({ ev: 'sdk', msg: {
+  type: 'system', subtype: 'steer_result', request_id: cmd.uuid,
+  target_turn_id: cmd.targetTurnUUID, accepted: false, message,
+} });
+
 const pending = new Map();
 const canUseTool = readOnly ? async (tool, input) => (
   readOnlyTools.includes(tool)
@@ -78,6 +95,7 @@ const q = query({
   options: {
     cwd, resume, model, permissionMode: readOnly ? 'dontAsk' : permissionMode,
     includePartialMessages: true,
+    extraArgs: { 'replay-user-messages': null },
     settingSources: readOnly ? [] : ['user', 'project'],
     canUseTool,
     // Normal sessions retain selected MCPs and built-in bridges; read-only never mounts them.
@@ -108,7 +126,24 @@ rl.on('line', async (line) => {
   let cmd; try { cmd = JSON.parse(line); } catch { return emit({ ev: 'error', message: 'bad json: ' + line }); }
   try {
     switch (cmd.op) {
+      case 'steer':
       case 'send': {
+        if (cmd.op === 'steer') {
+          if (stopping || !activeTurn || cmd.targetTurnUUID !== activeTurn) {
+            rejectSteer(cmd, '這一輪已結束或正在停止，請重新送出');
+            break;
+          }
+          if (!cmd.uuid || submitted.has(cmd.uuid)) {
+            rejectSteer(cmd, '重複或無效的插話識別碼');
+            break;
+          }
+          steering.set(cmd.uuid, activeTurn);
+        } else {
+          activeTurn = cmd.uuid;
+          submitted.clear();
+        }
+        submitted.add(cmd.uuid);
+        outstanding.add(cmd.uuid);
         const atts = Array.isArray(cmd.attachments) ? cmd.attachments : [];
         if (atts.length === 0) {
           push({ type: 'user', message: { role: 'user', content: cmd.text }, parent_tool_use_id: null, uuid: cmd.uuid });
@@ -138,7 +173,23 @@ rl.on('line', async (line) => {
         p.resolve(cmd.allow ? { behavior: 'allow', updatedInput: cmd.updatedInput ?? p.input } : { behavior: 'deny', message: cmd.message ?? '使用者拒絕' });
         break;
       }
-      case 'interrupt': await q.interrupt(); break;
+      case 'interrupt': {
+        if (stopping) break;
+        stopping = true;
+        inbox.length = 0;
+        // A native interrupt alone leaves queued user messages runnable. Close
+        // this query after its interrupt receipt so Stop also stops insertions.
+        // The App resumes the saved session in a fresh sidecar on the next send.
+        try { await q.interrupt(); }
+        catch (e) { emit({ ev: 'stderr', line: String(e) }); }
+        q.close();
+        for (const id of steering.keys()) acknowledge(id, false, '已停止，插話送達狀態待確認', true);
+        emit({ ev: 'sdk', msg: { type: 'result', subtype: 'cancelled',
+          client_turn_id: activeTurn, is_error: false, result: '' } });
+        emit({ ev: 'closed' });
+        process.exit(0);
+        break;
+      }
       case 'model': await q.setModel(cmd.model); break;
       case 'mcp_status': {
         const servers = await q.mcpServerStatus();
@@ -153,7 +204,42 @@ rl.on('line', async (line) => {
 rl.on('close', () => { closed = true; push(null); });
 
 (async () => {
-  for await (const msg of q) emit({ ev: 'sdk', msg });
+  for await (const msg of q) {
+    if (stopping) continue;
+    // Replay confirms receipt, not completion. Result UUIDs also cover inputs
+    // coalesced into one native turn (the pinned SDK reports all batch members).
+    const answered = msg.user_message_uuids ?? (msg.user_message_uuid ? [msg.user_message_uuid] : []);
+    if (msg.type === 'result' && answered.length && !answered.some(id => outstanding.has(id))) continue;
+    if (msg.type === 'user' && msg.isReplay && !msg.parent_tool_use_id) acknowledge(msg.uuid, true);
+    if (!msg.parent_tool_use_id) for (const id of answered) acknowledge(id, true);
+    if (msg.type === 'result') {
+      if (msg.is_error) {
+        for (const id of steering.keys()) acknowledge(id, false, '回合失敗，插話送達狀態待確認', true);
+        emit({ ev: 'sdk', msg: { ...msg, client_turn_id: activeTurn } });
+        q.close();
+        break;
+      }
+      if (answered.length) {
+        for (const id of answered) outstanding.delete(id);
+      } else if (outstanding.size <= 1 && steering.size === 0) {
+        outstanding.clear(); // Ordinary turns from older producers.
+      } else {
+        // Do not guess which insertion was answered by an older producer.
+        for (const id of steering.keys()) acknowledge(id, false, '引擎未回報插話識別碼，請確認回覆', true);
+        emit({ ev: 'sdk', msg: { ...msg, client_turn_id: activeTurn,
+          is_error: true, result: '引擎未回報插話回覆的識別碼；請確認對話後重新送出。' } });
+        q.close();
+        break;
+      }
+      if (outstanding.size > 0 || msg.queued_turn_count > 0) {
+        emit({ ev: 'sdk', msg: { type: 'system', subtype: 'turn_continued', client_turn_id: activeTurn } });
+        continue;
+      }
+    }
+    emit({ ev: 'sdk', msg: { ...msg, ...(activeTurn ? { client_turn_id: activeTurn } : {}) } });
+    if (msg.type === 'result') activeTurn = undefined;
+  }
+  if (stopping) return;
   emit({ ev: 'closed' });
   process.exit(0);
-})().catch((e) => { emit({ ev: 'error', message: String(e?.stack || e) }); process.exit(1); });
+})().catch((e) => { if (stopping) return; emit({ ev: 'error', message: String(e?.stack || e) }); process.exit(1); });

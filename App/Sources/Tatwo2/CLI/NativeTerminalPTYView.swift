@@ -48,6 +48,7 @@ final class NativeTerminalPTYNSView: NSView, @preconcurrency TerminalViewDelegat
     private var eventMonitor: Any?
     private var inset: CGFloat = CLIWorkbenchMetrics.inset
     private var focused = false
+    private var palette = NativeTerminalPTYPalette.lightGlass
     private var historyScroll = CLIWorkbenchScrollAccumulator()
     var editingOptions = CLIWorkbenchEditingOptions()
 
@@ -134,14 +135,29 @@ final class NativeTerminalPTYNSView: NSView, @preconcurrency TerminalViewDelegat
     func update(fontSize: CGFloat, inset: CGFloat, palette: NativeTerminalPTYPalette, focused: Bool) {
         if terminal.font.pointSize != fontSize { terminal.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular) }
         self.inset = inset
-        let background = palette.background ?? NSColor(TatwoActivePalette.current.surfaceFill)
-        if terminal.nativeBackgroundColor != background { terminal.nativeBackgroundColor = background }
-        if terminal.nativeForegroundColor != palette.defaultInk { terminal.nativeForegroundColor = palette.defaultInk }
-        layer?.backgroundColor = background.cgColor
+        self.palette = palette
+        applyAppearance()
         let focusChanged = self.focused != focused
         self.focused = focused
         if focusChanged && focused { window?.makeFirstResponder(terminal) }
         needsLayout = true
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyAppearance()
+    }
+
+    private func applyAppearance() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            // SwiftTerm stores resolved RGB values, so dynamic NSColor equality
+            // alone cannot detect an appearance switch.
+            let background = (palette.background ?? NSColor(TatwoActivePalette.current.surfaceFill))
+                .usingColorSpace(.sRGB) ?? .windowBackgroundColor
+            let ink = palette.defaultInk.usingColorSpace(.sRGB) ?? .labelColor
+            terminal.nativeBackgroundColor = background
+            terminal.nativeForegroundColor = ink
+            layer?.backgroundColor = background.cgColor
+        }
     }
     override func layout() {
         super.layout()

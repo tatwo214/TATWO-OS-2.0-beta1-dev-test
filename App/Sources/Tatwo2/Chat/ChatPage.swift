@@ -267,7 +267,7 @@ struct ChatPage: View {
             // settings.json、也會把外部連結佇列吃進來，兩件事都是污染獨立 Browser（/goal 101 G9）。
     }
 
-    private var workspaceBody: some View {
+    private var workspaceLayout: some View {
         VStack(spacing: isPanel ? 10 : 0) {
             if isPanel {
                 topChrome
@@ -609,6 +609,10 @@ struct ChatPage: View {
                 onPRDiscuss: model.returnActivePRToDiscussion)
                 .id(model.activePlanArtifact?.planID)
         }
+    }
+
+    private var workspaceLifecycle: some View {
+        workspaceLayout
         .onAppear {
             model.updateGatewayLiveStatus(gatewayLiveStatus)
             // 容器關閉＝使用者已過 LoopsInterruptGate 確認。這裡除了停 chat runner，
@@ -672,6 +676,10 @@ struct ChatPage: View {
         .onChange(of: browserWorkSpaceStore.sidebarInteractionActive) { _, active in
             if !active { updateChatProjectHover(chatProjectPointerInside) }
         }
+    }
+
+    private var workspaceBody: some View {
+        workspaceLifecycle
         .onReceive(
             NotificationCenter.default.publisher(for: .tatwoOpenSettingsSection)
         ) { notification in

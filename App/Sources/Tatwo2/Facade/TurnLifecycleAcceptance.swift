@@ -16,7 +16,9 @@ enum TurnLifecycleAcceptance {
         import readline from 'node:readline';
         const args = process.argv.slice(2), cwd = args[args.indexOf('--cwd') + 1];
         const emit = msg => console.log(JSON.stringify({ev:'sdk',msg}));
-        let active, prior, timer, rejectedStop = false;
+        const previousCommands = fs.existsSync(cwd+'/lifecycle-commands.jsonl')
+          ? fs.readFileSync(cwd+'/lifecycle-commands.jsonl','utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+        let active, prior = previousCommands.filter(c => c.op === 'send').at(-1)?.uuid, timer, rejectedStop = false;
         const watch = (file, subtype) => {
           clearInterval(timer);
           timer = setInterval(() => {
@@ -115,6 +117,8 @@ enum TurnLifecycleAcceptance {
               engine.transcript(for: thread).contains { $0.text == "fixture stop rejected" && $0.status == "error|停止失敗" }
               && engine.threadRecord(thread)?.subStatus == "running")
         check("background room stays active until confirmation", engine.threadRecord(thread)?.subStatus == "running")
+        check("another ordinary send cannot overlap pending cancellation",
+              !engine.send(threadID: thread, text: "must-not-start", model: "fixture", engine: .codex))
         var unpairedRejected = false
         do { _ = try bridge.callForSelfTest(method: "stop_thread", params: ["threadID": thread.uuidString]) }
         catch { unpairedRejected = String(describing: error).contains("remote_access_disabled") }
@@ -126,21 +130,21 @@ enum TurnLifecycleAcceptance {
         try registry.add(id: "fixture-peer", name: "fixture", host: "fixture.invalid",
                          user: "fixture", publicKeyFingerprint: "SHA256:fixture")
         let requested = try bridge.callForSelfTest(method: "stop_thread", params: ["threadID": thread.uuidString])
-        check("remote stop response distinguishes requested from confirmed",
-              requested["stopRequested"] as? Bool == true && requested["stopped"] as? Bool == false)
+        // The second stop intentionally escalates to forceStop; no native
+        // terminal event is needed after this process has been terminated.
+        check("second stop confirms forced termination",
+              requested["stopRequested"] as? Bool == true && requested["stopped"] as? Bool == true)
         let roomStop = try bridge.callForSelfTest(method: "stop_room",
             params: ["roomID": thread.uuidString, "callerThreadID": parent.uuidString])
-        check("room stop does not falsely acknowledge completion", roomStop["stopped"] as? Bool == false)
+        check("room stop confirms the already terminated process", roomStop["stopped"] as? Bool == true)
         let allStop = try bridge.callForSelfTest(method: "stop_all_rooms",
             params: ["callerThreadID": parent.uuidString])
-        check("stop all rooms also waits for confirmation", allStop["stopped"] as? Bool == false)
-        if engine.isRunning(thread) {
-            check("another ordinary send cannot overlap pending cancellation",
-                  !engine.send(threadID: thread, text: "must-not-start", model: "fixture", engine: .codex))
-        }
+        check("stop all rooms confirms the already terminated process", allStop["stopped"] as? Bool == true)
         try Data().write(to: root.appendingPathComponent("finish-stop"))
         try await until("cancelled terminal") { !engine.isRunning(thread) }
-        // Consume both terminal and immediately following late system metadata.
+        // Force-stop closes the process before it can emit metadata. Exercise
+        // the same late metadata path explicitly, without restarting work.
+        engine.handleSDK(thread, ["type": "system", "subtype": "model", "model": "fixture-native"])
         try await Task.sleep(for: .milliseconds(50))
         check("confirmed stop clears view model running", !model.isRunning)
         check("late system metadata does not resurrect background work", engine.threadRecord(thread)?.subStatus == "done")

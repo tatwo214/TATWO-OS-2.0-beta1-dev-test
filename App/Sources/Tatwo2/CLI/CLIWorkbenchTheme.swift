@@ -14,8 +14,8 @@ struct CLIWorkbenchAppearance {
         Self(canvas: palette.canvasBase, surface: palette.surfaceFill,
              border: palette.usesGlass ? Color.gray.opacity(LiquidGlassTokens.strokeOpacity) : palette.surfaceBorder,
              accent: palette.brandAccent,
-             ink: Color(nsColor: .init(calibratedWhite: 0.16, alpha: 1)),
-             secondaryInk: Color(nsColor: .init(calibratedWhite: 0.48, alpha: 1)),
+             ink: Color(nsColor: .labelColor),
+             secondaryInk: TatwoThemeColor.adaptive(.init(srgbRed: 0.36, green: 0.36, blue: 0.36, alpha: 1), .init(srgbRed: 0.75, green: 0.75, blue: 0.75, alpha: 1)),
              cornerRadius: LiquidGlassTokens.radiusChip)
     }
 }

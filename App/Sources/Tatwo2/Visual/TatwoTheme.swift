@@ -10,6 +10,16 @@ import CoreImage.CIFilterBuiltins
 // - 語意狀態色（綠就緒/橙執行/紅錯誤/.secondary）不進 palette、永不隨主題變。
 // - 玻璃 shader 參數（R34/alpha.18/blur2.2…）恆定，不隨主題變；主題只換「色」不換「材質幾何」。
 
+/// Resolve both sides of a surface against the same AppKit appearance.
+enum TatwoThemeColor {
+    static var canvasVeil: Color { adaptive(.white, .black) }
+    static func adaptive(_ light: NSColor, _ dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        })
+    }
+}
+
 enum TatwoThemeID: String, CaseIterable, Codable, Sendable {
     case aurora   // 預設：紫藍粉極光
     case fable5   // fable5 與 sol 協作紀念
@@ -66,11 +76,11 @@ struct TatwoTheme: Identifiable, Sendable {
             accentViolet: Color(red: 0.757, green: 0.682, blue: 0.949),
             accentBlue: Color(red: 0.667, green: 0.780, blue: 1.0),
             brandAccent: Color(red: 0.545, green: 0.451, blue: 0.925),
-            canvasBase: Color(red: 0.965, green: 0.965, blue: 0.972),
+            canvasBase: TatwoThemeColor.adaptive(NSColor(srgbRed: 0.965, green: 0.965, blue: 0.972, alpha: 1), NSColor(srgbRed: 0.10, green: 0.10, blue: 0.13, alpha: 1)),
             ambient: 1.0,
             grain: 0.0,
             usesGlass: true,
-            surfaceFill: Color.white,
+            surfaceFill: TatwoThemeColor.adaptive(.white, NSColor(srgbRed: 0.16, green: 0.16, blue: 0.19, alpha: 1)),
             surfaceBorder: Color.white,
             radiusScale: 1.0
         ),
@@ -86,11 +96,11 @@ struct TatwoTheme: Identifiable, Sendable {
             accentViolet: Color(red: 0.502, green: 0.576, blue: 0.463), // 鼠尾草綠（圖鑑葉）
             accentBlue: Color(red: 0.831, green: 0.686, blue: 0.416),   // 古金 / 赭黃（花蕊）
             brandAccent: Color(red: 0.729, green: 0.400, blue: 0.310),  // 赤陶／鏽紅錨點（古典暖，非語意紅）
-            canvasBase: Color(red: 0.914, green: 0.882, blue: 0.816),   // 做舊牛皮紙米底（比卡片略深，卡片浮起）
+            canvasBase: TatwoThemeColor.adaptive(NSColor(srgbRed: 0.914, green: 0.882, blue: 0.816, alpha: 1), NSColor(srgbRed: 0.14, green: 0.12, blue: 0.10, alpha: 1)),   // 做舊牛皮紙米底（比卡片略深，卡片浮起）
             ambient: 1.15,
             grain: 0.085,                                                // 造點略增，向小視窗(工具列)的Claude感靠攏(使用者:大視窗造點少一點)
             usesGlass: false,                                            // 深度改造：不要玻璃
-            surfaceFill: Color(red: 0.968, green: 0.949, blue: 0.906),   // 卡片/按鈕＝較亮暖紙（扁平不透明）
+            surfaceFill: TatwoThemeColor.adaptive(NSColor(srgbRed: 0.968, green: 0.949, blue: 0.906, alpha: 1), NSColor(srgbRed: 0.20, green: 0.18, blue: 0.15, alpha: 1)),   // 卡片/按鈕＝較亮暖紙（扁平不透明）
             surfaceBorder: Color(red: 0.792, green: 0.729, blue: 0.639), // 暖褐邊（乾淨細線，非玻璃高光）
             radiusScale: 0.5                                             // Claude 式方正 R 角
         ),

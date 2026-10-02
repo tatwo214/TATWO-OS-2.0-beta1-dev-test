@@ -542,7 +542,7 @@ final class ChatPageModel: ObservableObject {
             (!isRunning || isLocalNativeGoalCommand || canSteerCurrentTurn)
     }
     var canSteerCurrentTurn: Bool {
-        guard selectedRemote == nil, routeChoice.brandGroup == .openAI, let id = selectedThreadID else { return false }
+        guard selectedRemote == nil, [.openAI, .anthropic].contains(routeChoice.brandGroup), let id = selectedThreadID else { return false }
         return localLive?.canSteer(id) == true
     }
     var codexMirrorStatusMessage: String {

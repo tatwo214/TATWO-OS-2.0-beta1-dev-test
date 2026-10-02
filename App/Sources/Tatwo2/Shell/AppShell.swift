@@ -606,7 +606,8 @@ enum TatwoPanelSnapshotExporter {
         let surface: TatwoAppSurfaceKind = (windowPath != nil || env["TATWO_ULTRAWORK_EXPORT_SURFACE"] == "window") ? .window : .panel
         do {
             try export(to: URL(fileURLWithPath: path), surface: surface)
-            fputs("tatwo_\(surface == .window ? "window" : "panel")_snapshot=\(path)\n", stderr)
+            let suffix = env["TATWO_ULTRAWORK_EXPORT_APPEARANCE"] == "cycle" ? "_cycle" : ""
+            fputs("tatwo_\(surface == .window ? "window" : "panel")_snapshot\(suffix)=\(path)\n", stderr)
         } catch {
             fputs("tatwo_snapshot_failed=\(TatwoPrivacyRedactor.redacted(error.localizedDescription))\n", stderr)
         }
@@ -644,14 +645,25 @@ enum TatwoPanelSnapshotExporter {
                 initialModesAuthority: TatwoPanelModesInitialAuthority.resolve(
                     environment: env),
                 initialLiveQuotaSnapshot: liveQuota))
-        if env["TATWO_ULTRAWORK_EXPORT_APPEARANCE"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "dark"
-        {
-            view.appearance = NSAppearance(named: .darkAqua)
+        switch env["TATWO_ULTRAWORK_EXPORT_APPEARANCE"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "dark": view.appearance = NSAppearance(named: .darkAqua)
+        case "light": view.appearance = NSAppearance(named: .aqua)
+        default: break
         }
         let settleMilliseconds = env["TATWO_ULTRAWORK_EXPORT_ASYNC_SETTLE_MS"].flatMap(Int.init) ?? 0
         let scale = exportScaleOverride(env: env)
+        if env["TATWO_ULTRAWORK_EXPORT_APPEARANCE"] == "cycle" {
+            // Exercise retained SwiftUI and AppKit views, without changing the
+            // desktop appearance or restarting the app between captures.
+            for (index, appearance) in [NSAppearance.Name.aqua, .darkAqua, .aqua].enumerated() {
+                view.appearance = NSAppearance(named: appearance)
+                let destination = url.deletingPathExtension()
+                    .appendingPathExtension("\(index).png")
+                try exportHostingView(view, size: size, scale: scale, to: destination,
+                                      settleMilliseconds: max(200, settleMilliseconds))
+            }
+            return
+        }
         try exportHostingView(
             view,
             size: size,
@@ -1880,7 +1892,7 @@ private struct ChatWindowCanvasBackdrop: View {
         if TatwoActivePalette.current.usesGlass {
             ZStack {
                 Rectangle()
-                    .fill(Color.white.opacity(0.16))
+                    .fill(TatwoThemeColor.canvasVeil.opacity(0.16))
                 Rectangle()
                     .fill(LiquidGlassTokens.tint.opacity(LiquidGlassTokens.tintOpacity * 0.35))
             }
@@ -1898,10 +1910,10 @@ private struct ChatWindowCanvasBackdrop: View {
                     endPoint: .bottomTrailing
                 )
                 Rectangle()
-                    .fill(Color.white.opacity(0.30))
+                    .fill(TatwoThemeColor.canvasVeil.opacity(0.30))
                     .allowsHitTesting(false)
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(TatwoThemeColor.canvasVeil.opacity(0.08))
                     .allowsHitTesting(false)
             }
                 .overlay {

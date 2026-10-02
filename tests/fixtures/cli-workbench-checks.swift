@@ -70,6 +70,7 @@ import AppKit
         let content = CLIWorkbenchFixtureView(state: state, appearance: .osTheme(theme.palette))
             .frame(width: size.width, height: size.height)
         let view = NSHostingView(rootView: content)
+        view.appearance = NSAppearance(named: .aqua)
         view.frame = CGRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -92,7 +93,10 @@ import AppKit
                     (layout.paneIDs.count > 1 ? CLIWorkbenchMetrics.paneHeader : 0))
             let expected = layout.projection(in: canvasSize, focused: tab.focusedPaneID,
                                             maximized: tab.maximizedPaneID)
-            let surface = NSColor(theme.palette.surfaceFill).usingColorSpace(.deviceRGB)!
+            var surface = NSColor.white
+            view.effectiveAppearance.performAsCurrentDrawingAppearance {
+                surface = NSColor(theme.palette.surfaceFill).usingColorSpace(.deviceRGB)!
+            }
             // Raster evidence, not merely layout math: catches offset panes clipped by a small ZStack.
             for pane in expected.panes where pane.isVisible {
                 let x = Int((origin.x + pane.frame.midX) / size.width * CGFloat(bitmap.pixelsWide))
