@@ -153,6 +153,12 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
   // Distillation preserves the human's bytes instead of round-tripping Markdown.
   var distillText: String?
   var distillSubmission: DistillSubmission?
+  var prModeExited: Bool?
+  var isPRModeActive: Bool {
+    kind == "pr" && prModeExited != true && state != .ready
+      && prReview?.submittedURL == nil && prContinuationThreadID == nil
+      && prMessage != Self.prMovedMessage
+  }
   var prReview: PRPlanReview?
   var prMessage: String?
   var prImplementationInterrupted: Bool?
@@ -225,6 +231,7 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
     self.kind = try container.decodeIfPresent(String.self, forKey: .kind)
     self.distillText = try container.decodeIfPresent(String.self, forKey: .distillText)
     self.distillSubmission = try container.decodeIfPresent(DistillSubmission.self, forKey: .distillSubmission)
+    self.prModeExited = try container.decodeIfPresent(Bool.self, forKey: .prModeExited)
     self.prReview = try container.decodeIfPresent(PRPlanReview.self, forKey: .prReview)
     self.prMessage = try container.decodeIfPresent(String.self, forKey: .prMessage)
     self.prImplementationInterrupted = try container.decodeIfPresent(Bool.self, forKey: .prImplementationInterrupted)

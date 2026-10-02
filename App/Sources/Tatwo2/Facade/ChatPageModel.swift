@@ -553,7 +553,10 @@ final class ChatPageModel: ObservableObject {
         }
     }
     var isActivePlanTurnWriting: Bool { isPlanModeEnabled && isRunning }
-    var isPlanModeEnabled: Bool { activePlanArtifact?.state == .discussing }
+    var isPlanModeEnabled: Bool {
+        guard let plan = activePlanArtifact, plan.state == .discussing else { return false }
+        return plan.kind != "pr" || plan.isPRModeActive
+    }
     var isSelectedThreadStandalone: Bool { selectedThreadProject == nil && selectedThread != nil }
     /// composer 尾端 `@` token 的搜尋字（nil＝沒有 @ token）。1.0 :358
     var issueAtMentionQuery: String? {
@@ -3004,7 +3007,12 @@ final class ChatPageModel: ObservableObject {
                     let url = try await PullRequestCoordinator.shared.submitPlan(directory: review.directory, repository: review.repository,
                         identity: identity, snapshot: review.snapshot, title: title, description: description)
                     plan.prReview?.submittedURL = url; plan.prMessage = nil
-                } catch { plan.prMessage = error.localizedDescription + "\n未自動重送；請先確認本機分支與 GitHub 結果。" }
+                } catch {
+                    let retryable = plan.prReview?.recordSubmissionFailure(error) == true
+                    plan.prMessage = error.localizedDescription + (retryable
+                        ? "\n尚未提交程式碼，可按「送 PR」重試。"
+                        : "\n未自動重送；請先確認本機分支與 GitHub 結果。")
+                }
                 _ = persistPlanCanvas(plan)
             }
         } catch {

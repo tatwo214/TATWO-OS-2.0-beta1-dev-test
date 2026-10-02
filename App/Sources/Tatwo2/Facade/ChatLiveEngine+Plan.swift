@@ -70,6 +70,7 @@ extension ChatLiveEngine {
             return Self.feedbackDiscussionRules + "\n目前畫布：\n" + plan.editableText()
         }
         if plan.kind == "pr" {
+            guard plan.isPRModeActive else { return nil }
             if plan.state == .discussing {
                 return Self.planDiscussionRules + "\n這是要送回公開倉庫的貢獻；必須等人按畫布「確認」，文字「開始」不算確認。\n目前畫布：\n" + plan.editableText()
             }
@@ -86,7 +87,8 @@ extension ChatLiveEngine {
 
     func updatePlanFromReply(_ threadID: UUID, reply: ChatMessage) {
         do {
-            guard var plan = try loadPlanArtifact(threadID), plan.state == .discussing else { return }
+            guard var plan = try loadPlanArtifact(threadID), plan.state == .discussing,
+                  plan.kind != "pr" || plan.isPRModeActive else { return }
             if plan.kind == "distill" {
                 guard plan.distillSubmission == nil,
                       let draft = DistillCanvas.draft(from: reply.text) else { return }

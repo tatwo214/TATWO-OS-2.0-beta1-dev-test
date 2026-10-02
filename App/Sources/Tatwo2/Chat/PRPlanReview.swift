@@ -8,6 +8,12 @@ struct PRPlanReview: Codable, Equatable, Sendable {
     var submittedURL: URL?
     var attempted = false
 
+    mutating func recordSubmissionFailure(_ error: Error) -> Bool {
+        let retryable = (error as? PullRequestFailure)?.safeToRetry == true
+        if retryable { attempted = false }
+        return retryable
+    }
+
     static let titles = ["標題", "改了什麼", "動到的檔", "怎麼驗的", "風險與回滾"]
     static func sections(_ reply: String) -> [TatwoPlanArtifactV1.Section]? {
         guard let sections = TatwoPlanArtifactV1.parseSections(fromReply: reply, fenceName: "tatwo-pr"),

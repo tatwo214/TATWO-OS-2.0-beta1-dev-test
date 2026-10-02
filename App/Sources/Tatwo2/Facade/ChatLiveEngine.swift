@@ -707,7 +707,9 @@ final class ChatLiveEngine: LiveEngineAPI {
         guard let sidecar = ensureSidecar(threadID, model: model, engine: engine, systemPrompt: systemPrompt) else { return false }
         let turn = UUID().uuidString
         let planBriefing = planContext(plan, userText: t)
-        if var confirmed = plan, confirmed.acceptsStart(t) {
+        if var confirmed = plan, confirmed.acceptsStart(t)
+            || (confirmed.kind == "pr" && confirmed.state == .confirmed && onTurnComplete[threadID] != nil) {
+            if confirmed.kind == "pr" { confirmed.prModeExited = true }
             confirmed.executionTurnID = turn
             do { try savePlanArtifact(confirmed) }
             catch {

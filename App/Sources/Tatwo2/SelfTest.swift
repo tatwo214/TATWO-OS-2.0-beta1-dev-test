@@ -702,7 +702,7 @@ enum SelfTest {
         model.send()
         check("empty command reopens canvas", model.planInspectorRequest != nil && model.prompt.isEmpty)
         model.confirmActivePlan()
-        check("confirm facade", !model.isPlanModeEnabled && engine.transcript(for: id).last?.text == "計畫已確認；說「開始」即執行")
+        check("confirm facade", !model.isPlanModeEnabled && engine.transcript(for: id).last?.text == "計畫已確認；按「開始實作」或說「開始」即執行")
         check("empty edit rejected", !model.saveEditedPlanCanvasText(" \n"))
         check("editor uses shared parser", model.saveEditedPlanCanvasText("新標題\n\n" + body) && model.activePlanArtifact?.sections == sections)
         model.selectedThreadID = nil
@@ -751,6 +751,18 @@ enum SelfTest {
         check("pr start still discusses", engine.planContext(prPlan, userText: "開始")?.contains("文字「開始」不算確認") == true)
         prPlan.confirm()
         check("pr confirmed without callback never executes", engine.planContext(prPlan, userText: "開始")?.contains("不改檔") == true)
+        prPlan.prModeExited = true
+        prPlan.executionTurnID = "pr-dispatched-fixture"
+        try engine.savePlanArtifact(prPlan)
+        check("pr dispatched plan releases context", engine.planContext(prPlan, userText: "下一件事") == nil)
+        check("pr exit survives reload", try reopened.loadPlanArtifact(id)?.prModeExited == true)
+        check("pr reloaded exit releases context", reopened.planContext(try reopened.loadPlanArtifact(id), userText: "下一件事") == nil)
+        prPlan.recoverInterruptedPR(hasActiveTurn: false)
+        try engine.savePlanArtifact(prPlan)
+        check("pr interruption does not restore mode", !model.isPlanModeEnabled && engine.planContext(prPlan, userText: "下一件事") == nil)
+        var legacyReady = prPlan
+        legacyReady.prModeExited = nil; legacyReady.state = .ready
+        check("pr legacy ready releases context", engine.planContext(legacyReady, userText: "下一件事") == nil)
         try engine.savePlanArtifact(plan)
         if let snapshot = ProcessInfo.processInfo.environment["TATWO2_PLAN_SNAPSHOT"] {
             if environment["TATWO2_FEEDBACK_SNAPSHOT"] == "1" { try engine.savePlanArtifact(feedbackPlan) }

@@ -3,6 +3,7 @@ import CryptoKit
 
 struct PullRequestFailure: LocalizedError {
     let message: String
+    var safeToRetry = false
     var errorDescription: String? { message }
 }
 
@@ -104,6 +105,16 @@ struct PullRequestService {
 
     func api(_ path: String, identity: FeedbackIdentity, method: String = "GET",
              payload: [String: String]? = nil, allowMissing: Bool = false) async throws -> [String: Any]? {
+        let object = try await apiValue(path, identity: identity, method: method, payload: payload, allowMissing: allowMissing)
+        guard let object else { return nil }
+        guard let dictionary = object as? [String: Any] else {
+            throw PullRequestFailure(message: "GitHub 回應格式不符，未繼續提交。")
+        }
+        return dictionary
+    }
+
+    private func apiValue(_ path: String, identity: FeedbackIdentity, method: String = "GET",
+                          payload: [String: String]? = nil, allowMissing: Bool = false) async throws -> Any? {
         var request = URLRequest(url: URL(string: "https://api.github.com" + path)!)
         request.httpMethod = method; request.timeoutInterval = 30
         request.setValue("Bearer " + identity.token, forHTTPHeaderField: "Authorization")
@@ -116,10 +127,54 @@ struct PullRequestService {
         catch { throw PullRequestFailure(message: "GitHub 結果未確認；若已送出，請先至倉庫確認，不要重送。") }
         if allowMissing && response.statusCode == 404 { return nil }
         guard (200...299).contains(response.statusCode),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let object = try? JSONSerialization.jsonObject(with: data) else {
             throw PullRequestFailure(message: "GitHub 請求未完成（HTTP \(response.statusCode)）。請檢查帳號權限。")
         }
         return object
+    }
+
+    /// Resolve by verified owner and parent, never by a guessed fork name alone.
+    func resolveFork(repository: String, identity: FeedbackIdentity) async throws -> String {
+        guard Self.validRepository(repository), Self.validRepository(identity.username + "/fixture") else {
+            throw PullRequestFailure(message: "GitHub 帳號或倉庫無效。")
+        }
+        func ownedName(_ metadata: [String: Any]?) -> String? {
+            guard let name = metadata?["full_name"] as? String, Self.validRepository(name),
+                  name.split(separator: "/").first?.lowercased() == identity.username.lowercased(),
+                  metadata?["fork"] as? Bool == true else { return nil }
+            return name
+        }
+        func verifiedName(_ metadata: [String: Any]?) -> String? {
+            guard let name = ownedName(metadata),
+                  ((metadata?["parent"] as? [String: Any])?["full_name"] as? String)?.lowercased() == repository.lowercased()
+            else { return nil }
+            return name
+        }
+        let repoName = String(repository.split(separator: "/")[1])
+        let conventional = try await api("/repos/" + identity.username + "/" + repoName, identity: identity, allowMissing: true)
+        if let name = verifiedName(conventional) { return name }
+        // The forks endpoint is public metadata; only inspect the current account's candidates.
+        for page in 1...100 {
+            guard let forks = try await apiValue("/repos/\(repository)/forks?per_page=100&page=\(page)", identity: identity) as? [[String: Any]] else {
+                throw PullRequestFailure(message: "無法確認 Fork 清單，未繼續提交。")
+            }
+            for fork in forks {
+                guard let candidate = ownedName(fork) else { continue }
+                if let name = verifiedName(try await api("/repos/" + candidate, identity: identity)) { return name }
+            }
+            if forks.count < 100 { break }
+            if page == 100 { throw PullRequestFailure(message: "Fork 清單過長，尚未確認你的 Fork，未繼續提交。") }
+        }
+        let payload = conventional == nil ? [:] : ["name": repoName + "-" + UUID().uuidString.prefix(8).lowercased()]
+        let created = try await api("/repos/\(repository)/forks", identity: identity, method: "POST", payload: payload)
+        guard let candidate = ownedName(created) else {
+            throw PullRequestFailure(message: "GitHub 尚未回傳可確認的 Fork，請稍後重試。")
+        }
+        for attempt in 0..<10 {
+            if let name = verifiedName(try await api("/repos/" + candidate, identity: identity, allowMissing: true)) { return name }
+            if attempt < 9 { try await Task.sleep(nanoseconds: 3_000_000_000) }
+        }
+        throw PullRequestFailure(message: "Fork 尚未就緒，請稍後重試。")
     }
 
     /// Check repository identity independently of dirty/ahead preflight (a fresh clone is clean).
@@ -219,28 +274,22 @@ struct PullRequestService {
                 snapshot: Snapshot, title: String, description: String) async throws -> URL {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title.count <= 256, description.utf8.count <= 60_000 else {
-            throw PullRequestFailure(message: "請填寫標題，並確認內容長度。")
+            throw PullRequestFailure(message: "請填寫標題，並確認內容長度。", safeToRetry: true)
         }
         try FeedbackService.scanSecrets(title + "\n" + description + "\n" + snapshot.diff)
-        let now = try await preflight(directory: directory, repository: repository, identity: identity)
-        guard snapshot.fingerprint == now.fingerprint else { throw PullRequestFailure(message: "改動已變更，請關閉並重新執行 /pr。") }
-        let repoName = String(repository.split(separator: "/")[1])
-        let forkName = identity.username + "/" + repoName
-        guard Self.validRepository(forkName) else { throw PullRequestFailure(message: "GitHub 帳號無效。") }
-        var fork = try await api("/repos/" + forkName, identity: identity, allowMissing: true)
-        if fork == nil {
-            _ = try await api("/repos/\(repository)/forks", identity: identity, method: "POST", payload: [:])
-            for _ in 0..<10 {
-                try await Task.sleep(nanoseconds: 3_000_000_000)
-                fork = try await api("/repos/" + forkName, identity: identity, allowMissing: true)
-                if fork != nil { break }
+        let forkName: String
+        do {
+            let now = try await preflight(directory: directory, repository: repository, identity: identity)
+            guard snapshot.fingerprint == now.fingerprint else {
+                throw PullRequestFailure(message: "改動已變更，請關閉並重新執行 /pr。")
             }
-        }
-        guard fork?["fork"] as? Bool == true,
-              ((fork?["parent"] as? [String: Any])?["full_name"] as? String)?.lowercased() == repository.lowercased()
-        else { throw PullRequestFailure(message: "Fork 尚未就緒或同名倉庫不是目標的 fork。") }
-        guard snapshot.fingerprint == (try await Self.snapshot(at: directory)).fingerprint else {
-            throw PullRequestFailure(message: "等待 fork 時改動已變更，請重新執行 /pr。")
+            forkName = try await resolveFork(repository: repository, identity: identity)
+            guard snapshot.fingerprint == (try await Self.snapshot(at: directory)).fingerprint else {
+                throw PullRequestFailure(message: "等待 fork 時改動已變更，請重新執行 /pr。")
+            }
+        } catch {
+            // No local branch, commit, push or PR request has begun. Retrying rechecks the fork.
+            throw PullRequestFailure(message: error.localizedDescription, safeToRetry: true)
         }
         let branch = Self.branchName(title: title)
         _ = try await Self.git(["switch", "-c", branch], at: directory)

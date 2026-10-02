@@ -57,13 +57,15 @@ final class PullRequestCoordinator: ObservableObject {
     func submitPlan(directory: URL, repository: String, identity expected: FeedbackIdentity,
                     snapshot: PullRequestService.Snapshot, title: String, description: String) async throws -> URL {
         guard !busy, window?.isVisible != true else {
-            throw PullRequestFailure(message: "PR 作業處理中，請先完成或關閉 PR 面板。")
+            throw PullRequestFailure(message: "PR 作業處理中，請先完成或關閉 PR 面板。", safeToRetry: true)
         }
         busy = true
         defer { busy = false }
-        let current = try identity()
+        let current: FeedbackIdentity
+        do { current = try identity() }
+        catch { throw PullRequestFailure(message: error.localizedDescription, safeToRetry: true) }
         guard current.username == expected.username, PullRequestService.repository == repository else {
-            throw PullRequestFailure(message: "帳號或倉庫設定已變更，未自動送出 PR。")
+            throw PullRequestFailure(message: "帳號或倉庫設定已變更，未自動送出 PR。", safeToRetry: true)
         }
         return try await service.submit(directory: directory, repository: repository, identity: current,
                                         snapshot: snapshot, title: title, description: description)
@@ -87,7 +89,11 @@ final class PullRequestCoordinator: ObservableObject {
                     message = "已建立 PR：\(url.absoluteString)"; report?(message)
                     NSWorkspace.shared.open(url)
                 } catch {
-                    message = error.localizedDescription + "\n請先確認本機分支與 GitHub 結果；本面板不會自動重送。"
+                    let retryable = (error as? PullRequestFailure)?.safeToRetry == true
+                    if retryable { submitDisabled = false }
+                    message = error.localizedDescription + (retryable
+                        ? "\n尚未提交程式碼，可重試。"
+                        : "\n請先確認本機分支與 GitHub 結果；本面板不會自動重送。")
                     report?(message)
                 }
             }

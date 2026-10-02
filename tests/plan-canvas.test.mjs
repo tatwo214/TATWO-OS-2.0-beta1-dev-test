@@ -12,7 +12,7 @@ const canvas = read('App/Sources/Tatwo2/Chat/ChatPage+Plan.swift');
 const checks = read('App/Sources/Tatwo2/SelfTest.swift');
 
 test('plan is real state, with exact slash token and reopen request', () => {
-  assert.match(model, /var isPlanModeEnabled: Bool \{ activePlanArtifact\?\.state == \.discussing \}/);
+  assert.match(model, /var isPlanModeEnabled: Bool[\s\S]*plan\.state == \.discussing[\s\S]*plan\.kind != "pr" \|\| plan\.isPRModeActive/);
   assert.doesNotMatch(model, /var isPlanModeEnabled: Bool \{ false \}/);
   assert.match(model, /planCommand\.split\(whereSeparator: \\\.isWhitespace\)\.first == "\/plan"/);
   assert.match(model, /objective: String\(objective\.prefix\(60\)\)/);
@@ -98,6 +98,7 @@ test('production Swift start predicate and planContext enforce two-stage and PR 
 struct TatwoPlanArtifactV1 {
  enum State { case discussing, confirmed, ready }
  var kind: String? = nil, state: State = .discussing, executionTurnID: String? = nil
+ var isPRModeActive: Bool { kind == "pr" && state != .ready }
  let threadID = UUID()
  func editableText() -> String { "fixture plan" }
  ${predicate}
@@ -132,7 +133,7 @@ for kind in ["pr", "feedback"] {
   plan.state = state
   for text in starts {
    precondition(!plan.acceptsStart(text))
-   precondition(!engine.planContext(plan, userText: text)!.contains("現在可以動手"))
+   precondition(engine.planContext(plan, userText: text)?.contains("現在可以動手") != true)
   }
  }
 }
