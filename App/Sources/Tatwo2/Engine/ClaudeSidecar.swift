@@ -245,7 +245,7 @@ final class ClaudeSidecar {
         write(["op": "permission", "id": id, "allow": allow, "message": message ?? "使用者拒絕"])
     }
     func steer(text: String, attachments: [String], requestID: String, targetTurnUUID: String) {
-        guard kind == .codex else { return }
+        guard kind == .codex || kind == .claude else { return }
         write(["op": "steer", "text": text, "attachments": attachments,
                "uuid": requestID, "targetTurnUUID": targetTurnUUID])
     }

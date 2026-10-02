@@ -800,7 +800,7 @@ final class ChatLiveEngine: LiveEngineAPI {
 
     func canSteer(_ threadID: UUID) -> Bool {
         runningThreads.contains(threadID) && !stoppingThreads.contains(threadID) &&
-        pendingSteers[threadID] == nil && sidecars[threadID]?.kind == .codex &&
+        pendingSteers[threadID] == nil && (sidecars[threadID]?.kind == .codex || sidecars[threadID]?.kind == .claude) &&
         threadRecord(threadID)?.deviceID == nil
     }
 
@@ -871,6 +871,11 @@ final class ChatLiveEngine: LiveEngineAPI {
         guard stoppingThreads.contains(threadID), runningThreads.contains(threadID) else { return }
         if let rid = streamingRowID[threadID] { update(threadID, rid) { $0.status = "cancelled|已終止" } }
         streamingRowID[threadID] = nil
+        for row in messages[threadID] ?? []
+        where row.turnID == turnID[threadID] && row.status?.hasPrefix("running-command") == true {
+            update(threadID, row.id) { $0.status = "cancelled|已終止" }
+        }
+        touchLiveness(threadID, done: true)
         currentNativeGoals.remove(threadID)
         finishGoalControl(threadID, accepted: false, message: "這一輪已強制終止，目標操作結果待確認")
         finishSteer(threadID, accepted: false, message: "這一輪已強制終止，請先確認插話是否送達", unknown: true)
@@ -1170,6 +1175,7 @@ final class ChatLiveEngine: LiveEngineAPI {
         let type = m["type"] as? String ?? ""
         switch type {
         case "system":
+            if m["subtype"] as? String == "turn_continued" { endStreaming(threadID) }
             if m["subtype"] as? String == "turn_error", let message = m["message"] as? String {
                 appendSystem(threadID, message, status: "error|停止失敗")
             }

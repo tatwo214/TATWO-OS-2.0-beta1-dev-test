@@ -22,9 +22,6 @@ extension ChatPage {
                 }
             }
         }
-        // The matte paper palette is light even when the window exports in dark appearance.
-        // Resolve the existing primary/secondary semantic tokens against that paper surface.
-        .transformEnvironment(\.colorScheme) { if !TatwoActivePalette.current.usesGlass { $0 = .light } }
         .alert("終端機改名", isPresented: $model.cliRenamePresented) {
             TextField("名稱", text: $model.cliRenameTitle)
             Button("儲存") { model.commitCLIRename() }

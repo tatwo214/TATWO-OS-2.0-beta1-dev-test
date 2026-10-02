@@ -22,7 +22,7 @@ struct TatwoWindowGlassBase: View {
                 ZStack {
                     TatwoBehindWindowMaterial()
                     LiquidGlassTokens.canvasBackground.opacity(0.55)
-                    Rectangle().fill(Color.white.opacity(0.10))
+                    Rectangle().fill(TatwoThemeColor.canvasVeil.opacity(0.10))
                 }
             } else {
                 LiquidGlassTokens.canvasBackground

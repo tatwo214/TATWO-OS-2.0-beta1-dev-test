@@ -158,7 +158,7 @@ struct ThreadGoalCard: View {
 
     /// 專案總覽：同專案每條討論串還沒完成的主線目標。
     private var projectOverview: some View {
-        let rows = siblings.compactMap { sibling -> (UUID, String, [ThreadGoal], (Int, Int))? in
+        let rows: [(UUID, String, [ThreadGoal], (done: Int, total: Int))] = siblings.compactMap { sibling in
             let list = store.list(sibling.id)
             let open = list.goals.filter { $0.status != .done && !$0.proposed && $0.parent == nil }
             return open.isEmpty ? nil : (sibling.id, sibling.title, open, ThreadGoalRules.progress(list))
