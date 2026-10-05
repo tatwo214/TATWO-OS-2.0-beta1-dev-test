@@ -19,7 +19,7 @@ description: Use when the user invokes TATWO Ultrawork, asks how to split work b
 | 角色 | 預設模型 | 做什麼 | 不做什麼 |
 |---|---|---|---|
 | 主導 | Fable 5.1 | 翻使用者的話成施工單、讀 diff、親跑驗證、對使用者報告、設計判斷 | 不親寫可規格化的功能，除非同一件事 sub 做壞兩次 |
-| loops | GPT-6（fast／priority） | 整批施工單、寫碼、寫測試、跑測試、commit 到自己的分支 | 不改施工單範圍外的檔；不推 remote；不自升格 |
+| loops | GPT-6.1 Sol（`gpt-6.1-sol`，fast／priority） | 整批施工單、寫碼、寫測試、跑測試、commit 到自己的分支 | 不改施工單範圍外的檔；不推 remote；不自升格 |
 | loops 備援 | Opus 5.5（子代理） | 主要 loops 引擎額度見底或連續 429 時接同一張施工單；建置仍送主設備 | 同 loops |
 | 細修 | Opus 5.5 | 來回討論、小範圍修改、對主導的方案提反例 | 不接整批施工單 |
 | 機械工 | Grok 4.7 | 搬檔、轉檔、批次替換、跑既定腳本 | 不做需要判斷的事；不開 high effort |
@@ -54,14 +54,14 @@ GPT-5.6 系列不在預設名單。模型換代時先由主設備更新入口憲
 6. 記憶體門檻寫「free＋inactive 合計」，不寫 raw free。
 7. 報告格式：首行一句結論；然後只列產物路徑、跑過的檢查、沒做的事；不誇報。
 
-## 6. 派工配方（codex exec，GPT-6）
+## 6. 派工配方（codex exec，loops 引擎）
 
 ```bash
 # 一個房間；主導串鏈時一個接一個跑，不並行重型房間
 export CODEX_HOME=<精簡家目錄，例如 ~/.tatwo2/codex-room-home>   # 無 MCP 的精簡家，auth 回連真家
 git -C <repo> worktree add <wt> -b <branch> <base>
 tmux new-session -d -s sol-<room> \
-  "codex exec -C <wt> -m gpt-6 -c model_reasoning_effort=high -c service_tier=priority \
+  "codex exec -C <wt> -m <§2 表 loops 的代號> -c model_reasoning_effort=high -c service_tier=priority \
    -c features.plugins=false -c features.plugin_sharing=false \
    --dangerously-bypass-approvals-and-sandbox -o <log-dir>/<room>.last.md \
    < <brief.md> > <log-dir>/<room>.log 2>&1"
@@ -82,6 +82,8 @@ tmux new-session -d -s sol-<room> \
 - **監工由主導在自己的工作階段掛 Monitor，不另開常駐監工程式**：看輸出檔 mtime 判活性；編譯類 20 分沒長判卡；**網路協商類（大倉庫 git fetch、上傳）不自動殺，只回報**——曾誤殺一次 fetch 等於重來；只回報「階段變化」與「結束／錯誤」，不洗頻；每 30 分重掛。
 - 硬體上限：一次一個重型建置；記憶體吃緊先關掉非必要產物（例：CEF 關 dSYM）；大工作放外接卷的 staging，**路徑不能有空白**（Chromium／CEF 工具以空白切命令；卷名有空白就掛一顆無空白的 APFS 映像）；系統碟留 15 GB 以上。
 - 長工作要能中斷續跑：nohup／caffeinate、階段標記檔、腳本重跑會接續；主導斷線不影響。
+- 流程（Workflow、房間）被重啟或崩潰打斷：先讀 journal 與各階段產物，只補沒完成的階段；已完成的不重做。
+- 交接寫在入口的 `rooms/<列車>-handoff/`（耐久）：施工單、報告、log、工具一起放；不要只放在 job 暫存（會被清掉）。
 - 收尾一律：主導讀 diff → 閘門（debug＋release＋focused 0 fail）→ 併入 → 合併樹閘門 → 打包候選 → 兩台安裝＋功能檢查 → 三輪全套對基準 0 新失敗 → 乾淨安裝閘門 → 才發版。
 - 程式化的下一步是 W95（`docs/specs/095-primary-job-queue/spec.md`）：這些腳本收進 `scripts/rooms/`，副設備經簽章通道提交白名單工作，主設備 GUI 排隊執行並回收據；`device_status` 加容量欄。
 
@@ -90,12 +92,13 @@ tmux new-session -d -s sol-<room> \
 - sub 的 DONE 永遠不算數：讀 diff 不讀報告；親跑測試；UI 要截圖。
 - 宣告完成前逐字對齊 spec；沒做到的明說。
 - 工程測試過但沒視覺證據時，寫「工程測試通過，UI 尚未驗收」。
+- 自測夾具不能比真實資料寬鬆：照真的資料形狀造，不預放實機不會有的欄位（例：加入端配對紀錄只有主機金鑰，夾具卻預放簽章指紋，自測全過、實機才壞；W183 契約 §11.10）。
 - 刪除走封存：先移到可復原位置＋一份說明來源與還原步驟的 Markdown，換另一家引擎複審後才真刪。
 
 ## 8. 額度
 
 - 主導的額度花在四件事：施工單、讀 diff、驗證、報告。
-- 每批派工前看 GPT-6 額度；週上限低於 15% 停派，主導自己收尾。
+- 每批派工前看 loops 引擎的額度；週上限低於 15% 停派，主導自己收尾。
 - 一次一個重型房間；文字／審查類可並行。
 
 ## 9. 本技能的維護

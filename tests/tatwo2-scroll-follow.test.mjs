@@ -17,9 +17,11 @@ test('production scroll-follow state preserves reading intent through lazy layou
     path.join(root, 'App/Sources/Tatwo2/Chat/ChatTranscriptScrollFollowState.swift'),
     path.join(root, 'tests/fixtures/scroll-follow-checks.swift'), '-o', binary,
   ], { encoding: 'utf8', timeout: 60_000 });
+  fs.writeFileSync(path.join(scratch, 'compile.log'), `${build.stdout ?? ''}${build.stderr ?? ''}`);
   assert.equal(build.status, 0, build.stderr || String(build.error));
   const run = spawnSync(binary, [], { encoding: 'utf8', timeout: 5_000 });
+  fs.writeFileSync(path.join(scratch, 'result.log'), `${run.stdout ?? ''}${run.stderr ?? ''}`);
   process.stdout.write(run.stdout);
   assert.equal(run.status, 0, run.stderr || String(run.error));
-  assert.match(run.stdout, /RESULT passed=17 failed=0 skipped=0/);
+  assert.match(run.stdout, /RESULT passed=29 failed=0 skipped=0/);
 });

@@ -33,7 +33,7 @@ final class T2ChatSession: ObservableObject {
         do {
             try s.start(cwd: thread.cwd, resume: thread.sessionId, model: thread.model)
             sidecar = s
-            status = thread.sessionId == nil ? "啟動中" : "續接 session"
+            status = thread.sessionId == nil ? "啟動中" : "續接對話"
         } catch {
             lastError = "sidecar 啟動失敗：\(error.localizedDescription)"
         }

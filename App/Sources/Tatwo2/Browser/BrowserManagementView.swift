@@ -264,7 +264,7 @@ struct TatwoBrowserManagementView: View {
                     }
                 }
                 actionButton(
-                    "清空這個 session 的瀏覽資料",
+                    "清空這個對話的瀏覽資料",
                     systemImage: "arrow.counterclockwise")
                 {
                     pendingConfirmation = PendingConfirmation(
@@ -378,9 +378,7 @@ struct TatwoBrowserManagementView: View {
             Text(message)
                 .font(.system(size: 11.5, weight: .semibold))
                 .multilineTextAlignment(.center)
-            Button("重新讀取", action: reload)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            OSChipButton(title: "重新讀取", action: reload)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -440,9 +438,9 @@ struct TatwoBrowserManagementView: View {
         var title: String {
             switch action {
             case .reset:
-                "清空這個 session 的瀏覽資料？"
+                "清空這個對話的瀏覽資料？"
             case .delete:
-                "刪除這個 session 的瀏覽資料？"
+                "刪除這個對話的瀏覽資料？"
             default:
                 ""
             }

@@ -22,7 +22,8 @@ const uiFiles = [devicesCard, sidebar, legacySections];
 test('W98 設備頁：「遙控它」換成「遠端設備專案」，只負責把人帶去側欄項目', () => {
   const card = source(devicesCard);
   assert.doesNotMatch(card, /遙控它/);
-  assert.match(card, /Button\("遠端設備專案"\)/);
+  // W180 D1：設定頁的按鈕是玻璃 chip。
+  assert.match(card, /OSChipButton\(title: "遠端設備專案"\)/);
   // W98d：只帶路（展開＋捲到那台的區塊），不自己進遠端模式。
   assert.match(card, /model\.requestSidebarDeviceSection\(device\.id\)/);
   assert.doesNotMatch(card, /enterRemoteMode/);
@@ -118,10 +119,10 @@ test('W98 設備列照 Computer Use 的收納列：收合只露名稱、狀態�
   // 展開後才出現的東西，全在 isExpanded 之後。
   const expandedBlock = card.slice(card.indexOf('if isExpanded {'), card.indexOf('private func badge('));
   for (const detail of ['device.fingerprintSummary', 'DeviceEndpointsRow(device: device)',
-                        '加入 \\(Self.stamp(device.addedAt))', 'Button("移除")', 'Button("遠端設備專案")']) {
+                        '加入 \\(Self.stamp(device.addedAt))', 'OSChipButton(title: "移除")', 'OSChipButton(title: "遠端設備專案")']) {
     assert.ok(expandedBlock.includes(detail), `展開區缺少 ${detail}`);
   }
-  assert.match(card, /badge\(isOnline \? "在線" : "離線"/);
+  assert.match(card, /badge\(\(isOnline \? "在線" : "離線"/);
   // 沒有可提供的更新就不顯示徽章。
   assert.match(card, /if !update\.hasSuffix\("無"\)/);
 });

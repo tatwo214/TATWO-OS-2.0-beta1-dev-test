@@ -28,6 +28,11 @@ struct BrowserSpaceDot: View {
     let space: BrowserWorkSpaceStore.Space
     let fallbackFill: Color
     let idleFill: Color
+    /// W184 G2d：私訊框的 Browser 用同一顆圓點，只切換空間（false＝右鍵不改名、不換色、不刪；空間在主視窗整理）。
+    var editable = true
+    /// W184 G2d（GPT-6 審查 G2d #4）：點了交給誰——nil＝畫出它的那一份 store 自己切（主視窗照舊）；私訊框給自己的（先記下使用者選的空間再切，
+    /// 主視窗的 store 交過來時照它切一次，不從最後的狀態反推）。
+    var choose: (@MainActor (BrowserWorkSpaceStore.Space) -> Void)? = nil
     @State private var menuPresented = false
 
     private var selected: Bool { store.selectedSpaceID == space.id }
@@ -37,7 +42,7 @@ struct BrowserSpaceDot: View {
     }
 
     var body: some View {
-        Button { store.selectSpace(space.id) } label: {
+        Button { if let choose { choose(space) } else { store.selectSpace(space.id) } } label: {
             ZStack {
                 if space.isSessionSpace {
                     Circle().strokeBorder(fill, lineWidth: WorkspaceSpaceControlMetrics.ringStroke)
@@ -49,15 +54,15 @@ struct BrowserSpaceDot: View {
             .frame(width: WorkspaceSpaceControlMetrics.cellWidth, height: WorkspaceSpaceControlMetrics.cellHeight)
             .contentShape(Rectangle())
         }
-        .overlay { if !space.isSessionSpace { BrowserRightClickCatcher { menuPresented = true } } }
+        .overlay { if !space.isSessionSpace { BrowserRightClickCatcher { if editable { menuPresented = true } } } }
         .popover(isPresented: $menuPresented, arrowEdge: .top) {
             BrowserSpaceMenu(store: store, space: space) { menuPresented = false }
         }
-        .help(space.isSessionSpace ? space.name : "\(space.name)（右鍵改名、換顏色）")
+        .help(space.isSessionSpace || !editable ? space.name : "\(space.name)（右鍵改名、換顏色）")
         .accessibilityLabel(space.name)
         .accessibilityIdentifier("browser.space.\(space.id)")
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityAction(named: "編輯空間") { if !space.isSessionSpace { menuPresented = true } }
+        .accessibilityAction(named: "編輯空間") { if !space.isSessionSpace && editable { menuPresented = true } }
     }
 }
 

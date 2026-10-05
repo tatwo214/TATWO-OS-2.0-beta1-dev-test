@@ -146,7 +146,7 @@ test('W54 settings use numbered warm cards, three-column rows and immutable AI v
   uses(settings, ['settingsNavWidth', 'settingsCardRadius', 'settingsCardVerticalPadding', 'settingsCardHorizontalPadding']);
   uses(components, ['settingsNumberSize', 'settingsKeyWidth', 'settingsControlFontSize', 'settingsDisabledOpacity']);
   assert.match(settings, /browserHumanSecurityColumn\s*Divider\(\)\s*browserAISecurityColumn/);
-  const ai = section(settings, 'private var browserAISecurityColumn:', 'private var browserDiagnosticsSettings:');
+  const ai = section(settings, 'private var browserAISecurityColumn:', 'private func browserDiagnosticsSettings(');
   assert.doesNotMatch(ai, /Toggle|Picker|Button|Binding|Slider|Stepper/);
   assert.match(ai, /\.disabled\(true\).allowsHitTesting\(false\)/);
   assert.match(components, /struct BrowserSettingsPolicyValue[\s\S]*allowsHitTesting\(false\)/);

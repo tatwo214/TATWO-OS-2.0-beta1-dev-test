@@ -46,19 +46,54 @@ extension ChatPage {
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.isRemoteTranscriptLoading {
-            // W100：遠端逐字稿在背景拉，第一次沒有快取時顯示「連線中…」而不是空白。
-            ProgressView("連線中…")
+            // W100：遠端逐字稿在背景拉，第一次沒有快取時顯示「載入對話…」而不是空白（W201：不報連線狀態）。
+            ProgressView("載入對話…")
                 .controlSize(.small)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let note = model.remoteOfflineEmptyNote {
+            RemoteOfflineEmptyTranscript(text: note)   // W182 R4：那台離線、這條離線前沒讀過
         } else {
+            VStack(spacing: 8) {
+                if model.mode == .chat {
+                    ChatGPTSessionMappingRow(pageModel: model, spaceModel: .shared, side: .coder,
+                                            topInset: surface == .window ? WindowChromeMetrics.bandHeight : 0)
+                }
+                if let engine = model.localLiveForBridge {
+                    if let notice = engine.documentSafetyNotice {
+                        Text(notice).font(.caption).textSelection(.enabled)
+                    }
+                    if let candidate = engine.recoveryCandidate {
+                        ConversationRecoveryRow(candidate: candidate, isDisabled: engine.store.isReadOnly) {
+                            engine.restoreUnreadableConversation()
+                            if let id = engine.doc.selectedThreadID { model.selectLocalThread(id) }
+                        }
+                    }
+                }
             transcript(contentMaxWidth: contentMaxWidth)
+                if let id = model.selectedThreadID {
+                    let state = model.chatGPTTurnState
+                    if let thinking = state?.thinking {
+                        ChatGPTThinkingRow(thinking: thinking).frame(maxWidth: contentMaxWidth, alignment: .leading)
+                    }
+                    if let failure = state?.failure {
+                        ChatGPTTurnFailureRow(failure: failure) { model.restoreChatGPTInput(failure, in: id) }
+                            .frame(maxWidth: contentMaxWidth, alignment: .leading)
+                    }
+                    if state?.thinking == nil, let note = ChatGPTThinking.doneText(state?.thoughtSeconds) {
+                        Text(note).font(.system(size: 13)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("chatgpt.thoughtDuration")
+                    }
+                }
+            }
         }
     }
 
     func transcript(contentMaxWidth: CGFloat?) -> some View {
         let rowWidth = contentMaxWidth ?? composerMaxWidth ?? ChatUILayout.chatColumnMaxWidth
         return TranscriptScrollView(
+            threadID: model.selectedThreadID,
+            mcpAllowBlockedNote: model.mcpAllowBlockedNote(threadID: model.selectedThreadID),
             messages: model.transcriptMessages,
             selectedSessionReference: model.selectedSessionReference,
             assistantRoute: model.routeChoice,
@@ -69,6 +104,7 @@ extension ChatPage {
             gitChangedLineDeletions: model.gitChangedLineDeletions,
             isRunning: model.isRunning,
             latestTurnArtifacts: model.latestTurnArtifacts,
+            artifactStore: model.selectedRemote == nil ? model.localLiveForBridge?.turnArtifacts : nil,
             onOpenArtifact: { model.openArtifact(path: $0) },
             canRetryTurn: model.canRetryLastTurn,
             onRetryTurn: { model.resendLastUserMessage() },
@@ -104,6 +140,10 @@ extension ChatPage {
     }
 
     private struct TranscriptScrollView: View {
+        // W180 D3：這串逐字稿屬於哪條（上面 .id 也以它為鍵，換條就重建），權限放行鈕寫這條。
+        let threadID: UUID?
+        // W180 D3：這條不能在這台放行（Coder 正在看遠端那條）時，放行鈕換成的那行字。
+        let mcpAllowBlockedNote: String?
         let messages: [ChatMessage]
         let selectedSessionReference: TatwoNativeChatSessionReference?
         let assistantRoute: ChatRouteChoice
@@ -114,6 +154,7 @@ extension ChatPage {
         let gitChangedLineDeletions: Int
         let isRunning: Bool
         let latestTurnArtifacts: TurnArtifactIndex?
+        let artifactStore: TurnArtifacts?
         let onOpenArtifact: (String) -> Void
         let canRetryTurn: Bool
         let onRetryTurn: () -> Void
@@ -125,6 +166,7 @@ extension ChatPage {
         let onOpenChangedFiles: () -> Void
         let isPanel: Bool
 
+        @State private var artifactIndices: [String: TurnArtifactIndex] = [:]
         @State private var followState = ChatTranscriptScrollFollowState()
         /// 歷史條跳轉後要抖動＋短暫陰影的那一列（serial 讓同一列連點也會再播一次）。
         @State private var historyArrival: ChatHistoryArrival?
@@ -221,6 +263,8 @@ extension ChatPage {
 
         var body: some View {
             GeometryReader { viewport in
+                let projection = CoderTurnProjection(displayItems, messages: messages, isRunning: isRunning)
+                let currentTurn = messages.last(where: { $0.role == .user })?.turnID
                 ScrollViewReader { proxy in
                     ZStack(alignment: .bottom) {
                         ScrollView {
@@ -228,11 +272,11 @@ extension ChatPage {
                                 alignment: .leading,
                                 spacing: TatwoChatTranscriptVisualMetrics.messageSpacing
                             ) {
-                                ForEach(displayItems) { item in
+                                ForEach(projection.items) { item in
                                     Group {
                                         switch item {
                                         case .message(let message):
-                                            messageRow(message)
+                                            messageRow(message, details: projection.details[message.id] ?? [], ownsTurn: projection.owners[message.turnID ?? message.id] == message.id, isTurnRunning: isRunning && message.turnID == currentTurn)
                                                 .frame(
                                                     width: rowWidth,
                                                     alignment: message.role == .user ? .trailing : .leading)
@@ -240,16 +284,17 @@ extension ChatPage {
                                             ChatInlineWorkTimelineView(
                                                 timeline: timeline,
                                                 assistantRoute: assistantRoute,
-                                                rowWidth: rowWidth,
+                                                rowWidth: rowWidth - 38,
                                                 planSourceText: timeline.messages.contains { $0.id == planArtifactMessageID }
                                                     ? messages.first { $0.id == planArtifactMessageID && $0.role == .assistant && $0.eventKind == .message }?.text
                                                     : nil)
+                                                .padding(.leading, timeline.presentation.isActive ? 38 : 3)
                                         case .planSummary:
                                             PlanTranscriptSummaryView(
                                                 artifact: planArtifact,
                                                 isWriting: false,
                                                 isSidePanelPresented: $planInspectorPresented)
-                                                .frame(width: rowWidth, alignment: .leading)
+                                                .frame(width: rowWidth - 38, alignment: .leading).padding(.leading, 38)
                                                 .id(item.id)
                                                 .accessibilityIdentifier("plan-transcript-summary")
                                         }
@@ -272,8 +317,8 @@ extension ChatPage {
                                         isSidePanelPresented:
                                             $planInspectorPresented)
                                         .frame(
-                                            width: rowWidth,
-                                            alignment: .leading)
+                                            width: rowWidth - 38,
+                                            alignment: .leading).padding(.leading, 38)
                                         .id("tatwo-plan-writing-summary")
                                         .accessibilityIdentifier(
                                             "plan-transcript-summary")
@@ -307,7 +352,7 @@ extension ChatPage {
                             }
                         }
                         .coordinateSpace(name: Self.coordinateSpaceName)
-                        .scrollIndicators(.hidden)
+                        .coderScrollIndicators()
                         .background(ChatTranscriptScrollIntentObserver {
                             followState.detachFromLatest()
                         })
@@ -336,6 +381,14 @@ extension ChatPage {
                             scrollToLatest(
                                 using: proxy,
                                 viewportHeight: viewport.size.height)
+                        }
+                        .task(id: latestTurnArtifacts?.turnID) {
+                            guard let artifactStore, let threadID else { return }
+                            var indices: [String: TurnArtifactIndex] = [:]
+                            for turn in Set(messages.compactMap(\.turnID)) {
+                                if let index = try? await artifactStore.list(threadID: threadID, turnID: turn) { indices[turn] = index }
+                            }
+                            if !Task.isCancelled { artifactIndices = indices }
                         }
                         .onAppear {
                             followState.jumpToLatest()
@@ -389,7 +442,7 @@ extension ChatPage {
                         .overlay(alignment: .leading) {
                             if !isPanel {
                                 ChatHistoryMinimap(
-                                    items: displayItems
+                                    items: projection.items
                                 ) { id in
                                     followState.detachFromLatest()
                                     // 2026-09-11 使用者：跳到的訊息不要貼齊上緣 → 落在視窗約 12% 高度；
@@ -442,21 +495,28 @@ extension ChatPage {
         }
 
         @ViewBuilder
-        private func messageRow(_ message: ChatMessage) -> some View {
+        private func messageRow(_ message: ChatMessage, details: [ChatTranscriptDisplayItem], ownsTurn: Bool, isTurnRunning: Bool) -> some View {
+            let candidate = message.turnID.flatMap { artifactIndices[$0] } ?? latestTurnArtifacts
+            let index = candidate.flatMap { $0.threadID == threadID && ($0.messageID == message.id || ($0.messageID == nil && $0.turnID == message.turnID && ownsTurn)) && !$0.artifacts.isEmpty ? $0 : nil }
+            let changed = message.id == latestAssistantMessageID && gitChangedFileCount > 0 && index == nil
+            let hasDetails = !details.isEmpty || (!isTurnRunning && (index != nil || changed))
             if let error = ChatErrorCardPresentation.resolve(message) {
                 ChatErrorCard(
                     presentation: error,
                     rowWidth: rowWidth,
                     canRetry: canRetryTurn,
                     onRetry: onRetryTurn)
+                    .padding(.leading, 38)
                     .id("tatwo-chat-error-\(message.id)")
             } else if let note = ChatSystemNotePresentation.resolve(message) {
-                ChatSystemNoteRow(presentation: note, rowWidth: rowWidth)
+                ChatSystemNoteRow(presentation: note, rowWidth: rowWidth - 38)
+                    .padding(.leading, 32)
                     .id("tatwo-chat-note-\(message.id)")
             } else {
-            VStack(alignment: .leading, spacing: 12) {
                 ChatBubble(
                     message: message,
+                    threadID: threadID,
+                    mcpAllowBlockedNote: mcpAllowBlockedNote,
                     assistantRoute: assistantRoute,
                     rowWidth: rowWidth,
                     assistantTranscriptCache: assistantTranscriptCache,
@@ -470,28 +530,32 @@ extension ChatPage {
                         initialFocusClaimedPlanQuestionMessageIDs
                             .insert(message.id)
                     },
-                    planInspectorPresented: $planInspectorPresented)
-
-                if shouldRenderArtifacts(after: message), let index = latestTurnArtifacts {
-                    ChatArtifactsCard(index: index, onView: onOpenChangedFiles, onOpen: onOpenArtifact)
-                        .id("tatwo-chat-artifacts-card")
-                } else if shouldRenderChangedFiles(after: message) {
-                    ChatChangedFilesSummaryView(
-                        files: gitChangedFiles,
-                        totalFileCount: gitChangedFileCount,
-                        totalAdditions: gitChangedLineAdditions,
-                        totalDeletions: gitChangedLineDeletions,
-                        onView: onOpenChangedFiles)
-                        .id("tatwo-chat-changed-files-summary")
-                }
+                    planInspectorPresented: $planInspectorPresented,
+                    coderTranscript: true,
+                    turnDetails: hasDetails ? AnyView(VStack(alignment: .leading, spacing: 8) {
+                        ForEach(details.sorted { a, b in if case .workTimeline = a { if case .workTimeline = b { return false }; return true }; return false }) { item in
+                            switch item {
+                            case .workTimeline(let timeline):
+                                ForEach(ChatInlineWorkTimelineDetailProjection.rows(for: timeline, isExpanded: true)) { detail in
+                                    ChatInlineWorkDetailRow(detail: detail, symbolName: detail.state == .failed ? "exclamationmark.triangle" : "checkmark.circle", symbolTint: detail.state == .failed ? .red : .secondary)
+                                }
+                                if timeline.messages.contains(where: { $0.id == planArtifactMessageID }), let text = messages.first(where: { $0.id == planArtifactMessageID && $0.role == .assistant && $0.eventKind == .message })?.text {
+                                    ChatAssistantTranscriptBlockView(document: TatwoAssistantTranscriptPresentation.document(markdown: text), copyAllText: text)
+                                }
+                            case .message(let note):
+                                if let presentation = ChatSystemNotePresentation.resolve(note) { ChatSystemNoteRow(presentation: presentation, rowWidth: nil, revealsMemory: true) }
+                            case .planSummary: EmptyView()
+                            }
+                        }
+                        if !isTurnRunning, let index {
+                            ChatArtifactsCard(index: index, onView: onOpenChangedFiles, onOpen: onOpenArtifact, initiallyExpanded: true)
+                        } else if !isTurnRunning && changed {
+                            ChatChangedFilesSummaryView(files: gitChangedFiles, totalFileCount: gitChangedFileCount,
+                                totalAdditions: gitChangedLineAdditions, totalDeletions: gitChangedLineDeletions, onView: onOpenChangedFiles)
+                        }
+                    }) : nil)
+                    .padding(.leading, message.role == .system ? 38 : 0)
             }
-            }
-        }
-
-        private func shouldRenderArtifacts(after message: ChatMessage) -> Bool {
-            guard let index = latestTurnArtifacts, !index.artifacts.isEmpty else { return false }
-            return message.role == .assistant && message.eventKind == .message
-                && message.id == latestAssistantMessageID && !isRunning
         }
 
         private var showsTypingIndicator: Bool {
@@ -499,16 +563,6 @@ extension ChatPage {
             guard let last = messages.last else { return true }
             if last.role == .assistant, last.eventKind == .message, !last.text.isEmpty { return false }
             return true
-        }
-
-        private func shouldRenderChangedFiles(
-            after message: ChatMessage
-        ) -> Bool {
-            message.role == .assistant
-                && message.eventKind == .message
-                && message.id == latestAssistantMessageID
-                && !isRunning
-                && gitChangedFileCount > 0
         }
 
         private func scrollToLatest(
@@ -898,7 +952,6 @@ extension ChatPage {
     func activeGoalStatusPill(_ text: String) -> some View {
         Text(text.isEmpty ? "planned" : text)
             .font(.system(size: 9, weight: .black, design: .rounded))
-            .foregroundStyle(LiquidGlassTokens.brandAccent)
             .lineLimit(1)
             .padding(.horizontal, 7)
             .frame(height: 20)
@@ -924,4 +977,41 @@ extension ChatPage {
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.070), lineWidth: 1))
     }
 
+}
+
+/// 確認之前只顯示副本資訊，不覆寫文件。
+struct ConversationRecoveryRow: View {
+    #if DEBUG
+    final class Probe {
+        var button: CGRect?
+        var confirming = false
+    }
+    var testProbe: Probe? = nil
+    #endif
+    let candidate: URL
+    let isDisabled: Bool
+    let restore: () -> Void
+    @State private var showsConfirmation = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button { showsConfirmation = true } label: {
+                Text("還原對話紀錄").font(.caption).padding(.horizontal, 10).frame(height: 28).chatGlassChip()
+            }
+            .buttonStyle(.plain)
+            .disabled(isDisabled)
+            #if DEBUG
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { testProbe?.button = $0 }
+            .onChange(of: showsConfirmation) { testProbe?.confirming = $0 }
+            #endif
+            .alert("還原對話紀錄？", isPresented: $showsConfirmation) {
+                Button("取消", role: .cancel) {}
+                Button("先另存目前文件，再還原", action: restore)
+            } message: {
+                Text("會用這份副本取代目前的對話紀錄；還原前會先另存目前文件。")
+            }
+            Text("副本日期：" + ChatLiveStore.backupDate(candidate).formatted(date: .numeric, time: .shortened))
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
 }

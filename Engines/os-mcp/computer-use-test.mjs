@@ -127,6 +127,14 @@ try {
       assert.equal(observed.content[0].type, 'image');
       assert.equal(JSON.parse(observed.content[1].text).imageBase64, undefined);
     }
+    // W184 CU：選填 windowID（computer_window_not_uniquely_identified 的候選）照原樣送到 App；不是正整數視窗編號就擋在這裡。
+    await call('computer_observe', { sessionID, windowID: 59634 });
+    if (bound) assert.equal(calls.at(-1).params.windowID, 59634);
+    await call('computer_observe', { sessionID, windowID: 4294967295 });
+    for (const windowID of [0, -1, 1.5, '59634', true, null, 4294967296]) {
+      await call('computer_observe', { sessionID, windowID }, false);
+    }
+    await call('computer_action', { sessionID, observationID, action: 'click', element: 0, windowID: 1 }, false);
     windowless = true;
     for (const [name, args] of [['computer_observe', { sessionID }],
       ['computer_action', { sessionID, observationID, action: 'press_key', keys: 'cmd+n' }]]) {

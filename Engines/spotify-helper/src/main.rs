@@ -4,7 +4,7 @@
 //! 這支程式用 librespot 在本機當一台叫「TATWO OS」的 Spotify 裝置，聲音由它自己播，不經瀏覽器的加密播放元件。
 //!
 //! 和 App 的約定（一行一筆）：
-//! - stdin 指令：`login`、`logout`、`transfer`（把正在播的轉到這台）、`quit`。
+//! - stdin：login／logout／quit／cancel_resume；JSON transfer（id、device_id、resume）與 reconnect。
 //! - stdout 事件：JSON，例如 `{"event":"connected"}`、`active`／`inactive`（是不是正在播放的那台）；另外 librespot 會印一行 `Browse to: <登入網址>`，App 照原樣接。
 //! - stderr：一般記錄（不含權杖）。
 //! 登入只走 Spotify 官方 OAuth 頁；可重複使用的憑證由 librespot 存在 `--cache` 資料夾的 credentials.json。
@@ -15,10 +15,11 @@ use std::{
 };
 
 use librespot::{
-    connect::{ConnectConfig, Spirc},
+    connect::{ConnectConfig, Spirc, LoadRequest, LoadRequestOptions},
     core::{
         authentication::Credentials, cache::Cache, config::DeviceType, config::SessionConfig,
         session::Session,
+        Error, error::ErrorKind,
     },
     oauth::OAuthClientBuilder,
     playback::{
@@ -35,6 +36,9 @@ use tokio::{
     io::{AsyncBufReadExt, BufReader},
     sync::mpsc,
 };
+
+mod recovery;
+use recovery::{Backoff, Playback, resume_snapshot, is_web_player};
 
 // 和 librespot 主程式相同的範圍；少了部分範圍時 Connect 的狀態同步會失敗。
 const SCOPES: &[&str] = &[
@@ -103,11 +107,38 @@ fn parse_options() -> Result<Options, String> {
     Ok(Options { cache: cache.ok_or("需要 --cache")?, name, port })
 }
 
+#[derive(Clone)]
+struct Transfer {
+    id: String,
+    device_id: Option<String>,
+    resume: bool,
+}
+
 enum Command {
     Login,
     Logout,
-    Transfer,
+    Transfer(Transfer),
+    Reconnect,
+    CancelResume,
     Quit,
+}
+
+fn parse_command(line: &str) -> Option<Command> {
+    let object: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+    let name = object["command"].as_str().unwrap_or(line.trim());
+    match name {
+        "login" => Some(Command::Login),
+        "logout" => Some(Command::Logout),
+        "transfer" => Some(Command::Transfer(Transfer {
+            id: object["id"].as_str().unwrap_or("legacy").into(),
+            device_id: object["device_id"].as_str().map(str::to_owned),
+            resume: object["resume"].as_bool().unwrap_or(false),
+        })),
+        "reconnect" => Some(Command::Reconnect),
+        "cancel_resume" => Some(Command::CancelResume),
+        "quit" => Some(Command::Quit),
+        _ => None,
+    }
 }
 
 fn spawn_stdin_reader() -> mpsc::UnboundedReceiver<Command> {
@@ -115,44 +146,31 @@ fn spawn_stdin_reader() -> mpsc::UnboundedReceiver<Command> {
     tokio::spawn(async move {
         let mut lines = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let command = match line.trim() {
-                "login" => Command::Login,
-                "logout" => Command::Logout,
-                "transfer" => Command::Transfer,
-                "quit" => Command::Quit,
-                "" => continue,
-                other => {
-                    emit("error", serde_json::json!({ "message": format!("不認得的指令 {other}") }));
-                    continue;
-                }
-            };
-            if tx.send(command).is_err() {
-                break;
+            if let Some(command) = parse_command(&line) {
+                if tx.send(command).is_err() { break; }
             }
         }
-        // App 關掉 stdin（或 App 結束）＝結束。
         let _ = tx.send(Command::Quit);
     });
     rx
 }
 
-/// 目前正在播放的裝置。Spotify 每次狀態變動都會推一份 cluster；這支程式自己也訂一份，隨時知道是誰在播。
-static ACTIVE_DEVICE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+// None means preserve the source's playing/paused state, never force play.
+// Always resolve the target from the live session, not a previously connected session.
+async fn transfer_here(session: Session, from: Option<String>) -> Result<(), Error> {
+    let own = session.device_id();
+    let from = from.as_deref().filter(|id| !id.is_empty()).unwrap_or(own);
+    session.spclient().transfer(from, own, None).await?;
+    Ok(())
+}
 
-/// 把播放轉到這台。2026-09-23 實測：librespot 自己的 transfer（從自己轉給自己）會被 OS 裡的 Spotify 網頁播放器立刻搶回；
-/// 從「正在播放的那台」轉給這台，才等於使用者在「裝置」清單手動選這台（網頁播放器不會再搶）。
-async fn transfer_here(session: &Session, spirc: &Spirc) -> Result<(), String> {
-    let own = session.device_id().to_string();
-    let active = ACTIVE_DEVICE.lock().unwrap().clone();
-    match active {
-        Some(from) if from != own => session
-            .spclient()
-            .transfer(&from, &own, None)
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
-        Some(_) => Ok(()),
-        None => spirc.transfer(None).map_err(|e| e.to_string()),
+fn transfer_result(request: &Transfer, result: Result<(), Error>) {
+    match result {
+        Ok(()) => emit("transferred", serde_json::json!({ "id": request.id })),
+        Err(error) => emit("transfer_failed", serde_json::json!({
+            "id": request.id, "not_found": error.kind == ErrorKind::NotFound,
+            "message": error.to_string(),
+        })),
     }
 }
 
@@ -191,7 +209,7 @@ async fn main() {
     let credentials_file = options.cache.join("credentials.json");
 
     let session_config = SessionConfig::default();
-    let player_config = PlayerConfig { bitrate: Bitrate::Bitrate320, ..PlayerConfig::default() };
+    let player_config = PlayerConfig { bitrate: Bitrate::Bitrate320, position_update_interval: Some(Duration::from_secs(1)), ..PlayerConfig::default() };
     let connect_config = ConnectConfig {
         name: options.name.clone(),
         device_type: DeviceType::Computer,
@@ -221,51 +239,103 @@ async fn main() {
     });
     let mut player_events = player.get_player_event_channel();
 
+    type SpircFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+    type ClusterStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<ClusterUpdate, Error>> + Send>>;
     let mut spirc: Option<Spirc> = None;
-    let mut spirc_task: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>> = None;
-    type ClusterStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<ClusterUpdate, librespot::core::Error>> + Send>>;
+    let mut spirc_task: Option<SpircFuture> = None;
+    let mut connecting: Option<tokio::task::JoinHandle<Result<(Spirc, SpircFuture), Error>>> = None;
     let mut cluster_updates: Option<ClusterStream> = None;
-    let mut reconnects: Vec<Instant> = Vec::new();
+    let mut backoff = Backoff::default();
+    let mut retry_at = tokio::time::Instant::now();
+    let mut connected_at = Instant::now();
+    let mut registered = false;
+    let mut registration_deadline = tokio::time::Instant::now();
     let mut login_task: Option<tokio::task::JoinHandle<Result<Credentials, String>>> = None;
-    let mut transfer_pending = false;
-    // 轉播放要在主迴圈裡做（要用到目前的 session 與 spirc）。
-    let (transfer_tx, mut transfer_rx) = mpsc::unbounded_channel::<()>();
+    let mut transfer_pending: Option<Transfer> = None;
+    let mut transfer_task: Option<tokio::task::JoinHandle<Result<(), Error>>> = None;
+    let mut transferring: Option<Transfer> = None;
+    let mut transfer_deadline = tokio::time::Instant::now();
+    let mut transfer_accepted = false;
+    let mut active_device: Option<String> = None;
+    let mut active = false;
+    // SessionDisconnected is also emitted during unexpected shutdown.
+    // Only a cluster naming another device revokes pre-disconnect ownership.
+    let mut owned = false;
+    let mut player_active = false;
+    let mut playback: Option<Playback> = None;
+    let mut saved: Option<Playback> = None;
+    let mut restoring: Option<Playback> = None;
+    let mut connection_check = tokio::time::interval(Duration::from_secs(1));
+    connection_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     emit(if credentials.is_some() { "starting" } else { "needs_login" }, serde_json::json!({}));
 
     loop {
-        // 有憑證但還沒連上：建立連線。
-        if spirc.is_none() && credentials.is_some() && login_task.is_none() {
-            if session.is_invalid() {
-                session = Session::new(session_config.clone(), Some(cache.clone()));
-                player.set_session(session.clone());
-            }
-            match Spirc::new(connect_config.clone(), session.clone(), credentials.clone().unwrap(), player.clone(), mixer.clone()).await {
-                Ok((new_spirc, task)) => {
-                    emit("connected", serde_json::json!({ "device": options.name }));
-                    cluster_updates = session.dealer().listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>).ok();
-                    if transfer_pending {
-                        transfer_pending = false;
-                        transfer_tx.send(()).ok();
-                    }
-                    spirc = Some(new_spirc);
-                    spirc_task = Some(Box::pin(task));
-                }
-                Err(e) => {
-                    // 多半是憑證過期或被撤銷：丟掉舊憑證，請使用者重新登入。
-                    log::warn!("connect failed: {e}");
-                    let _ = std::fs::remove_file(&credentials_file);
-                    credentials = None;
-                    if !session.is_invalid() {
-                        session.shutdown();
-                    }
-                    emit("needs_login", serde_json::json!({ "reason": e.to_string() }));
-                }
-            }
-        }
-
         tokio::select! {
-            command = commands.recv() => match command.unwrap_or(Command::Quit) {
+            _ = connection_check.tick(), if spirc.is_some() => {
+                // Freeze before librespot's asynchronous disconnect cleanup can delay reconnection.
+                if session.is_invalid() && saved.is_none() {
+                    saved = resume_snapshot(owned, playback.as_ref());
+                }
+            },
+            _ = tokio::time::sleep_until(retry_at), if spirc.is_none() && connecting.is_none() && credentials.is_some() && login_task.is_none() => {
+                if session.is_invalid() {
+                    session = Session::new(session_config.clone(), Some(cache.clone()));
+                    player.set_session(session.clone());
+                }
+                let (config, session, credentials, player, mixer) =
+                    (connect_config.clone(), session.clone(), credentials.clone().unwrap(), player.clone(), mixer.clone());
+                connecting = Some(tokio::spawn(async move {
+                    let (spirc, task) = tokio::time::timeout(Duration::from_secs(30),
+                        Spirc::new(config, session, credentials, player, mixer)).await
+                        .map_err(|_| Error::deadline_exceeded("connect timeout"))??;
+                    Ok((spirc, Box::pin(task) as SpircFuture))
+                }));
+            },
+            result = async { connecting.as_mut().unwrap().await }, if connecting.is_some() => {
+                connecting = None;
+                match result.unwrap_or_else(|e| Err(Error::unavailable(e.to_string()))) {
+                    Ok((new_spirc, task)) => {
+                        connected_at = Instant::now();
+                        registered = false;
+                        registration_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                        cluster_updates = session.dealer().listen_for("hm://connect-state/v1/cluster", Message::from_raw::<ClusterUpdate>).ok();
+                        spirc = Some(new_spirc);
+                        spirc_task = Some(task);
+                    }
+                    Err(e) => {
+                        log::warn!("connect failed: {e}");
+                        session.shutdown();
+                        if recovery::authentication_failed(e.kind, &credentials_file) {
+                            // Only authentication failures require login. Never delete credentials for transport errors.
+                            credentials = None;
+                            saved = None;
+                            emit("needs_login", serde_json::json!({}));
+                        } else {
+                            let delay = backoff.next();
+                            retry_at = tokio::time::Instant::now() + delay;
+                            emit("reconnecting", serde_json::json!({ "delay": delay.as_secs() }));
+                        }
+                    }
+                }
+            },
+            command = commands.recv() => {
+                let command = command.unwrap_or(Command::Quit);
+                if matches!(&command, Command::CancelResume) ||
+                    matches!(&command, Command::Transfer(request) if !request.resume) {
+                    saved = None; restoring = None;
+                    if session.is_invalid() { owned = false; }
+                    if transfer_pending.as_ref().is_some_and(|pending| pending.resume) {
+                        transfer_pending = None;
+                    }
+                    if transferring.as_ref().is_some_and(|current| current.resume) {
+                        if let Some(task) = transfer_task.take() { task.abort(); }
+                        if let Some(current) = transferring.take() {
+                            transfer_result(&current, Err(Error::cancelled("resume cancelled")));
+                        }
+                    }
+                }
+                match command {
                 Command::Login => {
                     if login_task.is_none() {
                         let client_id = session_config.client_id.clone();
@@ -274,24 +344,49 @@ async fn main() {
                     }
                 }
                 Command::Logout => {
+                    saved = None; restoring = None; playback = None; active = false; owned = false; player_active = false; active_device = None;
+                    transfer_pending = None;
+                    if let Some(task) = connecting.take() { task.abort(); }
+                    if let Some(task) = transfer_task.take() { task.abort(); }
+                    if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::cancelled("logged out"))); }
                     if let Some(s) = spirc.take() { let _ = s.shutdown(); }
                     if let Some(task) = spirc_task.take() { tokio::spawn(task); }
+                    cluster_updates = None;
                     if !session.is_invalid() { session.shutdown(); }
+                    player.stop();
                     let _ = std::fs::remove_file(&credentials_file);
                     credentials = None;
                     emit("logged_out", serde_json::json!({}));
                 }
-                Command::Transfer => match spirc.as_ref() {
-                    Some(_) => { transfer_tx.send(()).ok(); }
-                    None => transfer_pending = true,
-                },
+                Command::Transfer(request) => {
+                    transfer_pending = Some(request);
+                }
+                Command::CancelResume => {}
+                Command::Reconnect => {
+                    if saved.is_none() { saved = resume_snapshot(owned, playback.as_ref()); }
+                    restoring = None;
+                    if let Some(task) = connecting.take() { task.abort(); }
+                    if let Some(task) = transfer_task.take() { task.abort(); }
+                    if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::not_found("session replaced"))); }
+                    if let Some(s) = spirc.take() { let _ = s.shutdown(); }
+                    if let Some(task) = spirc_task.take() { tokio::spawn(task); }
+                    cluster_updates = None;
+                    session.shutdown();
+                    player.stop();
+                    active = false; owned = false; player_active = false; active_device = None;
+                    backoff.reset();
+                    retry_at = tokio::time::Instant::now();
+                    emit("reconnecting", serde_json::json!({ "delay": 0 }));
+                }
                 Command::Quit => break,
+                }
             },
             result = async { login_task.as_mut().unwrap().await }, if login_task.is_some() => {
                 login_task = None;
                 match result {
                     Ok(Ok(new_credentials)) => {
                         credentials = Some(new_credentials);
+                        backoff.reset(); retry_at = tokio::time::Instant::now();
                         emit("logged_in", serde_json::json!({}));
                     }
                     Ok(Err(message)) => emit("login_failed", serde_json::json!({ "message": message })),
@@ -299,45 +394,124 @@ async fn main() {
                 }
             },
             _ = async { spirc_task.as_mut().unwrap().await }, if spirc_task.is_some() => {
-                spirc_task = None;
-                spirc = None;
-                reconnects.retain(|t| t.elapsed() < Duration::from_secs(600));
-                if reconnects.len() >= 5 {
-                    emit("error", serde_json::json!({ "message": "和 Spotify 的連線一直斷，先停下來" }));
-                    credentials = None;
-                } else {
-                    reconnects.push(Instant::now());
-                    emit("reconnecting", serde_json::json!({}));
-                    if !session.is_invalid() { session.shutdown(); }
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                if saved.is_none() { saved = resume_snapshot(owned, playback.as_ref()); }
+                restoring = None;
+                spirc_task = None; spirc = None; cluster_updates = None;
+                active = false; owned = false; player_active = false; active_device = None;
+                if let Some(task) = transfer_task.take() { task.abort(); }
+                if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::not_found("session disconnected"))); }
+                if !session.is_invalid() { session.shutdown(); }
+                player.stop();
+                // Reset only after a stable connection, not each brief successful handshake.
+                if connected_at.elapsed() >= Duration::from_secs(60) { backoff.reset(); }
+                let delay = backoff.next();
+                retry_at = tokio::time::Instant::now() + delay;
+                emit("reconnecting", serde_json::json!({ "delay": delay.as_secs() }));
+            },
+            update = async { cluster_updates.as_mut().unwrap().next().await }, if cluster_updates.is_some() => {
+                match update {
+                    Some(Ok(update)) if !session.is_invalid() => {
+                        if !registered && update.cluster.device.contains_key(session.device_id()) {
+                            registered = true;
+                            emit("connected", serde_json::json!({ "device": options.name, "device_id": session.device_id(), "resume": saved.is_some() }));
+                        }
+                        let id = &update.cluster.active_device_id;
+                        if !id.is_empty() {
+                            active_device = Some(id.clone());
+                            active = id == session.device_id();
+                            owned = active;
+                            let web = update.cluster.device.get(id).is_some_and(|info|
+                                is_web_player(&info.name, &info.model));
+                            emit("device", serde_json::json!({ "active": active, "web": web }));
+                        }
+                    }
+                    None => cluster_updates = None,
+                    _ => {}
                 }
             },
-            Some(update) = async { cluster_updates.as_mut().unwrap().next().await }, if cluster_updates.is_some() => {
-                if let Ok(update) = update {
-                    let id = update.cluster.active_device_id.clone();
-                    *ACTIVE_DEVICE.lock().unwrap() = if id.is_empty() { None } else { Some(id) };
+            _ = tokio::time::sleep_until(registration_deadline), if spirc.is_some() && !registered => {
+                log::warn!("device registration timed out");
+                session.shutdown();
+                registration_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            },
+            result = async { transfer_task.as_mut().unwrap().await }, if transfer_task.is_some() => {
+                transfer_task = None;
+                let result = result.unwrap_or_else(|e| Err(Error::unavailable(e.to_string())));
+                match result {
+                    Ok(()) => transfer_accepted = true,
+                    Err(e) => if let Some(request) = transferring.take() { transfer_result(&request, Err(e)); },
                 }
             },
-            Some(()) = transfer_rx.recv() => {
-                if let Some(s) = spirc.as_ref() {
-                    match transfer_here(&session, s).await {
-                        Ok(()) => emit("transferred", serde_json::json!({})),
-                        Err(message) => emit("error", serde_json::json!({ "message": format!("轉到這台失敗：{message}") })),
+            _ = tokio::time::sleep_until(transfer_deadline), if transferring.is_some() => {
+                if let Some(task) = transfer_task.take() { task.abort(); }
+                restoring = None;
+                if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::deadline_exceeded("device did not take over"))); }
+            },
+            Some(event) = player_events.recv() => {
+                let playing = matches!(&event, PlayerEvent::Playing { .. });
+                match event {
+                PlayerEvent::Playing { track_id, position_ms, .. } | PlayerEvent::Paused { track_id, position_ms, .. } if !session.is_invalid() && player_active => {
+                    playback = Some(Playback { track: track_id.to_uri().unwrap_or_default(), position_ms, playing, updated: Instant::now() });
+                    emit(if playing { "playing" } else { "paused" }, serde_json::json!({}));
+                    if playing && restoring.as_ref().is_some_and(|p|
+                        playback.as_ref().is_some_and(|current| current.track == p.track &&
+                            current.position_ms.abs_diff(p.position_ms) < 2000)) {
+                        restoring = None; saved = None;
+                        if let Some(request) = transferring.take() { transfer_result(&request, Ok(())); }
                     }
                 }
-            },
-            Some(event) = player_events.recv() => match event {
-                PlayerEvent::Playing { .. } => emit("playing", serde_json::json!({})),
-                PlayerEvent::Paused { .. } => emit("paused", serde_json::json!({})),
-                PlayerEvent::Stopped { .. } => emit("stopped", serde_json::json!({})),
-                PlayerEvent::Unavailable { .. } => emit("unavailable", serde_json::json!({})),
-                // 變成／不再是正在播放的那台（別的裝置或網頁播放器把播放搶走時會收到 inactive）。
-                PlayerEvent::SessionConnected { .. } => emit("active", serde_json::json!({})),
-                PlayerEvent::SessionDisconnected { .. } => emit("inactive", serde_json::json!({})),
+                PlayerEvent::PositionChanged { position_ms, .. } | PlayerEvent::PositionCorrection { position_ms, .. } | PlayerEvent::Seeked { position_ms, .. } if !session.is_invalid() => {
+                    if let Some(p) = playback.as_mut() { p.position_ms = position_ms; p.updated = Instant::now(); }
+                }
+                PlayerEvent::Stopped { .. } | PlayerEvent::Unavailable { .. } if !session.is_invalid() => {
+                    if let Some(p) = playback.as_mut() { p.playing = false; }
+                    emit("stopped", serde_json::json!({}));
+                }
+                PlayerEvent::SessionConnected { connection_id, .. } if !session.is_invalid() && connection_id == session.connection_id() => {
+                    active = true; owned = true; player_active = true;
+                    emit("active", serde_json::json!({}));
+                }
+                PlayerEvent::SessionDisconnected { connection_id, .. } if !session.is_invalid() && connection_id == session.connection_id() => {
+                    active = false; player_active = false;
+                    emit("inactive", serde_json::json!({}));
+                }
                 _ => {}
+                }
             },
         }
+
+        if spirc.is_some() && registered && transferring.is_none() {
+            if let Some(request) = transfer_pending.take() {
+                if request.device_id.as_deref().is_some_and(|id| id != session.device_id()) {
+                    transfer_result(&request, Err(Error::not_found("stale device id")));
+                } else {
+                    transfer_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                    transfer_accepted = active && player_active;
+                    if !transfer_accepted {
+                        let (session, from) = (session.clone(), active_device.clone());
+                        transfer_task = Some(tokio::spawn(transfer_here(session, from)));
+                    }
+                    transferring = Some(request);
+                }
+            }
+        }
+        if active && player_active && transfer_accepted && restoring.is_none() {
+            if let Some(request) = transferring.take() {
+                if request.resume {
+                    if let (Some(s), Some(p)) = (spirc.as_ref(), saved.as_ref()) {
+                        match s.load(LoadRequest::from_tracks(vec![p.track.clone()], LoadRequestOptions {
+                            start_playing: true, seek_to: p.position_ms, ..Default::default()
+                        })) {
+                            Ok(()) => { restoring = Some(p.clone()); transferring = Some(request); }
+                            Err(e) => transfer_result(&request, Err(e)),
+                        }
+                    } else { transfer_result(&request, Ok(())); }
+                } else { transfer_result(&request, Ok(())); }
+            }
+        }
     }
+    if let Some(task) = connecting.take() { task.abort(); }
+    if let Some(task) = transfer_task.take() { task.abort(); }
 
     if let Some(s) = spirc.take() { let _ = s.shutdown(); }
     if let Some(task) = spirc_task.take() {
@@ -346,4 +520,36 @@ async fn main() {
     emit("stopped_helper", serde_json::json!({}));
     // 讀 stdin 的背景執行緒會卡住 runtime 的收尾；說好要走就直接走。
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_http_404_and_410_become_the_not_found_wire_flag() {
+        for status in [404u16, 410u16] {
+            let error: Error = librespot::core::http_client::HttpClientError::StatusCode(
+                status.try_into().unwrap()
+            ).into();
+            assert_eq!(error.kind, ErrorKind::NotFound);
+        }
+    }
+
+    #[test]
+    fn stdin_json_transfer_preserves_request_target_and_resume_semantics() {
+        let Some(Command::Transfer(request)) = parse_command(
+            r#"{"command":"transfer","id":"request-1","device_id":"live-device","resume":false}"#
+        ) else { panic!("expected transfer"); };
+        assert_eq!(request.id, "request-1");
+        assert_eq!(request.device_id.as_deref(), Some("live-device"));
+        assert!(!request.resume);
+        let Some(Command::Transfer(request)) = parse_command(
+            r#"{"command":"transfer","id":"resume-1","resume":true}"#
+        ) else { panic!("expected resume"); };
+        assert!(request.resume);
+        assert!(matches!(parse_command(r#"{"command":"reconnect"}"#), Some(Command::Reconnect)));
+        assert!(matches!(parse_command(r#"{"command":"cancel_resume"}"#), Some(Command::CancelResume)));
+        assert!(matches!(parse_command("quit"), Some(Command::Quit)));
+    }
 }

@@ -42,11 +42,8 @@ enum ChatComposerSlashCatalog {
     static let commands = ["/plg", "/plan", "/goal", "/issue", "/feedback", "/pr", "/討論串", "/顯示討論串", "/蒸餾"]
 
     static func matches(prompt: String) -> [ChatComposerSlashMatch] {
-        let activeLine = prompt
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .last
-            .map(String.init) ?? prompt
-        let trimmed = activeLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard prompt.rangeOfCharacter(from: .newlines) == nil else { return [] }
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("/") else { return [] }
         guard !trimmed.dropFirst().contains(where: \.isWhitespace) else { return [] }
         return commands

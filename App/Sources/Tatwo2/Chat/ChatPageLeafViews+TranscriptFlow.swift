@@ -1125,7 +1125,7 @@ private struct ChatAssistantTranscriptCodeBlock: View {
                 .padding(.top, 34)
                 .padding(.bottom, 12)
         }
-        .scrollIndicators(.hidden)
+        .coderScrollIndicators()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             Color.black.opacity(0.20),

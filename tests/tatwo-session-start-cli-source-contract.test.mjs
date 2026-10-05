@@ -208,9 +208,15 @@ assert.match(
 );
 assert.match(
   bootstrapSurface,
-  /open\([\s\S]*?O_DIRECTORY \| O_NOFOLLOW \| O_CLOEXEC[\s\S]*?flock\(descriptor, LOCK_EX\)/,
+  /open\([\s\S]*?O_DIRECTORY \| O_NOFOLLOW \| O_CLOEXEC[\s\S]*?flock\(descriptor, LOCK_EX \| LOCK_NB\)/,
   "bootstrap fence must lock the existing state-root directory without creating a fifth lock artifact",
 );
+
+assert.match(bootstrapSurface, /if code == EINTR \{ continue \}/);
+assert.match(bootstrapSurface, /if code == EWOULDBLOCK \|\| code == EAGAIN/);
+assert.match(bootstrapSurface, /guard waited < 8 else \{[\s\S]*?bootstrapFenceTimedOut/);
+assert.match(bootstrapSurface, /bootstrapFenceAcquireFailed\(path: root\.path, code: code\)/);
+assert.match(bootstrapSurface, /defer \{ _ = flock\(descriptor, LOCK_UN\) \}/);
 
 assert.match(
   appBootstrap,
@@ -260,10 +266,12 @@ const productionBeginOffset = chatModel.indexOf(
   "let attachment = try sessionStore.beginCurrent(",
 );
 assert.notEqual(productionBeginOffset, -1);
-const productionBeginSurface = chatModel.slice(
-  Math.max(0, productionBeginOffset - 4_000),
-  productionBeginOffset + 2_000,
+const productionFunctionStart = chatModel.lastIndexOf(
+  "    func ensureSelectedThreadWorkOSContract(", productionBeginOffset,
 );
+const productionFunctionEnd = chatModel.indexOf("\n    func send()", productionBeginOffset);
+assert.ok(productionFunctionStart >= 0 && productionFunctionEnd > productionBeginOffset);
+const productionBeginSurface = chatModel.slice(productionFunctionStart, productionFunctionEnd);
 assert.match(
   productionBeginSurface,
   /guard let canonicalOwner else/,

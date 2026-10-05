@@ -5,6 +5,8 @@ import Foundation
 
 final class ChatSliderPointerCaptureView: LiquidGlassDashboardSliderPointerCaptureView {
     var onCancelled: (() -> Void)?
+    /// W184 H4 修正（審查 #4）：模式卡中間那一段在捲的時候的可視範圍；按下要落在裡面才接（nil＝不限，其他拉條照舊）。
+    var viewport: TatwoComposerModeViewport?
     private var lifecycle = TatwoChatSliderPointerLifecycle()
     private weak var attachedWindow: NSWindow?
     private var localEventMonitor: Any?
@@ -205,7 +207,10 @@ final class ChatSliderPointerCaptureView: LiquidGlassDashboardSliderPointerCaptu
                 return
             }
             guard let point = routedLocalPoint(for: event) else { return }
-            guard bounds.contains(point) else { return }
+            // W184 H4 修正（審查 #4）：看得到的地方按下才接——被捲走（祖先裁切：visibleRect）、落在卡的捲動區外面
+            // （被固定的標題、S～XXL、底列蓋住）的不接，不然看不到的拉條照樣被改值。
+            let viewportRect = viewport?.windowRect(in: window).map { convert($0, from: nil) }
+            guard Self.accepts(point: point, bounds: bounds, visibleRect: visibleRect, viewport: viewportRect) else { return }
             let x = clampedX(point.x)
             debugPointerEvent("monitor-down", x: x)
             apply(lifecycle.pointerDown(at: x))
@@ -226,6 +231,13 @@ final class ChatSliderPointerCaptureView: LiquidGlassDashboardSliderPointerCaptu
         default:
             return
         }
+    }
+
+    /// 按下的點（這個 view 的座標）接不接：在拉條上、在看得到的那一塊（visibleRect）、有捲動區時也在捲動區裡。
+    static func accepts(point: NSPoint, bounds: NSRect, visibleRect: NSRect, viewport: NSRect?) -> Bool {
+        guard bounds.contains(point), visibleRect.contains(point) else { return false }
+        if let viewport { return viewport.contains(point) }
+        return true
     }
 
     private func apply(_ transition: TatwoChatSliderPointerTransition) {
@@ -380,6 +392,8 @@ struct ChatSliderPointerOverlay: NSViewRepresentable {
     var onEnded: ((CGFloat) -> Void)?
     var onCancelled: (() -> Void)?
     var pendingSettleActive = false
+    /// W184 H4 修正（審查 #4）：模式卡中間那一段捲動時的可視範圍（其他拉條不給＝照舊）。
+    var viewport: TatwoComposerModeViewport? = nil
 
     func makeNSView(context _: Context) -> ChatSliderPointerCaptureView {
         let captureView = ChatSliderPointerCaptureView()
@@ -401,6 +415,7 @@ struct ChatSliderPointerOverlay: NSViewRepresentable {
         captureView.onChanged = onChanged
         captureView.onEnded = onEnded
         captureView.onCancelled = onCancelled
+        captureView.viewport = viewport
         captureView.synchronizePendingSettle(pendingSettleActive)
     }
 }

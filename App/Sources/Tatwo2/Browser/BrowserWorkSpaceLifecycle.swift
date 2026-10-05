@@ -41,16 +41,17 @@ final class BrowserWorkSpaceLifecycle {
     }
 
     func consumePendingURLs() throws {
-        queue.consume(whenMounted: true) { urls in
+        queue.consumeItems(whenMounted: true) { items in
             let settings = BrowserGeneralSettings.load(from: settingsURL)
             let target = registry.spaces.first { $0.id == store.currentSpaceUUID && !$0.isSessionSpace }
                 ?? registry.spaces.first { $0.id == settings.defaultSpaceID && !$0.isSessionSpace }
                 ?? registry.spaces.first { !$0.isSessionSpace }
                 ?? registry.addSpace(name: "一般")
-            for url in urls {
+            for item in items {
                 // Existing UUID-aware entrypoint calls registry.openTab(owner: .workSpace, url:)
                 // and selects the new tab; no Session-space or chat ownership can leak in.
-                store.openExternal(spaceID: target.id, url: url)
+                // W183 R3b：一次性的授權網址開成只在記憶體的分頁（不進 tabs.json）。
+                store.openExternal(spaceID: target.id, url: item.url, sensitive: item.sensitive)
                 if let id = store.selectedRegistryID { registry.select(id) }
             }
         }

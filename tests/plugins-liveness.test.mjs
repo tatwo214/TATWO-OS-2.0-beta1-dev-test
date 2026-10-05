@@ -65,7 +65,7 @@ struct GitHubAccountsStore {
  func loadAccounts() throws -> [GitHubAccountRecord] { [] }
  func mcpToken(username: String) throws -> String? { nil }
 }
-enum ClaudeSidecar { enum Kind { case claude }; static func scriptPath(for: Kind) -> String { "/unavailable/sidecar.mjs" } }
+enum ClaudeSidecar { enum Kind: String, CaseIterable, Hashable { case claude, codex, grok }; static func scriptPath(for: Kind) -> String { "/unavailable/sidecar.mjs" }; static let mcpConfigEnvironmentKey = "TATWO2_MCP_CONFIG" }
 @MainActor enum ComputerUseSettings { struct Value { let enabled = true }; static let shared = Value() }
 @MainActor enum TatwoWebMCPRuntime {
  struct Value { let registeredToolCount = 0 }; static let shared = Value()
@@ -190,7 +190,7 @@ for name in ["os-mcp","browser-mcp"] {
 check(builtins.allSatisfy {$0.liveness.state == .ready},"observed builtin ready")
 check(builtins.first {$0.name == "os-mcp"}!.lastCalledAt == nil,"no invented audit")
 let unavailable=PluginsSource.builtinEntries(environment:env,runtime:.init())
-check(unavailable[2].liveness.detail == "需要輔助使用權限","TCC accessibility")
+check(unavailable[2].liveness.detail == "需要裝置控制和資料取用（舊稱輔助使用）權限","TCC accessibility")
 check(unavailable[3].liveness.state == .unknown && unavailable[3].liveness.detail == "目前沒有網頁登記工具","no WebMCP")
 check(PluginsSource.builtinEntries(environment:env,runtime:.init(accessibility:true))[2].liveness.detail == "需要螢幕錄製權限","TCC recording")
 let audit=root.appendingPathComponent("audit.log")
@@ -232,7 +232,9 @@ print("W62 \(checks) production checks PASS")
     'Facade/GBrainService.swift','Facade/GBrainKeychain.swift','Facade/TatwoEntry.swift',
     'Facade/DeviceIdentity.swift','Facade/DeviceStatus.swift','Facade/DeviceRegistry.swift',
     'Facade/OSUpstream.swift','Facade/OSUpstreamRefresh.swift','Facade/TatwoResources.swift',
-    'Facade/PluginsBuiltinSource.swift','Facade/PluginsRemoval.swift','Facade/EnginePaths.swift','Engine/NativeStagingIsolation.swift',
+    'Facade/PluginsBuiltinSource.swift','Facade/PluginsRemoval.swift','Facade/EnginePaths.swift','Facade/EngineRuntimeSelection.swift','Engine/NativeStagingIsolation.swift',
+    // W181 R3：GBrain 帶金鑰前問「不用 API 金鑰」的判斷（真的檔）。
+    'Facade/EngineDisableStore.swift','Facade/EngineAPIKeyPolicy.swift',
     'Browser/Diagnostics/BrowserDiagnosticsAudit.swift','Browser/Diagnostics/BrowserDiagnosticsPrivacy.swift'].map(p=>path.join(root,app+p));
   run('swiftc',['-num-threads','2',...files,path.join(dir,'stubs.swift'),path.join(dir,'main.swift'),'-o',path.join(dir,'fixture')]);
   // Keep sockets below sockaddr_un's bound by using an owned short temporary fixture root.

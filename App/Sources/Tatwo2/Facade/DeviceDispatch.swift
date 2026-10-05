@@ -51,6 +51,9 @@ final class DeviceDispatch: @unchecked Sendable {
     private let evidence: (() -> PrimaryTransfer.Evidence)?
     lazy var inbox = DeviceInbox(dispatch: self)
     private let lock = NSRecursiveLock()
+    /// W180 E1b：對主設備的簽章呼叫排成一列。序號在簽章時就定了、主設備只收比上次大的，每次呼叫卻各開一條 SSH，
+    /// 先簽的不一定先到；所以「簽章到收到回覆」整段拿著這把鎖（跟上面管 state 的 lock 分開，不擋驗章）。
+    private let rpcLock = NSRecursiveLock()
     private let worker = DispatchQueue(label: "ai.tatwo.tatwo2.dispatch")
     private var timer: DispatchSourceTimer?
 
@@ -327,6 +330,7 @@ final class DeviceDispatch: @unchecked Sendable {
             .mapValues(Self.hash)
         guard receipt.hashes == bundle.hashes, readback == bundle.hashes else { throw Failure(reason: "readback_mismatch") }
         receipt.phase = "converged"; receipt.updated = Date()
+        state.receipts.removeValue(forKey: "local")
         state.receipts[bundle.sender] = receipt; try save(state)
         if let transfer = local.transfer, !transfer.committed, transfer.from == bundle.sender,
            local.epoch == transfer.oldEpoch {
@@ -391,6 +395,7 @@ final class DeviceDispatch: @unchecked Sendable {
                 lock.lock(); defer { lock.unlock() }
                 let hashes = try snapshot().mapValues(Self.hash)
                 var state = try state()
+                state.receipts.removeValue(forKey: "local")
                 for peer in registry.list() where state.receipts[peer.id]?.hashes != hashes {
                     state.receipts[peer.id] = Receipt(seq: 0, phase: "pending", hashes: hashes, updated: Date())
                 }
@@ -399,18 +404,24 @@ final class DeviceDispatch: @unchecked Sendable {
             }
             let peer = try primary()
             inbox.flush()
-            let response = try send(peer, method: "dispatch_fetch", params: signed(method: "dispatch_fetch", payload: [:]))
+            let response = try serializedRPC { // W180 E1b
+                try send(peer, method: "dispatch_fetch", params: signed(method: "dispatch_fetch", payload: [:]))
+            }
             let bundle = try Self.decode(Bundle.self, response)
             guard !inbox.proposals().contains(where: {
                 ($0.document == "os" || $0.document == "skillet") && $0.status != "sent"
             }) else { throw Failure(reason: "pending_document_keeps_local_original") }
             let receipt = try apply(bundle, authenticatedPrimary: peer)
             // apply may promote this device; ACK must still go to the pinned sender.
-            _ = try send(peer, method: "dispatch_ack",
+            _ = try serializedRPC { // W180 E1b
+                try send(peer, method: "dispatch_ack",
                          params: signed(method: "dispatch_ack", payload: Self.object(receipt), recipient: peer.id))
+            }
         } catch {
             lock.lock(); defer { lock.unlock() }
-            if var state = try? state(), let local = try? identity(), let id = local.primaryDeviceID {
+            if var state = try? state() {
+                let id = (try? DeviceIdentityStore.readLocal(entry: entry))?.primaryDeviceID ?? "local"
+                if id != "local" { state.receipts.removeValue(forKey: "local") }
                 var row = state.receipts[id] ?? Receipt(seq: 0, phase: "delivered", hashes: [:], updated: Date())
                 // Preserve first failure time, so repeated outages cannot postpone timeout.
                 if row.phase == "converged" { row.phase = "delivered"; row.updated = Date() }
@@ -426,8 +437,15 @@ final class DeviceDispatch: @unchecked Sendable {
     // are not authentication. Keychain / the legacy Ed25519 signer are not used.
     func callPrimary(method: String, payload: [String: Any]) throws -> [String: Any] {
         let peer = try primary()
-        let proof = try signed(method: method, payload: payload)
-        return try send(peer, method: method, params: proof)
+        return try serializedRPC { // W180 E1b：簽章到收到回覆不被別的簽章呼叫插隊
+            let proof = try signed(method: method, payload: payload)
+            return try send(peer, method: method, params: proof)
+        }
+    }
+    /// W180 E1b：自己簽章、自己送（例如記憶同步推送前用同一條 pin 住的連線問位置）的呼叫也要包在這裡。
+    func serializedRPC<T>(_ body: () throws -> T) rethrows -> T {
+        rpcLock.lock(); defer { rpcLock.unlock() }
+        return try body()
     }
     private func send(_ peer: DeviceRecord, method: String, params: [String: Any]) throws -> [String: Any] {
         if let rpc { return try rpc(peer, method, params) }
@@ -436,9 +454,11 @@ final class DeviceDispatch: @unchecked Sendable {
     func pushSubmission(repository: URL, commit: String, ref: String) throws {
         let peer = try primary()
         let link = RemoteHostLink(environment: environment)
-        let params = try signed(method: "inbox_target", payload: [:])
-        let target = try rpc?(peer, "inbox_target", params)
-            ?? link.callPinned(device: peer, method: "inbox_target", params: params)
+        let target = try serializedRPC { () throws -> [String: Any] in // W180 E1b
+            let params = try signed(method: "inbox_target", payload: [:])
+            return try rpc?(peer, "inbox_target", params)
+                ?? link.callPinned(device: peer, method: "inbox_target", params: params)
+        }
         guard let path = target["repository"] as? String, path.hasPrefix("/"), !path.contains("\n") else {
             throw Failure(reason: "invalid_primary_repository")
         }
@@ -460,6 +480,7 @@ final class DeviceDispatch: @unchecked Sendable {
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         let key = environment["TATWO2_SSH_KEY_PATH"]
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519").path
+        guard FileManager.default.fileExists(atPath: key + ".pub") else { throw Failure(reason: "paired_ssh_key_missing") }
         let publicKey = try String(contentsOfFile: key + ".pub", encoding: .utf8)
         // Prefer the already-unlocked SSH agent using only the public-key path.
         // A noninteractive file-key fallback still uses the same paired key;
@@ -558,11 +579,15 @@ final class DeviceDispatch: @unchecked Sendable {
         try PrimaryTransfer.cancelPrepared(self)
     }
     func pullTransfer(from peer: DeviceRecord) throws {
-        let response = try send(peer, method: "dispatch_fetch",
-                                params: signed(method: "dispatch_fetch", payload: [:], recipient: peer.id))
+        let response = try serializedRPC { // W180 E1b
+            try send(peer, method: "dispatch_fetch",
+                     params: signed(method: "dispatch_fetch", payload: [:], recipient: peer.id))
+        }
         let receipt = try apply(Self.decode(Bundle.self, response), authenticatedPrimary: peer)
-        _ = try send(peer, method: "dispatch_ack",
+        _ = try serializedRPC { // W180 E1b
+            try send(peer, method: "dispatch_ack",
                      params: signed(method: "dispatch_ack", payload: Self.object(receipt), recipient: peer.id))
+        }
     }
     static func run(_ executable: String, _ arguments: [String], input: Data? = nil,
                     directory: URL? = nil) throws -> (Int32, Data) {

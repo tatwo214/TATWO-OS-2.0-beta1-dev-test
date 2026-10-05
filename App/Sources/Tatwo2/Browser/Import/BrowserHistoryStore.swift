@@ -38,8 +38,14 @@ actor BrowserHistoryStore {
         return document.entries
     }
 
+    /// W183 R3b 審查：一次性的授權網址（例如 Cloudflare 授權頁帶的 callback）不進瀏覽紀錄。
+    /// 含這個記號的網址（轉址後被編碼一兩層的也算）一律不記；記號只在記憶體（這個 App 行程內）。
+    static func excludeVisits(containing marker: String) { BrowserHistoryExclusions.shared.add(marker) }
+    static func isExcluded(_ url: URL) -> Bool { BrowserHistoryExclusions.shared.matches(url) }
+
     /// Live visits increment once per committed navigation; imports retain their idempotent max-count merge.
     func recordVisit(url: URL, title: String, at date: Date = Date()) throws {
+        guard !Self.isExcluded(url) else { return }   // W183 R3b
         let old = try entries().first { $0.url == url }
         _ = try append([BrowserHistoryEntry(url: url, title: title, lastVisitTime: date,
             visitCount: min(old?.visitCount ?? 0, Int.max - 1) + 1)])
@@ -96,5 +102,29 @@ actor BrowserHistoryStore {
         try data.write(to: storageURL, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: storageURL.path)
         return AppendResult(added: added, updated: updated, skipped: incoming.count - added - updated)
+    }
+}
+
+/// W183 R3b：不進瀏覽紀錄的記號（鎖保護；任何執行緒都能問）。
+private final class BrowserHistoryExclusions: @unchecked Sendable {
+    static let shared = BrowserHistoryExclusions()
+    private let lock = NSLock()
+    private var markers: Set<String> = []
+
+    func add(_ marker: String) {
+        guard marker.count >= 12 else { return }   // 太短的記號會誤擋一般網址
+        lock.lock(); markers.insert(marker); lock.unlock()
+    }
+
+    func matches(_ url: URL) -> Bool {
+        lock.lock(); let current = markers; lock.unlock()
+        guard !current.isEmpty else { return false }
+        var text = url.absoluteString
+        for _ in 0..<4 {
+            if current.contains(where: { text.contains($0) }) { return true }
+            guard let decoded = text.removingPercentEncoding, decoded != text else { return false }
+            text = decoded
+        }
+        return current.contains { text.contains($0) }
     }
 }

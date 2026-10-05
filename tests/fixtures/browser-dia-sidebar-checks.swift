@@ -4,6 +4,18 @@
         do {
             let blankRegistry = BrowserTabRegistry(storageURL: storage.appendingPathExtension("startpage"))
             let blankStore = BrowserWorkSpaceStore(registry: blankRegistry)
+            let owner = BrowserTabOwner.workSpace(spaceID: blankRegistry.spaces.first { !$0.isSessionSpace }!.id)
+            let closing = blankRegistry.openTab(owner: owner)
+            blankStore.focusMode = true
+            blankRegistry.close(closing.id)
+            precondition(blankStore.tabs.isEmpty && !blankStore.focusMode && !blankStore.sidebarPinned,
+                         "last-tab passive expansion survives projection deduplication")
+            blankStore.sidebarPinned = true
+            let pinned = blankRegistry.openTab(owner: owner)
+            blankRegistry.close(pinned.id)
+            precondition(blankStore.tabs.isEmpty && blankStore.sidebarPinned && !blankStore.focusMode,
+                         "passive empty-tab refresh preserves pinning")
+            blankStore.sidebarPinned = false
             precondition(blankStore.showsStartPage, "empty space has centered search")
             blankStore.addTab()
             let id = blankStore.selectedRegistryID
@@ -21,6 +33,22 @@
         let registry = BrowserTabRegistry(storageURL: storage)
         let store = BrowserWorkSpaceStore(registry: registry)
         let otherWindow = BrowserWorkSpaceStore(registry: registry)
+        let unrelated = registry.openTab(owner: .workSpace(spaceID: registry.spaces.first { !$0.isSessionSpace }!.id),
+                                         url: URL(string: "https://example.com/unrelated")!)
+        let stableTabs = store.tabs
+        var favoritePublications = 0
+        let favoriteWatch = otherWindow.$favorites.dropFirst().sink { _ in favoritePublications += 1 }
+        defer { favoriteWatch.cancel() }
+        let favorite = registry.addFavorite(url: URL(string: "https://example.com/favorite-only")!, title: "Favorite only")
+        precondition(store.favorites == registry.favorites && otherWindow.favorites == registry.favorites)
+        precondition(favoritePublications == 1 && store.tabs == stableTabs && otherWindow.tabs == stableTabs,
+                     "favorite-only changes publish to every store without a tab mutation")
+        registry.changes.send()
+        precondition(favoritePublications == 1, "same favorites do not publish again")
+        registry.removeFavorite(favorite.id)
+        precondition(favoritePublications == 2 && store.favorites.isEmpty && otherWindow.favorites.isEmpty,
+                     "removing an unopened favorite refreshes every store")
+        registry.close(unrelated.id)
         store.focusMode = true
         precondition(store.focusMode)
         store.sidebarPinned = true
@@ -127,6 +155,15 @@
         precondition(registry.tabs.count == count)
         store.selectSpace(store.spaces.first { $0.isSessionSpace }!.id)
         precondition(store.selectedRegistryID == nil, "session aggregate is not a workspace tab action target")
+        store.select(registryID: otherID)
+        precondition(store.selectedSpace.registryID == newSpace.id && store.selectedRegistryID == otherID,
+                     "foregrounding a page in another space switches to that space and selects that page")
+        let foreground = registry.openBookmark(bookmark.id, folderID: folder, owner: owner)!
+        store.selectSpace(store.spaces.first { $0.isSessionSpace }!.id)
+        store.select(registryID: foreground.id)
+        precondition(store.selectedSpace.registryID == space.id && store.selectedRegistryID == foreground.id)
+        precondition(store.folders.first { $0.id == folder }!.expanded,
+                     "foregrounding a bookmarked page expands its folder")
         precondition(!registry.tabs.first { $0.id == chat.id }!.isPinned)
         // Old tab documents without the optional binding remain readable.
         var old = try JSONSerialization.jsonObject(with: JSONEncoder().encode(registry.tabs[0])) as! [String: Any]

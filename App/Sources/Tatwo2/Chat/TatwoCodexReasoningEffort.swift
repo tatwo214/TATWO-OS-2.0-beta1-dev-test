@@ -8,6 +8,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
   case medium
   case high
   case xhigh
+  case max
+  case ultra
 
   public var id: String { rawValue }
 
@@ -17,6 +19,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
     case .medium: return "中"
     case .high: return "高"
     case .xhigh: return "超高"
+    case .max: return "最高"
+    case .ultra: return "Ultra（自動分派）"
     }
   }
 
@@ -26,6 +30,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
     case .medium: return "中"
     case .high: return "高"
     case .xhigh: return "超高"
+    case .max: return "最高"
+    case .ultra: return "Ultra"
     }
   }
 
@@ -35,6 +41,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
     case .medium: return "medium"
     case .high: return "high"
     case .xhigh: return "xhigh"
+    case .max: return "max"
+    case .ultra: return "ultra"
     }
   }
 
@@ -44,6 +52,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
     case .medium: return "medium"
     case .high: return "high"
     case .xhigh: return "xhigh"
+    // Claude 的既有最高對應是 xhigh；不把 Codex 專屬值交給 Claude。
+    case .max, .ultra: return "xhigh"
     }
   }
 
@@ -53,6 +63,8 @@ public enum TatwoCodexReasoningEffort: String, CaseIterable, Identifiable, Codab
     case .medium: return "medium"
     case .high: return "high"
     case .xhigh: return "xhigh"
+    case .max: return "max"
+    case .ultra: return "ultra"
     }
   }
 

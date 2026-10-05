@@ -58,10 +58,11 @@ enum ThreadLiveness: String, Codable, Sendable, Hashable {
     var label: String {
         switch self { case .active: "有輸出"; case .idle: "5 分鐘沒動"; case .stalled: "15 分鐘零輸出"; case .done: "已完成"; case .failed: "已失敗" }
     }
-    static func from(status: String?, lastOutputAt: Date?, now: Date = Date()) -> ThreadLiveness? {
+    static func from(status: String?, lastOutputAt: Date?, now: Date = Date(), dispatchActive: Bool = false) -> ThreadLiveness? {
         guard let status else { return nil }
         if status == "done" { return .done }
         if status == "failed" { return .failed }   // 2026-09-06：failed 不能因為剛有輸出被映成 active（r8 DISPATCH 呈現落差）；不看時間門檻
+        if status == "running", dispatchActive { return .active }
         guard let lastOutputAt else { return .idle }
         let gap = now.timeIntervalSince(lastOutputAt)
         if gap > 15 * 60 { return .stalled }
@@ -81,6 +82,7 @@ struct TatwoNativeChatProject: Identifiable, Sendable, Equatable, Hashable {
 struct TatwoNativeChatStoreDocument: Sendable, Equatable, Hashable {
     var projects: [TatwoNativeChatProject] = []
     var generalProjectID: UUID? = nil
+    var assistantProjectID: UUID? = nil
 }
 
 typealias ChatEngine = TatwoNativeChatEngine

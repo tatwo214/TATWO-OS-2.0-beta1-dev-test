@@ -33,12 +33,21 @@ function fixtureSource() {
   assert.ok(implementationStart >= 0);
   const engine = engineFile.slice(implementationStart);
   const get = (s, a) => declaration(s, a);
+  const coderImport = read('CoderImport.swift');
+  const handsEngine = engine.match(/^\s*static let handsEngine = "[^"]+"$/m)?.[0];
+  assert.ok(handsEngine, 'missing production hands engine identity');
   return String.raw`
 import Foundation
+import Darwin
 // Unrelated UI payloads and recording-only engine transport dependencies.
+enum OSEventSources {
+    static var send = "system"
+    static func begin(origin: String, actor: String) -> String { let previous = send; send = origin; return previous }
+}
 struct ChatNativeGoal: Codable, Equatable {}
 struct TatwoIssueListEntryV1: Codable, Equatable {}
-enum TatwoPermissionPreset: String, Codable { case standard }
+enum TatwoPermissionPreset: String, Codable { case standard, askFirst }
+enum TatwoChatRuntimeAdapter: String { case chatgptTap = "chatgpt-tap" }
 enum ChatMessageRole: String { case user, assistant, system; var storageValue: String { rawValue } }
 enum TatwoNativeChatEventKind: String { case message }
 struct ChatMessage {
@@ -47,6 +56,8 @@ struct ChatMessage {
     var text: String
     var status: String? = nil
     var modelID: String? = nil
+    var modelDisplayName: String? = nil
+    var engineErrorDetails: String? = nil
     var eventKind: TatwoNativeChatEventKind = .message
     var runtimeAdapterID: String? = nil
     var runtimeFallbackReason: String? = nil
@@ -54,7 +65,24 @@ struct ChatMessage {
     var planQuestions: [String]? = nil
     var createdAt: Date = Date()
 }
+// Real metadata dependency; do not pull archive/remote I/O into this fixture.
+${get(coderImport, 'struct CoderImportSource:')}
+enum CoderImport {
+    ${get(coderImport, 'static func dedupeKey(')}
+}
+${get(read('BotLibrary.swift'), 'enum BotLibraryError:')}
+// Only entry discovery is substituted; the external-workspace safety policy is real.
+// Never resolve the user's entry or defaults while running this isolated fixture.
+struct TatwoEntry {
+    let root: URL
+    init(environment: [String: String]) {
+        guard let path = environment["TATWO_TEST_ENTRY"] else { fatalError("fixture entry required") }
+        root = URL(fileURLWithPath: path, isDirectory: true)
+    }
+}
+${get(read('TatwoEntry.swift'), 'enum ExternalWorkspacePolicy {')}
 ${read('ChatLiveStore.swift')}
+${read('ChatDocumentRecovery.swift')}
 ${get(dispatch, 'struct RoomSpec {')}
 ${get(dispatch, 'struct DispatchedRoom {')}
 ${get(dispatch, 'struct ReclaimedRoom {')}
@@ -116,6 +144,7 @@ class RecordingEngine {
     ${get(engine, 'func configureRoom(threadID:')}
 }
 final class ChatLiveEngine: RecordingEngine {
+    ${handsEngine}
     var remoteHandles = RemoteHandles()
     ${get(engine, 'func configureReadOnlyRoom(threadID:')}
     ${get(engine, 'func setRequestedModel(')}
@@ -139,7 +168,7 @@ final class ChatPageModel {
     static func prepareRemoteRoomWorktree(ref: RemoteDeviceRef, workdir: String, roomID: String) throws -> String {
         Calls.remote += 1; throw DispatchGitFailure(message: "remote forbidden")
     }
-    static func runGit(_ args: [String], cwd: String) -> (status: Int32, output: String) {
+    static func runGit(_ args: [String], cwd: String, hands: Bool = false) -> (status: Int32, output: String) {
         Calls.git += 1; return (1, "git forbidden in fixture")
     }
 }
@@ -195,13 +224,18 @@ check(defaultResult.branch == "construction-branch", "normal branch lookup lost"
 // Actual decoder: absent/false/true accepted, malformed capability rejected.
 let decoder = JSONDecoder()
 let legacy = try decoder.decode(LiveThreadRecord.self, from: Data("{}".utf8))
-check(legacy.roomReadOnly == nil, "legacy decode")
+check(legacy.roomReadOnly == nil && legacy.importedFrom == nil, "legacy decode")
 for flag in [false, true] {
     var record = LiveThreadRecord(); record.roomReadOnly = flag
+    record.importedFrom = CoderImportSource(engine: "claude", sessionID: "fixture-session",
+        path: sourceMarker.path, title: "synthetic", cwd: source.path,
+        sourceModifiedAt: Date(timeIntervalSince1970: 100), importedAt: Date(timeIntervalSince1970: 200),
+        totalMessages: 2, keptMessages: 2)
     let encoder = JSONEncoder()
     let encoded = try encoder.encode(record)
     let decoded = try decoder.decode(LiveThreadRecord.self, from: encoded)
     check(decoded.roomReadOnly == flag, "capability Codable roundtrip")
+    check(decoded.importedFrom == record.importedFrom, "import metadata Codable roundtrip")
 }
 do { _ = try decoder.decode(LiveThreadRecord.self, from: Data(#"{"roomReadOnly":"true"}"#.utf8)); fatalError("malformed capability accepted") }
 catch DecodingError.typeMismatch(_, _) {}
@@ -275,6 +309,22 @@ do {
     let child = engine.createDiscussion(parentThreadID: normalID)!
     check(engine.threadRecord(copy)!.roomReadOnly != true && engine.threadRecord(child)!.roomReadOnly != true, "normal clone became readonly")
 }
+// The newly required policy must not become an always-allow stub.
+let external = TatwoEntry(environment: ProcessInfo.processInfo.environment).root
+    .appendingPathComponent("chatgpt/project", isDirectory: true)
+try fm.createDirectory(at: external, withIntermediateDirectories: true)
+let alias = root.appendingPathComponent("external-link")
+try fm.createSymbolicLink(at: alias, withDestinationURL: external)
+for workdir in [external.path, alias.path] {
+    let (engine, model, parent) = setup()
+    engine.doc.projects[0].workdir = workdir
+    do { _ = try model.dispatchChecked(rooms: [defaultSpec], parent: parent); fatalError("external workspace accepted") }
+    catch is DispatchGitFailure {}
+    check(Calls.prepare.isEmpty && Calls.remote == 0 && Calls.git == 0 && engine.sends.isEmpty,
+          "external workspace triggered construction or send")
+    let entries = try fm.contentsOfDirectory(atPath: external.path)
+    check(entries.isEmpty, "external workspace mutated")
+}
 try unchanged()
 print("PASS production readonly dispatch/configure/Codable/reopen/clone/reclaim; transport is recording-only")
 `;
@@ -291,13 +341,14 @@ test('native production readonly room decisions fail closed without construction
   const lock = path.join(root, 'scripts/tatwo-build-lock.sh');
   const run = (cmd, args, options = {}) => spawnSync(cmd, args, {
     cwd: root, encoding: 'utf8', timeout: 120_000, maxBuffer: 8 * 1024 * 1024,
-    env: { ...process.env, TMPDIR: `${dir}/` }, ...options,
+    env: { ...process.env, TMPDIR: `${dir}/`, TATWO_TEST_ENTRY: path.join(dir, 'data', 'entry') }, ...options,
   });
-  const acquired = run('bash', [lock, 'acquire', '--timeout', '0', '--pid', String(process.pid)]);
+  const acquired = run('bash', [lock, 'acquire', '--timeout', '120', '--pid', String(process.pid)], { timeout: 130_000 });
   assert.equal(acquired.status, 0, `build lock unavailable: ${acquired.stderr}`);
   const token = acquired.stdout.match(/^token=([a-f0-9]+)$/m)?.[1];
   assert.ok(token, 'missing ownership token');
   try {
+    assert.equal(run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']).stdout.trim(), '1', 'No compiler under resource pressure after waiting');
     const build = run('/usr/bin/nice', ['-n', '10', '/usr/bin/swiftc', '-num-threads', '2', source, '-o', path.join(dir, 'fixture')]);
     fs.writeFileSync(path.join(dir, 'compile.log'), `${build.stdout ?? ''}${build.stderr ?? ''}`);
     assert.equal(build.status, 0, `Swift fixture compile failed: ${build.error ?? ''}\n${build.stderr}`);

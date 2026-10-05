@@ -22,7 +22,8 @@ test('W86 strip geometry, placement, ID-only drops and W66 identity are explicit
   assert.match(strip, /HStack\(spacing: Self\.tileGap\)/);
   assert.match(strip, /\.help\(favorite.title\)/);
   assert.match(strip, /拖分頁到這裡珍藏/);
-  assert.match(workspace, /BrowserFavoritesStrip\(store: store\)\s+pinnedSection/);
+  // W184 G2d：同一行多一個借用模式的參數（主視窗不給＝nil，照舊）與自測量尺；珍藏那一排後面緊接 pinnedSection 不變。
+  assert.match(workspace, /BrowserFavoritesStrip\(store: store, external: guest\?\.favorites\)\s*\.background \{ guest\?\.mark\?\("favorites"\) \}\s+pinnedSection/);
   for (const kind of ['tab', 'bookmark', 'favorite', 'registry-tab']) {
     assert.ok(strip.includes(`tatwo-browser-${kind}`));
   }

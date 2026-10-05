@@ -128,6 +128,7 @@ extension ChatPageModel {
                 local.configureReadOnlyRoom(threadID: threadID, parentThreadID: parent,
                                             roomBrief: room.brief, cwd: reviewCwd)
                 local.setRequestedModel(room.model, threadID: threadID)
+                let eventSource = OSEventSources.begin(origin: "dispatch", actor: (parentRecord.engine ?? "引擎") + "/" + (parentRecord.model ?? "未知")); defer { OSEventSources.send = eventSource }
                 guard local.send(threadID: threadID, text: room.brief, model: room.model, engine: .claude) else {
                     throw DispatchGitFailure(message: "唯讀副審未啟動，請查看子討論串錯誤；未改用施工模式")
                 }
@@ -162,6 +163,8 @@ extension ChatPageModel {
                 if let remoteHandle { (live as? ChatLiveEngine)?.remoteHandles.set(threadID, remoteHandle) }
             } else {
                 do {
+                    // W183 R6c 審查：專案在入口 chatgpt/（ChatGPT 的工作區，外部資料）＝不在那裡建工作副本、不派工。
+                    if ExternalWorkspacePolicy.contains(project.workdir) { throw DispatchGitFailure(message: ExternalWorkspacePolicy.engineRefusal) }
                     worktree = try Self.prepareRoomWorktree(workdir: project.workdir, roomID: roomID)
                 } catch {
                     live.appendSystemMessage(threadID: threadID, text: "派工工作副本建立失敗，未送出：\(error)", status: "error|派工")
@@ -170,6 +173,7 @@ extension ChatPageModel {
             }
             live.configureRoom(threadID: threadID, parentThreadID: parent, roomBrief: room.brief, engine: room.engine, cwdOverride: worktree, deviceID: remote?.id)
             (live as? ChatLiveEngine)?.setRequestedModel(room.model, threadID: threadID)
+            let eventSource = OSEventSources.begin(origin: "dispatch", actor: (parentRecord.engine ?? "引擎") + "/" + (parentRecord.model ?? "未知")); defer { OSEventSources.send = eventSource }
             live.send(threadID: threadID, text: room.brief, model: room.model, engine: kind)
             results.append(DispatchedRoom(roomID: roomID, threadID: threadID.uuidString, worktree: worktree))
         }
@@ -322,30 +326,31 @@ extension ChatPageModel {
         }
 
         if path.hasPrefix(gitRoomRoot + "/") {
-            let branchResult = Self.runGit(["branch", "--show-current"], cwd: path)
+            let hands = room.engine == ChatLiveEngine.handsEngine   // W183 R1：手腳房間的 worktree 是沙盒寫的，git 一律加固
+            let branchResult = Self.runGit(["branch", "--show-current"], cwd: path, hands: hands)
             guard branchResult.status == 0 else { throw RoomReclaimError.gitFailed(branchResult.output) }
             let branch = branchResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let status = Self.runGit(["status", "--porcelain", "--untracked-files=all"], cwd: path)
+            let status = Self.runGit(["status", "--porcelain", "--untracked-files=all"], cwd: path, hands: hands)
             guard status.status == 0 else { throw RoomReclaimError.gitFailed(status.output) }
             var stashName: String?
             if !status.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let stash = Self.runGit(["stash", "push", "-u", "-m", "reclaim \(roomID.uuidString)"], cwd: path)
+                let stash = Self.runGit(["stash", "push", "-u", "-m", "reclaim \(roomID.uuidString)"], cwd: path, hands: hands)
                 guard stash.status == 0 else { throw RoomReclaimError.gitFailed(stash.output) }
-                let latest = Self.runGit(["stash", "list", "-1", "--format=%gd"], cwd: path)
+                let latest = Self.runGit(["stash", "list", "-1", "--format=%gd"], cwd: path, hands: hands)
                 stashName = latest.status == 0
                     ? latest.output.trimmingCharacters(in: .whitespacesAndNewlines)
                     : nil
             }
-            let removal = Self.runGit(["worktree", "remove", "--force", path], cwd: workdir)
+            let removal = Self.runGit(["worktree", "remove", "--force", path], cwd: workdir, hands: hands)
             guard removal.status == 0 else { throw RoomReclaimError.gitFailed(removal.output) }
 
             var deleted = false
             if !keepBranch, !branch.isEmpty {
-                let merged = Self.runGit(["branch", "--merged", "--format=%(refname:short)"], cwd: workdir)
+                let merged = Self.runGit(["branch", "--merged", "--format=%(refname:short)"], cwd: workdir, hands: hands)
                 guard merged.status == 0 else { throw RoomReclaimError.gitFailed(merged.output) }
                 let mergedBranches = Set(merged.output.split(whereSeparator: \.isNewline).map(String.init))
                 if mergedBranches.contains(branch) {
-                    let deletion = Self.runGit(["branch", "-d", branch], cwd: workdir)
+                    let deletion = Self.runGit(["branch", "-d", branch], cwd: workdir, hands: hands)
                     guard deletion.status == 0 else { throw RoomReclaimError.gitFailed(deletion.output) }
                     deleted = true
                 }
@@ -377,10 +382,11 @@ extension ChatPageModel {
         return ReclaimedRoom(roomID: roomID.uuidString, originalPath: path, archivedPath: destination.path, stash: nil, branch: nil, branchDeleted: false)
     }
 
-    private static func runGit(_ arguments: [String], cwd: String) -> (status: Int32, output: String) {
+    private static func runGit(_ arguments: [String], cwd: String, hands: Bool = false) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = arguments
+        process.arguments = hands ? HandsGit.arguments(arguments) : arguments
+        if hands { process.environment = HandsGit.environment() }   // W183 R1
         process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -448,11 +454,13 @@ extension ChatPageModel {
         source.configureRoom(threadID: thread, parentThreadID: parent, roomBrief: spec.brief,
                              engine: spec.engine, cwdOverride: canonicalPath, deviceID: nil)
         (source as? ChatLiveEngine)?.setRequestedModel(spec.model, threadID: thread)
+        let eventSource = OSEventSources.begin(origin: "dispatch", actor: "系統"); defer { OSEventSources.send = eventSource }
         source.send(threadID: thread, text: spec.brief, model: spec.model, engine: ClaudeSidecar.Kind(rawValue: spec.engine) ?? .codex)
         return [DispatchedRoom(roomID: thread.uuidString, threadID: thread.uuidString, worktree: canonicalPath)]
     }
 
     func dispatchGitContext(_ id: UUID) throws -> DispatchGitContext {
+        if let hands = try handsDispatchGitContext(id) { return hands }   // W183 R1b：ChatGPT 手腳走 Hands 專用後端（固定候選 SHA）
         guard isLive, let live, let room = live.threadRecord(id), room.parentThreadID != nil,
               let project = live.projectRecord(room.projectID), let path = room.cwdOverride else {
             throw DispatchGitFailure(message: "找不到本機子任務工作樹")
@@ -498,7 +506,9 @@ extension ChatPageModel {
 
     func loadDispatchDiff(_ id: UUID) async throws -> DispatchGitDiff {
         let context = try dispatchGitContext(id)
-        return try await DispatchGit.background { try DispatchGit.diff(context) }
+        let diff = try await DispatchGit.background { try DispatchGit.diff(context) }
+        handsMarkReviewed(context, truncated: diff.truncated)   // W183 R1b：記住看過哪一版（合併要同一個 SHA）
+        return diff
     }
 
     func confirmDispatchMerge(_ id: UUID) async {
@@ -508,16 +518,18 @@ extension ChatPageModel {
                 throw DispatchGitFailure(message: "子任務仍在執行，請先停止再合併")
             }
             let preview = try await DispatchGit.background { try DispatchGit.preview(context) }
+            let handsNote = try handsMergeCheck(context, preview: preview)   // W183 R1b：手腳房間要先看過這一版的 diff
             let alert = NSAlert()
             alert.messageText = "合併到主分支"
-            alert.informativeText = "分支：\(context.branch)\n目標 workdir：\(context.workdir)\n目前 HEAD：\(preview.shortHead)"
+            alert.informativeText = "分支：\(context.branch)\n目標 workdir：\(context.workdir)\n目前 HEAD：\(preview.shortHead)" + handsNote
             alert.addButton(withTitle: "合併"); alert.addButton(withTitle: "取消")
             guard let window = NSApp.keyWindow else { throw DispatchGitFailure(message: "找不到確認視窗，未合併") }
             let response = await withCheckedContinuation { continuation in
                 alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
             }
             guard response == .alertFirstButtonReturn else { return }
-            guard !source.isRunning(id), try dispatchGitContext(id).worktree == context.worktree else {
+            guard !source.isRunning(id), let again = try? dispatchGitContext(id), again.worktree == context.worktree,
+                  again.handsCandidate == context.handsCandidate else {   // W183 R1b：候選版本也不能變
                 throw DispatchGitFailure(message: "子任務狀態已改變，請重新確認")
             }
             let sha = try await DispatchGit.background { try DispatchGit.merge(context, expected: preview) }
@@ -537,7 +549,9 @@ extension ChatPageModel {
         guard !text.isEmpty else { throw DispatchGitFailure(message: "請填退回原因") }
         guard !engine.isRunning(id) else { throw DispatchGitFailure(message: "子任務仍在執行，請先停止再退回") }
         try context.requireLocal()
-        guard !EngineDisableStore.isDisabled(kind) else { throw DispatchGitFailure(message: "子任務引擎已禁用，未退回") }
+        if let reason = EngineDisableStore.sendBlockReason(kind, cwd: context.worktree) {   // W181 R3：同一個擋送出判斷
+            throw DispatchGitFailure(message: "未退回：\(reason)")
+        }
         try DispatchRoomActions.returnRoom(context, reason: text, engine: kind, messenger: engine)
         flashComposerHint("已退回重做")
     }

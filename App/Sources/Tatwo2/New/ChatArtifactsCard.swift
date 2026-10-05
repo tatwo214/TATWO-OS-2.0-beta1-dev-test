@@ -6,6 +6,7 @@ struct ChatArtifactsCard: View {
     let index: TurnArtifactIndex
     let onView: () -> Void
     let onOpen: (String) -> Void
+    var initiallyExpanded = false
 
     @State private var isExpanded = false
 
@@ -96,6 +97,7 @@ struct ChatArtifactsCard: View {
         .overlay { RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.secondary.opacity(0.16), lineWidth: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("本回合產出 \(index.artifacts.count) 項")
+        .onAppear { if initiallyExpanded { isExpanded = true } }
     }
 
     private var summaryLine: String {

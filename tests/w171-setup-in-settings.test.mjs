@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { nativeW214 } from './w214-native-fixture.mjs';
 
 const read = (p) => fs.readFileSync(new URL('../App/Sources/Tatwo2/' + p, import.meta.url), 'utf8');
 
@@ -19,20 +20,20 @@ test('W171 first run: safe defaults only, straight into the App', () => {
   assert.doesNotMatch(defaults, /removeItem/, 'archive, never delete');
 });
 
-test('W171 settings: 開始使用 first, dots on pending tabs, banners on the four tabs', () => {
+test('W171 settings: 開始使用 first, pending dots; merged login hides completed setup', () => {
   const settings = read('Shell/ChatPageSettings.swift');
   assert.match(settings, /enum Section: String, CaseIterable, Identifiable \{\n[^\n]*\n\s*case start\n\s*case space/);
   assert.match(settings, /case \.start: "開始使用"/);
   assert.match(settings, /else if SetupChecklist\.shared\.remaining > 0 \{ section = \.start \}/);
   assert.match(settings, /checklist\.pendingSections\.contains\(item\)/);
-  assert.match(settings, /GitHubBackupSetupBanner\(\)/);
-  assert.match(read('New/EngineLoginCard.swift'), /SetupBanner\(done: !loggedIn\.isEmpty/);
+  assert.match(nativeW214(2), /W214 PASS N2.environment-expands-in-place.false/);
+  assert.match(nativeW214(2), /W214 PASS N2.completed-banner-absent.false/);
   assert.match(read('New/OSSettingsPage.swift'), /for row in pending \{ try EngineLinks\.link\(row\) \}/);
   const devices = read('New/DevicesCard.swift');
   assert.match(devices, /FirstRunDefaults\.switchToExistingPrimary\(\)/);
   assert.match(devices, /\.confirmationDialog\("改成加入你已經有的那台？"/, 'role switch asks first');
   const guide = read('Shell/SetupGuide.swift');
-  for (const title of ['登入一個 AI 模型', '讓你的 AI 用同一套規則', '這台 Mac 的名字和身分', '備份到你的 GitHub', 'Computer Use 權限']) {
+  for (const title of ['設定 TATWO 助理模型', '讓你的 AI 用同一套規則', '這台 Mac 的名字和身分', '備份到你的 GitHub', 'Computer Use 權限']) {
     assert.ok(guide.includes(`"${title}"`), title);
   }
   assert.doesNotMatch(guide, /borderedProminent|Color\.accentColor|\.blue\b/, 'no blue buttons (settings ruling)');

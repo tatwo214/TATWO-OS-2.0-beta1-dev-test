@@ -253,9 +253,20 @@ private struct ChatAssistantTranscriptCachedText: View {
     }
 }
 
+/// W180 D3：權限一鍵放行要寫進「那則訊息所屬的討論串」，不是 Coder 目前選中的那條
+/// （TATWO 助理頁也畫 ChatBubble，它的訊息屬於助理那條）。
+struct ChatMCPAllowRequest: Sendable {
+    let tool: String
+    let threadID: UUID?
+}
+
 struct ChatBubble: View {
     @ObservedObject private var themeStore = TatwoThemeStore.shared
     let message: ChatMessage
+    // W180 D3：這則訊息所屬的討論串（畫這串逐字稿的那條）；nil＝不知道，放行鈕不寫任何一條。
+    let threadID: UUID?
+    // W180 D3：這條不能在這台放行時（主設備那條、遠端那條），放行鈕換成這行白話；nil＝照常畫鈕。
+    let mcpAllowBlockedNote: String?
     let assistantRoute: ChatRouteChoice
     let rowWidth: CGFloat?
     let assistantTranscriptCache: TatwoAssistantTranscriptCache
@@ -264,9 +275,18 @@ struct ChatBubble: View {
     let initialPlanQuestionFocusClaimed: Bool
     let onInitialPlanQuestionFocusClaimed: () -> Void
     @Binding var planInspectorPresented: Bool
+    var coderTranscript = false
+    var turnDetails: AnyView? = nil
+    @State private var showsTurnDetails = false
+    @State private var logoHovered = false
+    @FocusState private var logoFocused: Bool
 
     private var resolvedAssistantRoute: ChatRouteChoice {
-        if let modelID = message.modelID { return ChatRouteChoice.resolve(modelID) }
+        if let modelID = message.modelID {
+            var route = ChatRouteChoice.resolve(modelID)
+            route.rememberedDisplayName = message.modelDisplayName
+            return route
+        }
         return assistantRoute
     }
 
@@ -286,9 +306,23 @@ struct ChatBubble: View {
                 .frame(width: resolvedRowWidth, height: nil, alignment: .trailing)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             case .assistant:
-                HStack(alignment: .top, spacing: 10) {
-                    ChatModelAvatar(route: resolvedAssistantRoute)
-                        .padding(.top, usesPlainTranscript ? 0 : 1)
+                HStack(alignment: .top, spacing: coderTranscript ? 14 : 10) {
+                    if turnDetails != nil {
+                        Button { showsTurnDetails.toggle() } label: {
+                            ChatModelAvatar(route: resolvedAssistantRoute)
+                                .background(Color.primary.opacity((logoHovered || logoFocused) ? 0.06 : 0), in: Circle())
+                        }
+                        .buttonStyle(.plain).focusable().focused($logoFocused).focusEffectDisabled()
+                        .onKeyPress(keys: [.space, .return]) { _ in showsTurnDetails.toggle(); return .handled }
+                        .onHover { logoHovered = $0; ($0 ? NSCursor.pointingHand : NSCursor.arrow).set() }
+                        .accessibilityLabel("顯示這回合的步驟")
+                        .accessibilityValue(showsTurnDetails ? "已展開" : "已收合")
+                        .accessibilityIdentifier("coder-turn-logo-\(message.id)")
+                        .onDisappear { if logoHovered { NSCursor.arrow.set() } }
+                    } else {
+                        ChatModelAvatar(route: resolvedAssistantRoute)
+                            .padding(.top, usesPlainTranscript ? 0 : 1)
+                    }
                     messageContainer
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Spacer(minLength: 0)
@@ -439,32 +473,48 @@ struct ChatBubble: View {
             // per-thread allowlist，下一輪生效；spec「不靜默掛死＋一鍵放行」）。
             // 補完：權限請求常以助理結語轉述（"Claude requested permissions
             // to write to …"），不只 .raw 診斷——依內文比對，不只看 status。
+            // W180 D3：這台放行不了的那條不畫鈕（按了沒反應），改一行說明要到哪裡放行。
             if let tool = approvalActionTool {
-                Button {
-                    NotificationCenter.default.post(
-                        name: .tatwoChatAllowMCPTool, object: tool)
-                } label: {
+                if let note = mcpAllowBlockedNote {
                     HStack(spacing: 5) {
-                        Image(systemName: "checkmark.shield.fill")
-                            .font(.system(size: 10, weight: .bold))
-                        Text("允許 \(ChatBubble.approvalToolDisplayName(tool)) 並自動重試")
-                            .font(.system(size: 11, weight: .bold))
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(note)
+                            .font(.system(size: 11))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5.5)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("chat-mcp-approve-unavailable")
+                } else {
+                    Button {
+                        NotificationCenter.default.post(
+                            name: .tatwoChatAllowMCPTool,
+                            object: ChatMCPAllowRequest(tool: tool, threadID: threadID))
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "checkmark.shield.fill")
+                                .font(.system(size: 10, weight: .bold))
+                            Text("允許 \(ChatBubble.approvalToolDisplayName(tool))（下一句起生效）")
+                                .font(.system(size: 11, weight: .bold))
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5.5)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(LiquidGlassTokens.brandAccent)
+                    .background(
+                        LiquidGlassTokens.brandAccent.opacity(0.10),
+                        in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(
+                            LiquidGlassTokens.brandAccent.opacity(0.32),
+                            lineWidth: 1)
+                    }
+                    .padding(.top, 2)
+                    .accessibilityIdentifier("chat-mcp-approve-button")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(LiquidGlassTokens.brandAccent)
-                .background(
-                    LiquidGlassTokens.brandAccent.opacity(0.10),
-                    in: Capsule())
-                .overlay {
-                    Capsule().strokeBorder(
-                        LiquidGlassTokens.brandAccent.opacity(0.32),
-                        lineWidth: 1)
-                }
-                .padding(.top, 2)
-                .accessibilityIdentifier("chat-mcp-approve-button")
             }
             if !message.planQuestions.isEmpty {
                 PlanClarificationRequestCard(
@@ -476,6 +526,7 @@ struct ChatBubble: View {
                         onInitialPlanQuestionFocusClaimed)
                     .padding(.top, 4)
             }
+            if showsTurnDetails { turnDetails }
         }
         .padding(.horizontal, usesPlainTranscript ? 0 : 10)
         .padding(.vertical, usesPlainTranscript ? 2 : 8)
@@ -536,6 +587,18 @@ struct ChatBubble: View {
     private var messageBody: some View {
         if message.isCoworkCard {
             CoworkCardBody(message: message)
+        } else if let details = message.engineErrorDetails {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(message.text).textSelection(.enabled)
+                if EngineFailurePresentation.make(message.text, details: details, alternative: assistantRoute.title).category == .login {
+                    Button("登入") { EngineFailurePresentation.openModelLogin() }
+                        .buttonStyle(.plain).padding(.horizontal, 12).frame(height: 28).chatGlassChip()
+                }
+                DisclosureGroup("原始回傳（已遮敏）") {
+                    Text(details).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                }
+                .font(.caption)
+            }
         } else if let remoteJob = remoteJobPayload {
             remoteJobInlineRow(remoteJob)
         } else if isCompletedActivityOnly {
@@ -844,7 +907,7 @@ struct ChatBubble: View {
         case .thinking: "thinking"
         case .raw: "raw"
         case .failure: "issue"
-        case .session: "session"
+        case .session: "對話"
         case .continuation: "continuation"
         case .exit: "exit"
         case .message: "message"

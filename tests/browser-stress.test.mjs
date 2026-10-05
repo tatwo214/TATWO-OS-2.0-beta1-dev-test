@@ -1,4 +1,5 @@
 import { testScratch, stageFixtureFiles } from './helpers/test-scratch.mjs';
+import { protectedMediaFixture, protectedMediaChecks } from './fixtures/browser-diagnostics-media.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -274,8 +275,10 @@ test('W60 diagnostics sanitizes and bounds ten terminations without inventing PI
   skip:process.platform !== 'darwin', timeout:180000,
 }, () => {
   assert.match(fixture('health', `import Foundation
+${protectedMediaFixture()}
 @main struct Checks {
  static func main() {
+  ${protectedMediaChecks}
   // Construct synthetic URL credentials; this is not a stored mailbox or real secret.
   var url = URLComponents()
   url.scheme = "https"; url.host = "example.com"; url.user = "fixture"; url.password = "secret"

@@ -18,21 +18,31 @@ fs.writeFileSync(path.join(root, 'probe.swift'), `
 import Foundation
 enum ThreadLiveness {
     case stalled, idle, active, done, failed
-    static func from(status: String?, lastOutputAt: Date?) -> Self? { .active }
+    // 沒有輸出時間＝active（壓力測試用）；超過 15 分鐘沒輸出＝stalled（W183 R1 手腳房間不收的測試用）。
+    static func from(status: String?, lastOutputAt: Date?, now: Date = Date()) -> Self? {
+        guard let lastOutputAt else { return .active }
+        return now.timeIntervalSince(lastOutputAt) > 15 * 60 ? .stalled : .active
+    }
 }
+enum HandsMonotonic { static func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime } }
+// W205：派工期限內的房間不收；這裡的房間都沒有派工。
+struct ChatGPTDispatchActivityStub { func isActive(caller: UUID, uptime: TimeInterval) -> Bool { false } }
 struct Thread {
     var id = UUID()
     var title = "fixture"
     var parentThreadID: UUID?
     var subStatus: String?
     var lastOutputAt: Date?
+    var engine: String?   // W183 R1：手腳房間的 engine 欄位
 }
 @MainActor final class ChatLiveEngine {
+    static let handsEngine = "chatgpt-hands"   // W183 R1
     struct Doc { var threads: [Thread] = []; var selectedThreadID: UUID? }
     var doc = Doc()
     var dispatchPaused = false
     var onChange: (() -> Void)?
     var messages: [(UUID, String)] = []
+    var chatGPTDispatcher: ChatGPTDispatchActivityStub?
     func stop(threadID: UUID) {}
     func markSubStatus(_ id: UUID, _ status: String) {}
     func appendSystemMessage(threadID: UUID, text: String) { messages.append((threadID, text)) }
@@ -93,6 +103,15 @@ ${source.slice(0, start)}
         engine.doc.threads = [Thread(parentThreadID: UUID(), subStatus: "running")]
         tick(90)
         check(engine.dispatchPaused && engine.messages.isEmpty)
+    case "hands":
+        // W183 R1：ChatGPT 手腳的房間照人的速度動，看門狗不收、不提醒；一般子房照收。
+        let stale = Date().addingTimeInterval(-3600)
+        let handsParent = Thread(), plainParent = Thread()
+        engine.doc.threads = [handsParent, plainParent,
+            Thread(parentThreadID: handsParent.id, subStatus: "running", lastOutputAt: stale, engine: "chatgpt-hands"),
+            Thread(parentThreadID: plainParent.id, subStatus: "running", lastOutputAt: stale, engine: "claude")]
+        tick(30)
+        check(engine.messages.count == 1 && engine.messages.first?.0 == plainParent.id)
     default: fatalError("unknown probe")
     }
 }
@@ -115,6 +134,7 @@ for (const [mode, description] of [
   ['finished', 'completed work does not receive recovery chatter'],
   ['new', 'new active parent receives one alert and its own recovery'],
   ['orphan', 'deleted parent is not recreated for pressure notification'],
+  ['hands', 'W183 R1: ChatGPT hands rooms are never stopped by the liveness check; other rooms still are'],
 ]) {
   test(description, () => {
     const output = execFileSync(program, [mode], { encoding: 'utf8' }).trim().split('\n');

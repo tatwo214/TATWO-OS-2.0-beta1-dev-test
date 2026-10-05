@@ -20,6 +20,7 @@ struct TatwoIslandSettingsView: View {
                     .foregroundStyle(.tertiary)
                     .padding(.bottom, -6)
                 styleCard
+                GlobalDMSettingsCard() // W179 E：私訊鈕（總開關、單按 ⌥⌘、直達鍵）
             }
             .padding(TatwoSettingsPageMetrics.inset)
         }
@@ -136,9 +137,9 @@ struct TatwoIslandSettingsView: View {
                 Text("寬度、玻璃尺寸與透明度都回到 100%").font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Button("重設") { settings.resetSizes() }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            // W180 D1：設定頁不用系統按鈕（使用者裁決：不要藍按鈕、藍框），用玻璃 chip。
+            OSChipButton(title: "重設") { settings.resetSizes() }
+                .accessibilityLabel("Island 尺寸與透明度回到出廠值")
         }
         .padding(.leading, 32)
         .padding(.trailing, 14)

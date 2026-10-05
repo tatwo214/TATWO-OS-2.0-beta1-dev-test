@@ -155,6 +155,9 @@ final class TatwoWebMCPRuntime {
 
     private(set) var activeTabID: String?
     private var pages: [String: WebMCPPageTools] = [:]
+    /// Reference counts include consent waits and concurrent invocations on the same page.
+    private var invocationCounts: [String: Int] = [:]
+    var tabsInUse: Set<String> { Set(invocationCounts.keys) }
     private var invokers: [String: MainActorInvoker] = [:]
     private var revisions: [String: UUID] = [:]
     private struct ConsentKey: Hashable {
@@ -220,6 +223,11 @@ final class TatwoWebMCPRuntime {
     func invoke(tabID: String, tool name: String, argumentsJSON: String,
                 caller: WebMCPCaller = WebMCPCaller(id: "local", session: "local", preset: nil, readOnly: false),
                 contextIsCurrent: @escaping @MainActor () -> Bool = { true }) async throws -> String {
+        invocationCounts[tabID, default: 0] += 1
+        defer {
+            let remaining = (invocationCounts[tabID] ?? 1) - 1
+            invocationCounts[tabID] = remaining > 0 ? remaining : nil
+        }
         var decision = WebMCPInvocationPolicy.Decision.reject
         var outcome = "failure"
         var failure = "unavailable"

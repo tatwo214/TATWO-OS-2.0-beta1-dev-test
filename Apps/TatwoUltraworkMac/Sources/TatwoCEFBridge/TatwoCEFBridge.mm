@@ -1035,6 +1035,8 @@ struct BrowserRequestPolicySnapshot {
   bool privacy_strict = true;
   bool human = false;
   bool ad_block = true;
+  // W183 R5b 審查：敏感頁（私訊框的授權頁）只准 https。
+  bool https_only = false;
   std::shared_ptr<const BrowserHostDenyListSnapshot> host_deny_list;
 };
 
@@ -1142,6 +1144,7 @@ BrowserRequestPolicySnapshot ActorRequestPolicy(TatwoCEFBrowserView *owner) {
   policy.human = owner && owner.browserActor == TatwoCEFBrowserActorHuman && !owner.agentControlled;
   policy.blocks_third_party_cookies = !policy.human || owner.blocksThirdPartyCookies;
   policy.ad_block = !owner || owner.adBlock;
+  policy.https_only = owner && (owner.sensitivePage || owner.httpsOnly);   // W183 R5b；W183 R8b 審查：受保護呈現中的 Pod
   return policy;
 }
 
@@ -1150,6 +1153,8 @@ BrowserRequestPolicySnapshot ActorRequestPolicy(TatwoCEFBrowserView *owner) {
 bool IsActorURLAllowed(const BrowserRequestPolicySnapshot &policy, NSString *url) {
   if (!policy.human) return IsAllowedURLString(url);
   NSString *scheme = SafeURLComponents(url).scheme.lowercaseString;
+  // W183 R5b 審查（GPT-6）：敏感頁拒絕 http 降級與其他協定（主框架、轉址、資源都走這裡）。
+  if (policy.https_only) return [scheme isEqualToString:@"https"] && CanonicalHost(url).length > 0;
   return ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"]) && CanonicalHost(url).length > 0;
 }
 
@@ -3654,13 +3659,14 @@ class W58AgentLoginRenderer {
 #pragma mark - W58 End
 constexpr const char *kBrowserActivityMessage = "tatwo.browser.activity";
 
+// W184 E：video＝這個 frame 有 <video> 正在播（倒放＝影片子畫面挑分頁用）；新參數給預設值，舊的呼叫照舊。
 void SendBrowserActivity(CefRefPtr<CefFrame> frame, const CefString &token,
-                         const char *kind, bool dirty, bool playing, bool audible = false) {
+                         const char *kind, bool dirty, bool playing, bool audible = false, bool video = false) {
   if (!frame || !frame->IsValid()) return;
   auto message = CefProcessMessage::Create(kBrowserActivityMessage);
   auto args = message->GetArgumentList();
   args->SetString(0, token); args->SetString(1, kind);
-  args->SetBool(2, dirty); args->SetBool(3, playing); args->SetBool(4, audible);
+  args->SetBool(2, dirty); args->SetBool(3, playing); args->SetBool(4, audible); args->SetBool(5, video);
   frame->SendProcessMessage(PID_BROWSER, message);
 }
 
@@ -3672,6 +3678,10 @@ class TatwoBrowserActivityBinding final : public CefV8Handler {
                CefRefPtr<CefV8Value> &, CefString &) override {
     if (args.size() == 3 && args[0]->IsBool() && args[1]->IsBool() && args[2]->IsBool())
       SendBrowserActivity(frame_, token_, "update", args[0]->GetBoolValue(), args[1]->GetBoolValue(), args[2]->GetBoolValue());
+    // W184 E：第四個布林＝有 <video> 正在播（同一支腳本多回報一個是非值，不帶網址或內容）。
+    if (args.size() == 4 && args[0]->IsBool() && args[1]->IsBool() && args[2]->IsBool() && args[3]->IsBool())
+      SendBrowserActivity(frame_, token_, "update", args[0]->GetBoolValue(), args[1]->GetBoolValue(), args[2]->GetBoolValue(),
+                          args[3]->GetBoolValue());
     // The same private injected callback carries only the codec signal and host.
     if (args.size() == 1 && args[0]->IsObject() && frame_ && frame_->IsValid()) {
       auto kind = args[0]->GetValue("kind");
@@ -3719,15 +3729,24 @@ class TatwoTapPodBinding final : public CefV8Handler {
 
 // Only activity booleans and the codec signal's host cross the process boundary.
 // No input values, full URLs, selectors or text. Dirty lasts until a new document.
+// W184 E: the fourth boolean says a visible <video> is playing (never its source or the page).
 const char kBrowserActivityScript[] = R"JS((function(report) {
   let dirty = false, playing = false, audible = false;   // audible（W112）：真的有聲音在放，側欄才畫音符
+  let video = false;   // video（W184 E）：有 <video> 正在播、看得到（倒放＝影片子畫面挑分頁用）
   let codecReported = false;
   let h264Supported;
-  let lastDirty, lastPlaying, lastAudible;
+  let lastDirty, lastPlaying, lastAudible, lastVideo;
   const watchedTracks = new WeakSet();
   const publish = () => {
-    if (dirty === lastDirty && playing === lastPlaying && audible === lastAudible) return;
-    lastDirty = dirty; lastPlaying = playing; lastAudible = audible; report(dirty, playing, audible);
+    if (dirty === lastDirty && playing === lastPlaying && audible === lastAudible && video === lastVideo) return;
+    lastDirty = dirty; lastPlaying = playing; lastAudible = audible; lastVideo = video; report(dirty, playing, audible, video);
+  };
+  // W184 E：這一格算「在播影片」：<video>、正在播、有畫面尺寸、有版面位置（靜音也算）。只算一個是非值，不讀網址或內容。
+  const showsVideo = item => {
+    if (!item || item.tagName !== 'VIDEO' || item.paused || item.ended || !(item.videoWidth > 0) || !(item.videoHeight > 0) ||
+        typeof item.getBoundingClientRect !== 'function') return false;
+    const box = item.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
   };
   const edit = event => {
     const target = event.target;
@@ -3795,6 +3814,7 @@ const char kBrowserActivityScript[] = R"JS((function(report) {
       });
     });
     audible = elements.some(item => !item.paused && !item.ended && !item.muted && item.volume > 0);
+    video = elements.some(showsVideo);
     publish();
   };
   document.addEventListener('input', edit, true);
@@ -4510,6 +4530,13 @@ class TatwoBrowserProcessApp final : public CefApp,
     command_line->AppendSwitchWithValue("disable-features", disabled_features);
     AppendCEFEmbeddingTelemetryLine([NSString stringWithFormat:@"phase=command_line event=disable_features value=%s",
                                      disabled_features.c_str()]);
+    // W179 附修（2026-09-26 MacBook 主程式 CPU 常駐 120%）：CEF 154 的裝置上 AI 模型管理員（optimization_guide
+    // ManifestAssetManager）在判定「這台不適用」（效能分級 kServiceCrash）後，量元件資料夾剩餘空間一直拿不到值，
+    // 就立刻重量——OnDiskSpaceEvaluated → UpdateRegistrations → GetFreeDiskSpace，UI 執行緒每秒被叫醒約四萬次。
+    // 關 feature 擋不住（不適用時照樣建管理員）。改用 Chromium 自己的覆寫委派：剩餘空間固定回報、不向元件更新
+    // 下載裝置上模型（我們不用 Chrome 內建模型，翻譯走 Apple）。給讀得到但不是 JSON 的 /dev/null，只記一行錯誤。
+    command_line->AppendSwitchWithValue("optimization-guide-manifest-override", "/dev/null");
+    AppendCEFEmbeddingTelemetryLine(@"phase=command_line event=optimization_guide_manifest_override value=/dev/null");
     command_line->AppendSwitch("disable-sync");
     command_line->AppendSwitch("metrics-recording-only");
     command_line->AppendSwitch("no-default-browser-check");
@@ -5784,8 +5811,9 @@ class TatwoClient final : public CefClient,
 };
 
 struct BrowserState {
-  struct Activity { std::string token; bool dirty = false; bool playing = false; bool audible = false; };
+  struct Activity { std::string token; bool dirty = false; bool playing = false; bool audible = false; bool video = false; };
   bool audible_reported = false;
+  bool video_reported = false;   // W184 E：上一次告訴 App 的「在播影片」
   std::map<std::string, Activity> activity_frames;
   bool activity_main_ready = false;
 #pragma mark - W57a
@@ -5860,7 +5888,7 @@ struct BrowserState {
 
 void UpdateBrowserActivity(BrowserState *state, const std::string &key,
                            const std::string &token, const std::string &kind,
-                           bool is_main, bool dirty, bool playing, bool audible) {
+                           bool is_main, bool dirty, bool playing, bool audible, bool video = false) {
   if (token.empty()) return;
   if (kind == "ready") {
     auto current = state->activity_frames.find(key);
@@ -5878,6 +5906,7 @@ void UpdateBrowserActivity(BrowserState *state, const std::string &key,
     found->second.dirty = found->second.dirty || dirty;
     found->second.playing = playing;
     found->second.audible = audible;
+    found->second.video = video;   // W184 E
   }
 }
 
@@ -6106,6 +6135,8 @@ bool TatwoClient::OnBeforePopup(
     CefRefPtr<CefClient> &client, CefBrowserSettings &settings,
     CefRefPtr<CefDictionaryValue> &extra_info, bool *no_javascript_access) {
   CEF_REQUIRE_UI_THREAD();
+  // W183 R10 第四輪：開窗的是不是主框架（下面的 NSRect frame 會蓋掉這個名字，先記下來）。
+  const bool opener_is_main_frame = frame.get() != nullptr && frame->IsMain();
   TatwoCEFBrowserView *opener = owner_;
   BrowserState *parent = State(opener);
   NSString *url = FromCefString(target_url);
@@ -6119,6 +6150,42 @@ bool TatwoClient::OnBeforePopup(
     LogBrowserLifecycle(@"popup_blocked");
     return true;
   }
+#pragma mark - W183 R5b sensitive popups
+  // W183 R5b 審查（GPT-6）：敏感頁（私訊框的授權頁；手機 App 的內嵌瀏覽器）開的所有新視窗——帶尺寸、NEW_POPUP、
+  // about:blank、一般 target=_blank 都算——一律不開原生視窗：在 CEF 建立前交給 onContainedPopup 放進同一張頁面
+  // （保住 opener／postMessage，OAuth 照常）；沒有接的地方、或 opener 不在畫面上，就擋掉（不退回原生視窗）。
+  if (opener.sensitivePage) {
+    void (^contain)(TatwoCEFBrowserView *) = opener.onContainedPopup;
+    NSView *stage = opener.superview;
+    if (!policy.human || contain == nil || opener.window == nil || stage == nil) {
+      LogBrowserLifecycle(@"popup_blocked_sensitive");
+      return true;
+    }
+    NSRect frame = stage.bounds;
+    if (frame.size.width < 1 || frame.size.height < 1) frame = NSMakeRect(0, 0, 466, 600);
+    TatwoCEFBrowserView *contained =
+        [[TatwoCEFBrowserView alloc] initForPopupWithFrame:frame opener:opener popupID:popup_id];
+    if (contained == nil) return true;
+    BrowserState *contained_state = State(contained);
+    // W183 R10 第四輪：開它的是不是 opener 的主框架（子框架、iframe 開的＝NO）。
+    contained.openedByMainFrame = opener_is_main_frame;
+    contained.sensitivePage = YES;
+    contained.onContainedPopup = contain;
+    [parent->popup_views addObject:contained];
+    contained.wantsLayer = YES;
+    contain(contained);   // 同步放進同一張頁面（opener 所在的那一疊）；CEF 建在它底下
+    window_info.SetAsChild((__bridge CefWindowHandle)contained,
+                          CefRect(0, 0, (int)frame.size.width, (int)frame.size.height));
+    window_info.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
+    client = contained_state->client;
+    settings.javascript_close_windows = STATE_ENABLED;
+    settings.javascript_access_clipboard = STATE_DISABLED;
+    settings.javascript_dom_paste = STATE_DISABLED;
+    settings.background_color = kBrowserDocumentBackgroundColor;
+    LogBrowserLifecycle(@"popup_contained");
+    return false;
+  }
+#pragma mark - W183 R5b sensitive popups end
 #pragma mark - W112 link-to-tab
   // 使用者 2026-09-20：「從網頁中點擊連結的時候會跳視窗 但應該是要新增在左列browser space的新分頁 跟dia一樣」。
   // 一般的 target=_blank／沒帶視窗尺寸的 window.open(url) 交給 Swift 開成左列分頁；只有真的彈出視窗
@@ -6143,6 +6210,8 @@ bool TatwoClient::OnBeforePopup(
   TatwoCEFBrowserView *popup =
       [[TatwoCEFBrowserView alloc] initForPopupWithFrame:bounds opener:opener popupID:popup_id];
   if (popup == nil) return true;
+  // W183 R10 第四輪：開它的是不是 opener 的主框架（子框架、iframe 開的＝NO）；onPopupCreated 之前設好。
+  popup.openedByMainFrame = opener_is_main_frame;
   BrowserState *state = State(popup);
   NSWindow *window = [[NSWindow alloc] initWithContentRect:bounds
       styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
@@ -7154,18 +7223,28 @@ bool TatwoClient::OnProcessMessageReceived(
     if (!browser || !frame || !frame->IsValid() || !state || !state->browser ||
         !state->browser->IsSame(browser) || state->close_requested) return true;
     auto args = message->GetArgumentList();
-    if (!args || args->GetSize() != 5 || args->GetType(2) != VTYPE_BOOL || args->GetType(3) != VTYPE_BOOL ||
-        args->GetType(4) != VTYPE_BOOL) return true;
+    // W184 E：第六個參數（在播影片）是新加的；只有五個的舊訊息照舊收（影片當作沒在播）。
+    if (!args || (args->GetSize() != 5 && args->GetSize() != 6) || args->GetType(2) != VTYPE_BOOL ||
+        args->GetType(3) != VTYPE_BOOL || args->GetType(4) != VTYPE_BOOL ||
+        (args->GetSize() == 6 && args->GetType(5) != VTYPE_BOOL)) return true;
     const auto key = frame->GetIdentifier().ToString();
     const auto token = args->GetString(0).ToString();
     const auto kind = args->GetString(1).ToString();
-    UpdateBrowserActivity(state, key, token, kind, frame->IsMain(), args->GetBool(2), args->GetBool(3), args->GetBool(4));
+    UpdateBrowserActivity(state, key, token, kind, frame->IsMain(), args->GetBool(2), args->GetBool(3), args->GetBool(4),
+                          args->GetSize() == 6 && args->GetBool(5));
     // W112：任何一個 frame 有聲音就算這個分頁在出聲；只在變動時通知畫面（只有一個布林，不帶網址或內容）。
     bool audible_now = false;
     for (const auto &entry : state->activity_frames) audible_now = audible_now || entry.second.audible;
     if (audible_now != state->audible_reported) {
       state->audible_reported = audible_now;
       if (owner.onAudibleChange && ActorRequestPolicy(owner).human) owner.onAudibleChange(audible_now);
+    }
+    // W184 E：任何一個 frame 有影片在播就算這個分頁在播影片（倒放挑分頁）；同樣只在變動時、只給使用者本人的頁面、只有一個布林。
+    bool video_now = false;
+    for (const auto &entry : state->activity_frames) video_now = video_now || entry.second.video;
+    if (video_now != state->video_reported) {
+      state->video_reported = video_now;
+      if (owner.onVideoPlayingChange && ActorRequestPolicy(owner).human) owner.onVideoPlayingChange(video_now);
     }
     return true;
   }
@@ -9398,6 +9477,9 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
   _agentControlled = opener.agentControlled;
   _blocksThirdPartyCookies = opener.blocksThirdPartyCookies;
   _adBlock = opener.adBlock;
+  // W183 R5b：敏感頁的 popup 也是敏感頁（只准 https、新視窗也放進同一張頁面）。
+  _sensitivePage = opener.sensitivePage;
+  _onContainedPopup = [opener.onContainedPopup copy];
   BrowserState *state = CreateBrowserState(self);
   state->request_context = parent->request_context;
   state->request_context_security_ready = true;
@@ -10429,6 +10511,16 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
 
 - (void)closeBrowser {
   [self closeBrowserWithCompletion:nil];
+}
+
+// W183 R5b：只登記「真的關完時叫我」，不發起關閉（私訊框的頁面疊：popup 自己 window.close() 時把它拿掉）。
+- (void)addCloseObserver:(TatwoCEFBrowserCloseHandler)observer {
+  BrowserState *state = State(self);
+  if (!state || state->close_completed) {
+    observer();
+    return;
+  }
+  [state->close_handlers addObject:[observer copy]];
 }
 
 - (void)closeBrowserWithCompletion:

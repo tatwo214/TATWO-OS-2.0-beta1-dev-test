@@ -25,6 +25,8 @@ struct TatwoSkillsDirectoryCatalog: Sendable {
         if ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("TATWO_ULTRAWORK_EXPORT_") }) {
             return .init(value: [])
         }
+        // W183 R6c 審查：技能目錄連到入口 chatgpt/（外部 AI 的工作區）＝整個不收。
+        if ExternalWorkspacePolicy.contains(rootURL.path) { return .init(value: []) }
         do {
             let manager = FileManager.default
             let children = try manager.contentsOfDirectory(at: rootURL.resolvingSymlinksInPath(), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
@@ -36,7 +38,8 @@ struct TatwoSkillsDirectoryCatalog: Sendable {
             for child in children.sorted(by: { $0.path < $1.path }) {
                 let directory = child.resolvingSymlinksInPath()
                 let manifest = directory.appendingPathComponent("SKILL.md")
-                guard manager.fileExists(atPath: manifest.path), seen.insert(directory.path).inserted else { continue }
+                guard manager.fileExists(atPath: manifest.path), PluginsSource.skillAllowed(folder: child, manifest: manifest),   // W183 R6c 審查
+                      seen.insert(directory.path).inserted else { continue }
                 let text = try String(contentsOf: manifest, encoding: .utf8)
                 let metadata = Self.metadata(text)
                 entries.append(.init(

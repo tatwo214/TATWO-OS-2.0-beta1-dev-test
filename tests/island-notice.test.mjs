@@ -30,6 +30,14 @@ import Combine
     final class Shell { func holdOpen(_ value: Bool) {} }
 }
 enum LiquidGlassTokens { static let brandAccent = Color.blue }
+// The notice holds Island open while ChatGPT operates another app (W185 F1); only its status is read here.
+@MainActor final class HandsComputerUse: ObservableObject {
+    static let shared = HandsComputerUse()
+    struct Request { let appDisplayName: String }
+    @Published var isOperating = false
+    @Published var current: Request?
+    func stop() {}
+}
 struct ComputerUseArrowGlyph: View {
     enum Style { case aurora }
     let style: Style
@@ -243,7 +251,10 @@ test('shell renders shared content and every interrupt caller preserves the Bool
   assert.match(compat, /frame\(width: LiquidGlassTokens.islandBlankWidth, height: LiquidGlassTokens.islandBlankHeight\)/);
   assert.match(compat, /IslandNotice.shared.info\(title:/);
   const app = read('App/Sources/Tatwo2/Shell/AppShell.swift');
-  assert.match(app, /sender\.reply\(toApplicationShouldTerminate: approved\)/);   // 終止確認改由 terminationCoordinator 回覆
+  // A denial replies immediately; approval waits for the CEF termination drain.
+  const terminate = app.slice(app.indexOf('func applicationShouldTerminate('), app.indexOf('private func showDefaultSurfaceForUserOpen()'));
+  assert.match(terminate, /terminationCoordinator\.request\(requiresConfirmation: requiresConfirmation, window: visibleWindow\) \{ approved in\s*guard approved else \{ sender\.reply\(toApplicationShouldTerminate: false\); return \}\s*ChromeStyleSpike\.drainForTermination \{ sender\.reply\(toApplicationShouldTerminate: true\) \}/);
+  assert.match(terminate, /if decision == \.terminateNow, ChromeStyleSpike\.needsTerminationDrain \{\s*ChromeStyleSpike\.drainForTermination \{ sender\.reply\(toApplicationShouldTerminate: true\) \}\s*return \.terminateLater/);
   assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .escapeClose/);
   assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .windowClose/);
   assert.match(read('App/Sources/Tatwo2/CLI/CLILoopDetailPane.swift'), /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .composerStop\)/);
@@ -263,7 +274,8 @@ test('/goal 102: chat stop needs no confirmation, swaps to send while typing, an
   // 使用者 2026-09-19：聊天的終止鍵不要二次確認；回覆中有字時同一顆鈕變送出；引擎不理中斷時要有保底。
   const composer = read('App/Sources/Tatwo2/Chat/ChatPage+Composer.swift');
   assert.doesNotMatch(composer, /TatwoInterruptConfirmationPresenter\.confirm\(kind: \.composerStop\)/);
-  assert.match(composer, /if model\.isRunning && !model\.canSend \{\s*composerStopButton\s*\} else \{\s*composerSendButton/);
+  // W195（.055）：ChatGPT（TAP）回合執行中一律留停止鍵（喚醒與排隊時也能取消）；其餘規則不變——停止不用確認、打字時送出鍵並排出現。
+  assert.match(composer, /if model\.isRunning && \(model\.routeChoice\.runtimeAdapter == \.chatgptTap \|\| !model\.canSend \|\| model\.activePlanArtifact != nil\) \{\s*composerStopButton\s*if model\.canSend \{ composerSendButton\(compactToolbar: compactToolbar\) \}\s*\} else \{\s*composerSendButton\(compactToolbar: compactToolbar\)/);
   assert.doesNotMatch(composer, /islandExceptionsCount/);
   const engine = read('App/Sources/Tatwo2/Facade/ChatLiveEngine.swift');
   assert.match(engine, /if stoppingThreads\.contains\(threadID\) \{ forceStop\(threadID\); return \}/);

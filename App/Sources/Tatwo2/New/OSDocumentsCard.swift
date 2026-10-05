@@ -356,20 +356,30 @@ struct OSChipButton: View {
     let title: String
     var systemImage: String? = nil
     var isPrimary = false
+    /// W180 D1：.destructive（例如「立即停止」）字用紅色，其他同一般 chip。
+    var role: ButtonRole? = nil
     let action: () -> Void
+    // 停用時使用可讀中性色、僅輕度淡化、不畫強調底；仍由 Button 拒絕操作。
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
-        Button(action: action) {
+        Button(role: role, action: action) {
             HStack(spacing: 5) {
                 if let systemImage { Image(systemName: systemImage).font(.system(size: 11, weight: .semibold)) }
                 Text(title).font(.system(size: 12, weight: isPrimary ? .semibold : .regular))
             }
-            .foregroundStyle(isPrimary ? LiquidGlassTokens.brandAccent : Color.primary)
+            .foregroundStyle(foreground)
             .padding(.horizontal, 11).padding(.vertical, 5)
-            .chatGlassChip(isSelected: isPrimary)
+            .chatGlassChip(isSelected: isPrimary && isEnabled)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ChatGlassChipButtonStyle())
+    }
+
+    private var foreground: Color {
+        if !isEnabled { return ChatGlassChipModifier.chipForeground }
+        if role == .destructive { return ChatGlassChipModifier.chipDestructiveForeground }
+        return ChatGlassChipModifier.chipForeground
     }
 }
 
@@ -381,8 +391,16 @@ struct MemoryProposalsView: View {
     @State private var publicIDs: Set<String> = []
     @State private var message = ""
     @State private var busy = false
+    /// W182 R5：佇列一變就重畫（排隊中／沒送成那一行）。
+    @State private var outboxRevision = 0
 
     private var pending: [UserMemoryProposal] { items.filter { $0.status == "pending" } }
+    /// W182 R5：副設備連不上主設備時，核准先排隊（正式 App 那一份佇列）。
+    private var outbox: PrimaryOutbox? {
+        _ = outboxRevision
+        return PrimaryOutbox.main
+    }
+    private var primaryName: String { outbox?.primaryName.map { "「\($0)」" } ?? "主設備" }
     private var decided: [UserMemoryProposal] { items.filter { $0.status != "pending" }.prefix(8).map { $0 } }
 
     var body: some View {
@@ -393,7 +411,7 @@ struct MemoryProposalsView: View {
                 OSChipButton(title: "匯入 Claude 記憶") { importClaude() }
                 OSChipButton(title: "重新整理") { refresh() }
             }
-            Text(offline ? "連不上主設備：只顯示這台還沒送出的提案，連上後會自動送。"
+            Text(offline ? "列的是這台還沒送出的提案與上次看到的內容；決定可在設定 › 設備取消。"
                  : "核准的句子會加進 user.md 的「最近記住」，所有 AI 下一條對話就讀得到。標「公開」的才會給對外的 bot。")
                 .font(.caption).foregroundStyle(.secondary)
             if !message.isEmpty { Text(message).font(.caption).foregroundStyle(.secondary) }
@@ -419,6 +437,13 @@ struct MemoryProposalsView: View {
         }
         .onAppear(perform: refresh)
         .disabled(busy)
+        .onReceive(NotificationCenter.default.publisher(for: PrimaryOutbox.didChange)) { _ in outboxRevision += 1 }   // W182 R5
+        .onReceive(NotificationCenter.default.publisher(for: PrimaryOutbox.memoryDecided)) { note in   // W182 R5
+            // 排著的核准連回後送到了：不管這個畫面是不是離線時打開的，一律重讀清單（那條就不在「待核准」了）；收下的連 user.md 一起重讀。
+            guard let box = note.object as? PrimaryOutbox, box === PrimaryOutbox.main else { return }
+            refresh()
+            if note.userInfo?["accept"] as? Bool == true { onAccepted() }
+        }
     }
 
     private func row(_ item: UserMemoryProposal) -> some View {
@@ -428,11 +453,20 @@ struct MemoryProposalsView: View {
                 Text("\(item.source)・\(item.createdAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                Toggle("公開", isOn: Binding(get: { publicIDs.contains(item.id) || item.isPublic },
-                                             set: { if $0 { publicIDs.insert(item.id) } else { publicIDs.remove(item.id) } }))
-                    .toggleStyle(.checkbox).font(.caption)
-                OSChipButton(title: "不要") { decide(item, accept: false) }
-                OSChipButton(title: "收下", isPrimary: true) { decide(item, accept: true) }
+                if let queued = outbox?.item(.memoryDecide, key: "id", value: item.id) {   // W182 R5：排隊中／沒送成
+                    Text(queued.refused == true ? "沒送成：\(queued.reason ?? "")"
+                         : queued.state == .sending ? "送出中…"
+                         : "等送出・\(queued.params["accept"] == "true" ? "收下" : "不要")")
+                        .font(.caption).foregroundStyle(queued.refused == true ? Color.orange : Color.secondary)
+                    OSChipButton(title: queued.refused == true ? "移除" : "取消") { outbox?.cancel(queued.id) }
+                        .disabled(queued.state == .sending)
+                } else {
+                    Toggle("公開", isOn: Binding(get: { publicIDs.contains(item.id) || item.isPublic },
+                                                 set: { if $0 { publicIDs.insert(item.id) } else { publicIDs.remove(item.id) } }))
+                        .toggleStyle(.checkbox).font(.caption)
+                    OSChipButton(title: "不要") { decide(item, accept: false) }
+                    OSChipButton(title: "收下", isPrimary: true) { decide(item, accept: true) }
+                }
             }
         }
         .padding(10)
@@ -443,17 +477,44 @@ struct MemoryProposalsView: View {
         busy = true
         Task.detached {
             let result = UserMemoryStore.shared.list()
-            await MainActor.run { items = result.items; offline = result.offline; busy = false }
+            await MainActor.run {
+                // W182 R5：連不上主設備時，上次看到的主設備提案照樣列出來（按了先排隊）；連得上就記下這一份。
+                if result.offline {
+                    let cached = (PrimaryOutbox.main?.lastMemoryProposals ?? []).filter { $0.status == "pending" }
+                    items = result.items + cached.filter { row in !result.items.contains { $0.id == row.id } }
+                } else {
+                    items = result.items
+                    PrimaryOutbox.main?.lastMemoryProposals = result.items
+                }
+                offline = result.offline; busy = false
+            }
         }
     }
 
     private func decide(_ item: UserMemoryProposal, accept: Bool) {
         let isPublic = publicIDs.contains(item.id) || item.isPublic
+        // W182 R5：副設備連不上主設備：先排隊，連回後自動送（照原本的簽章方法）。
+        if offline, let outbox = PrimaryOutbox.main {
+            if outbox.enqueueMemoryDecide(id: item.id, accept: accept, isPublic: isPublic, text: item.text) != nil {
+                message = "" // W201：自動排隊不報備；原項目的待送狀態與取消操作照舊。
+            }
+            return
+        }
         busy = true
         Task.detached {
             let error = Result { try UserMemoryStore.shared.decide(id: item.id, accept: accept, isPublic: isPublic) }
+            let queueable = !UserMemoryStore.shared.isPrimary   // 副設備送不到主設備（連線類）才排隊
             await MainActor.run {
-                if case .failure(let e) = error { message = "沒完成：\(e.localizedDescription)" }
+                if case .failure(let e) = error {
+                    let failure = PrimaryCallFailure(e)
+                    // 主設備說不能做、這台還沒跟主設備配好的不排隊（再送也一樣），直接說原因。
+                    if queueable, failure.isRetryable, let outbox = PrimaryOutbox.main,
+                       outbox.enqueueMemoryDecide(id: item.id, accept: accept, isPublic: isPublic, text: item.text) != nil {
+                        message = "" // W201：能自動補送就安靜處理，實際拒收仍在下面說明。
+                    } else {
+                        message = "沒完成：\(e.localizedDescription)"
+                    }
+                }
                 else { message = accept ? "已寫進 user.md" : "已略過"; if accept { onAccepted() } }
                 busy = false
             }

@@ -14,6 +14,8 @@ import AppKit
 
 struct BotStudioRootView: View {
     @StateObject private var state: BotStudioState
+    /// 只讀私訊鈕總開關；不訂閱整個私訊框狀態（W179 E：私訊框每打一個字 Bot 頁不再整棵重算）。
+    @AppStorage(GlobalDMStore.enabledKey) private var globalDMEnabled = true
     var onSwitchMode: ((ChatRunMode) -> Void)?
 
     /// 快照捕捉時是否改抓 Gen-5（預設 0＝仍抓 Gen-4 12 場景的凍結金樣）。
@@ -59,9 +61,9 @@ struct BotStudioRootView: View {
                 BotStudioEdgeTabsMounter(state: state)
             }
         }
-        // bot 私訊：右下浮鈕＋小視窗（沿用 Gen-4 的資產）。
+        // bot 私訊：右下浮鈕＋小視窗（沿用 Gen-4 的資產）。W179：全域私訊框開著時不重複顯示。
         .overlay(alignment: .bottomTrailing) {
-            BotStudioMessagesFAB(state: state)
+            if !globalDMEnabled { BotStudioMessagesFAB(state: state) }
         }
     }
 

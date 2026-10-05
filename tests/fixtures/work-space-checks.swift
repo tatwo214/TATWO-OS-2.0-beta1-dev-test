@@ -25,12 +25,12 @@ enum TatwoChatCommandMode { case chat, cli }
         let legacy = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
         let doc = try JSONDecoder().decode(SpaceWorkspaceDocument.self, from: legacy).validated()
         let saved = doc.domains["legacy"]!
-        precondition(saved.tabOrder == [.bot, .chat, .cli, .browser, .chatgpt])
+        precondition(saved.tabOrder == [.tatwo, .bot, .chat, .cli, .browser, .chatgpt])
         precondition(saved.disabledTabs == [.cli])
         precondition(saved.customTabs == [:])
         let roundTrip = try JSONDecoder().decode(SpaceWorkspaceDocument.self, from: JSONEncoder().encode(doc)).validated()
         precondition(roundTrip == doc)
-        // User explicitly requires appending every missing builtin at decode, not only Browser.
+        // TATWO prepends; all other missing builtins append.
         let missingBuiltins = Data(#"{"version":1,"domains":{"legacy":{"id":"legacy","tabOrder":[]}}}"#.utf8)
         let repaired = try JSONDecoder().decode(SpaceWorkspaceDocument.self, from: missingBuiltins).validated()
         precondition(repaired.domains["legacy"]!.tabOrder == SpaceManagedTab.allCases)
@@ -64,7 +64,7 @@ enum TatwoChatCommandMode { case chat, cli }
         precondition(domain.interfaces.isEmpty && domain.bots.count == 1)
         domain.renameWorkSpace(tab, to: "Renamed")
         domain.moveTab(tab, offset: -1)
-        domain.moveTab(tab, before: .chat)
+        domain.moveTab(tab, before: .tatwo)
         precondition(domain.tabs.first == tab && domain.name(for: tab) == "Renamed")
         domain.toggle(tab)
         precondition(!domain.visibleTabs.contains(tab))

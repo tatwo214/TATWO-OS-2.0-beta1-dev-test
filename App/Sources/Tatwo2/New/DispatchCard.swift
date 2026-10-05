@@ -17,6 +17,8 @@ struct DispatchCard: View {
     @State private var diffResult: DispatchGitDiff?
     @State private var showsDiff = false
     @State private var diffRoomID: UUID?
+    /// W183 R3：ChatGPT 手腳房間的審查卡（候選 SHA、主線前進、會被執行的檔）。
+    @State private var handsReview: HandsReviewSummary?
     @State private var busy = false
     @State private var expanded =
         ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil &&
@@ -79,6 +81,8 @@ struct DispatchCard: View {
 
     @ViewBuilder private var diffSheet: some View {
             if let result = diffResult {
+                VStack(spacing: 0) {
+                if let handsReview { HandsReviewBanner(summary: handsReview); Divider() }   // W183 R3：v3 V6 審查卡
                 DiffReviewView(diffProvider: { result.parsed },
                                goalLabel: result.truncated ? "已截斷（512KB）" : nil,
                                reviewerLabel: result.stat.isEmpty ? nil : result.stat,
@@ -87,13 +91,15 @@ struct DispatchCard: View {
                                    busy = true
                                    Task {
                                        defer { busy = false }
-                                       do { diffResult = try await model.loadDispatchDiff(id) }
+                                       // W183 R3：diff 與審查卡一起重算（同一個候選 SHA）；候選途中變了＝兩個都不換、提示重開。
+                                       do { let loaded = try await model.loadDispatchReview(id); diffResult = loaded.diff; handsReview = loaded.review }
                                        catch { model.flashComposerHint(String(describing: error)) }
                                    }
                                })
                     .id(result.id)
                     .disabled(busy)
                     .frame(minWidth: 720, minHeight: 480)
+                }
                     .toolbar { Button("關閉") { showsDiff = false } }
             }
     }
@@ -107,7 +113,7 @@ struct DispatchCard: View {
                         Text(room.title)
                             .font(ChatTypography.transcriptAssistant)
                             .lineLimit(1)
-                        Text(room.engineLabel)
+                        Text(room.isHands ? "ChatGPT 手腳（外部資料）" : room.engineLabel)   // W183 R3
                             .font(ChatTypography.transcriptMeta)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -123,7 +129,7 @@ struct DispatchCard: View {
 
                     HStack(spacing: 5) {
                         Circle()
-                            .fill(room.needsAttention ? .orange : livenessColor(room.liveness))
+                            .fill(room.isHands ? handsColor(room.liveness) : room.needsAttention ? .orange : livenessColor(room.liveness))   // W183 R3：手腳房間不畫「待確認」橘點
                             .frame(width: 7, height: 7)
                         Text(room.statusLabel)
                             .font(ChatTypography.transcriptMeta)
@@ -136,7 +142,7 @@ struct DispatchCard: View {
                         Button(model.expandedDispatchReports.contains(room.id) ? "收合" : "看報告") { model.toggleDispatchReport(room.id) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
-                    } else if room.isRunning {
+                    } else if room.isRunning, !room.isHands {   // W183 R3：手腳房間沒有本機引擎可停；撤銷在 TAP › ChatGPT
                         Button("停") { model.stopDispatchRoom(room.id) }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -151,14 +157,18 @@ struct DispatchCard: View {
                                 Task {
                                     defer { busy = false }
                                     do {
-                                        diffResult = try await model.loadDispatchDiff(room.id)
+                                        let loaded = try await model.loadDispatchReview(room.id)   // W183 R3：diff＋審查卡同一個候選 SHA
+                                        diffResult = loaded.diff
+                                        handsReview = loaded.review
                                         diffRoomID = room.id
                                         showsDiff = true
                                     } catch { model.flashComposerHint(String(describing: error)) }
                                 }
                             }
                             if !room.isRunning {
-                                Button("複製合併指令") { model.copyDispatchMergeCommand(room.id) }
+                                if !model.isHandsRoom(room.id) {   // W183 R1b：ChatGPT 手腳的房間不給複製合併指令
+                                    Button("複製合併指令") { model.copyDispatchMergeCommand(room.id) }
+                                }
                                 Button("合併到主分支") {
                                     busy = true
                                     Task {
@@ -166,7 +176,9 @@ struct DispatchCard: View {
                                         await model.confirmDispatchMerge(room.id)
                                     }
                                 }
-                                Button("退回重做") { model.presentDispatchReturn(room.id) }
+                                if !model.isHandsRoom(room.id) {   // W183 R1：ChatGPT 手腳的房間不能退回給本機引擎重做
+                                    Button("退回重做") { model.presentDispatchReturn(room.id) }
+                                }
                             }
                         } label: {
                             Image(systemName: "ellipsis")
@@ -221,6 +233,15 @@ struct DispatchCard: View {
             : Date()
         let minutes = max(0, Int(now.timeIntervalSince(date) / 60))
         return "\(minutes) 分鐘前"
+    }
+
+    /// W183 R3：ChatGPT 手腳房間（照人的速度動）：動手中綠、等 ChatGPT 與已交件灰、失敗紅；沒有「待確認」。
+    private func handsColor(_ liveness: ThreadLiveness) -> Color {
+        switch liveness {
+        case .active: .green
+        case .failed: .red
+        case .idle, .stalled, .done: .secondary.opacity(0.55)
+        }
     }
 
     private func livenessColor(_ liveness: ThreadLiveness) -> Color {

@@ -48,6 +48,7 @@ enum ChatComposerFooterStateResolver {
 
 enum ChatRouteBrandGroup: String, CaseIterable, Identifiable, Hashable {
     case openAI = "OpenAI"
+    case chatgptTap = "ChatGPT"
     case anthropic = "Anthropic"
     case xAI = "xAI"
     case miniMax = "MiniMax"
@@ -58,6 +59,7 @@ enum ChatRouteBrandGroup: String, CaseIterable, Identifiable, Hashable {
 
     static let pickerOrder: [ChatRouteBrandGroup] = [
         .openAI,
+        .chatgptTap,
         .anthropic,
         .xAI,
         .miniMax,
@@ -75,9 +77,10 @@ struct ChatRouteBrandSection: Identifiable, Hashable {
 
 struct ChatRouteChoice: Identifiable, Hashable {
     let profile: TatwoChatRouteProfile
+    var rememberedDisplayName: String? = nil
 
     var id: String { profile.id }
-    var title: String { profile.displayName }
+    var title: String { rememberedDisplayName ?? profile.displayName }
     var family: String { profile.family }
     var engine: ChatEngine { profile.engine }
     var runtimeAdapter: TatwoChatRuntimeAdapter { profile.runtimeAdapter }
@@ -89,8 +92,12 @@ struct ChatRouteChoice: Identifiable, Hashable {
     var allowedSpeedTiers: [TatwoModelSpeedTier] { profile.allowedSpeedTiers }
     var supportsNativeReasoningControl: Bool { profile.supportsNativeReasoningControl }
     var supportsNativeSpeedControl: Bool { profile.supportsNativeSpeedControl }
+    var tapModel: TapModel? { ChatGPTTapModelCatalog.snapshot.first { ChatGPTTapModelCatalog.routeID($0.id) == id } }
+    var tapEfforts: [TapEffort] { tapModel?.efforts ?? [] }
+    var isAvailable: Bool { runtimeAdapter != .chatgptTap || tapModel != nil }
 
     var brandGroup: ChatRouteBrandGroup {
+        if runtimeAdapter == .chatgptTap { return .chatgptTap }
         let identities = [
             id,
             title,
@@ -130,7 +137,7 @@ struct ChatRouteChoice: Identifiable, Hashable {
         // User-facing Chat UI should read as a Codex-App-like model selector, not
         // as a terminal command surface. The runtime adapter still owns the
         // actual launch plan; this label is only a compact model identity.
-        profile.displayName
+        runtimeAdapter == .chatgptTap ? "ChatGPT / \(title)" : title
     }
 
     var providerIconID: String {
@@ -146,13 +153,19 @@ struct ChatRouteChoice: Identifiable, Hashable {
         return "codex-gpt"
     }
 
-    static let all: [ChatRouteChoice] = TatwoChatRouteProfile.defaults.map { ChatRouteChoice(profile: $0) }
+    static var all: [ChatRouteChoice] { choices() }
 
-    static func brandSections(selectedID: String?) -> [ChatRouteBrandSection] {
+    static func choices(deviceID: String = "local") -> [ChatRouteChoice] {
+        ChatRouteLookupCache.shared.choices(deviceID: deviceID)
+    }
+
+    static func brandSections(selectedID: String?, deviceID: String = "local") -> [ChatRouteBrandSection] {
+        let all = choices(deviceID: deviceID)
         var brands = ChatRouteBrandGroup.pickerOrder.filter { brand in
             all.contains { $0.brandGroup == brand }
         }
-        if let selectedBrand = selectedID.flatMap(resolveOrNil)?.brandGroup,
+        if let selectedBrand = selectedID.flatMap({ resolveOrNil($0, deviceID: deviceID) })?.brandGroup,
+           selectedBrand != .chatgptTap,
            let selectedIndex = brands.firstIndex(of: selectedBrand),
            selectedIndex != brands.startIndex {
             brands.remove(at: selectedIndex)
@@ -167,29 +180,26 @@ struct ChatRouteChoice: Identifiable, Hashable {
         }
     }
 
-    private static func normalizedLookupKey(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .filter { $0.isLetter || $0.isNumber }
-    }
-
-    static func resolveOrNil(_ id: String) -> ChatRouteChoice? {
-        let needle = normalizedLookupKey(id)
-        guard !needle.isEmpty else { return nil }
-        if let direct = all.first(where: { choice in
-            [choice.id, choice.canonicalModelSlug, choice.modelArgument, choice.title, choice.family]
-                .compactMap { $0 }
-                .contains { normalizedLookupKey($0) == needle }
-        }) {
-            return direct
+    static func resolveOrNil(_ id: String, deviceID: String = "local") -> ChatRouteChoice? {
+        ChatRouteLookupCache.shared.resolve(id, deviceID: deviceID) { all in
+            // TAP 的記錄不能解析成 Codex（Pod 休眠時目錄暫時沒有該模型也一樣）。
+            if ChatGPTTapModelCatalog.isRouteID(id) {
+                return ChatGPTTapModelCatalog.choice(model: TapModel(
+                    id: ChatGPTTapModelCatalog.modelID(id),
+                    title: ChatGPTTapModelCatalog.rememberedTitle(ChatGPTTapModelCatalog.modelID(id)) ?? "ChatGPT 模型", detail: ""))
+            }
+            let compatible = TatwoChatRouteProfile.resolve(id)
+            if let name = EngineModelCatalog.rememberedName(id, deviceID: deviceID) {
+                return ChatRouteChoice(profile: EngineModelCatalog.resolvedProfile(compatible, deviceID: deviceID), rememberedDisplayName: name)
+            }
+            return all.first { $0.id == compatible.id }
         }
-        let compatible = TatwoChatRouteProfile.resolve(id)
-        return all.first { $0.id == compatible.id }
     }
 
-    static func resolve(_ id: String) -> ChatRouteChoice {
-        resolveOrNil(id) ?? ChatRouteChoice(profile: TatwoChatRouteProfile.resolve(id))
+    static func resolve(_ id: String) -> ChatRouteChoice { resolve(id, deviceID: "local") }
+
+    static func resolve(_ id: String, deviceID: String) -> ChatRouteChoice {
+        resolveOrNil(id, deviceID: deviceID) ?? ChatRouteChoice(profile: EngineModelCatalog.resolvedProfile(TatwoChatRouteProfile.resolve(id), deviceID: deviceID))
     }
 }
 
@@ -1266,6 +1276,7 @@ struct ChatMessageSemanticIdentity: Equatable {
         statusWasNil: Bool,
         modelIDFingerprint: ChatStableContentFingerprint,
         modelIDWasNil: Bool,
+        modelDisplayNameFingerprint: ChatStableContentFingerprint = ChatStableContentFingerprint(""),
         eventKindFingerprint: ChatStableContentFingerprint,
         runtimeAdapterFingerprint: ChatStableContentFingerprint,
         runtimeAdapterWasNil: Bool,
@@ -1292,6 +1303,7 @@ struct ChatMessageSemanticIdentity: Equatable {
         accumulator.append(statusFingerprint)
         accumulator.append(modelIDWasNil)
         accumulator.append(modelIDFingerprint)
+        accumulator.append(modelDisplayNameFingerprint)
         accumulator.append(eventKindFingerprint)
         accumulator.append(runtimeAdapterWasNil)
         accumulator.append(runtimeAdapterFingerprint)
@@ -1307,6 +1319,7 @@ struct ChatMessageSemanticIdentity: Equatable {
             + textFingerprint.utf8Count
             + statusFingerprint.utf8Count
             + modelIDFingerprint.utf8Count
+            + modelDisplayNameFingerprint.utf8Count
             + eventKindFingerprint.utf8Count
             + runtimeAdapterFingerprint.utf8Count
             + runtimeFallbackFingerprint.utf8Count
@@ -1401,6 +1414,7 @@ struct ChatTranscriptSemanticRevision: Equatable {
 struct ChatMessage: Identifiable, Equatable {
     let id: String
     let role: ChatMessageRole
+    var engineErrorDetails: String? = nil
     var text: String {
         didSet {
             guard !isApplyingIncrementalTextAppend else { return }
@@ -1422,9 +1436,16 @@ struct ChatMessage: Identifiable, Equatable {
             refreshDisplaySemanticIdentity()
         }
     }
+    var modelDisplayName: String? {
+        didSet {
+            guard modelDisplayName != oldValue else { return }
+            refreshDisplaySemanticIdentity()
+        }
+    }
     var modelID: String? {
         didSet {
             guard modelID != oldValue else { return }
+            modelDisplayName = modelID.map { ChatRouteChoice.resolve($0).title }
             derivedModelIDFingerprint =
                 ChatStableContentFingerprint(modelID ?? "")
             derivedModelIDWasNil = modelID == nil
@@ -1542,6 +1563,7 @@ struct ChatMessage: Identifiable, Equatable {
         text: String,
         status: String? = nil,
         modelID: String? = nil,
+        modelDisplayName: String? = nil,
         eventKind: TatwoNativeChatEventKind = .message,
         runtimeAdapterID: String? = nil,
         runtimeFallbackReason: TatwoChatRuntimeFallbackReason? = nil,
@@ -1549,11 +1571,15 @@ struct ChatMessage: Identifiable, Equatable {
         planQuestions: [PlanQuestionV1] = [],
         createdAt: Date = Date()
     ) {
+        if let modelID, let modelDisplayName {
+            ChatGPTTapModelCatalog.rememberDisplayName(modelDisplayName, routeID: modelID)
+        }
         self.id = id
         self.role = role
         self.text = text
         self.status = status
         self.modelID = modelID
+        self.modelDisplayName = modelDisplayName ?? modelID.map { ChatRouteChoice.resolve($0).title }
         self.eventKind = eventKind
         self.runtimeAdapterID = runtimeAdapterID
         self.runtimeFallbackReason = runtimeFallbackReason
@@ -1602,6 +1628,7 @@ struct ChatMessage: Identifiable, Equatable {
             statusWasNil: status == nil,
             modelIDFingerprint: modelIDFingerprint,
             modelIDWasNil: modelID == nil,
+            modelDisplayNameFingerprint: ChatStableContentFingerprint(self.modelDisplayName ?? ""),
             eventKindFingerprint: eventKindFingerprint,
             runtimeAdapterFingerprint: runtimeAdapterFingerprint,
             runtimeAdapterWasNil: runtimeAdapterID == nil,
@@ -1657,6 +1684,7 @@ struct ChatMessage: Identifiable, Equatable {
             statusWasNil: derivedStatusWasNil,
             modelIDFingerprint: derivedModelIDFingerprint,
             modelIDWasNil: derivedModelIDWasNil,
+            modelDisplayNameFingerprint: ChatStableContentFingerprint(modelDisplayName ?? ""),
             eventKindFingerprint: derivedEventKindFingerprint,
             runtimeAdapterFingerprint: derivedRuntimeAdapterFingerprint,
             runtimeAdapterWasNil: derivedRuntimeAdapterWasNil,
@@ -1677,6 +1705,7 @@ struct ChatMessage: Identifiable, Equatable {
             && lhs.text == rhs.text
             && lhs.status == rhs.status
             && lhs.modelID == rhs.modelID
+            && lhs.modelDisplayName == rhs.modelDisplayName
             && lhs.eventKind == rhs.eventKind
             && lhs.runtimeAdapterID == rhs.runtimeAdapterID
             && lhs.runtimeFallbackReason == rhs.runtimeFallbackReason
@@ -2213,6 +2242,7 @@ enum ChatPlanThoughtPresentation {
                 detail: statusDetail,
                 policy: statusPolicy),
             modelID: source.modelID,
+            modelDisplayName: source.modelDisplayName,
             eventKind: .thinking,
             runtimeAdapterID: source.runtimeAdapterID,
             runtimeFallbackReason: source.runtimeFallbackReason,

@@ -108,11 +108,14 @@ enum PluginsSource {
         var result: [PluginRegistryEntry] = []
         for root in roots {
             if staging && !NativeStagingIsolation.allowsRead(root, within: paths.enginesRoot) { continue }
+            if ExternalWorkspacePolicy.contains(root) { continue }   // W183 R6c 審查：技能根連到入口 chatgpt/（外部 AI 的工作區）＝整個不收
             guard let children = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { continue }
             for child in children {
                 let manifest = child.appendingPathComponent("SKILL.md")
                 if staging && !NativeStagingIsolation.allowsRead(manifest, within: root) { continue }
                 guard manager.fileExists(atPath: manifest.path) else { continue }
+                // W183 R6c 審查：技能資料夾或 SKILL.md 解開捷徑後在入口 chatgpt/ 裡＝外部資料，不列成已安裝的技能。
+                guard Self.skillAllowed(folder: child, manifest: manifest) else { continue }
                 let canonical = manifest.resolvingSymlinksInPath().path
                 guard seen.insert(canonical).inserted else { continue }
                 let metadata = skillMetadata(at: manifest)
@@ -128,6 +131,11 @@ enum PluginsSource {
             }
         }
         return result
+    }
+
+    /// W183 R6c 審查：技能來源（資料夾本身、解開捷徑後的資料夾與 SKILL.md）不在入口的 chatgpt/ 裡（ExternalWorkspacePolicy）。
+    static func skillAllowed(folder: URL, manifest: URL, entries: [String]? = nil) -> Bool {
+        !ExternalWorkspacePolicy.contains(folder.path, entries: entries) && !ExternalWorkspacePolicy.contains(manifest.path, entries: entries)
     }
 
     static func mcpNames(

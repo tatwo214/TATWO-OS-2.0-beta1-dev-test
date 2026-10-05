@@ -52,8 +52,7 @@ private struct SpaceSetupDomainView: View {
                 ScrollView(.horizontal) {
                     HStack {
                         ForEach(domain.interfaces) { item in
-                            Button(item.name) { domain.selectInterface(item.id) }
-                                .buttonStyle(.bordered)
+                            OSChipButton(title: item.name) { domain.selectInterface(item.id) }
                         }
                     }
                     .padding(.horizontal, 14)
@@ -267,6 +266,8 @@ private struct SpaceSetupBuilderView: View {
     @State private var textHeight = TatwoChatTranscriptVisualMetrics.windowComposerTextMinimumHeight
     @State private var copyMessage = "複製規格"
     @State private var composerWidth: CGFloat = ChatUILayout.chatColumnMaxWidth
+    /// W184 H4b：模式卡開著沒有：chip 在工具列、卡掛在整個輸入框（下面那張玻璃卡）上，所以開關放在兩邊共同的這一層，用 Binding 往下傳給工具列。
+    @State private var modeOpen = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -319,12 +320,17 @@ private struct SpaceSetupBuilderView: View {
                     .padding(.horizontal, 20)
                     .padding(.top, 15)
                     .padding(.bottom, 8)
-                SpaceSetupComposerToolbar(domain: domain, compact: composerWidth < 720)
+                SpaceSetupComposerToolbar(domain: domain, compact: composerWidth < 720, modeOpen: $modeOpen)
                 .padding(.horizontal, 11)
                 .padding(.bottom, 8)
             }
             .frame(minHeight: TatwoChatTranscriptVisualMetrics.windowComposerMinimumHeight)
             .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusPrimary)
+            // W184 H4b：模式卡浮在整個輸入框（這張玻璃卡）上方 8、右緣對齊，不蓋到打字區；點卡以外的地方收起。
+            // （原本掛在工具列上，卡的下緣在工具列上方 8，蓋住打字區 59pt。）
+            .tatwoComposerModeCard(isPresented: $modeOpen) {
+                TatwoComposerModeCard(mode: TatwoComposerMode.spaceSetup(domain: domain), metrics: .main)
+            }
             .background {
                 GeometryReader { proxy in
                     Color.clear

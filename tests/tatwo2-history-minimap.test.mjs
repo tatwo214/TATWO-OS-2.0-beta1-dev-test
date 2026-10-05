@@ -1,27 +1,24 @@
 import { testScratch } from './helpers/test-scratch.mjs';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import test from 'node:test';
+import { runNativeW215 } from './helpers/w215-native.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const read = name => readFileSync(path.join(repo, name), 'utf8');
 const minimap = read('App/Sources/Tatwo2/Chat/ChatHistoryMinimap.swift');
 const transcript = read('App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift');
 
-test('minimap and transcript use the same rendered row identities', () => {
-  assert.match(transcript, /ForEach\(displayItems\)/);
-  assert.match(transcript, /ChatHistoryMinimap\(\s*items: displayItems\s*\)/);
-  assert.match(minimap, /let items: \[ChatTranscriptDisplayItem\]/);
-  assert.match(minimap, /ForEach\(items\)/);
-  assert.match(minimap, /\.onTapGesture \{ onJump\(m\.id\) \}/);
-  assert.match(transcript, /followState\.detachFromLatest\(\)[\s\S]*?proxy\.scrollTo\(id, anchor: \.top\)/);
-  // Do not give each tick a 2pt minimum: dense histories would exceed the
-  // measured viewport and make tooltip and click positions disagree.
-  assert.match(minimap, /height: slot, alignment: \.leading/);
-  assert.doesNotMatch(minimap, /height: max\(slot, 2\)/);
+test('Coder minimap uses visible rows and centers sparse and overflowing histories', { timeout: 120_000 }, t => {
+  const output = runNativeW215(t, 4);
+  if (!output) return;
+  assert.match(output, /PASS N4 history uses visible row count/);
+  assert.match(output, /PASS N4 history jump uses rendered row id message:a2/);
+  assert.match(output, /PASS N4 history centered count=4 height=650/);
+  assert.match(output, /PASS N4 history centered count=80 height=300/);
 });
 
 test('native display builder, preview projection and SwiftUI surface', {
@@ -51,6 +48,12 @@ test('native display builder, preview projection and SwiftUI surface', {
     const timeline = read('App/Sources/Tatwo2/Chat/ChatPageLeafViews+WorkTimeline.swift');
     const start = timeline.indexOf('enum ChatInlineWorkState:');
     const end = timeline.indexOf('struct ChatInlineWorkTimelineSummary:');
+    // W201（.056）：時間軸先濾掉自動設備狀態列；判斷函式取正式檔，不另寫替身。
+    const noteRow = read('App/Sources/Tatwo2/New/ChatSystemNoteRow.swift');
+    const filterStart = noteRow.indexOf('    static func isAutomaticDeviceStatus(');
+    const filterEnd = noteRow.indexOf('    static func resolve(');
+    assert.ok(filterStart >= 0 && filterEnd > filterStart);
+    const systemNoteFilter = `enum ChatSystemNotePresentation {\n${noteRow.slice(filterStart, filterEnd)}}`;
     assert.ok(start >= 0 && end > start);
     // Compile the actual production grouping and entire minimap View.
     // Doubles below only supply surrounding message/theme/remote types, not
@@ -81,6 +84,7 @@ enum LiquidGlassTokens { static let brandAccent = Color.orange }
 extension View {
     func liquidGlassSurface(cornerRadius: CGFloat) -> some View { self }
 }
+${systemNoteFilter}
 ${timeline.slice(start, end)}
 ${minimap}
 @main struct MinimapRegression {
@@ -103,17 +107,26 @@ ${minimap}
         let messages = [user, running, tool, done, answer]
         let items = ChatTranscriptDisplayBuilder.build(messages)
         check(items.count == 3, "three work events collapse to one tick")
-        check(items.map(\\.id) == ["message:u1", "chat-inline-work-timeline:turn1:gpt-6-astra", "message:a1"],
-            "actual message and model-scoped timeline targets")
+        check(items.map(\\.id) == ["message:u1", "message:a1", "chat-inline-work-timeline:turn1:gpt-6-astra"],
+            "completed work follows final prose with the same model-scoped target")
         let targets = Set(items.map(\\.id))
         check(messages.allSatisfy { !targets.contains($0.id) },
             "fixture reproduces old raw-message target mismatch")
         check(items[0].historyIsUser && !items[1].historyIsUser, "user emphasis preserved")
-        check(items[0].historyTitle == "你的指令" && items[1].historyTitle == "工作"
-            && items[2].historyTitle == "回覆", "tooltip labels match rendered row")
+        check(items[0].historyTitle == "你的指令" && items[1].historyTitle == "回覆"
+            && items[2].historyTitle == "工作", "tooltip labels match rendered row")
         check(items[0].historyPreviewText == "畫一張圖", "trim ordinary preview")
-        check(items[1].historyPreviewText.contains("已完成"), "timeline shows terminal summary")
-        check(items[2].historyPreviewText == "完成的圖片", "final prose remains independently reachable")
+        check(items[2].historyPreviewText.contains("已完成"), "timeline shows terminal summary")
+        check(items[1].historyPreviewText == "完成的圖片", "final prose remains independently reachable")
+        // Completed work moves after the answer; active work stays in place (2026-09-11 design).
+        let active = ChatTranscriptDisplayBuilder.build([user, running, tool])
+        check(active.map(\\.id) == ["message:u1", "chat-inline-work-timeline:turn1:gpt-6-astra"],
+            "active work stays at its original position")
+        check(active[1].id == items[2].id, "completion reorders but never replaces the jump identity")
+        let nextUser = ChatMessage(id: "u2", role: .user, text: "下一輪", turnID: "turn2")
+        let nextTurn = ChatTranscriptDisplayBuilder.build(messages + [nextUser])
+        check(nextTurn.map(\\.id) == items.map(\\.id) + ["message:u2"],
+            "completed summary stays in its own turn")
         let blank = ChatTranscriptDisplayItem.message(ChatMessage(id: "empty", role: .system, text: " \\n "))
         check(blank.historyPreviewText == "（無文字）" && blank.historyTitle == "系統", "empty and system preview")
         let long = ChatTranscriptDisplayItem.message(ChatMessage(id: "long", role: .user, text: String(repeating: "圖", count: 500)))
@@ -126,6 +139,13 @@ ${minimap}
         otherModel.modelID = "fable-5"
         let multi = ChatTranscriptDisplayBuilder.build([user, running, otherModel, answer])
         check(multi.count == 4 && Set(multi.map(\\.id)).count == 4, "same turn distinct models remain separate")
+        check(Set(multi.map(\\.id)) == Set(["message:u1", "message:a1",
+            "chat-inline-work-timeline:turn1:gpt-6-astra", "chat-inline-work-timeline:turn1:fable-5"]),
+            "model scopes retain exact jump targets")
+        let plan = ChatTranscriptDisplayItem.planSummary(sourceMessageID: "a1")
+        check(plan.id == "tatwo-plan-summary:a1" && plan.historyTitle == "計畫"
+            && plan.historyPreviewText == "展開計畫畫布" && !plan.historyIsUser,
+            "plan summary is a distinct preview and target")
         let many = (0..<600).map { ChatMessage(id: "history-\\($0)", role: $0 % 2 == 0 ? .user : .assistant, text: "訊息 \\($0)") }
         let manyItems = ChatTranscriptDisplayBuilder.build(many)
         check(manyItems.count == 600 && Set(manyItems.map(\\.id)).count == 600, "large history preserves all targets")
@@ -134,13 +154,40 @@ ${minimap}
                 .frame(width: 22, height: 320).padding(12)
                 .frame(width: 320, height: 360, alignment: .leading)
                 .background(Color.white)
-            let renderer = ImageRenderer(content: content)
-            renderer.scale = 2
-            guard let image = renderer.cgImage,
-                  let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])
+            // ImageRenderer can return an all-white bitmap for this ScrollView.
+            // Give the actual SwiftUI view an offscreen AppKit host; never show a window.
+            _ = NSApplication.shared
+            let host = NSHostingView(rootView: content)
+            host.frame = NSRect(x: 0, y: 0, width: 320, height: 360)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+            host.layoutSubtreeIfNeeded()
+            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil,
+                pixelsWide: 640, pixelsHigh: 720, bitsPerSample: 8, samplesPerPixel: 4,
+                hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0) else { fatalError("bitmap failed: " + name) }
+            bitmap.size = host.bounds.size
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            guard let png = bitmap.representation(using: .png, properties: [:])
             else { fatalError("render failed: " + name) }
             try png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]).appendingPathComponent(name + ".png"))
-            check(image.width == 640 && image.height == 720, name + " real SwiftUI render")
+            check(bitmap.pixelsWide == 640 && bitmap.pixelsHigh == 720, name + " real SwiftUI render")
+            var tickPixels = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<100 {
+                    if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB),
+                       color.alphaComponent > 0.9,
+                       min(color.redComponent, color.greenComponent, color.blueComponent) < 0.98 {
+                        tickPixels += 1
+                    }
+                }
+            }
+            check(tickPixels > 100, name + " has visible minimap ticks, not a blank bitmap")
+            window.close()
         }
         print("RESULT checks=\\(checks) failures=0")
     }
@@ -150,16 +197,18 @@ ${minimap}
     const compiler = run('/usr/bin/xcrun', ['--find', 'swiftc']).stdout.trim();
     const sdk = run('/usr/bin/xcrun', ['--sdk', 'macosx', '--show-sdk-path']).stdout.trim();
     const binary = path.join(scratch, 'minimap-regression');
+    const plugins = process.env.TATWO_SWIFT_PLUGIN_PATH ?? path.join(process.env.HOME, 'tatwo-build/toolchains.noindex/macosx-plugins');
+    const macroFlags = existsSync(plugins) ? ['-plugin-path', plugins] : [];
     const env = { ...process.env, TMPDIR: scratch };
     const compiled = run('/usr/bin/time', ['-l', compiler, '-j', '2', '-swift-version', '5', '-parse-as-library',
-      '-sdk', sdk, '-target', `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macosx14.0`,
+      '-sdk', sdk, ...macroFlags, '-target', `${process.arch === 'arm64' ? 'arm64' : 'x86_64'}-apple-macosx14.0`,
       '-module-cache-path', path.join(output, 'minimap-swift-cache'),
       path.join(scratch, 'MinimapRegression.swift'), '-o', binary], { env });
     writeFileSync(path.join(scratch, 'compile.log'), compiled.stdout + compiled.stderr);
     writeFileSync(path.join(scratch, 'preflight.json'), JSON.stringify({ pressure }, null, 2));
     const result = run(binary, [scratch], { env });
     writeFileSync(path.join(scratch, 'result.log'), result.stdout + result.stderr);
-    assert.match(result.stdout, /RESULT checks=15 failures=0/);
+    assert.match(result.stdout, /RESULT checks=22 failures=0/);
     console.log(result.stdout.trim());
     console.log(`Evidence: ${scratch}`);
   } finally {

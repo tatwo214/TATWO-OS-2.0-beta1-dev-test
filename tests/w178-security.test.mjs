@@ -14,7 +14,9 @@ const binary = process.env.TATWO2_TEST_BINARY;
 function fixture() {
   // UNIX socket 路徑有 104 位元組上限：放在短的暫存目錄。
   // 用解析過的真實路徑（/tmp 其實是 /private/tmp），staging 隔離檢查才對得上。
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(fs.existsSync('/tmp') ? '/tmp' : tmpdir(), 'w178-')));
+  const parent = process.env.TATWO2_SECURITY_TEST_ROOT || (fs.existsSync('/tmp') ? '/tmp' : tmpdir());
+  fs.mkdirSync(parent, { recursive: true });
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(parent, 'w178-')));
   const at = name => path.join(root, name);
   for (const name of ['h', 'l', 'e', 'entry', 'docs']) fs.mkdirSync(at(name));
   const env = {
@@ -97,17 +99,33 @@ test('W178 os.sock: other local programs only reach status and proposal methods;
     const socketPath = env.TATWO2_OS_SOCKET;
     // 這個實例是 staging 隔離（沒有使用者資料），get_document 等唯讀空狀態方法依設計對外可讀；其餘照樣擋。
     for (const method of ['list_rooms', 'send_message', 'transcript', 'run_background', 'computer_observe',
-      'cli_open', 'cli_send', 'whoami', 'select_thread', 'github_import_from_gh', 'app_terminate_for_update']) {
+      'cli_open', 'cli_send', 'whoami', 'select_thread', 'github_import_from_gh', 'app_terminate_for_update',
+      'os_status', 'goal_index', 'project_overview', 'project_suggest', 'project_proposal_decide']) {
       const { reply } = await rpc(socketPath, { id: method, method, params: { callerThreadID: '00000000-0000-0000-0000-000000000001' } });
       assert.equal(reply.ok, false, method);
       assert.equal(reply.error, 'caller_not_trusted', `${method}: ${JSON.stringify(reply)}`);
     }
+    // W183 R1：ChatGPT 手腳的三個方法只給 App 登記的關口本人（.externalAI）；同一台 Mac 上的其他程式一律不行。
+    for (const method of ['hands_tools', 'hands_call', 'hands_auth']) {
+      const { reply } = await rpc(socketPath, { id: method, method, params: { callerThreadID: '00000000-0000-0000-0000-000000000001' } });
+      assert.equal(reply.ok, false, method);
+      assert.equal(reply.error, 'caller_not_trusted', `${method}: ${JSON.stringify(reply)}`);
+    }
+    // W182 R5：補回助理那條（assistant_append_offline）只給已配對設備，同一台 Mac 上的其他程式一律不行。
+    const append = await rpc(socketPath, { id: 'append', method: 'assistant_append_offline', params: {} });
+    assert.equal(append.reply.error, 'caller_not_trusted', JSON.stringify(append.reply));
     const unsignedJob = await rpc(socketPath, { id: 'job', method: 'job_submit', params: {} });
     assert.equal(unsignedJob.reply.error, 'caller_not_trusted');
     const status = await rpc(socketPath, { id: 'status', method: 'device_status', params: {} });
     assert.notEqual(status.reply.error, 'caller_not_trusted', JSON.stringify(status.reply));
     const stagingDocument = await rpc(socketPath, { id: 'doc', method: 'get_document', params: {} });
-    assert.notEqual(stagingDocument.reply.error, 'caller_not_trusted', JSON.stringify(stagingDocument.reply));
+    // W179 rooms keep fixtures on the staging volume. Only physical /private/tmp or /private/var/folders
+    // roots qualify for W178's extra read-only allowance; an external-volume fixture must still fail closed.
+    if (env.TATWO_STAGING_ROOT.startsWith('/private/tmp/') || env.TATWO_STAGING_ROOT.startsWith('/private/var/folders/')) {
+      assert.notEqual(stagingDocument.reply.error, 'caller_not_trusted', JSON.stringify(stagingDocument.reply));
+    } else {
+      assert.equal(stagingDocument.reply.error, 'caller_not_trusted', JSON.stringify(stagingDocument.reply));
+    }
     // 回應會帶回 id：超大 id 直接拒絕。
     const hugeID = await rpc(socketPath, { id: 'x'.repeat(4096), method: 'device_status', params: {} });
     assert.equal(hugeID.reply.error, 'bad_request_id');
@@ -137,4 +155,67 @@ test('W178 os.sock: other local programs only reach status and proposal methods;
   for (const label of ['終端機：同一分頁兩次送出不交錯', '終端機：貼上後確認失敗就清掉、不執行']) {
     assert.ok(tmuxSkipped || output.includes('SECURITYTEST PASS ' + label), label);
   }
+});
+
+// W180 E1b：記憶自動同步的兩個設備 RPC 跟 memory_propose 同一組——外部程式只能帶設備簽章來（DeviceDispatch.authenticate 驗章），
+// 不在 SSH 遙控清單、也不在 staging 唯讀清單。原始碼契約，不需要建好的 App。
+test('W180 E1b memory sync RPCs: signed-device group only', () => {
+  const bridge = fs.readFileSync(new URL('../App/Sources/Tatwo2/Facade/OSAgentBridge.swift', import.meta.url), 'utf8');
+  const list = name => bridge.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
+  for (const method of ['memory_sync_target', 'memory_sync_receive']) {
+    assert.ok(list('untrustedCallerMethods').includes(`"${method}"`), `${method} reachable only with a device signature`);
+    assert.ok(!list('sshForwardMethods').includes(`"${method}"`), `${method} not an SSH remote-control method`);
+    assert.ok(!list('stagingReadOnlyMethods').includes(`"${method}"`), `${method} not a staging read-only method`);
+  }
+  assert.match(bridge, /"memory_sync_target", "memory_sync_receive":\n\s*let \(sender, payload\) = try DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)/);
+});
+
+// W182 R5：副設備離線時那段助理問答補回主設備（assistant_append_offline）——只給已配對設備（SSH 轉進來），
+// 不在「外部程式也能用」與 staging 唯讀清單；這台自己的 AI 引擎、背景工作也不能呼叫（只能 caller == .ssh）。
+test('W182 R5 assistant_append_offline: paired devices only', () => {
+  const bridge = fs.readFileSync(new URL('../App/Sources/Tatwo2/Facade/OSAgentBridge.swift', import.meta.url), 'utf8');
+  const list = name => bridge.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
+  const method = 'assistant_append_offline';
+  assert.ok(list('sshForwardMethods').includes(`"${method}"`), 'SSH (paired device) list');
+  assert.ok(!list('untrustedCallerMethods').includes(`"${method}"`), 'not for other programs');
+  assert.ok(!list('stagingReadOnlyMethods').includes(`"${method}"`), 'not a staging read-only method');
+  assert.match(bridge, /if method == AssistantOfflineWire\.method \{ return caller == \.ssh \}/);
+  assert.match(bridge, /private static let remoteMethods: Set<String> = \[[\s\S]*?"assistant_append_offline"/);
+});
+
+// W183 R1：ChatGPT 手腳的關口（.externalAI）只准三個方法，這三個方法也不在任何既有清單（不給其他程式、SSH、staging）。原始碼契約。
+test('W183 R1 external AI: exact three-method allowlist, never in the existing lists', () => {
+  const read = name => fs.readFileSync(new URL(`../App/Sources/Tatwo2/Facade/${name}`, import.meta.url), 'utf8');
+  const bridge = read('OSAgentBridge.swift');
+  const contract = read('HandsContract.swift');
+  const list = (source, name) => source.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
+  const hands = list(contract, 'externalAIMethods').match(/"([^"]+)"/g)?.map(value => value.slice(1, -1)).sort();
+  assert.deepEqual(hands, ['hands_auth', 'hands_call', 'hands_tools']);
+  for (const name of ['untrustedCallerMethods', 'stagingReadOnlyMethods', 'sshForwardMethods']) {
+    assert.doesNotMatch(list(bridge, name), /"hands_/, name);
+  }
+  const allows = bridge.slice(bridge.indexOf('static func allows(caller:'), bridge.indexOf('/// 只有隔離根在暫存目錄'));
+  assert.match(allows, /if case \.externalAI = caller \{ return HandsContract\.externalAIMethods\.contains\(method\) \}\n\s*if HandsContract\.externalAIMethods\.contains\(method\) \{ return false \}/);
+  assert.match(allows, /case \.externalAI:\n\s*return false/);
+});
+
+// W183 R3：ChatGPT 手腳的標準設定流程（hands_setup_*）只給 App 與這台的引擎；副設備看主機狀態（remote_hands_*）要設備簽章。原始碼契約。
+test('W183 R3 hands setup tools and secondary RPC: trust lists', () => {
+  const read = name => fs.readFileSync(new URL(`../App/Sources/Tatwo2/Facade/${name}`, import.meta.url), 'utf8');
+  const bridge = read('OSAgentBridge.swift');
+  const setup = read('HandsSetup.swift');
+  const list = name => bridge.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
+  for (const name of ['untrustedCallerMethods', 'stagingReadOnlyMethods', 'sshForwardMethods']) {
+    assert.doesNotMatch(list(name), /"hands_setup_/, `${name}: setup tools only for the App and local engines`);
+  }
+  for (const method of ['remote_hands_status', 'remote_hands_action']) {
+    assert.ok(list('untrustedCallerMethods').includes(`"${method}"`), `${method} reachable only with a device signature`);
+    assert.ok(!list('sshForwardMethods').includes(`"${method}"`) && !list('stagingReadOnlyMethods').includes(`"${method}"`), method);
+  }
+  const allows = bridge.slice(bridge.indexOf('static func allows(caller:'), bridge.indexOf('/// 只有隔離根在暫存目錄'));
+  assert.match(allows, /if HandsSetupTool\.methods\.contains\(method\) \{ return HandsSetupTool\.allows\(caller\) \}/);
+  assert.ok(allows.indexOf('HandsSetupTool.methods') > allows.indexOf('if case .externalAI = caller { return HandsContract.externalAIMethods.contains(method) }'),
+    'the external AI rule runs first');
+  assert.match(setup, /case \.job, \.ssh, \.externalAI, \.other: return false/);
+  assert.match(bridge, /case "remote_hands_status", "remote_hands_action":\n\s*let \(sender, payload\) = try DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)/);
 });

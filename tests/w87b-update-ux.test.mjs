@@ -21,7 +21,7 @@ test('W87b-1 metered blocking is visible, switchable and overridable for one can
   assert.match(card, /Toggle\(UpdateNetworkPolicy\.allowMeteredLabel, isOn: \$allowsMeteredDownload\)/);
   assert.match(card, /updater\.setAllowsMeteredAutomaticDownload\(value\)/);
   assert.match(card, /if let notice = updater\.networkNotice \{[\s\S]*Text\(notice\)/);
-  assert.match(card, /Button\(UpdateNetworkPolicy\.downloadNowLabel\) \{[\s\S]*updater\.downloadNowIgnoringMetering\(to: release\.tag_name, repository: checker\.repository\)/);
+  assert.match(card, /OSChipButton\(title: UpdateNetworkPolicy\.downloadNowLabel\) \{[\s\S]*updater\.downloadNowIgnoringMetering\(to: release\.tag_name, repository: checker\.repository\)/);
   // 狀態文字沿用卡片既有的次要文字樣式，不新做元件。
   assert.match(card, /Text\(notice\)\.font\(\.footnote\)\.foregroundStyle\(\.secondary\)/);
   assert.match(updater, /static let allowMeteredKey = "update-allow-metered"/);
@@ -273,6 +273,15 @@ final class Passed: @unchecked Sendable {
     }
   });
 
+// W87b 的施工範圍固定在其合併提交；後續 M2 只允許對話備份區塊不同。
+function withoutConversationBackup(source) {
+  const before = source.match(/^OLD_VERSION=.*\n/m);
+  const after = source.match(/^EXPECTED_RELEASE_SHA=.*$/m);
+  assert.ok(before && after && before.index < after.index, '安裝器備份邊界必須完整');
+  assert.equal(source.match(/^OLD_VERSION=/gm)?.length, 1);
+  assert.equal(source.match(/^EXPECTED_RELEASE_SHA=/gm)?.length, 1);
+  return source.slice(0, before.index + before[0].length) + source.slice(after.index);
+}
 test('W87b changes no installer, packaging or signing gate', () => {
   const repo = fileURLToPath(new URL('..', import.meta.url));
   const paths = ['install.sh', 'public/install.sh', 'scripts/package-release.sh'];
@@ -282,9 +291,30 @@ test('W87b changes no installer, packaging or signing gate', () => {
   assert.ok(rev, '列車基準分支不在這個 clone 裡，無法驗證安裝閘門零改動');
   const base = spawnSync('git', ['-C', repo, 'merge-base', 'HEAD', rev], { encoding: 'utf8' });
   assert.equal(base.status, 0, base.stderr);
-  const diff = spawnSync('git', ['-C', repo, 'diff', '--stat', base.stdout.trim(), '--', ...paths],
+  const w87b = '20311a26901a65835a9666922720d1e54188ed52';
+  const historical = spawnSync('git', ['-C', repo, 'diff', '--stat', w87b + '^1', w87b, '--', ...paths],
     { encoding: 'utf8' });
-  assert.equal(diff.status, 0, diff.stderr);
-  assert.equal(diff.stdout.trim(), '');
-  assert.equal(read('install.sh'), read('public/install.sh'));
+  assert.equal(historical.status, 0, historical.stderr);
+  assert.equal(historical.stdout.trim(), '');
+  for (const path of paths) {
+    const previous = spawnSync('git', ['-C', repo, 'show', base.stdout.trim() + ':' + path],
+      { encoding: 'utf8' });
+    assert.equal(previous.status, 0, previous.stderr);
+    if (path.endsWith('install.sh')) {
+      assert.equal(withoutConversationBackup(read(path)), withoutConversationBackup(previous.stdout),
+        path + '：對話備份之外的簽章、版本、切換閘門必須逐位元一致');
+    } else {
+      assert.equal(read(path), previous.stdout, path + '：封裝閘門必須逐位元一致');
+    }
+  }
+  assert.deepEqual(readFileSync(new URL('../install.sh', import.meta.url)),
+    readFileSync(new URL('../public/install.sh', import.meta.url)));
+});
+test('W87b current gate guard still rejects signing changes outside conversation backups', () => {
+  const source = read('install.sh');
+  const changed = source.replace('EXPECTED_RELEASE_SHA=', 'EXPECTED_RELEASE_SHA=fixture\nEXPECTED_RELEASE_SHA=');
+  assert.notEqual(changed, source);
+  assert.throws(() => withoutConversationBackup(changed));
+  const signature = source.replace('install-ready 缺少完整候選 SHA', 'fixture');
+  assert.notEqual(withoutConversationBackup(signature), withoutConversationBackup(source));
 });

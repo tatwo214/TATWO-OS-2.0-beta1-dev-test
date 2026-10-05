@@ -126,9 +126,10 @@ final class UserMemoryStore: @unchecked Sendable {
         var added = 0, skipped = 0
         for project in (try? fm.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil)) ?? [] {
             let memory = project.appendingPathComponent("memory")
+            if ExternalWorkspacePolicy.contains(memory) { continue }   // W183 R6c 審查：連到入口 chatgpt/ 的不當成 Claude 記憶
             for file in (try? fm.contentsOfDirectory(at: memory, includingPropertiesForKeys: nil)) ?? []
             where file.pathExtension == "md" && file.lastPathComponent != "MEMORY.md" {
-                guard let text = try? String(contentsOf: file, encoding: .utf8),
+                guard !ExternalWorkspacePolicy.contains(file), let text = try? String(contentsOf: file, encoding: .utf8),
                       let candidate = UserMemoryText.claudeMemoryCandidate(text) else { continue }
                 if (try? propose(text: candidate, source: "Claude 記憶")) == .duplicate { skipped += 1 } else { added += 1 }
             }

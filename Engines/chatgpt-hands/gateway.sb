@@ -1,0 +1,67 @@
+;; W183 R2b（T8、接口約定 v2 §1、v3 V8）：ChatGPT 手腳關口（gateway.mjs）的 Seatbelt 規則。TATWO 自寫，不含第三方片段。
+;; 用法：/usr/bin/sandbox-exec -p <本檔全文> -D NODE_BIN=… -D NODE_ROOT=… -D PROGRAM_DIR=… -D CONFIG=…
+;;       -D SOCKET=… -D OS_SOCKET=… -D ANC_0=… … -D ANC_23=… <NODE_BIN> <PROGRAM_DIR>/gateway.mjs <CONFIG>
+;; 每個路徑都先 realpath(3)，一律用 -D 參數傳，不拼進規則文字。ANC_n＝上面幾個路徑的上層資料夾（Node 解析模組路徑、關口確認 socket 路徑沒被換掉都要看），
+;; 用不到的格子填 "/"。預設全拒；關口手上沒有秘密（token 由 App 驗），不寫任何檔案（日誌走 stdout），不准開任何子行程。
+;; 明列允許：exec 內附 Node 本身、讀系統 runtime、在 App 預建的 socket 資料夾建自己的 socket、連 os.sock。其餘全拒——
+;; 讀不到 App 的設定與 OAuth 狀態（<App Support>/TATWO OS Hands/app）、cf-home 裡的通道 token、cf.yml、家目錄、鑰匙圈。
+(version 1)
+(deny default)
+
+;; 行程：只准執行 Node 本身（sandbox-exec 把自己換成 Node，pid 不變）；不准 fork，關口開不出任何子行程。
+(allow process-exec (literal (param "NODE_BIN")))
+(allow process-info* (target self))
+(allow signal (target self))
+;; sysctl 只開 Node 與系統程式庫實際會讀的（W183 R2b 審查：sandbox 記錄實測，Node 20 與 26）：硬體資訊、系統版本、鎖定模式、主機名稱。
+;; 主機名稱（kern.hostname）不得不開：uname() 一次讀全部欄位，少一個就整個失敗，Node 26 啟動時呼叫它、失敗就直接中止。
+;; 不開行程表（kern.proc.*）、開機參數（kern.bootargs）、網路路由表。
+;; 殘餘（實測 macOS 27）：讀別的同 UID 行程 argv／環境的 KERN_PROCARGS2 不歸 sysctl-read 管（deny sysctl*、deny process-info* 都擋不住），
+;; 關口被打穿時讀得到同一個使用者的非系統程式的環境變數——所以秘密一律不放環境變數（token 走 0600 檔、鑰匙圈）。
+(allow sysctl-read
+  (sysctl-name-prefix "hw.")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.osrevision")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.version")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.osvariant_status")
+  (sysctl-name "kern.iossupportversion")
+  (sysctl-name "kern.secure_kernel")
+  (sysctl-name "kern.maxfiles")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.usrstack64")
+  (sysctl-name "kern.hostname")
+  (sysctl-name-prefix "machdep.cpu.")
+  (sysctl-name "security.mac.lockdown_mode_state")
+  (sysctl-name "sysctl.proc_cputype")
+  (sysctl-name "sysctl.proc_translated"))
+
+;; 唯讀：系統 runtime（程式庫、時區）、Node、自己的程式、App 寫的 config.json（只有這一個檔，不是整個資料夾）。
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/usr/share")
+  (subpath "/System/Library")
+  (subpath "/System/Volumes/Preboot/Cryptexes")
+  (subpath "/private/var/db/timezone")
+  (literal "/private/etc/localtime")
+  (subpath (param "NODE_ROOT"))
+  (subpath (param "PROGRAM_DIR"))
+  (literal (param "CONFIG")))
+(allow file-read-metadata file-read-data (literal "/"))
+(allow file-read-metadata
+  (literal (param "ANC_0")) (literal (param "ANC_1")) (literal (param "ANC_2")) (literal (param "ANC_3"))
+  (literal (param "ANC_4")) (literal (param "ANC_5")) (literal (param "ANC_6")) (literal (param "ANC_7"))
+  (literal (param "ANC_8")) (literal (param "ANC_9")) (literal (param "ANC_10")) (literal (param "ANC_11"))
+  (literal (param "ANC_12")) (literal (param "ANC_13")) (literal (param "ANC_14")) (literal (param "ANC_15"))
+  (literal (param "ANC_16")) (literal (param "ANC_17")) (literal (param "ANC_18")) (literal (param "ANC_19"))
+  (literal (param "ANC_20")) (literal (param "ANC_21")) (literal (param "ANC_22")) (literal (param "ANC_23")))
+(allow file-read* (literal "/dev/urandom") (literal "/dev/random"))
+(allow file-read* file-write-data (literal "/dev/null"))
+
+;; 可寫：只有自己那個 unix socket 檔（在 App 預建的 0700 socket 資料夾裡建立、改權限、收掉時刪）。沒有其他可寫的地方。
+(allow file-read* file-write* (literal (param "SOCKET")))
+
+;; 網路：只准聽自己的 unix socket、只准連 os.sock。沒有 TCP、沒有 DNS、沒有其他 socket。
+(allow network-bind network-inbound (local unix-socket (path-literal (param "SOCKET"))))
+(allow network-outbound (remote unix-socket (path-literal (param "OS_SOCKET"))))

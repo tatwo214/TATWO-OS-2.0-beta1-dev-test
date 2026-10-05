@@ -49,7 +49,6 @@ struct CLILoopDetailPane: View {
                 } label: {
                     Label("停止", systemImage: "stop.fill")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(LiquidGlassTokens.brandAccent)
                         .padding(.horizontal, 10)
                         .frame(height: 24)
                         .contentShape(Rectangle())

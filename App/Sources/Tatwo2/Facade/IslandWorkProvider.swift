@@ -1,10 +1,10 @@
 import Foundation
 import Combine
 
-struct IslandWorkSnapshot {
+struct IslandWorkSnapshot: Equatable {
     enum Kind: Int, CaseIterable { case awaitingApproval, pendingMemory, stalled, failed }
     struct Target: Equatable { var threadID: UUID?; var botID: String?; var jobID: UUID? }
-    struct Item: Identifiable {
+    struct Item: Identifiable, Equatable {
         var kind: Kind?
         var title: String
         var target: Target
@@ -29,14 +29,14 @@ struct IslandWorkSnapshot {
         let env = ProcessInfo.processInfo.environment
         return env["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil && env["TATWO_ULTRAWORK_EXPORT_CHAT_SCENE"] == "等你"
     }
-    static func ordered(_ items: [Item]) -> Self {
+    static func ordered(_ items: [Item], limit: Int? = 20) -> Self {
         let sorted = items.sorted {
             if $0.kind?.rawValue != $1.kind?.rawValue { return ($0.kind?.rawValue ?? 4) < ($1.kind?.rawValue ?? 4) }
             if $0.since != $1.since { return $0.since < $1.since }
             return $0.id < $1.id
         }
-        return .init(exceptions: Array(sorted.filter { $0.kind != nil }.prefix(20)),
-                     normal: Array(sorted.filter { $0.kind == nil }.prefix(20)))
+        return .init(exceptions: Array(sorted.filter { $0.kind != nil }.prefix(limit ?? sorted.count)),
+                     normal: Array(sorted.filter { $0.kind == nil }.prefix(limit ?? sorted.count)))
     }
 }
 @MainActor final class IslandWorkProvider: ObservableObject, IslandSpaceProvider {
@@ -52,26 +52,27 @@ struct IslandWorkSnapshot {
                 guard let self else { return }
                 let value = await self.read()
                 guard !Task.isCancelled else { return }
-                self.data = value
+                if self.data != value { self.data = value }
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
     }
     func suspend() { polling?.cancel(); polling = nil }
-    func unload() { suspend(); data = .init() }
+    func unload() { suspend(); if data != IslandWorkSnapshot() { data = .init() } }
     deinit { polling?.cancel() }
     static func deviceName(id: String?, devices: [DeviceRecord]) -> String? {
         guard let id else { return nil }
         return devices.first { $0.id == id }?.name
     }
-    static func phase(pending: Bool, event: String) -> String {
+    nonisolated static func phase(pending: Bool, event: String) -> String {
         pending ? "等你" : event.lowercased().contains("tool") ? "工具" : "思考中"
     }
-    // Pure, bounded projection shared by the work page and the lightweight count source.
-    static func project(threads: [LiveThreadRecord], pending: Set<UUID>, running: Set<UUID>,
-                        bots: BotLibrarySnapshot, jobs: [BackgroundJobManager.Snapshot], now: Date) -> IslandWorkSnapshot {
+    // Work page stays bounded; the explicit global OS snapshot must not silently lose threads after 20 rows.
+    nonisolated static func project(threads: [LiveThreadRecord], pending: Set<UUID>, running: Set<UUID>,
+                        bots: BotLibrarySnapshot, jobs: [BackgroundJobManager.Snapshot], now: Date,
+                        limit: Int? = 20) -> IslandWorkSnapshot {
         var items: [IslandWorkSnapshot.Item] = []
-        for thread in threads.prefix(2000) {
+        for thread in threads.prefix(limit == nil ? threads.count : 2000) {
             let since = thread.lastOutputAt ?? thread.updatedAt
             let kind: IslandWorkSnapshot.Kind?
             if pending.contains(thread.id) { kind = .awaitingApproval }
@@ -96,7 +97,7 @@ struct IslandWorkSnapshot {
                                target: .init(threadID: job.threadID, jobID: job.jobID), since: job.startedAt,
                                hint: failed ? "背景工作失敗（\(job.exitCode ?? 0)）" : String(job.lastLine.prefix(200))))
         }
-        return .ordered(items)
+        return .ordered(items, limit: limit)
     }
     static func read(model: ChatPageModel, includeLastLine: Bool = true) async -> IslandWorkSnapshot {
         if IslandWorkSnapshot.isWaitingFixture { return .waitingFixture }

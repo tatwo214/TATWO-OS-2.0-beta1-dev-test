@@ -39,14 +39,16 @@ enum ChatTypography {
 }
 
 enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
+    case tatwo
     case chat, cli, bot, browser
     /// W177：ChatGPT Space（TAP 的第一座 Tap；畫面在 TAP/ChatGPTSpace.swift）。
     case chatgpt
     case custom(String)
 
-    static let allCases: [Self] = [.chat, .cli, .bot, .browser, .chatgpt]
+    static let allCases: [Self] = [.tatwo, .chat, .cli, .bot, .browser, .chatgpt]
     var rawValue: String {
         switch self {
+        case .tatwo: "tatwo"
         case .chat: "Chat"
         case .cli: "CLI"
         case .bot: "Bot"
@@ -57,6 +59,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
     }
     init?(rawValue: String) {
         switch rawValue {
+        case "tatwo": self = .tatwo
         case "Chat": self = .chat
         case "CLI": self = .cli
         case "Bot": self = .bot
@@ -70,6 +73,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
         if case .custom(let id) = self { return SpaceWorkspaceController.shared.displayName(for: id) }
         // W170（使用者 2026-09-22）：Chat 分頁改名 Coder；存檔用的 rawValue 仍是 "Chat"，舊設定不受影響。
         if case .chat = self { return "Coder" }
+        if case .tatwo = self { return "TATWO" }
         return rawValue
     }
 
@@ -94,6 +98,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
     var symbol: String {
         switch self {
+        case .tatwo: "sparkles"
         case .chat: "bubble.left.and.bubble.right"
         case .cli: "terminal"
         case .bot: "person.2"
@@ -105,6 +110,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
 
     var commandMode: TatwoChatCommandMode {
         switch self {
+        case .tatwo: .chat
         case .chat: .chat
         case .cli: .cli
         // Gen-4 展示面沒有命令面；映射 .chat 僅為型別完備，bot 模式下 composer 不掛接。
@@ -115,6 +121,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
 
     var subtitle: String {
         switch self {
+        case .tatwo: "你的 TATWO 助理"
         case .chat: "互動續聊"
         case .cli: "唯讀終端"
         case .bot: "bot 展示"

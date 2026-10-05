@@ -1,27 +1,19 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { verifyFixture, createSandbox, mockEnvironmentGuard } from "./helpers/model-gateway-historical-fixture.mjs";
 
-const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
-const candidateRoot = path.join(
-  repoRoot,
-  "candidates",
-  "model-gateway-continuation-20260803-v1",
-);
+// No live fallback: explicit private fixture, both hashes verified before any child.
+const candidateRoot = verifyFixture();
 const serverPath = path.join(candidateRoot, "server.js");
-const fixtureRoot = fs.mkdtempSync(
+const fixtureRoot = fs.realpathSync(fs.mkdtempSync(
   path.join(os.tmpdir(), `tatwo-model-gateway-continuation-${process.pid}-`),
-);
+));
 const claudeCapturePath = path.join(fixtureRoot, "claude-capture.json");
 const grokCapturePath = path.join(fixtureRoot, "grok-capture.json");
 const mockClaudePath = path.join(fixtureRoot, "mock-claude.cjs");
@@ -29,15 +21,17 @@ const mockGrokPath = path.join(fixtureRoot, "mock-grok.cjs");
 
 fs.writeFileSync(
   mockClaudePath,
-  `#!/usr/bin/env node
+  `#!/usr/bin/env -S node --openssl-config=/dev/null
 "use strict";
 const fs = require("node:fs");
+${mockEnvironmentGuard(fixtureRoot)}
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", () => {
   fs.writeFileSync(${JSON.stringify(claudeCapturePath)}, JSON.stringify({
     argv: process.argv.slice(2),
     stdin: Buffer.concat(chunks).toString("utf8"),
+    scenario: process.env.MOCK_CLAUDE_SCENARIO || "exact_text",
   }));
   const scenario = process.env.MOCK_CLAUDE_SCENARIO || "exact_text";
   const exactStart = {
@@ -147,9 +141,10 @@ fs.chmodSync(mockClaudePath, 0o700);
 
 fs.writeFileSync(
   mockGrokPath,
-  `#!/usr/bin/env node
+  `#!/usr/bin/env -S node --openssl-config=/dev/null
 "use strict";
 const fs = require("node:fs");
+${mockEnvironmentGuard(fixtureRoot)}
 const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk));
 process.stdin.on("end", () => {
@@ -180,6 +175,8 @@ process.stdin.on("end", () => {
 );
 fs.chmodSync(mockGrokPath, 0o700);
 
+const sandbox = createSandbox(fixtureRoot, candidateRoot, mockClaudePath, mockGrokPath);
+
 async function unusedPort() {
   const server = http.createServer();
   await new Promise((resolve, reject) => {
@@ -192,36 +189,17 @@ async function unusedPort() {
 }
 
 async function startGateway(extraEnv = {}) {
+  assert.ok(fs.existsSync(candidateRoot), `gateway candidate directory is missing: ${candidateRoot}`);
+  assert.ok(fs.statSync(candidateRoot).isDirectory(), "gateway cwd must be a directory");
+  assert.ok(fs.existsSync(serverPath), `gateway entrypoint is missing: ${serverPath}`);
   const port = await unusedPort();
-  const child = spawn(process.execPath, [serverPath], {
-    cwd: candidateRoot,
-    env: {
-      ...process.env,
-      MODEL_GATEWAY_HOST: "127.0.0.1",
-      MODEL_GATEWAY_PORT: String(port),
-      TATWO_OS_CONTEXT: "0",
-      GATEWAY_CONTEXT_GUARD: "0",
-      GATEWAY_HEARTBEAT_MS: "50",
-      CLAUDE_TIMEOUT_MS: "5000",
-      GROK_TIMEOUT_MS: "5000",
-      CLAUDE_COMMAND: mockClaudePath,
-      GROK_COMMAND: mockGrokPath,
-      GROK_USE_ISOLATED_HOME: "0",
-      GROK_MOCK_SESSION_STATE_JSON: JSON.stringify({
-        session_id_sha256: "mock-grok-session-sha256",
-        summary_session_id_matches: true,
-        request_id_consistent: true,
-        summary_current_model_id: "grok-4.6",
-        turn_started_model_id: "grok-4.6",
-        turn_ended_outcome: "success",
-        turn_number: 1,
-      }),
-      ...extraEnv,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  assert.deepEqual(Object.keys(extraEnv).filter((key) => key !== "MOCK_CLAUDE_SCENARIO"), [],
+    "fixture only accepts a mock scenario, never arbitrary child env");
+  const child = sandbox.launch([serverPath], port, extraEnv.MOCK_CLAUDE_SCENARIO);
   let stdout = "";
   let stderr = "";
+  let spawnError;
+  child.once("error", (error) => { spawnError = error; });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   child.stdout.on("data", (chunk) => { stdout += chunk; });
@@ -230,7 +208,8 @@ async function startGateway(extraEnv = {}) {
   const baseURL = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
+    if (spawnError) throw spawnError;
+    if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `gateway exited before ready: code=${child.exitCode}\nstdout=${stdout}\nstderr=${stderr}`,
       );
@@ -422,6 +401,9 @@ test("focused candidate route boundaries", async (t) => {
       });
       assert.equal(result.status, 200, gateway.logs().stderr);
       const body = JSON.parse(result.text);
+      const capture = JSON.parse(fs.readFileSync(claudeCapturePath, "utf8"));
+      assert.equal(capture.scenario, "raw_tool_without_schema",
+        "a failed mock spawn must not masquerade as raw-tool rejection");
       assert.equal(body.degraded, true);
       assert.equal(body.output_text.includes('"tool_calls"'), false);
       assert.match(body.output_text, /gateway-notice/);

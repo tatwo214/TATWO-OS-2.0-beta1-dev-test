@@ -14,7 +14,7 @@ test('W57e only map-derived browser shortcuts, ordered settings and recording UI
     assert.doesNotMatch(read(b+file), /\.keyboardShortcut\("(?:w|l|r|\[|\]|f|\+|=|-|[0-9]|t)"/);
   }
   const settings = read('App/Sources/Tatwo2/Shell/ChatPageSettings.swift');
-  assert.match(settings, /browserSettingsCard\("Browser work space"\)[\s\S]*?browserSettingsCard\("快捷鍵"\) \{ BrowserShortcutsSettingsView\(\) \}[\s\S]*?browserSettingsCard\("Session 瀏覽器"\)/);
+  assert.match(settings, /browserSettingsCard\("Browser work space"\)[\s\S]*?browserSettingsCard\("快捷鍵"\) \{ BrowserShortcutsSettingsView\(\) \}[\s\S]*?browserSettingsCard\("對話瀏覽器"\)/);
   const ui = read(b+'BrowserShortcutsSettingsView.swift');
   for (const copy of ['已提供常用瀏覽器快捷鍵；可自訂或清除個別設定','全部還原預設','未設定','設定…','Delete 清除']) assert.ok(ui.includes(copy),copy);
   assert.match(ui, /BrowserAction\.allCases/);
@@ -24,9 +24,9 @@ test('W57e only map-derived browser shortcuts, ordered settings and recording UI
   const design = read(b+'BrowserWorkSpaceDesignView.swift');
   // PR #4：兩種 chrome 共用的動作清單搬到 BrowserWorkSpaceEmbeddedChrome.swift。
   assert.match(read(b+'BrowserWorkSpaceEmbeddedChrome.swift'), /Button\("搜尋分頁…", action: openTabSearch\)/);
-  assert.match(design, /case \.openImport: store\.requestImport\(\)/);
+  assert.match(design, /case \.openImport: sidebarStore\.requestImport\(\)/);
   assert.match(design, /func requestImport\(\) \{[\s\S]*?tatwo\.browser\.openImport/);
-  assert.match(read(b+'BrowserWorkSpaceEmbeddedChrome.swift'), /Button\(store\.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
+  assert.match(read(b+'BrowserWorkSpaceEmbeddedChrome.swift'), /Button\(sidebarStore\.focusMode \? "展開側欄" : "收合側欄", action: sidebarStore.toggleSidebar\)/);
   assert.match(ui, /firstResponder === self/);
   assert.doesNotMatch(ui, /addGlobalMonitor|addLocalMonitor/);
   assert.match(read(b+'BrowserDailyNavigationControls.swift'), /BrowserShortcutInvocation\(message: shortcutKind\)/);

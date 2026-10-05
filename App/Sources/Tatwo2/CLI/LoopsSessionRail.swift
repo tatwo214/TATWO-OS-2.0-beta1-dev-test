@@ -786,7 +786,7 @@ struct LoopsSessionRail: View {
             Image(systemName: "circle.hexagongrid")
                 .font(.system(size: 24, weight: .light))
                 .foregroundStyle(.secondary.opacity(0.7))
-            Text("尚無 loops session")
+            Text("尚無 loops 對話")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
             Text("點「新規劃」建立一條 Loops 工作。")

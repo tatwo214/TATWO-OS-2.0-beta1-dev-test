@@ -46,10 +46,8 @@ struct ChatHistoryMinimap: View {
 
     /// Fixed spacing — never compressed; overflow scrolls instead.
     private static let slot: CGFloat = 8
-    /// Same margin above and below the column inside the *visible* transcript area. The transcript runs
-    /// under the composer, so its bottom ~150pt is not visible and is reserved first (使用者：天地不對稱).
+    /// The parent already reserves the composer; center within the supplied transcript viewport.
     private static let verticalMargin: CGFloat = 56
-    private static let composerReserve: CGFloat = 150
     /// 使用者：整體歷史條縮小一點 — the column never grows taller than this; more ticks scroll.
     private static let maxColumnHeight: CGFloat = 360
     private static let columnWidth: CGFloat = 22
@@ -60,7 +58,7 @@ struct ChatHistoryMinimap: View {
     var body: some View {
         if items.count >= 4 {
             GeometryReader { geo in
-                let available = min(max(geo.size.height - Self.composerReserve - Self.verticalMargin * 2, Self.slot * 4),
+                let available = min(max(geo.size.height - Self.verticalMargin * 2, Self.slot * 4),
                                     Self.maxColumnHeight)
                 let contentHeight = CGFloat(items.count) * Self.slot
                 let visible = min(contentHeight, available)
@@ -71,7 +69,6 @@ struct ChatHistoryMinimap: View {
                     .scrollDisabled(contentHeight <= available)
                     .frame(width: Self.laneWidth, height: visible)
                     .frame(maxHeight: .infinity, alignment: .center)
-                    .padding(.bottom, Self.composerReserve)
                     .onAppear {
                         if let last = items.last?.id { reader.scrollTo(last, anchor: .bottom) }
                         // headless 自驗：TATWO_ULTRAWORK_MINIMAP_HOVER=<index> 強制 hover 某格看預覽筐位置。

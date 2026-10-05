@@ -357,10 +357,12 @@ final class TatwoIslandShellController {
             contentRect: .zero,
             viewController: hostingController
         )
-        // 非 key panel 的 Esc 先取消目前卡片；空白 Island 才交回既有關窗路徑。
+        // Esc 只處理 Island 自己的鍵盤焦點；任何文字輸入的 Esc 都交回輸入框。
         localEvents = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
             guard let self, self.state.isExpanded else { return event }
             if event.type == .keyDown {
+                guard event.window === self.panel, self.panel.isKeyWindow,
+                      !(self.panel.firstResponder is NSTextInputClient) else { return event }
                 if event.keyCode == 53 {
                     if let request = IslandNotice.shared.current {
                         IslandNotice.shared.resolve(.cancel, id: request.id)
@@ -496,6 +498,8 @@ final class TatwoIslandShellPanel: NSPanel {
         contentViewController = viewController
         contentView?.wantsLayer = true
         contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        // W184 AB（GPT-6 第三輪 #6）：fable5 把整個 App 固定成淺色；Island 照舊跟著系統的明暗（玻璃、字）。
+        TatwoSystemAppearance.follow(self)
     }
 }
 
@@ -845,5 +849,39 @@ private struct TatwoIslandNotchBlackPaint: View {
                     .frame(width: coreWidth, height: coreHeight)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+/// W184 AB（GPT-6 第三輪 #6）：跟著「系統」明暗（不跟 App 的 NSApp.appearance）的外觀。放在 Island 這個檔（唯一用它的地方）：
+/// tests/island-hover.test.mjs 單獨編譯 TatwoIslandShell.swift 也編得過。fable5 把整個 App 固定成淺色，
+/// Island 這種本來就跟著系統明暗的元件照舊跟系統：視窗的 appearance 直接設成系統現在的樣子，系統切換時一起換。
+@MainActor
+enum TatwoSystemAppearance {
+    /// 系統現在是不是深色（全域的 AppleInterfaceStyle；自測可以換）。
+    static var isDark: @MainActor () -> Bool = { UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark" }
+    static var appearance: NSAppearance? { NSAppearance(named: isDark() ? .darkAqua : .aqua) }
+    private static let followers = NSHashTable<NSWindow>.weakObjects()
+    private static var observer: NSObjectProtocol?
+
+    /// 這個視窗跟著系統的明暗。
+    static func follow(_ window: NSWindow) {
+        followers.add(window)
+        window.appearance = appearance
+        guard observer == nil else { return }
+        observer = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"), object: nil, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                refresh()
+                // 全域偏好有時晚一點才同步到這個行程：再看一次。
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { MainActor.assumeIsolated { refresh() } }
+            }
+        }
+    }
+
+    /// 照系統現在的樣子重設所有跟著系統的視窗（自測換了 isDark 也叫這個）。
+    static func refresh() {
+        let current = appearance
+        for window in followers.allObjects where window.appearance?.name != current?.name { window.appearance = current }
     }
 }

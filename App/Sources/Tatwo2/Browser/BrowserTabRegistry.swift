@@ -69,7 +69,7 @@ struct BrowserLaneSnapshot: Codable, Equatable {
     var openURLs: [URL] { laneState.lanes.compactMap { laneURLs[$0.id.rawValue] } }
 }
 
-struct OpenBrowserSessionSummary: Identifiable {
+struct OpenBrowserSessionSummary: Identifiable, Equatable {
     let sessionID: String
     let threadTitle: String
     let projectName: String
@@ -109,34 +109,117 @@ final class BrowserTabRegistry: ObservableObject {
         let folderID: UUID?
         var bookmarkID: UUID? = nil
         var isAgentTab: Bool? = nil
+        var snapshot: BrowserTab? = nil
     }
     @Published private(set) var recentlyClosed: [ClosedTab] = []
-    private func rememberClosed(_ tab: BrowserTab) {
-        if case .bot = tab.owner { return }
-        recentlyClosed.append(ClosedTab(url: tab.url, title: tab.title, owner: tab.owner,
-                                       folderID: tab.folderID, bookmarkID: tab.bookmarkID, isAgentTab: tab.isAgentTab))
-        recentlyClosed = Array(recentlyClosed.suffix(10))
+    /// Batch undo keeps its own records beyond the ten-entry single-tab history.
+    @Published private(set) var closedWorkSpaceBatches: [UUID: (records: [ClosedTab], selectedID: UUID?)] = [:]
+    var workSpaceTabUsage: (UUID) -> (agentControlled: Bool, isHuman: Bool, webMCPInUse: Bool) = { _ in (false, true, false) }
+    func workSpaceCloseCandidates(spaceID: UUID) -> [BrowserTab] {
+        tabs(ownedBy: .workSpace(spaceID: spaceID)).filter {
+            let usage = workSpaceTabUsage($0.id)
+            return $0.isAgentTab != true && !usage.agentControlled && usage.isHuman && !usage.webMCPInUse
+        }
+    }
+    func closeWorkSpaceTabs(spaceID: UUID, selectedID: UUID?) -> (noticeTitle: String, noticeDetail: String) {
+        let closing = workSpaceCloseCandidates(spaceID: spaceID)
+        let retained = tabs(ownedBy: .workSpace(spaceID: spaceID)).count - closing.count
+        let records = rememberClosed(closing)
+        if !closing.isEmpty {
+            let ids = Set(closing.map(\.id))
+            tabs.removeAll { ids.contains($0.id) }
+            loadingTabIDs.subtract(ids)
+            closedWorkSpaceBatches[spaceID] = records.isEmpty ? nil : (records, selectedID)
+            changed()
+        } else { changes.send() }
+        let detail = records.isEmpty ? "" : "右鍵可全部復原"
+        return ("已關閉 \(closing.count) 個分頁", [detail, retained > 0 ? "\(retained) 個 AI 正在用的分頁保留" : ""].filter { !$0.isEmpty }.joined(separator: "・"))
+    }
+    func reopenWorkSpaceBatch(spaceID: UUID) -> UUID? {
+        guard let batch = closedWorkSpaceBatches[spaceID] else { return nil }
+        var next = tabs
+        var selected = batch.selectedID.flatMap { id in next.first { $0.id == id }?.id }
+        let records = batch.records.filter { accepts($0.owner) }
+        for record in records {
+            if let tab = restoreClosedTab(record, into: &next) {
+                updateSessionSelection(tab)
+                if record.snapshot?.id == batch.selectedID { selected = tab.id }
+            }
+        }
+        if let index = next.firstIndex(where: { $0.id == selected }) {
+            next[index].lastActiveAt = Date()
+            updateSessionSelection(next[index])
+        }
+        consumeClosed(records, batchID: spaceID)
+        tabs = next
+        changed()
+        return selected
     }
     @discardableResult
-    func reopenClosedTab(owner: BrowserTabOwner? = nil) -> BrowserTab? {
-        guard let index = recentlyClosed.lastIndex(where: { (owner == nil || $0.owner == owner) && accepts($0.owner) }) else { return nil }
-        let record = recentlyClosed.remove(at: index)
-        let tab: BrowserTab
-        let existingBookmarkTab = record.bookmarkID.flatMap { id in
-            tabs.first { $0.owner == record.owner && $0.bookmarkID == id }
+    private func rememberClosed(_ closing: [BrowserTab]) -> [ClosedTab] {
+        let records = closing.compactMap { tab -> ClosedTab? in
+            if case .bot = tab.owner { return nil }
+            guard !sensitiveTabIDs.contains(tab.id) else { return nil }
+            return ClosedTab(url: tab.url, title: tab.title, owner: tab.owner,
+                             folderID: tab.folderID, bookmarkID: tab.bookmarkID, isAgentTab: tab.isAgentTab, snapshot: tab)
         }
-        if let bookmarkID = record.bookmarkID, let folderID = record.folderID,
-           let bound = openBookmark(bookmarkID, folderID: folderID, owner: record.owner) {
-            tab = bound
-            if existingBookmarkTab == nil {
-                update(bound.id, url: record.url, title: record.title, favicon: nil)
-            }
-        } else {
-            tab = openTab(owner: record.owner, url: record.url, title: record.title, folderID: record.folderID,
-                          isAgentTab: record.isAgentTab == true)
+        if !records.isEmpty { recentlyClosed = Array((recentlyClosed + records).suffix(10)) }
+        return records
+    }
+    private func consumeClosed(_ records: [ClosedTab], batchID: UUID? = nil) {
+        recentlyClosed.removeAll { records.contains($0) }
+        var batches = closedWorkSpaceBatches
+        if let batchID { batches.removeValue(forKey: batchID) }
+        for key in batches.keys { batches[key]?.records.removeAll { records.contains($0) } }
+        closedWorkSpaceBatches = batches
+    }
+    @discardableResult
+    func reopenClosedTab(owner: BrowserTabOwner? = nil, record supplied: ClosedTab? = nil) -> BrowserTab? {
+        guard let record = supplied ?? recentlyClosed.last(where: { (owner == nil || $0.owner == owner) && accepts($0.owner) }) else { return nil }
+        var next = tabs
+        guard let tab = restoreClosedTab(record, into: &next) else { return nil }
+        consumeClosed([record])
+        tabs = next
+        updateSessionSelection(tab)
+        changed()
+        return tab
+    }
+    /// Single-tab and batch undo share identity rules; publish the resulting array once.
+    private func restoreClosedTab(_ record: ClosedTab, into next: inout [BrowserTab]) -> BrowserTab? {
+        guard accepts(record.owner) else { return nil }
+        let now = Date()
+        if let index = next.firstIndex(where: {
+            ($0.owner == record.owner && record.bookmarkID != nil && $0.bookmarkID == record.bookmarkID)
+                || (record.snapshot?.favoriteID != nil && $0.favoriteID == record.snapshot?.favoriteID)
+        }) {
+            next[index].lastActiveAt = now
+            return next[index]
         }
-        select(tab.id)
-        return tabs.first { $0.id == tab.id }
+        let favorite = record.snapshot?.favoriteID.flatMap { id in favorites.first { $0.id == id } }
+        if let favorite, let index = Self.unboundFavoriteTab(favorite, in: next, preferring: record.owner) {
+            next[index].favoriteID = favorite.id
+            next[index].url = record.url; next[index].title = record.title
+            next[index].faviconPNG = record.snapshot?.faviconPNG
+            next[index].isPinned = record.snapshot?.isPinned == true
+            next[index].lastActiveAt = now
+            return next[index]
+        }
+        let bookmark = record.bookmarkID.flatMap { id -> UUID? in
+            guard let folder = record.folderID, let (space, index) = folderLocation(folder),
+                  record.owner == .workSpace(spaceID: spaces[space].id),
+                  spaces[space].folders[index].bookmarks.contains(where: { $0.id == id }) else { return nil }
+            return id
+        }
+        let tab = BrowserTab(id: UUID(), owner: record.owner, url: record.url, title: record.title,
+            faviconPNG: record.snapshot?.faviconPNG, isPinned: record.snapshot?.isPinned == true,
+            isSleeping: true, lastActiveAt: now, createdAt: now, folderID: favorite == nil ? record.folderID : nil,
+            bookmarkID: favorite == nil ? bookmark : nil, favoriteID: favorite?.id,
+            isAgentTab: favorite == nil && bookmark == nil && record.isAgentTab == true ? true : nil)
+        if case let .chatSession(sessionID) = tab.owner {
+            laneIdentities[tab.id] = LaneIdentity(sessionID: sessionID, rawID: tab.id.uuidString, binding: .unboundReadOnly)
+        }
+        next.append(tab)
+        return tab
     }
     @Published private(set) var persistenceError: String?
     /// Post-mutation event: projections never read the old value from @Published's willSet.
@@ -194,6 +277,18 @@ final class BrowserTabRegistry: ObservableObject {
     private var pendingSave: Task<Void, Never>?
     private var writable = true
     private var terminationObservation: AnyCancellable?
+    /// W183 R3b 審查：敏感分頁（一次性的授權網址，例如 Cloudflare 授權頁；網址拿到的人可以把自己的帳號塞進來）：
+    /// 只在記憶體——不進 tabs.json、最近關閉、空間封存；流程結束時由 closeSensitiveTabsNotification 關掉。
+    private var sensitiveTabIDs: Set<UUID> = [] {
+        // W183 R5b 審查（GPT-6）：敏感分頁開著時 Computer Use 不准以 TATWO 自己為目標（BrowserSensitivePageGate 讀這個）。
+        didSet {
+            if sensitiveTabIDs.isEmpty { Self.withSensitiveTabs.remove(ObjectIdentifier(self)) } else { Self.withSensitiveTabs.insert(ObjectIdentifier(self)) }
+        }
+    }
+    /// W183 R5b 審查：現在有敏感分頁的分頁清單（任何一份）。
+    private(set) static var withSensitiveTabs: Set<ObjectIdentifier> = []
+    private var sensitiveObservation: AnyCancellable?
+    static let closeSensitiveTabsNotification = Notification.Name("tatwo.browser.closeSensitiveTabs")
 
     /// nil storage is deliberately ephemeral (fixtures/previews). No production data is touched.
     /// The old implementation was memory-only. legacyURL accepts an explicitly supplied export;
@@ -265,6 +360,25 @@ final class BrowserTabRegistry: ObservableObject {
                 guard let self else { return }
                 do { try self.flush() } catch { self.persistenceError = error.localizedDescription }
             }
+        sensitiveObservation = NotificationCenter.default.publisher(for: Self.closeSensitiveTabsNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.closeSensitiveTabs() }
+    }
+
+    /// W183 R3b：這個分頁是不是敏感分頁（只在記憶體）。
+    func isSensitive(_ id: UUID) -> Bool { sensitiveTabIDs.contains(id) }
+
+    /// W183 R3b：授權流程結束——敏感分頁全部關掉（不記進最近關閉）。
+    func closeSensitiveTabs() {
+        guard !sensitiveTabIDs.isEmpty else { return }
+        let ids = sensitiveTabIDs
+        sensitiveTabIDs.removeAll()
+        guard tabs.contains(where: { ids.contains($0.id) }) else { return }
+        let owners = tabs.filter { ids.contains($0.id) }.map(\.owner)
+        tabs.removeAll { ids.contains($0.id) }
+        for id in ids { loadingTabIDs.remove(id) }
+        for owner in owners { removeEmptySession(owner) }
+        changed()
     }
 
     private static var chatInspectorRegistries: [ObjectIdentifier: BrowserTabRegistry] = [:]
@@ -368,7 +482,7 @@ final class BrowserTabRegistry: ObservableObject {
     }
     @discardableResult
     func openTab(owner: BrowserTabOwner, url: URL? = nil, title: String = "新分頁", folderID: UUID? = nil,
-                 isAgentTab: Bool = false, bookmarkID: UUID? = nil) -> BrowserTab {
+                 isAgentTab: Bool = false, bookmarkID: UUID? = nil, sensitive: Bool = false) -> BrowserTab {
         let now = Date()
         let tab = BrowserTab(id: UUID(), owner: owner, url: url, title: title, isPinned: false,
                              isSleeping: true, lastActiveAt: now, createdAt: now, folderID: folderID,
@@ -377,6 +491,7 @@ final class BrowserTabRegistry: ObservableObject {
         if case let .chatSession(sessionID) = owner {
             laneIdentities[tab.id] = LaneIdentity(sessionID: sessionID, rawID: tab.id.uuidString, binding: .unboundReadOnly)
         }
+        if sensitive { sensitiveTabIDs.insert(tab.id) }   // W183 R3b
         tabs.append(tab)
         changed()
         return tab
@@ -420,6 +535,11 @@ final class BrowserTabRegistry: ObservableObject {
 
     func select(_ id: UUID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
+        updateSessionSelection(tab)
+        touch(id)
+    }
+    private func updateSessionSelection(_ tab: BrowserTab) {
+        let id = tab.id
         if case let .chatSession(sessionID) = tab.owner {
             var state = sessions[sessionID] ?? SessionState(schemaVersion: 1, maximumLaneCount: 8,
                 selectedLaneID: nil, updatedAt: Date())
@@ -427,19 +547,20 @@ final class BrowserTabRegistry: ObservableObject {
             state.updatedAt = Date()
             sessions[sessionID] = state
         }
-        touch(id)
     }
 
     func close(_ id: UUID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        rememberClosed(tab)
+        rememberClosed([tab])
         tabs.removeAll { $0.id == id }
         loadingTabIDs.remove(id)
         removeEmptySession(tab.owner)
         changed()
     }
     func closeAll(ownedBy owner: BrowserTabOwner) {
-        for tab in tabs(ownedBy: owner) { rememberClosed(tab); loadingTabIDs.remove(tab.id) }
+        let closing = tabs(ownedBy: owner)
+        rememberClosed(closing)
+        loadingTabIDs.subtract(closing.map(\.id))
         tabs.removeAll { $0.owner == owner }
         if case let .chatSession(id) = owner { sessions.removeValue(forKey: id) }
         changed()
@@ -556,7 +677,6 @@ final class BrowserTabRegistry: ObservableObject {
     @discardableResult
     func openFavorite(_ id: UUID, owner: BrowserTabOwner) -> BrowserTab? {
         guard let favorite = favorites.first(where: { $0.id == id }) else { return nil }
-        let key = Self.favoriteURLKey(favorite.url)
         // Prefer the current space, but do not duplicate a tab already open in another owner.
         // 先找已經屬於這個珍藏的分頁（就算它已經導覽到別的網址，仍然是這個珍藏的分頁）。
         let bound = tabs.filter { $0.favoriteID == id }
@@ -564,20 +684,26 @@ final class BrowserTabRegistry: ObservableObject {
             select(existing.id)
             return existing
         }
-        let matching = tabs.filter {
-            if case .bot = $0.owner { return false } // Bot rows have no selectable human surface.
-            return $0.bookmarkID == nil && $0.favoriteID == nil && $0.url.map(Self.favoriteURLKey) == key
-        }
-        if let existing = matching.first(where: { $0.owner == owner }) ?? matching.first {
-            edit(existing.id) { $0.favoriteID = id }   // 已經開著同一個網址：收進珍藏，不再列在下面
-            select(existing.id)
-            return tabs.first { $0.id == existing.id }
+        if let index = Self.unboundFavoriteTab(favorite, in: tabs, preferring: owner) {
+            let existing = tabs[index].id
+            edit(existing) { $0.favoriteID = id }   // 已經開著同一個網址：收進珍藏，不再列在下面
+            select(existing)
+            return tabs.first { $0.id == existing }
         }
         guard accepts(owner) else { return nil }
         let tab = openTab(owner: owner, url: favorite.url, title: favorite.title)
         edit(tab.id) { $0.favoriteID = id }
         update(tab.id, url: favorite.url, title: favorite.title, favicon: favorite.faviconPNG)
         return tabs.first { $0.id == tab.id }
+    }
+    /// Opening and undo both adopt an unbound human tab already showing the favorite's URL.
+    private static func unboundFavoriteTab(_ favorite: BrowserFavorite, in tabs: [BrowserTab], preferring owner: BrowserTabOwner) -> Int? {
+        let key = favoriteURLKey(favorite.url)
+        let matching = tabs.indices.filter {
+            if case .bot = tabs[$0].owner { return false } // Bot rows have no selectable human surface.
+            return tabs[$0].bookmarkID == nil && tabs[$0].favoriteID == nil && tabs[$0].url.map(favoriteURLKey) == key
+        }
+        return matching.first { tabs[$0].owner == owner } ?? matching.first
     }
     private func edit(_ id: UUID, _ body: (inout BrowserTab) -> Void) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -604,7 +730,7 @@ final class BrowserTabRegistry: ObservableObject {
         guard let space = spaces.first(where: { $0.id == id && !$0.isSessionSpace }),
               spaces.filter({ !$0.isSessionSpace }).count > 1 else { return nil }   // 最後一個一般空間不給刪
         struct Archive: Encodable { let archivedAt: Date; let space: BrowserSpace; let openTabs: [String] }
-        let open = tabs(ownedBy: .workSpace(spaceID: id)).compactMap { $0.url?.absoluteString }
+        let open = tabs(ownedBy: .workSpace(spaceID: id)).filter { !sensitiveTabIDs.contains($0.id) }.compactMap { $0.url?.absoluteString }
         var destination: URL?
         if let storageURL {
             let folder = storageURL.deletingLastPathComponent().appendingPathComponent("archived-spaces", isDirectory: true)
@@ -624,6 +750,7 @@ final class BrowserTabRegistry: ObservableObject {
         // With closingTabs=false preserve the space until its tabs have been moved by the caller.
         guard closingTabs || tabs(ownedBy: .workSpace(spaceID: id)).isEmpty else { return }
         tabs.removeAll { $0.owner == .workSpace(spaceID: id) }
+        closedWorkSpaceBatches[id] = nil
         spaces.removeAll { $0.id == id }; changed()
     }
     @discardableResult
@@ -768,7 +895,8 @@ final class BrowserTabRegistry: ObservableObject {
     }
     private func savePayload() -> SavePayload {
         var favicons: [(String, Data)] = []
-        let stored = tabs.map { tab -> StoredTab in
+        // W183 R3b：敏感分頁（一次性的授權網址）只在記憶體，不寫進 tabs.json。
+        let stored = tabs.filter { !sensitiveTabIDs.contains($0.id) }.map { tab -> StoredTab in
             var copy = tab
             copy.faviconPNG = nil
             let filename = tab.faviconPNG.map { _ in "\(tab.id.uuidString).png" }
@@ -784,7 +912,7 @@ final class BrowserTabRegistry: ObservableObject {
         }
         let document = Document(spaces: spaces, tabs: stored, laneIdentities: laneIdentities, sessions: sessions,
                                 retiredLanes: retiredLanes, legacyImported: legacyImported, bookmarksImported: bookmarksImported, storedLaneIDs: storedLaneIDs,
-                                codecNoticeTabIDs: codecNoticeTabIDs.intersection(Set(tabs.map(\.id))),
+                                codecNoticeTabIDs: codecNoticeTabIDs.intersection(Set(stored.map(\.tab.id))),
                                 dismissedCodecHosts: dismissedCodecHosts, favorites: storedFavorites)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         // Encoding a value type cannot fail here except for programmer error; surface it as empty data.

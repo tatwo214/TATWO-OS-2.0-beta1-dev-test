@@ -59,7 +59,7 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
 
   public var menuSubtitle: String {
     let image = supportsImageInput ? "image ok" : "text-first"
-    return "\(family) · \(contextWindowLabel) · \(image) · \(pluginFit)"
+    return "\(family) · \(contextWindowLabel) · \(image) · \(pluginFit)" + (notes.first?.hasPrefix("備援表") == true ? " · 備援表" : "")
   }
 
   public var supportsNativeReasoningControl: Bool {
@@ -98,6 +98,8 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       return .none
     case .codexExec:
       return .codexExecImage
+    case .chatgptTap:
+      return .none
     case .claudeCLI:
       return .claudeReadRescue
     case .grokCLI:
@@ -114,8 +116,36 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
   public func nativeReasoningEffort(for requested: TatwoCodexReasoningEffort) -> TatwoCodexReasoningEffort? {
     guard supportsNativeReasoningControl else { return nil }
     if allowedEfforts.contains(requested) { return requested }
+    if requested == .max || requested == .ultra {
+      return TatwoCodexReasoningEffort.allCases.last { allowedEfforts.contains($0) }
+    }
     if allowedEfforts.contains(defaultEffort) { return defaultEffort }
     return allowedEfforts.first
+  }
+
+  /// 只新增 max / ultra 的能力防線；舊值與未指定值保持既有行為。
+  var hasEngineCapabilityReport: Bool {
+    notes.first?.hasPrefix("app-server model/list") == true || notes.first?.hasPrefix("Agent SDK") == true
+  }
+
+  public func compatibleReasoningValue(_ raw: String?) -> String? {
+    if hasEngineCapabilityReport {
+      guard let raw, let requested = TatwoCodexReasoningEffort(rawValue: raw) else { return nil }
+      return nativeReasoningEffort(for: requested)?.codexRawValue
+    }
+    guard let raw, let requested = TatwoCodexReasoningEffort(rawValue: raw),
+          requested == .max || requested == .ultra else { return raw }
+    return nativeReasoningEffort(for: requested)?.codexRawValue
+  }
+
+  public func reasoningDowngradeNotice(for raw: String?) -> String? {
+    guard let raw, let requested = TatwoCodexReasoningEffort(rawValue: raw),
+          hasEngineCapabilityReport || requested == .max || requested == .ultra,
+          !allowedEfforts.contains(requested) else { return nil }
+    if let fallback = nativeReasoningEffort(for: requested) {
+      return "\(displayName) 不支援 \(requested.displayName)，已改用\(fallback.displayName)。"
+    }
+    return "\(displayName) 不支援 \(requested.displayName)，推理強度照引擎預設。"
   }
 
   public func nativeSpeedTier(for requested: TatwoModelSpeedTier?) -> TatwoModelSpeedTier? {
@@ -127,6 +157,68 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
 
   public static let defaults: [TatwoChatRouteProfile] = [
     .init(
+      id: "gpt-6.1-sol",
+      displayName: "GPT-6.1 Sol",
+      family: "Codex/GPT",
+      engine: .codex,
+      modelArgument: "gpt-6.1-sol",
+      contextWindowLabel: "272k",
+      supportsImageInput: true,
+      pluginFit: "最新主力 host / tools",
+      sessionRisk: "低",
+      defaultEffort: .low,
+      // Codex CLI 0.160.0 內建 supported_reasoning_levels。
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
+      defaultSpeedTier: .fast,
+      allowedSpeedTiers: [.fast, .standard],
+      notes: ["Codex 0.160 最新 coding / everyday work 主力；Coder 新對話沿用 medium"]),
+    .init(   // 2026-09-05 GPT-6 發布；打包的 codex 0.153.2 的 model/list 已列 gpt-6-astra
+      id: "gpt-6-astra",
+      displayName: "GPT-6",
+      family: "Codex/GPT",
+      engine: .codex,
+      modelArgument: "gpt-6-astra",
+      contextWindowLabel: "長 context",
+      supportsImageInput: true,
+      pluginFit: "最佳 host / tools",
+      sessionRisk: "低",
+      defaultEffort: .low,
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
+      defaultSpeedTier: .fast,
+      allowedSpeedTiers: [.fast, .standard],
+      notes: ["GPT-6（codex 模型名 gpt-6-astra）"]),
+    .init(
+      id: "gpt-6-sol",
+      displayName: "GPT-6 Sol",
+      family: "Codex/GPT",
+      engine: .codex,
+      modelArgument: "gpt-6-sol",
+      contextWindowLabel: "長 context",
+      supportsImageInput: true,
+      pluginFit: "上一代主力 host / tools",
+      sessionRisk: "低",
+      defaultEffort: .medium,
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
+      defaultSpeedTier: .fast,
+      allowedSpeedTiers: [.fast, .standard],
+      notes: ["Codex 0.160 previous generation workhorse model"]),
+    .init(
+      id: "gpt-6-luna",
+      displayName: "GPT-6 Luna",
+      family: "Codex/GPT",
+      engine: .codex,
+      modelArgument: "gpt-6-luna",
+      contextWindowLabel: "長 context",
+      supportsImageInput: true,
+      pluginFit: "省額度 / 一般 Chat",
+      sessionRisk: "低",
+      defaultEffort: .medium,
+      // Codex CLI 0.160.0 的 Luna 有 max，但沒有 ultra。
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max],
+      defaultSpeedTier: .fast,
+      allowedSpeedTiers: [.fast, .standard],
+      notes: ["GPT-6 系列省額度路線"]),
+    .init(
       id: "gpt-5.6-sol",
       displayName: "GPT-5.6 Sol",
       family: "Codex/GPT",
@@ -136,8 +228,8 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       supportsImageInput: true,
       pluginFit: "現代主力 host / tools",
       sessionRisk: "中：新 route 需 smoke",
-      defaultEffort: .high,
-      allowedEfforts: [.low, .medium, .high, .xhigh],
+      defaultEffort: .low,
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
       defaultSpeedTier: .fast,
       allowedSpeedTiers: [.fast, .standard],
       notes: ["GPT-5.6 現代主力；本機 gateway catalog 與 Codex session 已查證", "live catalog 宣告 text + image"]),
@@ -151,8 +243,8 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       supportsImageInput: true,
       pluginFit: "審查 / 驗證",
       sessionRisk: "中：需 active Codex session",
-      defaultEffort: .high,
-      allowedEfforts: [.low, .medium, .high, .xhigh],
+      defaultEffort: .medium,
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
       defaultSpeedTier: .fast,
       allowedSpeedTiers: [.fast, .standard],
       notes: ["OS 以 Codex exec 經單一 model_gateway 調度；保留 active Codex Authorization", "live catalog 宣告 text + image"]),
@@ -166,26 +258,11 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       supportsImageInput: true,
       pluginFit: "一般 Chat / 替代路線",
       sessionRisk: "中：需 active Codex session",
-      defaultEffort: .high,
-      allowedEfforts: [.low, .medium, .high, .xhigh],
+      defaultEffort: .medium,
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max],
       defaultSpeedTier: .fast,
       allowedSpeedTiers: [.fast, .standard],
       notes: ["OS 以 Codex exec 經單一 model_gateway 調度；保留 active Codex Authorization", "live catalog 宣告 text + image"]),
-    .init(   // 2026-09-05 GPT-6 發布；打包的 codex 0.153.2 的 model/list 已列 gpt-6-astra
-      id: "gpt-6-astra",
-      displayName: "GPT-6",
-      family: "Codex/GPT",
-      engine: .codex,
-      modelArgument: "gpt-6-astra",
-      contextWindowLabel: "長 context",
-      supportsImageInput: true,
-      pluginFit: "最佳 host / tools",
-      sessionRisk: "低",
-      defaultEffort: .medium,
-      allowedEfforts: [.low, .medium, .high, .xhigh],
-      defaultSpeedTier: .fast,
-      allowedSpeedTiers: [.fast, .standard],
-      notes: ["GPT-6（codex 模型名 gpt-6-astra）"]),
     .init(
       id: "grok-build",
       displayName: "Grok 4.7",
@@ -223,7 +300,7 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       engine: .claude,
       runtimeAdapter: .claudeCLI,
       canonicalModelSlug: "sonnet-5",
-      modelArgument: "sonnet-5",
+      modelArgument: "claude-sonnet-5",
       contextWindowLabel: "review",
       supportsImageInput: true,
       pluginFit: "Loops Supervisor",
@@ -257,17 +334,14 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       pluginFit: "diff review",
       sessionRisk: "低",
       defaultEffort: .medium,
-      allowedEfforts: [.low, .medium, .high, .xhigh],
+      allowedEfforts: [.low, .medium, .high, .xhigh, .max, .ultra],
       defaultSpeedTier: .fast,
       allowedSpeedTiers: [.fast, .standard],
       notes: ["review lane，不是獨立模型權威"]),
   ]
 
   private static func normalizedLookupKey(_ value: String) -> String {
-    value
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-      .filter { $0.isLetter || $0.isNumber }
+    ChatProviderModelIdentity.lookupKey(value)
   }
 
   /// 2026-09-23 使用者：「只留 GPT-5.6 以上、Opus 5.5、Sonnet 5、Fable 5.1、Grok 4.7 等最新的模型」。
@@ -281,9 +355,7 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
     "grok46": "grokbuild", "grok45": "grokbuild",
   ]
 
-  public static func resolve(_ id: String) -> TatwoChatRouteProfile {
-    let needle = normalizedLookupKey(id)
-    let compatibilityAliases: [String: String] = [
+  private static let compatibilityAliases: [String: String] = [
       "fable": "fable51",
       "sonnet": "sonnet5",
       "sonnet46": "sonnet5",
@@ -291,12 +363,21 @@ public struct TatwoChatRouteProfile: Codable, Sendable, Equatable, Identifiable,
       "claudesonnet5": "sonnet5",
       "opus": "opus55",
     ].merging(retiredReplacements) { current, _ in current }
-    let resolvedNeedle = compatibilityAliases[needle] ?? needle
-    if let profile = defaults.first(where: { profile in
-      [profile.id, profile.canonicalModelSlug, profile.modelArgument, profile.displayName, profile.family]
-        .compactMap { $0 }
-        .contains { normalizedLookupKey($0) == resolvedNeedle }
-    }) {
+
+  private static let aliasIndex: [String: TatwoChatRouteProfile] = {
+    var index: [String: TatwoChatRouteProfile] = [:]
+    for profile in defaults {
+      for value in [profile.id, profile.canonicalModelSlug, profile.modelArgument, profile.displayName, profile.family].compactMap({ $0 }) {
+        let key = normalizedLookupKey(value)
+        if index[key] == nil { index[key] = profile }
+      }
+    }
+    return index
+  }()
+
+  public static func resolve(_ id: String) -> TatwoChatRouteProfile {
+    let needle = normalizedLookupKey(id)
+    if let profile = aliasIndex[compatibilityAliases[needle] ?? needle] {
       return profile
     }
 

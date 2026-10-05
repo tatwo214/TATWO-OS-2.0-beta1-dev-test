@@ -111,8 +111,9 @@ function setup() {
   return {dir,archives};
 }
 function shell(code,fixture,extra={}) {
-  return spawnSync('/bin/bash',['-c',`set -eu\n${transaction}\n${hygiene}\ntrash() {
-    # 產品碼會先把路徑解析成實體路徑再丟棄（防符號連結逃逸），所以守門也要比實體路徑。
+  return spawnSync('/bin/bash',['-c',`set -eu\n${transaction}\n${hygiene}\nremove_update_archive_tree() {
+    # W180 B3：產品碼改成原地刪除（不再丟垃圾桶）；替身把要刪的搬到 $HOME/trash 記下來，好逐項檢查。
+    # 產品碼會先把路徑解析成實體路徑再刪（防符號連結逃逸），所以守門也要比實體路徑。
     # 否則在預設 macOS（TMPDIR 位於 /var -> /private/var 連結下）這個替身必定誤判。
     local target archroot
     target="$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1")"
@@ -142,7 +143,7 @@ test('W64 B 52-directory legacy fixture retains one failed diagnosis and the rea
   assert.ok(existsSync(join(f.archives,saved,'previous.app.disabled/Contents/Info.plist')));
   assert.ok(!existsSync(join(f.archives,saved,'delta.app.disabled.part-1')));
   assert.equal(dirs(join(f.dir,'trash')).length,51);
-  assert.match(readFileSync(join(f.archives,'cleanup-manifest.md'),'utf8'),/Restore: macOS Trash/);
+  assert.match(readFileSync(join(f.archives,'cleanup-manifest.md'),'utf8'),/Removing: `[^`]+`\n  Reason: [^\n]+\n  Restore: not kept\. If that version is still on its GitHub Release[^\n]+\n  Result: removed\./);
 });
 test('W64 B only the two newest validated backup directories survive', () => {
   const f=setup();
@@ -159,9 +160,9 @@ test('W64 B rejects outside, sibling, nested, symlink and non-updater paths; pre
   const sibling=directory(f.dir,'UpdateArchives-sibling');
   const spoofedRoot=directory(f.dir,'.tatwo-update.outside-root');
   const r=shell(`for item in "$OUTSIDE" "$ARCHIVES" "$ARCHIVES/../UpdateArchives-sibling" "$SIBLING" "$LINK" "$NESTED" "$NESTED_STAGE"; do
-    if trash_update_archive "$ARCHIVES" "$item" fixture; then exit 91; fi
+    if discard_update_archive "$ARCHIVES" "$item" fixture; then exit 91; fi
   done
-  if trash_update_archive "$HOME" "$SPOOFED_ROOT" fixture; then exit 92; fi
+  if discard_update_archive "$HOME" "$SPOOFED_ROOT" fixture; then exit 92; fi
   retain_update_archives`,f,{OUTSIDE:outside,SIBLING:sibling,LINK:link,NESTED:nested,NESTED_STAGE:nestedStage,SPOOFED_ROOT:spoofedRoot});
   assert.equal(r.status,0,r.stderr);
   for(const p of [outside,sibling,link,nested,nestedStage,live,bad,spoofedRoot]) assert.ok(existsSync(p),p);
@@ -213,6 +214,33 @@ test('W64 B legacy backup ordering preserves subsecond recency and cleanup failu
   let r=shell('retain_update_archives',f); assert.equal(r.status,0,r.stderr);
   assert.deepEqual(dirs(f.archives).map(n=>readFileSync(join(f.archives,n,'previous.app.disabled/Contents/version'),'utf8')).sort(),['1','2']);
   const scratch=directory(f.archives,'.tatwo-update.failed-cleanup');
-  r=shell('trash() { return 12; }; retain_update_archives',f);
-  assert.notEqual(r.status,0); assert.ok(existsSync(scratch));
+  r=shell('remove_update_archive_tree() { return 12; }; retain_update_archives',f);
+  // W180 B3：刪不掉的先改成 .discard.* 保留名（不會再被當成備份），紀錄寫「incomplete」；下一次清理補刪。
+  assert.notEqual(r.status,0); assert.ok(!existsSync(scratch));
+  const leftover=dirs(f.archives).filter(n=>n.startsWith('.discard.'));
+  assert.equal(leftover.length,1);
+  assert.ok(existsSync(join(f.archives,leftover[0],'delta.app.disabled.part-1')));
+  assert.match(readFileSync(join(f.archives,'cleanup-manifest.md'),'utf8'),/Result: incomplete/);
+  r=shell('retain_update_archives',f); assert.equal(r.status,0,r.stderr);
+  assert.deepEqual(dirs(f.archives).filter(n=>n.startsWith('.discard.')),[]);
+});
+
+// W180 B3（09-27 使用者：「舊備份不丟垃圾桶」）：真的刪（不用替身），保留最新兩份回復備份；
+// 被刪的資料夾裡有指向外面的符號連結時，只刪連結、不跟過去。
+test('W180 B3 superseded backups are removed in place (no Trash) and nested symlinks are not followed', () => {
+  const f=setup(), outside=directory(f.dir,'outside-keep');
+  for(let i=0;i<4;i++) { const d=directory(f.archives,`.tatwo-update.backup.r${i}.noindex`); backup(d); utimesSync(d,100+i,100+i); }
+  symlinkSync(outside,join(f.archives,'.tatwo-update.backup.r0.noindex','escape'));
+  utimesSync(join(f.archives,'.tatwo-update.backup.r0.noindex'),100,100);
+  const r=spawnSync('/bin/bash',['-c',`set -eu\n${transaction}\n${hygiene}\ntrash() { exit 90; }\nretain_update_archives`],
+    {encoding:'utf8',env:{...process.env,HOME:f.dir,DEST:join(f.dir,'Applications/App.app')}});
+  assert.equal(r.status,0,r.stderr);
+  assert.deepEqual(dirs(f.archives),['.tatwo-update.backup.r2.noindex','.tatwo-update.backup.r3.noindex']);
+  assert.ok(existsSync(join(outside,'delta.app.disabled.part-1')));
+  assert.deepEqual(dirs(join(f.dir,'trash')),[]);
+  const manifest=readFileSync(join(f.archives,'cleanup-manifest.md'),'utf8');
+  assert.equal((manifest.match(/^- Removing: /gm)||[]).length,2);
+  assert.equal((manifest.match(/^  Result: removed\.$/gm)||[]).length,2);
+  assert.deepEqual(dirs(f.archives).filter(n=>n.startsWith('.discard.')),[]);
+  assert.doesNotMatch(install,/command -v trash|\btrash "\$item"/);
 });

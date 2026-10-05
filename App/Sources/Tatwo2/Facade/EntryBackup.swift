@@ -101,7 +101,7 @@ final class EntryBackup: ObservableObject {
         let store = GitHubAccountsStore()
         guard let account = (try? store.loadAccounts())?.first(where: \.isDefault) ?? (try? store.loadAccounts())?.first,
               let token = try? store.mcpToken(username: account.username), !token.isEmpty else {
-            statusLine = "要備份到 GitHub，請先到 設定 › GitHub 登入"
+            statusLine = "要備份到 GitHub，請先到 設定 › 環境登入 › GitHub 登入"   // W183 R3：分頁改名
             return
         }
         busy = true; defer { busy = false }
@@ -109,6 +109,13 @@ final class EntryBackup: ObservableObject {
         let slug = account.username + "/" + Self.repositoryName
         do {
             try Self.ensureRepository(entry: entry, deviceName: Host.current().localizedName ?? "本機")
+            // W183 R6c 審查：推之前查這次會送出的歷史（HEAD 走得到的所有提交）有沒有碰過 chatgpt/（ChatGPT 的工作區）：
+            // .gitignore 擋不住強制加入、以前收過又移掉的；有就不推（HandsWorkspaceRoot.backupProblem）。
+            let root = entry.root.path
+            if let problem = await Task.detached(operation: { HandsWorkspaceRoot.backupProblem(entry: root) }).value {
+                statusLine = "GitHub 備份沒完成：" + problem
+                return
+            }
             if createIfMissing { try await Self.createPrivateRepository(slug: slug, token: token) }
             if Self.gitOutput(["remote", "get-url", "origin"], in: entry.root) == nil {
                 _ = Self.gitOutput(["remote", "add", "origin", "https://github.com/\(slug).git"], in: entry.root, allowEmpty: true)

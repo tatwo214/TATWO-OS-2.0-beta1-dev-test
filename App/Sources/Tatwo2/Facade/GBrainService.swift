@@ -102,9 +102,11 @@ final class GBrainService: ObservableObject {
             if let tmp = environment["TMPDIR"] { env["TMPDIR"] = tmp }
             if let token = try keychain.read("bearer") { env["TATWO_GBRAIN_TOKEN"] = token }
             // Only a primary can read provider credentials. Secondary never probes them.
+            // W181 R3：勾了「不用 API 金鑰」的那家不讀、不帶它的金鑰（GBrain 的金鑰一定是按量計費）。
             if isPrimary {
-                if let key = try keychain.read("openai") { env["OPENAI_API_KEY"] = key }
-                if let key = try keychain.read("anthropic") { env["ANTHROPIC_API_KEY"] = key }
+                let keychain = self.keychain
+                for (name, key) in try EngineAPIKeyPolicy.gbrainProviderEnvironment(
+                    optedOut: EngineDisableStore.disabled(), read: { try keychain.read($0) }) { env[name] = key }
             }
             p.executableURL = node; p.arguments = [script.path, entry.root.path, helper.path]
             p.environment = env; p.standardInput = incoming; p.standardOutput = outgoing
@@ -177,6 +179,14 @@ final class GBrainService: ObservableObject {
         startOnQueue()
     }
     func refresh() { queue.async { [weak self] in self?.refreshOnQueue() } }
+    /// W181 R3：「不用 API 金鑰」改了：主設備上正在跑就重開一次，照新設定帶（或不帶）金鑰；沒在跑不動。
+    func applyAPIKeyPreference() {
+        queue.async { [weak self] in
+            guard let self, process?.isRunning == true, isPrimary else { return }
+            restartOnQueue()
+            refreshOnQueue()
+        }
+    }
     private func refreshOnQueue() {
         // An unpaired secondary can finish onboarding without a database. Once pairing
         // assigns its primary, reuse W80's trusted connection setup and the single service.
@@ -195,6 +205,7 @@ final class GBrainService: ObservableObject {
         let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let primary = isPrimary
         let openAI = primary && keychain.contains("openai"), anthropic = primary && keychain.contains("anthropic")
+        let openAIAllowed = EngineDisableStore.allowsAPIKey(.codex)   // W181 R3：勾了不用 OpenAI 的 API 金鑰，語意搜尋不算開著
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             healthy = field.reason == nil
@@ -208,7 +219,7 @@ final class GBrainService: ObservableObject {
             pageCount = object?["pageCount"] as? Int
             lastWrite = [object?["lastWriteAt"] as? String, object?["lastWriteDevice"] as? String].compactMap { $0 }.joined(separator: " · ")
             openAIConfigured = openAI; anthropicConfigured = anthropic
-            semanticEnabled = object?["semanticEnabled"] as? Bool == true && openAI
+            semanticEnabled = object?["semanticEnabled"] as? Bool == true && openAI && openAIAllowed   // W181 R3
         }
     }
     private func publishFailure(_ text: String) {

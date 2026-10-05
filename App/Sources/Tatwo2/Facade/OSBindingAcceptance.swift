@@ -71,24 +71,37 @@ enum OSBindingAcceptance {
                 && !CallerDirectoryCache.Snapshot(measuredAt: now.addingTimeInterval(-60)).isStale(at: now)
                 && CallerDirectoryCache.Snapshot(measuredAt: now.addingTimeInterval(-61)).isStale(at: now))
             // Owned git repo + linked worktree: queries must run in project workdir, not the child.
+            // W179：App 背景量測工作副本時也會跑 git，偶爾跟這裡的 commit 搶 index.lock（W178 版一樣會發生，約 1/8）。
+            // 只在「鎖被別的 git 拿著」時稍等重試；其他錯誤照舊失敗，並把 git 的錯誤訊息帶出來方便查。
             func git(_ args: [String]) throws -> String {
-                let p = Process(), output = Pipe()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                p.arguments = ["-C", root] + args
-                var env = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("GIT_") }
-                env["GIT_CONFIG_NOSYSTEM"] = "1"; env["GIT_CONFIG_GLOBAL"] = "/dev/null"
-                p.environment = env
-                p.standardOutput = output; p.standardError = FileHandle.nullDevice
-                try p.run()
-                let data = output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-                guard p.terminationStatus == 0 else { throw BotLibraryError.invalid("owned_git_fixture_failed") }
-                return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                var lastError = ""
+                for attempt in 0..<6 {
+                    let p = Process(), output = Pipe(), errors = Pipe()
+                    p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                    p.arguments = ["-C", root] + args
+                    var env = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("GIT_") }
+                    env["GIT_CONFIG_NOSYSTEM"] = "1"; env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+                    p.environment = env
+                    p.standardOutput = output; p.standardError = errors
+                    try p.run()
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    let err = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                    p.waitUntilExit()
+                    if p.terminationStatus == 0 {
+                        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                    }
+                    lastError = err.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard lastError.contains(".lock"), attempt < 5 else { break }
+                    Thread.sleep(forTimeInterval: 0.2 * Double(attempt + 1))
+                }
+                throw BotLibraryError.invalid("owned_git_fixture_failed: \(args.joined(separator: " ")): \(lastError.prefix(300))")
             }
             _ = try git(["init", "-b", "main"])
             _ = try git(["config", "user.name", "Owned Fixture"])
             _ = try git(["config", "user.email", "fixture@example.invalid"])
             _ = try git(["commit", "--allow-empty", "-m", "base"])
-            _ = try git(["worktree", "add", "-b", "friction-child", roomPath])
+            _ = try git(["branch", "friction-child"])
+            _ = try git(["worktree", "add", roomPath, "friction-child"])
             _ = try git(["-C", roomPath, "commit", "--allow-empty", "-m", "child"])
             await MainActor.run {
                 (model.live as? ChatLiveEngine)?.markSubStatus(room, "done")
@@ -108,7 +121,8 @@ enum OSBindingAcceptance {
             check("merge no-ff returns the real merge commit", merged["merged"] as? Bool == true
                 && merged["commit"] as? String == mergeCommit
                 && ISO8601DateFormatter().date(from: merged["checkedAt"] as? String ?? "") != nil)
-            _ = try git(["worktree", "add", "-b", "friction-ff", root + "/ff-room"])
+            _ = try git(["branch", "friction-ff"])
+            _ = try git(["worktree", "add", root + "/ff-room", "friction-ff"])
             _ = try git(["-C", root + "/ff-room", "commit", "--allow-empty", "-m", "ff child"])
             _ = try git(["merge", "--ff-only", "friction-ff"])
             let ffTip = try git(["rev-parse", "friction-ff"])

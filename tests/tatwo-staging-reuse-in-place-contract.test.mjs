@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -9,7 +10,9 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   rmSync,
+  statfsSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -23,6 +26,19 @@ const cefBundleScriptPath = path.join(repoRoot, "scripts", "tatwo-cef-bundle.sh"
 // Fixtures live under the OS runtime scratch and are removed on exit; they
 // used to accumulate 2 GB per run under staging/test-fixtures.
 const fixtureBase = "/tmp/tatwo2-fixture/runtime/test-tmp/staging-reuse";
+const sameSlotFixtureBase = path.join(repoRoot, ".build/runtime/test-tmp/staging-reuse");
+function fixtureStorageBase(sameSlotBuild) {
+  assert.equal(typeof sameSlotBuild, "boolean", "fixture storage accepts only the owned same-slot boolean, never a caller path");
+  return sameSlotBuild ? sameSlotFixtureBase : fixtureBase;
+}
+
+function requireSameSlotBuildSpace(root, readSpace = statfsSync) {
+  const { bavail, bsize } = readSpace(root, { bigint: true });
+  const available = bavail * bsize;
+  assert.ok(available >= 10n * 1024n ** 3n,
+    `same-slot real build requires >=10 GiB free at ${root}; available=${available} bytes; refusing to start build`);
+}
+
 const createdFixtureRoots = [];
 process.on("exit", () => {
   for (const root of createdFixtureRoots) {
@@ -31,7 +47,25 @@ process.on("exit", () => {
 });
 
 function run(command, args, options = {}) {
-  return spawnSync(command, args, { cwd: repoRoot, encoding: "utf8", ...options });
+  // A cold real Swift build emits more than Node's default 1 MiB buffer.
+  // Capture the complete build evidence instead of terminating it mid-build.
+  const signing = command === "codesign" && args.includes("--sign");
+  const result = spawnSync(command, args, {
+    cwd: repoRoot, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, ...options,
+    // Bound only our signer child; never kill SecurityAgent or change identity.
+    ...(signing ? { timeout: 60_000, killSignal: "SIGKILL" } : {}),
+  });
+  if (signing && (result.error || result.status !== 0)) {
+    const reason = result.error?.code === "ETIMEDOUT"
+      ? "timed out after 60000ms"
+      : "failed";
+    assert.fail(
+      `staging fixture codesign ${reason}; identity=${args[args.indexOf("--sign") + 1]}; target=${args.at(-1)}; `
+      + `status=${result.status}; signal=${result.signal}; error=${result.error?.code ?? "none"}; `
+      + `no alternate identity or skip attempted\n${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+    );
+  }
+  return result;
 }
 
 function signingIdentity() {
@@ -53,9 +87,17 @@ function createFixture({
   browserEngine = "webkit-legacy",
   omitBrowserEnginePin = false,
   omitGrokVendorVersionPin = false,
+  sameSlotBuild = false,
 } = {}) {
-  mkdirSync(fixtureBase, { recursive: true });
-  const root = path.join(fixtureBase, `tatwo-staging-reuse-${Date.now()}-${randomUUID()}`);
+  const base = fixtureStorageBase(sameSlotBuild);
+  mkdirSync(base, { recursive: true });
+  if (sameSlotBuild) {
+    assert.equal(realpathSync(base), path.join(realpathSync(repoRoot), ".build/runtime/test-tmp/staging-reuse"),
+      "same-slot scratch must not escape the owned repo through a symlink");
+  }
+  // The production reuse contract pins canonical bundle paths. Do not encode
+  // /tmp aliases in the signed plist or receipt and compare them with /private/tmp.
+  const root = path.join(realpathSync(base), `tatwo-staging-reuse-${Date.now()}-${randomUUID()}`);
   createdFixtureRoots.push(root);
   const app = path.join(root, "Tatwo Ultrawork Staging.app");
   const contents = path.join(app, "Contents");
@@ -373,7 +415,9 @@ function createCEFArtifactFixture() {
 test("dry-run preserves external runtime HOME and pinned fixed signing identity", () => {
   const fixture = createFixture();
   const before = snapshotTree(fixture.root);
-  const result = reuse(fixture.root, {}, true);
+  const aliasRoot = path.join(fixtureBase, path.basename(fixture.root));
+  assert.equal(realpathSync(aliasRoot), fixture.root);
+  const result = reuse(aliasRoot, {}, true);
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.deepEqual(snapshotTree(fixture.root), before);
   assert.match(result.stdout, /^HOME_MODE=preserved-external-runtime-home$/m);
@@ -384,6 +428,33 @@ test("dry-run preserves external runtime HOME and pinned fixed signing identity"
   assert.match(result.stdout, /^TCC_REAUTHORIZATION_REQUIRED=false$/m);
   assert.match(result.stdout, /^GROK_RUNTIME_REUSE_MODE=pinned-without-execution$/m);
   assert.equal(existsSync(fixture.grokExecutionMarker), false, "reuse dry-run must not execute either pinned Grok payload");
+});
+
+test("reuse accepts a /tmp alias in declared receipt path without changing any bytes", () => {
+  const fixture = createFixture();
+  const receipt = JSON.parse(readFileSync(fixture.receiptPath, "utf8"));
+  receipt.declaredAppBundle = fixture.app.replace(/^\/private\/tmp\//, "/tmp/");
+  assert.notEqual(receipt.declaredAppBundle, fixture.app);
+  writeFileSync(fixture.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  const before = snapshotTree(fixture.root);
+  const result = reuse(fixture.root, {}, true);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /REUSE_DRY_RUN=PASS/);
+  assert.deepEqual(snapshotTree(fixture.root), before);
+});
+
+test("reuse rejects a genuinely different declared bundle path without changing the slot", () => {
+  const fixture = createFixture();
+  const receipt = JSON.parse(readFileSync(fixture.receiptPath, "utf8"));
+  receipt.declaredAppBundle = path.join(fixture.root, "Different.app");
+  writeFileSync(fixture.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
+  const before = snapshotTree(fixture.root);
+  const result = reuse(fixture.root, {}, true);
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /reuse declared App path conflicts with receipt/);
+  assert.doesNotMatch(result.stdout, /REUSE_DRY_RUN=PASS/);
+  assert.deepEqual(snapshotTree(fixture.root), before);
+  assert.equal(existsSync(fixture.grokExecutionMarker), false);
 });
 
 test("reuse Grok hash mismatch fails closed without executing the trap runtime", () => {
@@ -860,6 +931,39 @@ test("real five-helper CEF bundles pass production verification while direct oto
   );
 });
 
+test("test-only CEF verification and failure injection reject outside, sibling-prefix and symlink escapes before writes", () => {
+  const outside = path.join(repoRoot, ".build", `staging-reuse-outside-${randomUUID()}`);
+  const prefixSibling = `${fixtureBase}-not-allowed-${randomUUID()}`;
+  for (const root of [outside, prefixSibling]) {
+    mkdirSync(root, { recursive: true });
+    createdFixtureRoots.push(root);
+  }
+  const link = path.join(fixtureBase, `escape-${randomUUID()}`);
+  symlinkSync(outside, link);
+  createdFixtureRoots.push(link);
+  for (const root of [outside, prefixSibling, link]) {
+    const before = snapshotTree(root);
+    const cef = run("/bin/bash", [scriptPath, "--verify-cef-artifact-fixture", root]);
+    assert.notEqual(cef.status, 0);
+    assert.match(cef.stderr, /restricted to owned runtime\/test-tmp\/staging-reuse/);
+    const injection = reuse(root, { TATWO_TEST_INJECT_REUSE_FAILURE_AFTER_RECEIPT_REPLACE: "1" }, true);
+    assert.notEqual(injection.status, 0);
+    assert.match(injection.stderr, /restricted to owned runtime\/test-tmp\/staging-reuse/);
+    assert.deepEqual(snapshotTree(root), before);
+  }
+});
+
+test("fixture guard rejects writable scratch even when its path is inside the allowlist", () => {
+  const writable = path.join(fixtureBase, `unsafe-permissions-${randomUUID()}`);
+  mkdirSync(writable, { recursive: true });
+  createdFixtureRoots.push(writable);
+  chmodSync(writable, 0o777);
+  const result = reuse(writable, { TATWO_TEST_INJECT_REUSE_FAILURE_AFTER_RECEIPT_REPLACE: "1" }, true);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /restricted to owned runtime\/test-tmp\/staging-reuse/);
+  assert.deepEqual(readdirSync(writable), []);
+});
+
 test("CEF pin, bridge, helper, and backend are present and not ignored candidates", () => {
   const requiredPaths = [
     "Apps/TatwoUltraworkMac/CEF/cef-runtime-arm64.json",
@@ -880,15 +984,96 @@ test("CEF pin, bridge, helper, and backend are present and not ignored candidate
   );
 });
 
-test("real same-slot swap commits, verifies signing, then injected post-receipt failure rolls back bytes and Contents", { timeout: 900_000 }, () => {
+function ownedModelRuntimeEnvironment(fixture) {
+  const source = path.join(repoRoot, "tests/fixtures/staging-reuse/model-runtime.sh");
+  assert.equal(createHash("sha256").update(readFileSync(source)).digest("hex"),
+    "a7ac31412b41359c8066069f97be2c1dc8a73aa0433ff20d4c3e0b6b2b58ccf9", "owned synthetic runtime bytes must be reviewed and pinned");
+  const owned = path.join(fixture.root, "owned-model-sources");
+  mkdirSync(owned);
+  const runtime = path.join(owned, "runtime");
+  copyFileSync(source, runtime);
+  const notices = path.join(owned, "LICENSE.txt");
+  writeFileSync(notices, "Synthetic packaging fixture owned by this test; no vendor runtime or account.\n");
+  const home = path.join(owned, "home");
+  mkdirSync(home);
+  return {
+    // Keep the signing process in its existing user keychain context. Only
+    // build/model homes are isolated; no real CLI/account is invoked.
+    TATWO_STAGING_BUILD_HOME: home,
+    TATWO_SUBSCRIPTION_RUNTIME_SOURCE: runtime,
+    TATWO_SUBSCRIPTION_CODE_MODE_HOST_SOURCE: runtime,
+    TATWO_SUBSCRIPTION_THIRD_PARTY_NOTICES_SOURCE: notices,
+    TATWO_CLAUDE_SUBSCRIPTION_RUNTIME_SOURCE: runtime,
+    TATWO_CLAUDE_SUBSCRIPTION_LICENSE_SOURCE: notices,
+    TATWO_GROK_VENDOR_RUNTIME_SOURCE: fixture.grokVendorRuntime,
+    TATWO_GROK_SUBSCRIPTION_RUNTIME_SOURCE: fixture.grokSubscriptionRuntime,
+    TATWO_STAGING_GROK_AUTH_SOURCE: path.join(home, "absent-auth.json"),
+    TATWO_FIXTURE_UNEXPECTED_EXECUTION: path.join(owned, "unexpected-execution"),
+  };
+}
+
+test("owned synthetic model runtime only answers --version and traps actual execution", () => {
   const fixture = createFixture();
-  const success = reuse(fixture.root);
+  const environment = ownedModelRuntimeEnvironment(fixture);
+  const runtime = environment.TATWO_CLAUDE_SUBSCRIPTION_RUNTIME_SOURCE;
+  const version = run(runtime, ["--version"], { env: environment });
+  assert.equal(version.status, 0);
+  assert.equal(version.stdout.trim(), "tatwo-staging-owned-fixture-1");
+  assert.equal(existsSync(environment.TATWO_FIXTURE_UNEXPECTED_EXECUTION), false);
+  const request = run(runtime, ["--print", "must not reach an account"], { env: environment });
+  assert.equal(request.status, 97);
+  assert.equal(readFileSync(environment.TATWO_FIXTURE_UNEXPECTED_EXECUTION, "utf8"), "unexpected model execution\n");
+});
+
+test("same-slot storage is repo-owned and insufficient build space fails closed", () => {
+  assert.equal(fixtureStorageBase(false), fixtureBase);
+  assert.equal(fixtureStorageBase(true), path.join(repoRoot, ".build/runtime/test-tmp/staging-reuse"));
+  for (const arbitrary of ["/tmp", "/Applications", {}, undefined]) {
+    assert.throws(() => fixtureStorageBase(arbitrary), /never a caller path/);
+  }
+  const capacity = bytes => (root, options) => {
+    assert.equal(root, repoRoot);
+    assert.deepEqual(options, { bigint: true });
+    return { bavail: bytes, bsize: 1n };
+  };
+  for (const bytes of [0n, 2n * 1024n ** 3n, 10n * 1024n ** 3n - 1n]) {
+    assert.throws(() => requireSameSlotBuildSpace(repoRoot, capacity(bytes)), /requires >=10 GiB.*refusing to start build/);
+  }
+  requireSameSlotBuildSpace(repoRoot, capacity(10n * 1024n ** 3n));
+  // Small signed preflight only: prove the real script accepts this owned root
+  // without starting Swift or consuming the build budget.
+  const fixture = createFixture({ sameSlotBuild: true });
+  assert.equal(path.dirname(fixture.root), realpathSync(sameSlotFixtureBase));
+  const before = snapshotTree(fixture.root);
+  const preflight = reuse(fixture.root, { TATWO_TEST_INJECT_REUSE_FAILURE_AFTER_RECEIPT_REPLACE: "1" }, true);
+  assert.equal(preflight.status, 0, preflight.stdout + preflight.stderr);
+  assert.match(preflight.stdout, /REUSE_DRY_RUN=PASS/);
+  assert.deepEqual(snapshotTree(fixture.root), before);
+});
+
+test("real same-slot swap commits, verifies signing, then injected post-receipt failure rolls back bytes and Contents", { timeout: 900_000 }, () => {
+  requireSameSlotBuildSpace(repoRoot);
+  const fixture = createFixture({ sameSlotBuild: true });
+  requireSameSlotBuildSpace(fixture.root);
+  const buildTmp = path.join(fixture.root, "build-tmp");
+  mkdirSync(buildTmp);
+  const runtimeEnvironment = {
+    ...ownedModelRuntimeEnvironment(fixture),
+    // Do not inherit a caller's /tmp Swift scratch override on low-space mini.
+    TATWO_SWIFT_SCRATCH_PATH: path.join(fixture.root, "swift-scratch"),
+    TMPDIR: buildTmp,
+  };
+  const success = reuse(fixture.root, runtimeEnvironment);
   assert.equal(success.status, 0, `${success.stdout}\n${success.stderr}`);
   assert.deepEqual(topLevelApps(fixture.root), ["Tatwo Ultrawork Staging.app"]);
   const verify = run("codesign", ["--verify", "--deep", "--strict", fixture.app]);
   assert.equal(verify.status, 0, verify.stderr);
   const successReceipt = JSON.parse(readFileSync(fixture.receiptPath, "utf8"));
   assert.equal(successReceipt.signingIdentitySHA1, fixture.identity.sha1);
+  const pinnedRuntimeHash = createHash("sha256").update(readFileSync(runtimeEnvironment.TATWO_SUBSCRIPTION_RUNTIME_SOURCE)).digest("hex");
+  for (const key of ["subscriptionRuntimeSHA256", "subscriptionCodeModeHostSHA256", "claudeSubscriptionRuntimeSHA256"]) {
+    assert.equal(successReceipt[key], pinnedRuntimeHash, `${key} must attest the owned synthetic bytes`);
+  }
   assert.equal(successReceipt.tccIdentityContinuity, "preserved");
   const successManifestPath = path.join(fixture.root, "archives", readdirSync(path.join(fixture.root, "archives")).sort().at(-1), "rollback-manifest.json");
   const successManifest = JSON.parse(readFileSync(successManifestPath, "utf8"));
@@ -896,7 +1081,8 @@ test("real same-slot swap commits, verifies signing, then injected post-receipt 
 
   const beforeReceipt = readFileSync(fixture.receiptPath);
   const beforeContents = snapshotTree(fixture.contents);
-  const failure = reuse(fixture.root, { TATWO_TEST_INJECT_REUSE_FAILURE_AFTER_RECEIPT_REPLACE: "1" });
+  requireSameSlotBuildSpace(fixture.root);
+  const failure = reuse(fixture.root, { ...runtimeEnvironment, TATWO_TEST_INJECT_REUSE_FAILURE_AFTER_RECEIPT_REPLACE: "1" });
   assert.equal(failure.status, 86, `${failure.stdout}\n${failure.stderr}`);
   assert.match(failure.stderr, /injected reuse failure immediately after receipt os\.replace/);
   assert.deepEqual(readFileSync(fixture.receiptPath), beforeReceipt, "receipt rollback must be byte-for-byte");
@@ -908,4 +1094,8 @@ test("real same-slot swap commits, verifies signing, then injected post-receipt 
   assert.equal(rollbackManifest.archivedContentsRole, "failed_candidate_contents");
   assert.equal(rollbackManifest.commitPoint, "rollback-manifest-atomic-replace");
   assert.ok(snapshotTree(rollbackManifest.archivedContents).length > 1);
+  assert.equal(existsSync(runtimeEnvironment.TATWO_FIXTURE_UNEXPECTED_EXECUTION), false);
+  assert.equal(existsSync(fixture.grokExecutionMarker), false);
+  assert.equal(successReceipt.subscriptionRuntimeVersion, "tatwo-staging-owned-fixture-1");
+  assert.equal(successReceipt.claudeSubscriptionRuntimeVersion, "tatwo-staging-owned-fixture-1");
 });

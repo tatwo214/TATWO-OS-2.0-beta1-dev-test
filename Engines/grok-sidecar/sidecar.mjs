@@ -281,6 +281,8 @@ async function runTurn(command) {
   let endEvent = null;
   let stdoutBuffer = '';
   let stderrBuffer = '';
+  const stderrTail = [];
+  const rememberStderr = line => { stderrTail.push(line.slice(-2000)); if (stderrTail.length > 6) stderrTail.shift(); };
   const held = [];
   const output = initialized ? emit : (value) => held.push(value);
 
@@ -322,7 +324,7 @@ async function runTurn(command) {
     stderrBuffer += chunk.toString();
     const lines = stderrBuffer.split(/\r?\n/);
     stderrBuffer = lines.pop() ?? '';
-    for (const line of lines) if (line) emit({ ev: 'stderr', line });
+    for (const line of lines) if (line) { rememberStderr(line); emit({ ev: 'stderr', line }); }
   });
 
   const exit = await new Promise((resolve) => {
@@ -331,7 +333,7 @@ async function runTurn(command) {
   });
   active = null;
   if (stdoutBuffer.trim()) parseLine(stdoutBuffer);
-  if (stderrBuffer.trim()) emit({ ev: 'stderr', line: stderrBuffer });
+  if (stderrBuffer.trim()) { rememberStderr(stderrBuffer); emit({ ev: 'stderr', line: stderrBuffer }); }
 
   const sessionID = endEvent?.sessionId ?? endEvent?.session_id ?? resume;
   if (sessionID) resume = String(sessionID);
@@ -353,7 +355,7 @@ async function runTurn(command) {
     session_id: sessionID ? String(sessionID) : '',
   });
   if (exit.error) emit({ ev: 'error', message: String(exit.error.stack || exit.error) });
-  else if (exit.code !== 0 && !closing) emit({ ev: 'error', message: `grok exited with code ${exit.code}${exit.signal ? ` (${exit.signal})` : ''}` });
+  else if (exit.code !== 0 && !closing) emit({ ev: 'error', message: `grok exited with code ${exit.code}${exit.signal ? ` (${exit.signal})` : ''}: ${stderrTail.join('\n')}`, details: JSON.stringify({ exitCode: exit.code, stderr: stderrTail }) });
   } finally {
     prompt.dispose();
   }

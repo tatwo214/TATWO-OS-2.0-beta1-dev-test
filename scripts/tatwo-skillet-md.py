@@ -212,11 +212,26 @@ def ensure_seed(path: Path) -> str:
     return text
 
 
+def refuse_seed_overwrite(dest: Path, text: str) -> bool:
+    """種子範本絕不蓋掉已有內容的 skillet（2026-09-25 入口 skillet.md 被整份蓋成種子）。回傳 True＝跳過不寫。"""
+    if text != render_document() or not dest.is_file():
+        return False
+    if dest.read_text() == text:
+        return False
+    print(f"warning: refused to overwrite {dest} with the bare seed", file=sys.stderr)
+    return True
+
+
 def mirror_wrappers(canonical: Path, wrappers: list[Path]) -> list[str]:
     text = canonical.read_text()
     updated: list[str] = []
     for dest in wrappers:
         if dest.resolve() == canonical.resolve():
+            continue
+        # 各家引擎的 skillet 入口是連到入口 skillet.md 的連結（09-22 統一入口）：不換掉連結、不透過它寫。
+        if dest.is_symlink():
+            continue
+        if refuse_seed_overwrite(dest, text):
             continue
         refuse_if_unsafe(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -374,6 +389,8 @@ def pull_cmd(args: argparse.Namespace) -> int:
     dest = canonical_path(args)
     refuse_if_unsafe(dest)
     text = source.read_text()
+    if refuse_seed_overwrite(dest, text):
+        return 2
     write_text(dest, text)
     mirrored = mirror_wrappers(dest, wrapper_paths(args))
     print(

@@ -695,7 +695,6 @@ extension ChatPage {
             {
                 return live
             }
-            return ultraworkRoleConfiguration.primaryModelID
         case let .auxiliary(index):
             if index == 0,
                let live = Self.normalizedRoleModelID(
@@ -703,8 +702,9 @@ extension ChatPage {
             {
                 return live
             }
-            return ultraworkRoleConfiguration.auxiliaryModelID(at: index)
         }
+        // W184 H4 修正（審查 #3、#5）：這一條自己記住的角色（主導、副審、每一個 sub；沒記過才照 app-wide 的上次設定）。
+        return model.ultraworkRoleModelID(slot, for: model.selectedThreadID)
     }
 
     static func normalizedRoleModelID(_ raw: String?) -> String? {
@@ -720,15 +720,13 @@ extension ChatPage {
         for slot: UltraworkRoleSlot
     ) {
         let modelID = choice.canonicalModelSlug
+        // W184 H4 修正（審查 #3、#5）：記在這一條（每一個角色都記，不是只有主導與副審）；app-wide 的那份只當新 thread 的預設。
+        model.setUltraworkRole(modelID, slot: slot, for: model.selectedThreadID)
         switch slot {
         case .primary:
             ultraworkRoleConfiguration.setPrimary(modelID)
-            model.setPrimaryModel(modelID)
         case let .auxiliary(index):
             ultraworkRoleConfiguration.setAuxiliary(modelID, at: index)
-            if index == 0 {
-                model.setSecondaryModel(modelID)
-            }
         }
         UltraworkRoleConfigurationStore().save(
             ultraworkRoleConfiguration)
@@ -865,7 +863,10 @@ extension ChatPage {
         case "gpt-5.6-sol": return "sol"
         case "gpt-5.6-terra": return "terra"
         case "gpt-5.6-luna": return "luna"
+        case "gpt-6.1-sol": return "sol6.1"
         case "gpt-6-astra": return "gpt6"
+        case "gpt-6-sol": return "sol6"
+        case "gpt-6-luna": return "luna6"
         case "fable-5.1": return "fable5.1"
         case "sonnet-5": return "sonnet5"
         case "grok-build": return "grok4.7"

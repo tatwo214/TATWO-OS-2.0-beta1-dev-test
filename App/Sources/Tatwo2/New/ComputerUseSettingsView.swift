@@ -111,20 +111,18 @@ struct ComputerUseSettingsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("系統權限").font(.system(size: 13, weight: .semibold))
                 HStack(spacing: 8) {
-                    permission("輔助使用", allowed: accessibilityAllowed)
+                    permission("裝置控制和資料取用（舊稱輔助使用）", allowed: accessibilityAllowed)
                     Text("·").foregroundStyle(.tertiary)
                     permission("螢幕錄製", allowed: screenAllowed)
                 }
             }
             Spacer(minLength: 8)
-            Button("打開系統設定") {
+            OSChipButton(title: "打開系統設定") {
                 let pane = accessibilityAllowed ? "Privacy_ScreenCapture" : "Privacy_Accessibility"
                 if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
                     NSWorkspace.shared.open(url)
                 }
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
         .padding(.leading, 32)
         .padding(.trailing, 14)

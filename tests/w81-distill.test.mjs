@@ -8,9 +8,12 @@ import readline from 'node:readline';
 import { once } from 'node:events';
 import { StdioTransport } from '../Engines/gbrain-adapter/server.mjs';
 import { delay } from '../Engines/gbrain-adapter/service.mjs';
+import { resolveBinary, resolveGBrainHelper } from './helpers/app-binary.mjs';
 
 const read = file => fs.readFileSync(new URL(`../App/Sources/Tatwo2/${file}`, import.meta.url), 'utf8');
-const binary = process.env.TATWO2_TEST_BINARY;
+// W180 E4：建好的 App 與 GBrain helper 也可以從主設備 staging 找到（lead-verify 的 node 步驟沒帶環境變數）。
+// 找不到就明確失敗，不跳過（整批驗收不能變成跳過）。
+const binary = resolveBinary();
 const headings = ['這段做了什麼', '架構現況', '決策與理由', '教訓', '下一步'];
 const finalBody = headings.map(title => `## ${title}\n使用者改過這一句，保留　空白、兩個空格  、Cafe\u0301 與 emoji 🧪。`).join('\n\n');
 function fixture() {
@@ -33,7 +36,7 @@ function fixture() {
   return { root, at, env };
 }
 function run(env) {
-  assert.ok(binary && fs.existsSync(binary), 'Set TATWO2_TEST_BINARY to the current build; never skip.');
+  assert.ok(binary && fs.existsSync(binary), 'Set TATWO2_TEST_BINARY (or run inside the staging build worktree); never skip.');
   const result = spawnSync(binary, [], { env, encoding: 'utf8', timeout: 150_000, maxBuffer: 2 * 1024 * 1024 });
   const output = result.stdout + result.stderr;
   assert.equal(result.status, 0, output);
@@ -42,48 +45,58 @@ function run(env) {
   return output;
 }
 
-test('W81 production Swift: draft, repeated rewrite, exact edits, primary submit, cancel/reopen, guards',
+test('W81 production Swift: draft, repeated rewrite, exact edits, human boundary, cancel/reopen, guards (W180 E4 canvas)',
   { timeout: 180_000 }, () => {
     const { env } = fixture();
     const output = run(env);
     for (const name of [
-      'bare-command-opens-canvas', 'argument-command-opens-canvas', 'ai-draft-exact',
+      'exact-command-token', 'bare-command-opens-canvas', 'argument-command-opens-canvas', 'ai-draft-exact',
       'ai-multiple-rewrites', 'nested-fence-preserved', 'example-and-incomplete-fence-ignored',
-      'human-edit-byte-exact', 'raw-json-roundtrip', 'ordinary-confirm-cannot-submit',
-      'close-reopen-no-write', 'no-destination-rejected', 'unavailable-gbrain-rejected',
-      'gbrain-normalization-rejected', 'stale-snapshot-rejected', 'human-submit-boundary',
-      'primary-write-byte-exact', 'stale-preview-no-overwrite', 'submitted-edit-blocked',
-      'submission-survives-reopen-no-rewrite', 'repeat-submission-rejected',
+      'legacy-fence-only-for-old-canvas', 'human-edit-byte-exact', 'raw-json-roundtrip',
+      'ordinary-confirm-cannot-submit', 'close-reopen-no-write', 'unavailable-gbrain-rejected',
+      'gbrain-normalization-rejected', 'unicode-byte-not-canonical-equality', 'stale-snapshot-rejected',
+      'human-submit-boundary', 'submitted-edit-blocked', 'submission-survives-reopen-no-rewrite',
+      'repeat-submission-rejected', 'legacy-canvas-still-reads', 'skillet-untouched',
     ]) assert.ok(output.includes(`W81TEST PASS ${name}\n`), name);
   });
 
-test('W81 shared canvas keeps destinations unselected, unavailable disabled, and only human click writes', () => {
-  const actions = read('Facade/DistillCanvas.swift');
-  const canvas = read('Chat/ChatPage+Plan.swift');
+// W180 E4：skillet 整份覆蓋、GBrain／skillet 開關、「送出」按鈕都已拿掉（改成整理成技能等、預覽寫入→確認寫入）。
+test('W81 canvas contract after W180 E4: no skillet destination, no toggles, only the human confirm writes', () => {
+  const canvas = read('Facade/DistillCanvas.swift');
+  const actions = read('Chat/DistillPlanActions.swift');
+  const panel = read('Chat/ChatPage+Plan.swift');
   const engine = read('Facade/ChatLiveEngine+Plan.swift');
-  assert.match(actions, /@State private var gbrain = false/);
-  assert.match(actions, /@State private var skillet = false/);
-  assert.match(actions, /Toggle\("GBrain", isOn: \$gbrain\)\.disabled\(!service\.healthy\)/);
-  assert.match(actions, /GBrain 不可用：/);
-  assert.match(actions, /Button\(busy \? "送出中…" : "送出"\) \{ submit\(\) \}/);
-  assert.match(actions, /guard onSubmission\(artifact\.planID, snapshot\)[\s\S]*service\.putDistillation\(snapshot\)/);
-  assert.match(actions, /previewContent\.map \{ DistillCanvas.byteEqual\(\$0, content\)/);
-  assert.match(actions, /writeFromDevice\(id: "skillet", text: content, base: base/);
-  assert.match(actions, /dispatch\.pushSubmission[\s\S]*method: "inbox_receive"/);
-  assert.doesNotMatch(actions, /inbox\.enqueue|method: "document_propose"/);
-  assert.match(canvas, /artifact.kind == "distill"[\s\S]*DistillPlanActions/);
-  assert.match(engine, /plan.kind == "distill"[\s\S]*Self.distillDiscussionRules/);
-  assert.match(read('Chat/ChatPage.swift'), /onDistillSubmission: model.saveDistillSubmission/);
-  for (const name of ['w81-proposal-in-primary-inbox', 'w81-proposal-byte-exact',
-    'w81-both-skillets-unchanged', 'w81-source-worktree-unchanged']) {
-    assert.ok(read('SelfTest.swift').includes(`check("${name}"`));
+  for (const source of [canvas, actions]) {
+    assert.doesNotMatch(source, /Toggle\("GBrain"|Toggle\("skillet"|@State private var skillet|writeFromDevice\(id: "skillet"/);
+    assert.doesNotMatch(source, /Button\(busy \? "送出中…" : "送出"\)|inbox_receive|pushSubmission/);
   }
+  assert.match(actions, /chip\(busy \? "寫入中…" : "確認寫入", selected: true\) \{ runWrite\(\) \}/);
+  assert.match(panel, /artifact.kind == "distill"[\s\S]*DistillPlanActions/);
+  assert.match(engine, /plan.kind == "distill"[\s\S]*Self.distillDiscussionRules\(for: DistillCanvas.output\(of: plan\)\)/);
+  assert.match(read('Chat/ChatPage.swift'), /distillActions: model.distillCanvasActions/);
+  // W78 的 skillet 提案檢查隨 skillet 去處一起退役。
+  const selftest = read('SelfTest.swift');
+  assert.doesNotMatch(selftest, /check\("w81-proposal-in-primary-inbox"|DistillCanvas\.writeSkillet/);
+  // 真 GBrain 往返走正式路徑（畫布 → 預覽 → DistillHost.begin → DistillWriter.perform → finish），不再有只給測試用的包裝。
+  const gbrain = selftest.slice(selftest.indexOf('TATWO2_W81_GBRAIN_DEFINITION'), selftest.indexOf('W81TEST GBRAIN_SLUG'));
+  for (const call of ['DistillHost.preview(', 'DistillHost.begin(apply', 'DistillWriter.perform(job)', 'DistillHost.finish(job',
+    'DistillHost.begin(restore', 'DistillWriter.readManifest(']) assert.ok(gbrain.includes(call), call);
+  assert.doesNotMatch(canvas + selftest, /DistillGBrainClient\.write\(|DistillCanvas\.validate\(|static func validate\(_ submission/);
+  assert.ok(canvas.includes('"clientInfo"') && canvas.includes('"tatwo-distill"'), 'same MCP client identity');
+  // 同名舊頁：只有 GBrain 明確回 page_not_found 才算新建；其他錯誤、讀不出內容都不寫。整頁（含標題、tags）進封存。
+  assert.match(canvas, /"include_content": true/);
+  assert.match(canvas, /object\["error"\] as\? String == "page_not_found"/);
+  assert.doesNotMatch(canvas, /try\? call\("get_page"/);
+  const writer = read('Facade/DistillWriter.swift');
+  assert.match(writer, /gbrain-page\.json/);
+  assert.match(writer, /catch let notSent as DistillGBrainClient\.NotSent/);
 });
 
-test('W81 real GBrain: Swift submit → W80 adapter → isolated PGLite → exact body + trusted source device',
+test('W81 real GBrain (W180 E4 production path): archive same-slug page whole → write → refuse changed page → restore old page + title',
   { timeout: 240_000 }, async () => {
-    const helper = process.env.W80B_GBRAIN_HELPER;
-    assert.ok(helper && fs.existsSync(helper), 'W80B_GBRAIN_HELPER is required; never skip.');
+    // W180 E4：GBrain 仍是 /蒸餾 的選項之一；這條往返保留，缺 helper 就失敗（不跳過）。
+    const helper = resolveGBrainHelper();
+    assert.ok(helper && fs.existsSync(helper), 'W80B_GBRAIN_HELPER is required (or run inside the staging build worktree); never skip.');
     const { root, at, env } = fixture();
     const ownerRoot = at('brain-owner'); fs.mkdirSync(ownerRoot);
     fs.writeFileSync(path.join(ownerRoot, 'device.json'), JSON.stringify({ role: 'primary', name: 'fixture-device' }));
@@ -107,22 +120,29 @@ test('W81 real GBrain: Swift submit → W80 adapter → isolated PGLite → exac
         await delay(500);
       }
       assert.equal(state?.healthy, true, diagnostics);
-      run({ ...env, TATWO_GBRAIN_TOKEN: token,
+      const output = run({ ...env, TATWO_GBRAIN_TOKEN: token,
         TATWO2_W81_GBRAIN_DEFINITION: JSON.stringify({ command: process.execPath, args: [adapter, ownerRoot] }) });
+      for (const name of ['real-gbrain-production-write', 'real-gbrain-old-page-archived-whole', 'real-gbrain-restore-refuses-changed-page',
+        'real-gbrain-restore-puts-old-page-back', 'real-gbrain-written-page-kept-in-archive']) {
+        assert.ok(output.includes(`W81TEST PASS ${name}\n`), name);
+      }
+      const slug = output.match(/^W81TEST GBRAIN_SLUG (\S+)$/m)?.[1];
+      assert.ok(slug && slug.startsWith('distill/'), 'slug printed');
       client = new StdioTransport(process.execPath, [adapter, ownerRoot], { ...env, TATWO_GBRAIN_TOKEN: token });
       await client.request({ jsonrpc: '2.0', id: 1, method: 'initialize',
         params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'fixture', version: '1' } } });
       await client.request({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      // 還原之後 GBrain 上是舊頁：正文、標題逐字放回，設備來源照樣由 adapter 蓋上。
       const readback = await client.request({ jsonrpc: '2.0', id: 2, method: 'tools/call',
-        params: { name: 'get_page', arguments: { slug: 'distill/w81-fixture' } } });
+        params: { name: 'get_page', arguments: { slug } } });
       assert.ok(!readback.error && !readback.result?.isError, JSON.stringify(readback));
       const page = readback.result.structuredContent ??
         JSON.parse(readback.result.content.find(row => row.type === 'text').text);
-      assert.equal(page.compiled_truth, finalBody);
-      assert.equal(page.title, 'Synthetic distillation');
+      assert.equal(page.compiled_truth, '# Old synthetic page\nold body line　保留 🧪');
+      assert.equal(page.title, 'Old synthetic title');
       assert.equal(page.frontmatter.device, 'fixture-device');
       assert.ok(page.tags.includes('device:fixture-device'));
-      fs.writeFileSync(at('roundtrip-evidence.json'), JSON.stringify({ slug: page.slug, exact: true,
+      fs.writeFileSync(at('roundtrip-evidence.json'), JSON.stringify({ slug: page.slug, restoredOldPage: true,
         device: page.frontmatter.device, bytes: Buffer.byteLength(finalBody) }, null, 2));
       console.log(`W81 real roundtrip evidence: ${root}`);
     } finally {

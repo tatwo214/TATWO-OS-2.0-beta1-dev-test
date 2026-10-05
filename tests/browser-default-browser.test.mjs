@@ -78,7 +78,7 @@ test('W57e custom close action closes only a tab and the empty workspace remains
   assert.match(design, /case \.closeTab: store.close\(store.selectedID\)/);
   assert.doesNotMatch(design, /keyboardShortcut\("w"/);
   assert.match(design, /if let tabID = store.selectedRegistryID[\s\S]*?\} else \{ page \}/);
-  assert.match(design, /private var page: some View[\s\S]*?searchBox/);
+  assert.match(design, /private var page: some View[\s\S]*?BrowserStartSearch\(/);   // W184 G2d：搜尋框本體在 BrowserStartSearch.swift
   assert.doesNotMatch(design, /NSApp.terminate|performClose/);
   assert.match(read('App/Sources/Tatwo2/Shell/AppShell.swift'), /func applicationShouldTerminateAfterLastWindowClosed\(_ sender: NSApplication\) -> Bool \{ false \}/);
   assert.match(read(browser + 'BrowserWorkSpaceCEFSurface.swift'), /if workTabs.first\(where: \{ \$0.id == id \}\)\?\.isSleeping == true \{ registry.markSleeping\(id, false\) \}/);

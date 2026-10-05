@@ -23,6 +23,8 @@ struct RemoteSidebarSection: Identifiable, Equatable, Sendable {
     let isOnline: Bool
     let lastSeenAt: Date
     let projects: [RemoteProjectRow]
+    /// W182 R4：離線但有離線副本時＝最後同步的時間（側欄照樣列出專案與串、整區變淡）；在線或沒有副本是 nil。
+    var offlineSyncedAt: Date? = nil
 }
 
 struct RemoteThreadTransferMessage: Codable, Equatable, Sendable {
@@ -384,16 +386,40 @@ final class RemoteDeviceSession: ObservableObject {
     @Published private(set) var engine: RemoteLiveEngine?
     @Published private(set) var state: State = .offline
     @Published private(set) var lastSeenAt: Date
+    @Published private(set) var connectionProblem: String?
+
+    /// Settings shows fixed actionable categories, never raw SSH diagnostics.
+    static func actionableConnectionProblem(_ error: Error) -> String? {
+        if case SSHHostPinError.hostKeyNotPaired = error { return "主機金鑰未確認，請重新配對" }
+        if case SSHHostPinError.pinFileUnwritable = error { return "主機金鑰無法保存，請檢查設備設定" }
+        let code = String(describing: error).lowercased() + " " + error.localizedDescription.lowercased()
+        if ["host key verification failed", "remote host identification has changed", "ssh_host_key_mismatch", "paired_host_key_not_found"].contains(where: code.contains) {
+            return "主機金鑰不符，請重新確認設備配對"
+        }
+        if ["permission denied", "authentication_failed", "authentication failed", "publickey"].contains(where: code.contains) {
+            return "認證失敗，請檢查設備登入與配對"
+        }
+        return nil
+    }
+    #if DEBUG
+    func w203ConnectionProblemForTest(_ error: Error) {
+        markOffline(error: error)
+        retryTask?.cancel(); retryTask = nil
+    }
+    #endif
 
     var onUpdate: (() -> Void)?
     var onHint: ((String) -> Void)?
     var document: TatwoNativeChatStoreDocument {
         engine?.document ?? lastDocument
     }
+    /// W182 R4：這台存的離線副本（最後同步到的文件＋讀過的內容）；連不上時畫面照樣列出、可以讀。
+    let offlineMirror: RemoteOfflineMirror
 
     private let environment: [String: String]
     private var lastDocument = TatwoNativeChatStoreDocument()
     private var retryDelay: TimeInterval = 30
+    static let maxRetryDelay: TimeInterval = 60
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
     /// W100：連線一定在這條佇列上跑，主執行緒不自己呼叫 `RemoteHostLink`。
@@ -409,6 +435,24 @@ final class RemoteDeviceSession: ObservableObject {
         self.link = link
         self.environment = environment
         self.lastSeenAt = device.lastSeenAt
+        // W182 R4：App 一開就在背景讀上次存的離線副本（讀好才叫 onUpdate；已經連上就不蓋掉）。
+        self.offlineMirror = RemoteOfflineMirror(deviceID: device.id, deviceName: device.name,
+                                                 cache: RemoteOfflineCache(root: RemoteOfflineCache.defaultRoot(environment: environment)))
+        offlineMirror.onChange = { [weak self] in self?.offlineMirrorChanged() }
+        offlineMirror.loadFromDisk()
+    }
+
+    /// W182 R4：離線副本讀好、讀到一條內容或清掉時：沒連上就用它當側欄的文件（清掉就回到空白），重畫。
+    private func offlineMirrorChanged() {
+        if engine == nil {
+            if let snapshot = offlineMirror.snapshot {
+                if lastDocument == TatwoNativeChatStoreDocument() { lastDocument = snapshot.projection }
+                lastSeenAt = max(lastSeenAt, snapshot.syncedAt)
+            } else {
+                lastDocument = TatwoNativeChatStoreDocument()
+            }
+        }
+        onUpdate?()
     }
 
     func start() {
@@ -476,6 +520,7 @@ final class RemoteDeviceSession: ObservableObject {
         connectTask?.cancel()
         retryTask = nil
         connectTask = nil
+        offlineMirror.flushPendingDocument()   // W182 R4：還沒寫的最後一份補寫（移除的那台已停記，不會寫）
         engine?.shutdownAll()
         engine = nil
         link.disconnect()
@@ -489,9 +534,16 @@ final class RemoteDeviceSession: ObservableObject {
                 link: link,
                 store: ChatLiveStore(root: cacheRoot),
                 initial: initial)
+            EngineModelCatalog.replace(remote.engineModelCatalogs, deviceID: device.id)
             remote.onHint = { [weak self] message in self?.onHint?(message) }
+            remote.onTranscriptFetched = { [weak self, weak remote] threadID, records in   // W182 R4：讀過的內容存進離線副本
+                guard let self, let remote, self.engine === remote else { return }   // 斷線、移除後晚到的不記
+                self.offlineMirror.record(transcript: records, threadID: threadID)
+            }
             remote.onChange = { [weak self, weak remote] in
                 guard let self, let remote, self.engine === remote else { return }
+                self.offlineMirror.record(document: remote.doc, revision: remote.currentRevision)   // W182 R4
+                EngineModelCatalog.replace(remote.engineModelCatalogs, deviceID: self.device.id)
                 self.lastDocument = remote.document
                 self.state = .online(remote.currentRevision)
                 self.lastSeenAt = Date()
@@ -501,12 +553,16 @@ final class RemoteDeviceSession: ObservableObject {
                 guard let self, let remote, self.engine === remote else { return }
                 switch result {
                 case .success(let revision):
+                    self.offlineMirror.record(document: remote.doc, revision: revision)   // W182 R4：換版或每分鐘存一次
+                    EngineModelCatalog.replace(remote.engineModelCatalogs, deviceID: self.device.id)
                     self.lastDocument = remote.document
                     self.state = .online(revision)
                     self.lastSeenAt = Date()
                     self.retryDelay = 30
                     self.onUpdate?()
                 case .failure(let error):
+                    self.offlineMirror.flushPendingDocument()   // W182 R4：忙的時候還沒寫的最後一份補寫
+                    EngineModelCatalog.replace(remote.engineModelCatalogs, deviceID: self.device.id)
                     self.lastDocument = remote.document
                     remote.shutdownAll()
                     self.engine = nil
@@ -514,8 +570,10 @@ final class RemoteDeviceSession: ObservableObject {
                 }
             }
             engine = remote
+            offlineMirror.record(document: remote.doc, revision: remote.currentRevision, force: true)   // W182 R4：連上就換成最新的快照
             lastDocument = remote.document
             state = .online(remote.currentRevision)
+            connectionProblem = nil
             lastSeenAt = Date()
             retryDelay = 30
             onUpdate?()
@@ -528,7 +586,8 @@ final class RemoteDeviceSession: ObservableObject {
         engine = nil
         link.disconnect()
         state = .offline
-        onHint?("遠端設備 \(device.name) 離線：\(error.localizedDescription)")
+        connectionProblem = Self.actionableConnectionProblem(error)
+        // W201：斷線由原本的重試處理；需要那台的動作在自己的位置說明，不主動報備。
         onUpdate?()
         scheduleRetry()
     }
@@ -536,7 +595,8 @@ final class RemoteDeviceSession: ObservableObject {
     private func scheduleRetry() {
         guard retryTask == nil else { return }
         let delay = retryDelay
-        retryDelay = min(retryDelay * 2, 300)
+        // W182 演練（09-27）：上限原本 5 分鐘，主設備開回來後這台最久要等 5 分鐘才連上、補回；改成最多 1 分鐘（連不上的 SSH 很便宜）。
+        retryDelay = min(retryDelay * 2, Self.maxRetryDelay)
         retryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard let self, !Task.isCancelled else { return }
@@ -544,6 +604,26 @@ final class RemoteDeviceSession: ObservableObject {
             self.start()
         }
     }
+
+    #if DEBUG
+    /// W201 自測：等假設備快照存好；只在隔離根目錄呼叫。
+    func w201WaitForCache() async { await RemoteOfflineCache.flush() }
+
+    /// W182 R4 自測：用給的 get_document 結果走真的「連上」路徑，再停掉輪詢（不開 SSH）。
+    func w182TestConnect(initial: [String: Any]) {
+        retryTask?.cancel()
+        retryTask = nil
+        installConnectedEngine(initial: initial)
+        engine?.shutdownAll()
+    }
+
+    /// W182 R4 自測：走真的「斷線」路徑（遠端引擎回報連線失敗），再取消自動重連（不開 SSH）。
+    func w182TestDisconnect() {
+        engine?.onConnectionStateChange?(.failure(RemoteHostLinkError.tunnelUnavailable))
+        retryTask?.cancel()
+        retryTask = nil
+    }
+    #endif
 
     private func remoteCacheRoot() -> URL {
         let localRoot = environment["TATWO2_LIVE_ROOT"].map {

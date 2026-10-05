@@ -161,7 +161,7 @@ test('timeouts and missing roots expose partial coverage rather than pretending 
   assert.equal(missing.coverage.enumerationComplete, false);
 });
 
-test('MCP advertises tool 39, rejects invalid arguments, and returns structured JSON from its cwd without App socket', t => {
+test('MCP advertises 50 tools, rejects invalid arguments, and returns structured JSON from its cwd without App socket', t => {
   const f = fixture(t);
   f.write('Types.swift', 'struct Actor {}\n' + Array(100).fill('use(Actor.self)').join('\n') + '\n');
   const bad = [{ symbol: 'a; rm -rf /' }, { symbol: 'Actor', limit: 201 }, { symbol: 'Actor', lang: null },
@@ -169,7 +169,7 @@ test('MCP advertises tool 39, rejects invalid arguments, and returns structured 
   const results = rpc(f.root, [null, { name: impactTool, arguments: { symbol: 'Actor' } },
     ...bad.map(args => ({ name: impactTool, arguments: args }))],
   server, { ...process.env, TATWO2_OS_SOCKET: path.join(f.root, 'absent.sock') });
-  assert.equal(results[0].tools.length, 39);
+  assert.equal(results[0].tools.length, 54);   // W198（.056）：chatgpt_dispatch／chatgpt_dispatch_stop；W180 E1：memory_search／memory_get／memory_save；E3b：project_overview／project_suggest；W183 R3：hands_setup_status／hands_setup_step
   const tool = results[0].tools.find(tool => tool.name === impactTool);
   assert.deepEqual(tool.inputSchema.required, ['symbol']);
   assert.equal(tool.inputSchema.properties.symbol.pattern, '^[A-Za-z_][A-Za-z0-9_]*$');

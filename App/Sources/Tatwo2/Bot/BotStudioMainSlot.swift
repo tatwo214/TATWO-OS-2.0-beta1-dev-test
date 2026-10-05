@@ -315,12 +315,26 @@ struct BotStudioComposer: View {
     var modelTier: String = "fast"
     var scopeLabel: String
     var statusText: String = "Gen-5 展示・未接入"
+    /// W184 H4：模式卡一開始就開著（自測畫卡片開著的樣子用；平常從 chip 開）。
+    var modeCardOpen = false
     var onSubmit: () -> Void
 
     @State private var height: CGFloat = 0
     @State private var focused = false
+    /// W184 H4：模式卡開著沒有（nil＝照 modeCardOpen）；chip 的位置（點 chip 不算點卡外面）。
+    @State private var modeOpenChoice: Bool?
+    @State private var modeAnchor = AssistantModelMenuAnchor()
 
     private var ready: Bool { !text.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// W184 H4：模型、派工方式收進「模式選擇」；展示：卡上照樣列出，一律不能改（原本兩顆按了也沒作用）；記憶不顯示（Bot）。
+    private var mode: TatwoComposerMode {
+        TatwoComposerMode.botStudio(modelLabel: modelLabel, modelTier: modelTier, scopeLabel: scopeLabel)
+    }
+
+    private var modeOpen: Binding<Bool> {
+        Binding(get: { modeOpenChoice ?? modeCardOpen }, set: { modeOpenChoice = $0 })
+    }
 
     var body: some View {
         let minH = TatwoChatTranscriptVisualMetrics.windowComposerTextMinimumHeight
@@ -348,6 +362,10 @@ struct BotStudioComposer: View {
             }
             .frame(minHeight: TatwoChatTranscriptVisualMetrics.windowComposerMinimumHeight)
             .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusPrimary)
+            // W184 H4：模式卡浮在輸入框上方、右緣對齊；點卡以外的地方收起。
+            .tatwoComposerModeCard(isPresented: modeOpen, anchor: modeAnchor) {
+                TatwoComposerModeCard(mode: mode, metrics: .main)
+            }
 
             statusBar
                 .zIndex(-1)
@@ -391,37 +409,13 @@ struct BotStudioComposer: View {
 
             Spacer(minLength: 14)
 
-            // 這隻用哪個模型跑（chat 分頁模型選單同語言）。
-            Button { } label: {
-                HStack(spacing: 6) {
-                    Text(modelLabel).font(.system(size: 11.5, weight: .bold)).lineLimit(1)
-                    Text(modelTier).font(.system(size: 10.5, weight: .semibold)).foregroundStyle(.secondary)
-                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .black)).opacity(0.8)
+            // W184 H4：這隻用哪個模型跑、自己做還是找群一起（原本兩顆展示 chip）收進一顆「模式選擇」（同 Coder 輸入框的那一顆）。
+            ChatComposerModeChip(segments: mode.segments, selected: modeOpenChoice ?? modeCardOpen, help: mode.help) {
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                    modeOpenChoice = !(modeOpenChoice ?? modeCardOpen)
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 26)
-                .contentShape(Capsule())
             }
-            .buttonStyle(.plain)
-            .fixedSize()
-            .chatGlassChip()
-            .help("這隻用哪個模型跑（展示・切換未生效）")
-
-            // 自己做還是找群一起（對應 chat 的 ultrawork 選單位置）。
-            Button { } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "circle.circle").font(.system(size: 10, weight: .bold)).opacity(0.75)
-                    Text(scopeLabel).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .black)).opacity(0.8)
-                }
-                .padding(.horizontal, 9)
-                .frame(height: 26)
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .fixedSize()
-            .chatGlassChip()
-            .help("自己做，還是找群一起（展示・切換未生效）")
+            .background(AssistantModelMenuAnchorView(anchor: modeAnchor))
 
             Button { onSubmit() } label: {
                 Image(systemName: "arrow.up")

@@ -53,8 +53,11 @@ final class BrowserWebFeatures {
 
     private var canPresent: Bool {
         guard let browser, let container else { return false }
+        // W184 E：頁面在自己的容器裡（或正在全螢幕）才開全螢幕與檔案框；借到私訊框倒放的頁面不開——
+        // 全螢幕退出時會放回分頁容器，把影片從倒放框帶走。
         return browser.browserActor == .human && !browser.agentControlled &&
-            browser.window != nil && !container.isHiddenOrHasHiddenAncestor && container.window != nil
+            browser.window != nil && !container.isHiddenOrHasHiddenAncestor && container.window != nil &&
+            (browser.superview === container || overlay != nil)
     }
 
     private func showFileDialog(mode: Int, title: String, defaultPath: String,

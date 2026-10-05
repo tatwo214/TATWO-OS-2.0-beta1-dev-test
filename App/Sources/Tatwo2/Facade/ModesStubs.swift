@@ -28,7 +28,10 @@ enum ModesFixture {
     static let modelTraits: [ModelTrait] = [
         // 2026-09-23 使用者：只留最新模型（GPT-5.6 以上、Opus 5.5、Sonnet 5、Fable 5.1、Grok 4.7）。
         trait("fable-5.1", "Fable 5.1", "主導：看全局、把使用者的話翻成目標與完成標準、讀 diff、下判斷。", 5, 4, 4),
+        trait("gpt-6.1-sol", "GPT-6.1 Sol", "最新主力：整批施工與另一家的審查；loops 預設。", 5, 5, 4),
         trait("gpt-6-astra", "GPT-6", "整批施工：照施工單寫碼、寫測試、跑測試；也適合當另一家的審查。", 5, 5, 4),
+        trait("gpt-6-sol", "GPT-6 Sol", "上一代主力：保留可選的施工與工具路線。", 5, 5, 4),
+        trait("gpt-6-luna", "GPT-6 Luna", "省額度路線：一般對話與輕量施工。", 4, 4, 4),
         trait("gpt-5.6-sol", "GPT-5.6 Sol", "現代主力 host 與工具呼叫；GPT-6 額度吃緊時的替代。", 4, 5, 4),
         trait("opus-5.5", "Opus 5.5", "細修與保守裁決：來回討論、小範圍修改、高風險審稿，沒有證據時寧可擋下。", 5, 5, 5),
         trait("sonnet-5", "Sonnet 5", "工程副審：代碼一致性、漏測檢查、M/L 級 debug。", 5, 5, 5),

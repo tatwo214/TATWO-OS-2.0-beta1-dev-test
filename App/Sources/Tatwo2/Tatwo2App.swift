@@ -32,10 +32,13 @@ enum Tatwo2App {
         if TatwoPanelSnapshotExporter.exportIfRequested() { return }
         if TatwoSingleInstanceGuard.forwardToExistingInstanceAndExitIfNeeded() { return }
         BrowserTabRegistry.shared.prepareForLaunch()
+        _ = DisplayIslandFeedback.shared
+        _ = DisplayControlService.shared
         let delegate = TatwoUltraworkAppDelegate()
         retainedTatwoAppDelegate = delegate
         let cliDelegate = Tatwo2CLITerminationDelegate(wrapped: delegate)
         retainedCLITerminationDelegate = cliDelegate
+        OSPresence.shared.install()
         application.delegate = cliDelegate
         application.run()
     }
@@ -77,6 +80,7 @@ private final class SidecarTerminationObserver {
         // This function always returns true after synchronously saving, detaching
         // and finishing pending writes. Run it only after AppKit accepted Quit.
         _ = CLISessionsTermination.shouldTerminate()
+        OSEventLog.flushAll()
         wrapped.applicationWillTerminate(notification)
     }
     func application(_ application: NSApplication, open urls: [URL]) {

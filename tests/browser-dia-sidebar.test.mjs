@@ -91,7 +91,9 @@ test('W66 browser sidebar and canvas abut; work-space close and pin are labeled 
   assert.match(host, /let sidebarContentGap = model.mode == .browser \? WorkspaceSidebarMetrics.browserContentGap : WorkspaceSidebarMetrics.contentGap/);
   assert.match(host, /sidebarWidth \+ sidebarContentGap/);
   assert.match(host, /HStack\(alignment: .top, spacing: showSidebar \? sidebarContentGap : 0\)/);
-  assert.match(controls, /Button\(action: store.toggleSidebar\)/);
+  // W184 G2d：同一顆給私訊框的 Browser（init(collapsed:toggle:)）；主視窗的 init(store:) 照舊綁 store.toggleSidebar／focusMode。
+  assert.match(controls, /init\(store: BrowserWorkSpaceStore\) \{\s*collapsed = store\.focusMode\s*toggle = store\.toggleSidebar\s*\}/);
+  assert.match(controls, /Button\(action: toggle\)/);
   assert.ok(controls.includes('.accessibilityIdentifier("browser.sidebarToggle")'));
   assert.equal([...controls.matchAll(/\.accessibilityLabel\(/g)].length, 1);
   assert.doesNotMatch(controls, /sidebarPin"|disabled|pin.fill/);
@@ -130,15 +132,18 @@ test('one sidebar control lives before navigation; the space title has no second
   assert.match(row, /browserSpaceMenu/);
   assert.doesNotMatch(row, /BrowserSidebarControls/);
   const toolbar = section(design, 'private var workspaceToolbar:', 'private var browserContent:');
-  assert.ok(toolbar.indexOf('BrowserSidebarControls(store: store)') < toolbar.indexOf('EmbeddedBrowserToolbar('));
-  assert.match(controls, /Button\(action: store.toggleSidebar\)/);
+  const sidebarIndex = toolbar.indexOf('BrowserSidebarControls(store: sidebarStore)');
+  const navigationIndex = toolbar.indexOf('EmbeddedBrowserToolbar(');
+  assert.ok(sidebarIndex >= 0 && navigationIndex > sidebarIndex);
+  assert.match(controls, /toggle = store\.toggleSidebar/);
+  assert.match(controls, /Button\(action: toggle\)/);
   assert.doesNotMatch(controls, /store\.close\(/);
 });
 
 test('explicit toggle unpins before collapsing; passive collapse still respects pinning', () => {
   assert.match(design, /let opening = focusMode\s*sidebarPinned = opening\s*focusMode = !opening/);
   assert.match(design, /sidebarPinned = false \{ didSet \{ if sidebarPinned \{ focusMode = false/);
-  assert.match(design, /tabs\.isEmpty && !sidebarPinned \{ focusMode = false \}/);
+  assert.match(design, /tabs\.isEmpty && !sidebarPinned && focusMode \{ focusMode = false \}/);
 });
 
 test('single control shares navigation hit-size and icon tokens', () => {
@@ -150,7 +155,8 @@ test('single control shares navigation hit-size and icon tokens', () => {
 test('collapsed sidebar restore and menu use the same explicit toggle', () => {
   const toolbar = section(design, 'private var workspaceToolbar:', 'private var browserContent:');
   const chrome = read(app + 'Browser/BrowserWorkSpaceEmbeddedChrome.swift');
-  assert.match(toolbar, /BrowserSidebarControls\(store: store\)/);
-  assert.match(chrome, /Button\(store.focusMode \? "展開側欄" : "收合側欄", action: store.toggleSidebar\)/);
+  assert.match(toolbar, /BrowserSidebarControls\(store: sidebarStore\)/);
+  assert.match(chrome, /Button\(sidebarStore.focusMode \? "展開側欄" : "收合側欄", action: sidebarStore.toggleSidebar\)/);
+  assert.match(design, /_sidebarStore = ObservedObject\(wrappedValue: sidebarStore \?\? store\)/);
   assert.doesNotMatch(toolbar + chrome, /disabled\(store.sidebarPinned\)/);
 });

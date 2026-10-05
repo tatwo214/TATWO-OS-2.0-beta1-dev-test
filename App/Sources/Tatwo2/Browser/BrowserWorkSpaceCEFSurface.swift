@@ -158,6 +158,13 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
         self.adoptsWorkSpaceTabs = adoptsWorkSpaceTabs
         runtimeProfile = profile ?? Self.profile
         access = .checking(profileKey: runtimeProfile.registryKey)
+        if owner == nil {
+            self.registry.workSpaceTabUsage = { [weak self] id in
+                let native = self?.host?.lendingNative(tabID: id.uuidString)
+                return (native?.agentControlled == true, native?.isHuman != false,
+                        TatwoWebMCPRuntime.shared.tabsInUse.contains(id.uuidString))
+            }
+        }
         Self.memoryRuntimes.append(WeakRuntime(self))
         Self.startMemoryMonitoring()
         self.registry.changes.receive(on: DispatchQueue.main).sink { [weak self] in self?.reconcile() }
@@ -207,9 +214,10 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
         }
         host.onFindResult = { [weak self] id, count, index in
             guard let self, id == self.selectedID?.uuidString else { return }
-            if count >= 0 { self.findCount = count }
-            if count == 0 { self.findIndex = 0 }
-            else if index >= 0 { self.findIndex = index }
+            if count >= 0 && self.findCount != count { self.findCount = count }
+            if count == 0 {
+                if self.findIndex != 0 { self.findIndex = 0 }
+            } else if index >= 0 && self.findIndex != index { self.findIndex = index }
         }
         host.onPageMetadataChange = { [weak self] id, url, title, favicon in
             guard let self, let uuid = UUID(uuidString: id), let tab = self.workTabs.first(where: { $0.id == uuid }),
@@ -233,6 +241,7 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
             }
         }
         host.onIdle = { [weak self] in self?.retireIfUnused() }
+        host.onLentReturned = { [weak self] id, reason in self?.lentReturned(id, reason) }   // W184 E
         self.host = host
         return host
     }
@@ -271,6 +280,59 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
         onPopup = nil
         reconcile()
         retireIfUnused()
+    }
+
+    // MARK: W184 E：借給私訊框倒放（影片子畫面）
+
+    /// 借給倒放的分頁（主視窗那一格疊「這支影片在私訊框倒放播放」＋「拿回來」）。
+    @Published private(set) var lentTabID: UUID?
+    /// 主機自己還回（分頁要關、主視窗下指令或按「拿回來」、頁面要全螢幕）：倒放跟著改。
+    let lentReturns = PassthroughSubject<(tabID: UUID, reason: BrowserTabReturnReason), Never>()
+
+    /// 倒放挑分頁用：Browser 工作區每個分頁現在的樣子（只讀，不建主機；還沒有主機＝沒有原生頁面，一個都借不到）。
+    /// 選中的分頁＝主視窗正顯示的；Browser 不在畫面上時是最後用的那個。
+    func lendableTabs() -> [BrowserLendableTab] {
+        guard owner == nil else { return [] }   // 只有 Browser 工作區；聊天旁、聊天 session 的分頁不借
+        let starts = BrowserVideoTabs.shared.startedAt
+        let tabs = workTabs
+        let selected = selectedID ?? tabs.max { $0.lastActiveAt < $1.lastActiveAt }?.id
+        return tabs.map { tab in
+            BrowserLendableTab(tab: tab, isSensitive: registry.isSensitive(tab.id), videoStartedAt: starts[tab.id.uuidString],
+                               isSelected: tab.id == selected, native: host?.lendingNative(tabID: tab.id.uuidString))
+        }
+    }
+
+    /// 借出（只搬 NSView；不重建、不重新載入）。借不到（不是 Browser 工作區醒著的分頁、敏感分頁、原生頁面不能借）＝false。
+    func lendTab(_ id: UUID, into target: NSView) -> Bool {
+        guard owner == nil, let host, workTabs.contains(where: { $0.id == id && !$0.isSleeping }), !registry.isSensitive(id),
+              host.lend(tabID: id.uuidString, into: target) else { return false }
+        if lentTabID != id { lentTabID = id }
+        return true
+    }
+
+    /// 倒放還回（切形態、收框、關掉子畫面、回到 Browser…）；focus＝鍵盤還給頁面。
+    func giveBackTab(_ id: UUID, focus: Bool = false) {
+        host?.giveBack(tabID: id.uuidString, focus: focus)
+        if lentTabID == id { lentTabID = nil }
+    }
+
+    /// 倒放的「回到 Browser」：跟點連結開新分頁一樣走 foregroundTabRequest（Browser 畫面選到它；分頁在別的空間先切過去）。
+    func requestForeground(_ id: UUID) {
+        guard owner == nil, workTabs.contains(where: { $0.id == id }) else { return }
+        foregroundTabRequest = (id, foregroundTabRequest.serial &+ 1)
+    }
+
+    /// 主視窗那一格的「拿回來」。
+    func takeBackLentTab() {
+        guard let id = lentTabID else { return }
+        host?.takeBack(tabID: id.uuidString)
+        if lentTabID == id { lentTabID = nil }
+    }
+
+    private func lentReturned(_ tabID: String, _ reason: BrowserTabReturnReason) {
+        guard let id = UUID(uuidString: tabID) else { return }
+        if lentTabID == id { lentTabID = nil }
+        lentReturns.send((tabID: id, reason: reason))
     }
 
     /// Retire only after native OnBeforeClose released the lease. Quick reopen can
@@ -331,12 +393,18 @@ final class BrowserWorkSpaceRuntime: ObservableObject {
         guard let uuid = UUID(uuidString: id), let tab = workTabs.first(where: { $0.id == uuid }), !tab.isSleeping else { return }
         registry.setLoading(uuid, state.isLoading)
         if uuid == selectedID {
-            error = state.visibleError?.message
-            navigationTabID = uuid
-            navigationState = state
+            updateNavigationPresentation(tabID: uuid, state: state)
         }
         guard let url = EmbeddedBrowserView.committedURLForPersistence(state) else { return }
         registry.update(uuid, url: url, title: tab.title, favicon: tab.url == url ? tab.faviconPNG : nil)
+    }
+
+    /// Only the selected tab's callback reaches this display projection.
+    func updateNavigationPresentation(tabID: UUID, state: EmbeddedBrowserNavigationState) {
+        let nextError = state.visibleError?.message
+        if error != nextError { error = nextError }
+        if navigationTabID != tabID { navigationTabID = tabID }
+        if navigationState != state { navigationState = state }
     }
 }
 
@@ -347,6 +415,7 @@ struct BrowserWorkSpaceCEFSurface: View {
     let onPopup: (UUID, URL) -> Void
     @State private var surfaceID = UUID()
     @ObservedObject var runtime: BrowserWorkSpaceRuntime = .shared
+    @ObservedObject private var spotify = SpotifyConnect.shared
     var isGeometryDragInProgress = false
 
     init(tabID: UUID, spaceID: UUID, command: EmbeddedBrowserCommand?, onPopup: @escaping (UUID, URL) -> Void,
@@ -379,6 +448,8 @@ struct BrowserWorkSpaceCEFSurface: View {
                             }
                         }
                     }
+                    // W184 E：這個分頁的畫面借給私訊框倒放：原分頁那一格疊「這支影片在私訊框倒放播放」＋「拿回來」。
+                    .overlay { if runtime.lentTabID == tabID { BrowserTentPlaceholder { runtime.takeBackLentTab() } } }
             } else {
                 VStack {
                     if case let .blocked(_, failure) = runtime.access {
@@ -389,7 +460,20 @@ struct BrowserWorkSpaceCEFSurface: View {
             }
         }
         .background(TatwoActivePalette.current.canvasBase)
+        .overlay(alignment: .top) {
+            if runtime.navigationTabID == tabID,
+               URL(string: runtime.navigationState.urlString ?? "")?.host?.lowercased() == SpotifyConnect.spotifyHost,
+               let notice = spotify.playbackNotice {
+                Text(notice).font(.caption).lineLimit(1).padding(8).chatGlassChip()
+                    .padding(.top, 8)
+                    .allowsHitTesting(false)
+            }
+        }
         .task { if EmbeddedBrowserEnginePolicy.current == .chromiumCEF { await runtime.authorize() } }
+        .onDisappear { spotify.spotifyPageChanged(host: nil) }
+        .onChange(of: runtime.navigationState.urlString) { _, url in
+            if runtime.navigationTabID == tabID { spotify.spotifyPageChanged(host: URL(string: url ?? "")?.host) }
+        }
         .onChange(of: command?.id) { _, _ in retryCommand = nil }
         .onChange(of: tabID) { _, _ in retryCommand = nil }
     }

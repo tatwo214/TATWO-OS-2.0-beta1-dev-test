@@ -42,7 +42,12 @@ enum OSUpstream {
         #endif
     }
 
-    /// 組出要注入的完整文字：上游宣告 ＋ 討論串人設（bot）。
+    static func assistantPersona() -> String? {
+        guard let url = TatwoResources.url(forResource: "tatwo-assistant", withExtension: "md") else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// 組出要注入的完整文字：上游宣告 ＋ 討論串人設（bot／助理）。
     static func compose(threadSystemPrompt: String?) -> String? {
         let persona = threadSystemPrompt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard let declaration = declaration() else { return persona.isEmpty ? nil : persona }

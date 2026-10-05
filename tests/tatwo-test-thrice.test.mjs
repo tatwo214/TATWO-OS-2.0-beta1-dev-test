@@ -104,7 +104,8 @@ function fixtureRepo(files) {
   }
   for (const [file, content] of Object.entries(files)) fs.writeFileSync(path.join(root, 'tests', file), content);
   fs.writeFileSync(path.join(root, 'version.txt'), 'initial\n');
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    !key.startsWith('GIT_') && key !== 'TATWO_TEST_CONCURRENCY'));
   const git = args => {
     const result = spawnSync('git', ['-c', 'core.hooksPath=/dev/null', ...args],
       { cwd: root, env, encoding: 'utf8' });
@@ -116,10 +117,11 @@ function fixtureRepo(files) {
     '-c', 'commit.gpgSign=false', 'commit', '-qm', 'fixture']);
   return { root, outer, env };
 }
-function runFixture(fixture, out = path.join(fixture.outer, 'evidence')) {
+function runFixture(fixture, out = path.join(fixture.outer, 'evidence'), concurrency) {
   const result = spawnSync('bash', [path.join(fixture.root, 'scripts/tatwo-test-thrice.sh'), out], {
     cwd: fixture.root, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024,
-    env: { ...fixture.env, W65_FIXTURE_COUNTER: path.join(fixture.outer, 'counter') },
+    env: { ...fixture.env, W65_FIXTURE_COUNTER: path.join(fixture.outer, 'counter'),
+      ...(concurrency === undefined ? {} : { TATWO_TEST_CONCURRENCY: concurrency }) },
   });
   assert.ifError(result.error);
   assert.equal(result.signal, null);
@@ -140,6 +142,58 @@ test('changing', () => assert.equal(attempt, 2));
 const needsNode22 = Number(process.versions.node.split('.')[0]) < 22
   ? { skip: `需要 Node >= 22 的 test:summary 事件；此機為 ${process.versions.node}` }
   : {};
+
+test('real thrice runner defaults to 2 and records explicit concurrency 1 or 2 without filtering or retries', needsNode22, () => {
+  for (const requested of [undefined, '1', '2']) {
+    const concurrency = requested === '1' ? 1 : 2;
+    const fixture = fixtureRepo({
+      'a.test.mjs': prelude + "test('always fails', () => assert.fail('fixture'));\n",
+      'b.test.mjs': prelude + `import fs from 'node:fs';
+test('counts all rounds', () => fs.appendFileSync(process.env.W65_FIXTURE_COUNTER, 'ran\\n'));
+`,
+    });
+    const result = runFixture(fixture, path.join(fixture.outer, 'evidence'), requested);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    const source = JSON.parse(fs.readFileSync(path.join(result.out, 'source.json'), 'utf8'));
+    const summary = JSON.parse(fs.readFileSync(path.join(result.out, 'summary.json'), 'utf8'));
+    assert.equal(source.concurrency, concurrency);
+    assert.equal(summary.concurrency, concurrency);
+    assert.deepEqual(source.testFiles, ['tests/a.test.mjs', 'tests/b.test.mjs']);
+    assert.equal(summary.rounds.length, 3);
+    assert.ok(summary.rounds.every(round => round.summary.counts.tests === 2));
+    assert.deepEqual(summary.failures[0].states, ['fail', 'fail', 'fail']);
+    assert.equal(fs.readFileSync(path.join(fixture.outer, 'counter'), 'utf8'), 'ran\nran\nran\n');
+    const report = fs.readFileSync(path.join(result.out, 'summary.txt'), 'utf8');
+    const command = `COMMAND node --test --test-concurrency=${concurrency} tests/*.test.mjs`;
+    assert.ok(report.split('\n').includes(command));
+    assert.ok(result.stdout.split('\n').includes(command));
+    for (let number = 1; number <= 3; number++) {
+      const status = JSON.parse(fs.readFileSync(path.join(result.out, `round-${number}.status.json`), 'utf8'));
+      assert.deepEqual(status.args.filter(arg => arg.startsWith('--test-concurrency=')),
+        [`--test-concurrency=${concurrency}`]);
+      assert.deepEqual(status.args.filter(arg => arg.startsWith('tests/')), source.testFiles);
+      assert.equal(status.args.some(arg => /--test-(?:name-pattern|skip-pattern|rerun-failures)/.test(arg)), false);
+      assert.match(fs.readFileSync(path.join(result.out, `round-${number}.tap`), 'utf8'), /# tests 2/);
+    }
+    assert.equal(fs.existsSync(path.join(result.out, 'round-4.status.json')), false);
+  }
+});
+
+test('invalid concurrency fails closed before creating evidence or starting tests', () => {
+  const fixture = fixtureRepo({
+    'sample.test.mjs': prelude + `import fs from 'node:fs';
+test('must not run', () => fs.writeFileSync(process.env.W65_FIXTURE_COUNTER, 'unexpected'));
+`,
+  });
+  for (const [index, value] of ['', '0', '3', '-1', '1.5', '01', '2.0', ' 1', '2 ', 'auto', 'NaN'].entries()) {
+    const out = path.join(fixture.outer, `invalid-${index}`);
+    const result = runFixture(fixture, out, value);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /TATWO_TEST_CONCURRENCY must be exactly 1 or 2/);
+    assert.equal(fs.existsSync(out), false, 'invalid scheduling must not create run evidence');
+    assert.equal(fs.existsSync(path.join(fixture.outer, 'counter')), false);
+  }
+});
 
 test('real thrice runner executes every file three times even after failures and separates identical titles', needsNode22, () => {
   const fixture = fixtureRepo({

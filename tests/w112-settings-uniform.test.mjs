@@ -16,9 +16,9 @@ const shell = read('Shell/ChatPageSettings.swift');
 const pageFiles = {
   'Issue List': 'Shell/ChatPageSettings.swift',
   '瀏覽器': 'Shell/ChatPageSettings.swift',
-  'GitHub': 'Shell/ChatPageSettings.swift',
+  // W214：環境登入併進「登入」頁最下面的收合區，不再是獨立頁。
   '代理帳戶＆錢包': 'Custody/AgentAccountsSettingsView.swift',
-  '模型登入': 'New/EngineLoginCard.swift',
+  '登入': 'New/EngineLoginCard.swift',   // W214：原「模型登入」改名
   'Tatwo Island': 'New/TatwoIslandSettingsView.swift',
   'Computer Use': 'New/ComputerUseSettingsView.swift',
   '設備': 'New/DevicesCard.swift',
@@ -28,7 +28,7 @@ const pageFiles = {
 };
 
 // 標題列以外、也要一起清乾淨的設定頁檔案。
-const extraFiles = ['New/GitHubAccountsCard.swift'];
+const extraFiles = ['New/GitHubAccountsCard.swift', 'New/CloudflareAccountsCard.swift', 'New/EnvironmentLoginPage.swift'];   // W183 R3：環境登入的子分頁
 const allFiles = [...new Set([...Object.values(pageFiles), ...extraFiles])];
 
 test('外框只有一個尺寸：780×560，沒有哪一頁自己撐大', () => {
@@ -95,7 +95,14 @@ test('框變窄之後，內容過長／過寬的頁面在框內捲動', () => {
   assert.match(accounts, /\.fixedSize\(horizontal: false, vertical: true\)/);
   // 設備、模型登入原本沒有捲動，內容超過 560 高會被裁掉。
   for (const file of ['New/DevicesCard.swift', 'New/EngineLoginCard.swift']) {
-    assert.match(read(file), /var body: some View \{\s*\n\s*ScrollView \{/, `${file} 少了外層 ScrollView`);
+    // W201（.056）：DevicesCard 先宣告 let _ = outboxRevision（排隊變動時重畫），外層照樣是 ScrollView。
+    const source = read(file);
+    if (file === 'New/EngineLoginCard.swift') {
+      assert.match(source, /var body: some View \{\s*ScrollViewReader \{ proxy in\s*ScrollView \{/, `${file} reader 必須包住 ScrollView`);
+      assert.match(source, /proxy\.scrollTo\(target\.rawValue, anchor: \.top\)/);
+    } else {
+      assert.match(source, /var body: some View \{\s*\n(?:\s*let _ = [A-Za-z]+\s*\n)?\s*ScrollView \{/, `${file} 少了外層 ScrollView`);
+    }
   }
 });
 

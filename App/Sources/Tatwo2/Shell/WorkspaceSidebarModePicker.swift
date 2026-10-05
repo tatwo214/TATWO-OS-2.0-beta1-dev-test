@@ -47,7 +47,6 @@ struct WorkspaceSidebarModePicker: View {
         let selected = selection == mode
         return Button { onSelect(mode) } label: {
             modeLabel(mode, count: count, selected: selected)
-                .foregroundStyle(selected ? Color.primary : Color.secondary.opacity(0.90))
                 .frame(maxWidth: .infinity)
                 .frame(height: 30)
                 .chatGlassChip(isSelected: selected)

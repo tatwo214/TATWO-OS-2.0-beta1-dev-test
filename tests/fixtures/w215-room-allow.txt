@@ -1,0 +1,6 @@
+App/Sources/Tatwo2/Chat/*.swift
+App/Sources/Tatwo2/New/ChatSystemNoteRow.swift
+App/Sources/Tatwo2/New/ChatArtifactsCard.swift
+App/Sources/Tatwo2/**/*Acceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/**

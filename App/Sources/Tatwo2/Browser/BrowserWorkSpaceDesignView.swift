@@ -19,6 +19,8 @@ final class BrowserWorkSpaceStore: ObservableObject {
         var isImage: Bool { name.lowercased().hasSuffix(".png") }
     }
     @Published private(set) var spaces: [Space] = []
+    /// Favorites leaves read the registry through this store, including in DM.
+    @Published private(set) var favorites: [BrowserFavorite] = []
     @Published private(set) var selectedSpaceID = 0
     @Published var focusMode = false { didSet { if sidebarPinned && focusMode { focusMode = false } } }
     /// 固定時不接受被動收合；單一開關可明確解除固定並收合。
@@ -41,7 +43,7 @@ final class BrowserWorkSpaceStore: ObservableObject {
     var spacePageCount: Int { spaces.count }
     func selectSpace(_ id: Int) {
         guard spaces.contains(where: { $0.id == id }) else { return }
-        selectedSpaceID = id
+        if selectedSpaceID != id { selectedSpaceID = id }
         if !selectedSpace.isSessionSpace { lastWorkSpaceID = spaceIDs[id] }
         refresh()
     }
@@ -64,7 +66,7 @@ final class BrowserWorkSpaceStore: ObservableObject {
         var title: String
         var url: String
     }
-    struct Folder: Identifiable {
+    struct Folder: Identifiable, Equatable {
         var id = UUID()
         var name = "新資料夾"
         var bookmarks: [Bookmark] = []
@@ -78,6 +80,7 @@ final class BrowserWorkSpaceStore: ObservableObject {
     @Published private(set) var folders: [Folder] = []
     @Published var annotationTab: BrowserTab?
     @Published var bookmarkEditorActive = false
+    @Published private(set) var closedBatchCount = 0
     @Published private(set) var lastRemovedBookmark: BrowserTabRegistry.RemovedBookmark?
     private var currentFolderID: UUID?
 
@@ -207,29 +210,35 @@ final class BrowserWorkSpaceStore: ObservableObject {
         let key = tabIDs.count; tabIDs[key] = id; return key
     }
     private func refresh() {
+        if favorites != registry.favorites { favorites = registry.favorites }
         for folder in folders { folderStates[folder.id] = folder }
-        spaces = registry.spaces.map { Space(id: spaceKey($0.id), name: $0.name, isSessionSpace: $0.isSessionSpace, registryID: $0.id, color: $0.color) }
-        spaces = spaces.filter(\.isSessionSpace) + spaces.filter { !$0.isSessionSpace }
+        let projectedSpaces = registry.spaces.map { Space(id: spaceKey($0.id), name: $0.isSessionSpace ? "對話瀏覽器" : $0.name, isSessionSpace: $0.isSessionSpace, registryID: $0.id, color: $0.color) }
+        let nextSpaces = projectedSpaces.filter(\.isSessionSpace) + projectedSpaces.filter { !$0.isSessionSpace }
+        if spaces != nextSpaces { spaces = nextSpaces }
         if !spaces.contains(where: { $0.id == selectedSpaceID }) {
             selectedSpaceID = spaces.first(where: { !$0.isSessionSpace })?.id ?? spaces.first?.id ?? 0
         }
         refreshSessionFolders()
         guard let spaceID = spaceIDs[selectedSpaceID], let space = registry.spaces.first(where: { $0.id == spaceID }) else { return }
-        folders = space.folders.map { folder in
+        let batchCount = registry.closedWorkSpaceBatches[spaceID]?.records.count ?? 0
+        if closedBatchCount != batchCount { closedBatchCount = batchCount }
+        let nextFolders = space.folders.map { folder in
             var projected = folderStates[folder.id] ?? Folder(id: folder.id)
             projected.name = folder.name
             projected.bookmarks = folder.bookmarks.map { Bookmark(id: $0.id, title: $0.title, url: $0.url.absoluteString) }
             return projected
         }
+        if folders != nextFolders { folders = nextFolders }
         let owned = space.isSessionSpace ? registry.tabs.filter {
             if case .chatSession = $0.owner { return true }; return false
         } : registry.tabs(ownedBy: .workSpace(spaceID: space.id))
         let bookmarkIDs = Set(folders.flatMap(\.bookmarks).map(\.id))
-        tabs = owned.map { Tab(id: tabKey($0.id), title: $0.title, pinned: $0.isPinned, url: $0.url?.absoluteString ?? "about:blank", sleeping: $0.isSleeping, faviconPNG: $0.faviconPNG, registryID: $0.id, bookmarkID: $0.bookmarkID.flatMap { bookmarkIDs.contains($0) ? $0 : nil }, favoriteID: $0.favoriteID, folderID: $0.folderID, loading: registry.loadingTabIDs.contains($0.id)) }
+        let nextTabs = owned.map { Tab(id: tabKey($0.id), title: $0.title, pinned: $0.isPinned, url: $0.url?.absoluteString ?? "about:blank", sleeping: $0.isSleeping, faviconPNG: $0.faviconPNG, registryID: $0.id, bookmarkID: $0.bookmarkID.flatMap { bookmarkIDs.contains($0) ? $0 : nil }, favoriteID: $0.favoriteID, folderID: $0.folderID, loading: registry.loadingTabIDs.contains($0.id)) }
+        if tabs != nextTabs { tabs = nextTabs }
         if !tabs.contains(where: { $0.id == selectedID }) { selectedID = stayOnStartPage ? -1 : (tabs.first?.id ?? -1) }
-        if tabs.isEmpty && !sidebarPinned { focusMode = false }
+        if tabs.isEmpty && !sidebarPinned && focusMode { focusMode = false }
     }
-    struct SessionFolder: Identifiable {
+    struct SessionFolder: Identifiable, Equatable {
         // nil is the general folder, distinct from a project actually named 一般.
         let id: String?
         var name: String { id ?? "一般" }
@@ -248,15 +257,18 @@ final class BrowserWorkSpaceStore: ObservableObject {
         }
         var keys = groups.keys.sorted { ($0 ?? "") < ($1 ?? "") }
         if keys.isEmpty { keys = [nil] }
-        sessionFolders = keys.map { key in
+        let nextSessionFolders = keys.map { key in
             let summaries = groups[key] ?? []
             return SessionFolder(id: key, sessions: summaries,
                 tabs: summaries.flatMap { registry.tabs(ownedBy: .chatSession(sessionID: $0.sessionID)) },
                 expanded: sessionFolders.first { $0.id == key }?.expanded ?? true)
         }
-        botTabs = registry.tabs.filter { if case .bot = $0.owner { return true }; return false }
+        if sessionFolders != nextSessionFolders { sessionFolders = nextSessionFolders }
+        let nextBotTabs = registry.tabs.filter { if case .bot = $0.owner { return true }; return false }
+        if botTabs != nextBotTabs { botTabs = nextBotTabs }
         if !sessionFolders.flatMap(\.tabs).contains(where: { $0.id == selectedSessionTabID }) {
-            selectedSessionTabID = selectedSessionID.flatMap { registry.tabs(ownedBy: .chatSession(sessionID: $0)).first?.id }
+            let nextID = selectedSessionID.flatMap { registry.tabs(ownedBy: .chatSession(sessionID: $0)).first?.id }
+            if selectedSessionTabID != nextID { selectedSessionTabID = nextID }
             if selectedSessionTabID == nil { selectedSessionID = nil }
         }
     }
@@ -311,14 +323,14 @@ final class BrowserWorkSpaceStore: ObservableObject {
     var activeTabs: [Tab] { tabs.filter { !$0.pinned && $0.bookmarkID == nil && $0.favoriteID == nil } }   // 屬於書籤／珍藏的分頁住在各自那一列，不列在下面
     var pinnedTabs: [Tab] { tabs.filter { $0.pinned && $0.bookmarkID == nil && $0.favoriteID == nil } }
 
-    func select(_ id: Int) {
+    func select(_ id: Int, touch: Bool = true) {
         guard tabs.contains(where: { $0.id == id }), let uuid = tabIDs[id] else { return }
         selectedID = id
         if let folderID = tabs.first(where: { $0.id == id && $0.bookmarkID != nil })?.folderID,
            let index = folders.firstIndex(where: { $0.id == folderID }), !folders[index].expanded {
             folders[index].toggle()
         }
-        registry.touch(uuid)
+        if touch { registry.touch(uuid) }
     }
     func openFavorite(_ id: UUID) {
         guard let destination = sessionDestination,
@@ -346,14 +358,14 @@ final class BrowserWorkSpaceStore: ObservableObject {
         let tab = registry.openTab(owner: .workSpace(spaceID: spaceID), url: url)
         selectedID = tabKey(tab.id)
     }
-    /// External links (other apps, default-browser handoff): switch to the target space and select the new tab.
-    func openExternal(spaceID: UUID, url: URL) {
+    /// External links (other apps, default-browser handoff): switch to the target space and select the new tab. W183 R3b: sensitive＝一次性授權網址，分頁只在記憶體。
+    func openExternal(spaceID: UUID, url: URL, sensitive: Bool = false) {
         guard registry.spaces.contains(where: { $0.id == spaceID && !$0.isSessionSpace }) else { return }
         selectSpace(spaceKey(spaceID))
-        let tab = registry.openTab(owner: .workSpace(spaceID: spaceID), url: url)
+        let tab = registry.openTab(owner: .workSpace(spaceID: spaceID), url: url, sensitive: sensitive)
         selectedID = tabKey(tab.id)
     }
-    func select(registryID: UUID) { select(tabKey(registryID)) }   // W114：點連結開的新分頁要切過去
+    func select(registryID: UUID, touch: Bool = true) { if case let .workSpace(space)? = registry.tabs.first(where: { $0.id == registryID })?.owner, spaceIDs[selectedSpaceID] != space, registry.spaces.contains(where: { $0.id == space && !$0.isSessionSpace }) { selectSpace(spaceKey(space)) }; select(tabKey(registryID), touch: touch) }   // W114：點連結開的新分頁要切過去；W184 E：倒放的「回到 Browser」也走這裡（分頁在別的空間先切過去）
     func openPopup(spaceID: UUID, url: URL) {
         guard registry.spaces.contains(where: { $0.id == spaceID && !$0.isSessionSpace }) else { return }
         let folderID = registry.tabs.first { $0.id == selectedRegistryID && $0.owner == .workSpace(spaceID: spaceID) }?.folderID
@@ -417,10 +429,14 @@ final class BrowserWorkSpaceStore: ObservableObject {
 
 struct BrowserWorkSpaceDesignView: View {
     @ObservedObject var store: BrowserWorkSpaceStore
+    @ObservedObject var sidebarStore: BrowserWorkSpaceStore
+    let session: BrowserSessionProjection?
     var onClose: (() -> Void)? = nil
     init(store: BrowserWorkSpaceStore, onClose: (() -> Void)? = nil,
-         runtime: BrowserWorkSpaceRuntime? = nil) {
+         runtime: BrowserWorkSpaceRuntime? = nil, sidebarStore: BrowserWorkSpaceStore? = nil, session: BrowserSessionProjection? = nil) {
         _store = ObservedObject(wrappedValue: store)
+        _sidebarStore = ObservedObject(wrappedValue: sidebarStore ?? store)
+        self.session = session
         self.onClose = onClose
         _runtime = ObservedObject(wrappedValue: runtime ?? BrowserWorkSpaceRuntime.shared)
     }
@@ -443,14 +459,14 @@ struct BrowserWorkSpaceDesignView: View {
     @State var newTabIntent = false
     @StateObject private var chromeReveal = BrowserChromeReveal()
     @StateObject var translator = BrowserPageTranslator()
-    @ObservedObject private var chatSessionSelection = BrowserChatSessionSelection.shared
+    @ObservedObject var chatSessionSelection = BrowserChatSessionSelection.shared
     @State var extensionsPresented = false
     @State private var findPresented = false
     @State private var findFocusRequest = 0
     @State private var shortcutMap = BrowserGeneralSettings.load().shortcuts
     @State private var query = ""
-    @State private var command: EmbeddedBrowserCommand?
-    @State private var commandTabID: UUID?
+    @State var command: EmbeddedBrowserCommand?
+    @State var commandTabID: UUID?
     @State private var settingsError: String?
     @State private var settings = BrowserSettings.load()
     @State private var tabSearchPresented = false
@@ -464,7 +480,9 @@ struct BrowserWorkSpaceDesignView: View {
     private var folderFill: Color { LiquidGlassTokens.browserFolderFill }
     private var shadowColor: Color { LiquidGlassTokens.browserShadowColor }
 
-    var body: some View {
+    var body: some View { sessionRoutedContent }
+
+    var workspaceBody: some View {
         Group {
             if onClose != nil {
                 // PR4c（使用者 09-18 實機：「chat 分頁按鈕一直有問題」）：聊天旁的頂列不再浮在 CEF
@@ -484,14 +502,14 @@ struct BrowserWorkSpaceDesignView: View {
                     browserPageContent.modifier(BrowserTranslationHost(runtime: runtime, translator: translator, tabID: store.showsStartPage ? nil : store.selectedRegistryID)).modifier(BrowserChromeStyleEmbedLayer(reveal: chromeReveal, surfaceChanged: { restoreAddress() }))
                     if chromeReveal.revealed { workspaceToolbar.background { BrowserFloatingToolbarBackdrop() }.transition(.opacity).zIndex(BrowserOmniboxMetrics.chromeZIndex) }
                 }
-                .background(BrowserChromeRevealHost(reveal: chromeReveal, sidebarVisible: !store.focusMode || store.sidebarInteractionActive || store.hoverRailShown, chromeHeight: BrowserOmniboxMetrics.toolbarHeight))
+                .background(BrowserChromeRevealHost(reveal: chromeReveal, sidebarVisible: !sidebarStore.focusMode || sidebarStore.sidebarInteractionActive || sidebarStore.hoverRailShown, chromeHeight: BrowserOmniboxMetrics.toolbarHeight))
                 // W124：選單／尋找／網址列開著時頂列不准收，否則滑鼠一離開觸發帶就連錨點一起消失。
                 .onChange(of: addressFocused || addressEditing || findPresented || tabSearchPresented || extensionsPresented, initial: true) { _, hold in chromeReveal.holdOpen = hold }
                 .onDisappear { chromeReveal.stop() }
             }
         }
             .background(palette.canvasBase)
-            .onChange(of: runtime.foregroundTabRequest.serial) { _, _ in if let id = runtime.foregroundTabRequest.tabID { store.select(registryID: id) } }   // 獨立與聊天旁都適用
+            .onChange(of: runtime.foregroundTabRequest.serial) { _, _ in if let id = runtime.foregroundTabRequest.tabID { selectForegroundTab(id) } }
             .background {
                 // Undo bookmark deletion is a listed action; it only has a key when the user binds one.
                 if let combo = shortcutMap.bindings[.undoBookmarkDeletion] {
@@ -517,11 +535,11 @@ struct BrowserWorkSpaceDesignView: View {
             .sheet(item: $store.annotationTab) { BrowserAnnotationSheet(tab: $0).background(BrowserAnnotationShortcutDismiss()) }
             .sheet(isPresented: $store.importPresented) { importSheet }
             .onChange(of: store.selectedSpaceID) { _, _ in
-                tabSearchPresented = false; findPresented = false
+                command = nil; commandTabID = nil; tabSearchPresented = false; findPresented = false
                 focusedField = nil; addressFocused = false; restoreAddress()
             }
             .onChange(of: store.selectedID) { _, _ in
-                command = nil; findPresented = false; addressFocused = false; restoreAddress()
+                command = nil; commandTabID = nil; findPresented = false; addressFocused = false; restoreAddress()
                 focusedField = store.showsStartPage ? .search : nil
             }
             .onChange(of: store.selectedTab.url) { _, _ in if focusedField != .search && !addressFocused { restoreAddress() } }
@@ -557,7 +575,6 @@ struct BrowserWorkSpaceDesignView: View {
 
     @ViewBuilder private var browserPageContent: some View {
         if EmbeddedBrowserEnginePolicy.current != .chromiumCEF { BrowserEngineUnavailablePlaceholder() }
-        else if store.selectedSpace.isSessionSpace, let pick = chatSessionSelection.pick { BrowserChatSessionSurface(pick: pick, source: store.registry) }
         else if store.selectedSpace.isSessionSpace { sessionContent }
         else { browserContent }
     }
@@ -602,40 +619,23 @@ struct BrowserWorkSpaceDesignView: View {
     }
 
     // MARK: - Centered Search and extensions
+    /// W184 G2d：置中的搜尋框抽成 BrowserStartSearch（私訊框的 Browser 沒分頁、空白分頁時用同一份）；這裡只接主視窗的動作。
     private var page: some View {
-        ZStack {
-            RadialGradient(colors: [palette.brandAccent.opacity(BrowserSidebarMetrics.searchGlowOpacity), .clear],
-                           center: .center, startRadius: BrowserSidebarMetrics.zero, endRadius: BrowserSidebarMetrics.searchGlowRadius)
-                .frame(maxWidth: BrowserSidebarMetrics.searchGlowWidth, maxHeight: BrowserSidebarMetrics.searchGlowHeight).allowsHitTesting(false)
-            searchBox
-                .frame(maxWidth: BrowserSidebarMetrics.searchMaxWidth)
-                .padding(.horizontal, BrowserSidebarMetrics.laneCardOuterInset)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .overlay(alignment: .bottom) {
-            if !store.notice.isEmpty { Text(store.notice).font(.caption).foregroundStyle(.secondary).padding(BrowserSidebarMetrics.laneRowSpacing) }
-        }
-
+        BrowserStartSearch(query: $query, focus: $focusedField, field: .search, canAddTab: store.canAddTab,
+                           suggestions: store.suggestions(for: query), notice: store.notice,
+                           onSubmit: submitSearch, onAddTab: { store.addTab(); store.searchFocusRequest += 1 },
+                           onSuggestion: { suggestion in
+                               if let id = suggestion.tabID { store.select(id) }
+                               else { submitSearch() }
+                               restoreAddress()
+                           }) { searchEngineMenu }
     }
 
-    func send(_ action: EmbeddedBrowserCommand.Action) {
-        commandTabID = store.selectedRegistryID
-        command = EmbeddedBrowserCommand(action: action)
-    }
-
+    /// W184 G2d：同一個選單（BrowserSearchEngineMenu；私訊框的 Browser 沒分頁時也用它）；主視窗照舊存、存不進去照舊寫在這一頁。
     private var searchEngineMenu: some View {
-        Picker("搜尋引擎", selection: Binding(get: { settings.searchEngine }, set: { engine in
-            do {
-                let updated = BrowserSettings(searchEngine: engine)
-                try updated.save()
-                settings = updated
-                settingsError = nil
-            } catch { settingsError = "搜尋設定未儲存：\(error.localizedDescription)" }
-        })) {
-            Text("Google").tag(BrowserSearchEngine.google)
-            Text("DuckDuckGo").tag(BrowserSearchEngine.duckduckgo)
-            Text("Bing").tag(BrowserSearchEngine.bing)
+        BrowserSearchEngineMenu(engine: settings.searchEngine) { engine in
+            settingsError = BrowserSearchEngineMenu.save(engine)
+            if settingsError == nil { settings = BrowserSettings(searchEngine: engine) }
         }
     }
 
@@ -646,10 +646,10 @@ struct BrowserWorkSpaceDesignView: View {
     private var workspaceToolbar: some View {
         VStack(spacing: BrowserOmniboxMetrics.zero) {
             HStack(spacing: BrowserOmniboxMetrics.controlGap) {
-                if store.focusMode && onClose == nil {
+                if sidebarStore.focusMode && onClose == nil {
                     Color.clear.frame(width: WindowChromeMetrics.trafficLightSafeWidth)
                 }
-                if onClose == nil { BrowserSidebarControls(store: store) }
+                if onClose == nil { BrowserSidebarControls(store: sidebarStore) }
                 EmbeddedBrowserToolbar(addressText: $query, addressFieldFocused: $addressFocused,
                     state: runtime.navigationTabID == store.selectedRegistryID ? runtime.navigationState : .blank,
                     enabled: store.canAddTab, onSubmit: submitSearch, onCommand: send,
@@ -679,9 +679,7 @@ struct BrowserWorkSpaceDesignView: View {
         .background(BrowserChromeHitLayer(isActive: chromeOwnsHits))
     }
 
-    /// 獨立 Browser 的 chrome 一直在；聊天旁的浮動工具列只有顯示時才吃點擊，
-    /// 隱藏時要讓點擊照常落到網頁上，不能停在「誰都收不到」的空窗。
-    /// PR4c：兩種 chrome 都固定在網頁上方，一律擁有自己的點擊（擋標題列帶拖視窗）。
+    /// 已掛載的共用 chrome 擁有自己的點擊；Session 路由不再另掛外層 chrome。
     private var chromeOwnsHits: Bool { true }
 
     /// 有面板／編輯器擋在前面時，瀏覽器不該再吃鍵盤快捷鍵。
@@ -704,6 +702,7 @@ struct BrowserWorkSpaceDesignView: View {
     }
 
     func performBrowserAction(_ action: BrowserAction) {
+        guard session?.acceptsCommands != false else { return }
         switch action {
         case .newTab:   // ⌘T：看著網頁時不換頁，叫出空白搜尋面板；使用者 09-20：「再點一次是取消搜尋」
             if newTabIntent { newTabIntent = false; addressFocused = false; focusedField = nil; return }
@@ -719,67 +718,16 @@ struct BrowserWorkSpaceDesignView: View {
             store.select(tabs[(index + (action == .nextTab ? 1 : tabs.count - 1)) % tabs.count].id)
         case .toggleAnnotations: store.showAnnotations(store.selectedID)
         case .openDiagnostics: diagnosticsPresented = true
-        case .newSpace: store.addSpace()
-        case .openImport: store.requestImport()
+        case .newSpace: sidebarStore.addSpace()
+        case .openImport: sidebarStore.requestImport()
         case .printPage: send(.printPage)
         case .printPDF: send(.printPDF)
         default: break
         }
     }
 
-    private var searchBox: some View {
-        VStack(spacing: BrowserSidebarMetrics.zero) {
-            HStack(spacing: BrowserSidebarMetrics.downloadsPadding) {
-                Image(systemName: "magnifyingglass").font(.system(size: BrowserSidebarMetrics.searchIconSize)).foregroundStyle(.secondary)
-                TextField("Search", text: $query).font(.system(size: BrowserSidebarMetrics.searchFontSize))
-                    .textFieldStyle(.plain).focused($focusedField, equals: .search)
-                    .accessibilityIdentifier("browser.startSearch")
-                    .onSubmit(submitSearch).contextMenu { searchEngineMenu }
-            }.padding(.horizontal, BrowserSidebarMetrics.childGap).padding(.top, BrowserSidebarMetrics.childGap).padding(.bottom, BrowserSidebarMetrics.laneRowSpacing)
-            HStack {
-                roundButton("加入分頁", "plus") { store.addTab(); store.searchFocusRequest += 1 }.disabled(!store.canAddTab)
-                Spacer()
-                roundButton("搜尋", "arrow.up", action: submitSearch)
-                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(.top, BrowserSidebarMetrics.searchTopInset).padding(.horizontal, BrowserSidebarMetrics.settingsCardHorizontalPadding).padding(.bottom, BrowserSidebarMetrics.searchBottomInset)
-        .background(fieldFill, in: RoundedRectangle(cornerRadius: BrowserSidebarMetrics.laneCardCornerRadius))
-        .shadow(color: shadowColor.opacity(BrowserSidebarMetrics.searchShadowOpacity), radius: BrowserSidebarMetrics.searchShadowRadius, x: BrowserSidebarMetrics.zero, y: BrowserSidebarMetrics.downloadsPadding)
-        .overlay(alignment: .top) {
-            // An overlay does not move the centered box when suggestions appear.
-            if !store.suggestions(for: query).isEmpty {
-                suggestionList.offset(y: BrowserSidebarMetrics.searchSuggestionsOffset)
-            }
-        }
-    }
-
-    private func roundButton(_ label: String, _ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: BrowserSidebarMetrics.searchIconSize))
-                .frame(width: BrowserSidebarMetrics.searchButtonSize, height: BrowserSidebarMetrics.searchButtonSize).background(palette.surfaceBorder.opacity(BrowserSidebarMetrics.searchButtonOpacity), in: Circle())
-        }.buttonStyle(.plain).accessibilityLabel(label)
-    }
-
-    private var suggestionList: some View {
-        VStack(spacing: BrowserSidebarMetrics.zero) {
-            ForEach(store.suggestions(for: query)) { suggestion in
-                Button {
-                    if let id = suggestion.tabID { store.select(id) }
-                    else { submitSearch() }
-                    restoreAddress()
-                } label: {
-                    HStack {
-                        Text(suggestion.section).font(.caption).foregroundStyle(.secondary)
-                        Text(suggestion.title).font(.system(size: BrowserSidebarMetrics.rowFontSize)).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }.padding(BrowserSidebarMetrics.downloadsPadding).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-        }.background(fieldFill, in: RoundedRectangle(cornerRadius: BrowserSidebarMetrics.rowSpacing))
-    }
-
     private func submitSearch() {
+        guard session?.acceptsCommands != false else { return }
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         settings = BrowserSettings.load()
         guard let url = BrowserOmniboxResolver.resolve(query, engine: settings.searchEngine) else { return }
@@ -895,6 +843,8 @@ struct BrowserWorkSpaceDesignView: View {
 // Shared chat shell owns the header and OS footer; this view only supplies browser rows.
 struct BrowserWorkSpaceSidebarList: View {
     @ObservedObject var store: BrowserWorkSpaceStore
+    /// W184 G2d：借用這一份側欄的那一邊（私訊框的 Browser；見 BrowserSidebarGuest）。nil＝主視窗（照舊）。
+    var guest: BrowserSidebarGuest? = nil
     @ObservedObject private var downloadStore = BrowserDownloadStore.shared
     @State private var hoveredTab: Int?
     @State private var targetedFolderID: UUID?
@@ -917,45 +867,53 @@ struct BrowserWorkSpaceSidebarList: View {
 
     var body: some View {
         VStack(spacing: WorkspaceSidebarMetrics.sectionSpacing) {
-            if store.selectedSpace.isSessionSpace {
+            // W184 G2d：借用的那一邊（私訊框）看不到也開不了聊天旁的分頁（它的分頁跟主視窗的分頁清單分開）：照一般空間的排法、列它自己的分頁。
+            if store.selectedSpace.isSessionSpace && guest == nil {
                 sessionSidebar
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: BrowserSidebarMetrics.hairline) {
-                        BrowserFavoritesStrip(store: store)
+                        BrowserFavoritesStrip(store: store, external: guest?.favorites)
+                            .background { guest?.mark?("favorites") }
                         pinnedSection
                         folderSection
                         Divider().padding(.horizontal, BrowserSidebarMetrics.dividerHorizontalInset).padding(.vertical, BrowserSidebarMetrics.rowHorizontalPadding)
                         VStack(alignment: .leading, spacing: BrowserSidebarMetrics.hairline) {   // W114：整塊分頁區都是落點（含下面一段空白）
                             newTabButton
-                            ForEach(store.activeTabs) { tab in tabRow(tab) }
+                            if let guest { guest.tabs } else { ForEach(store.activeTabs) { tab in tabRow(tab) } }
                             Color.clear.frame(height: 56)
-                        }.modifier(BrowserSidebarDrop(store: store, target: .tabs))
+                        }.browserSidebarWhen(guest == nil) { $0.modifier(BrowserSidebarDrop(store: store, target: .tabs)) }
+                        if guest?.compact == true && !store.threadScoped { spaceRow.padding(.top, BrowserSidebarMetrics.rowHorizontalPadding) }
                     }
                 }
                 .frame(maxHeight: .infinity)
+                .background { guest?.mark?("scroll") }
                 .contentShape(Rectangle())
-                .contextMenu {
-                    Button("重新開啟關閉的分頁", action: store.reopenClosedTab).disabled(!store.canReopenClosedTab)
-                    Button("復原刪除的書籤", action: store.undoBookmarkDeletion).disabled(store.lastRemovedBookmark == nil)
-                    Button("新增分頁") { store.addTab(); store.searchFocusRequest += 1 }.disabled(!store.canAddTab)
-                    Button("新增書籤（目前分頁）", action: store.bookmarkCurrentTab)
-                    Button("新增 space", action: store.addSpace)
-                    Button("從其他瀏覽器導入…", action: store.requestImport)
-                    Button("註解…") { store.showAnnotations(store.selectedID) }
-                    Button("新增資料夾", action: beginFolderNaming)
-                    Divider()
-                    Button("診斷…") { diagnosticsPresented = true }
+                .browserSidebarWhen(guest == nil) { list in
+                    list.contextMenu {
+                        BrowserWorkSpaceCloseMenu(store: store)
+                        Button("重新開啟關閉的分頁", action: store.reopenClosedTab).disabled(!store.canReopenClosedTab)
+                        Button("復原刪除的書籤", action: store.undoBookmarkDeletion).disabled(store.lastRemovedBookmark == nil)
+                        Button("新增分頁") { store.addTab(); store.searchFocusRequest += 1 }.disabled(!store.canAddTab)
+                        Button("新增書籤（目前分頁）", action: store.bookmarkCurrentTab)
+                        Button("新增 space", action: store.addSpace)
+                        Button("從其他瀏覽器導入…", action: store.requestImport)
+                        Button("註解…") { store.showAnnotations(store.selectedID) }
+                        Button("新增資料夾", action: beginFolderNaming)
+                        Divider()
+                        Button("診斷…") { diagnosticsPresented = true }
+                    }
                 }
             }
             if !store.threadScoped { spaceControls } // 聊天旁的分頁組跟著討論串走，不給手動切
         }
         .frame(maxHeight: .infinity)
         .sheet(isPresented: $diagnosticsPresented) { BrowserDiagnosticsView() }
+        // W184 G2d：借用的那一邊留著它自己的側欄（下載清單開著時）；不動主視窗的 store（兩邊是同一份 store）。
         .onChange(of: downloadsPresented || diagnosticsPresented || editingFolderID != nil) { _, active in
-            store.sidebarInteractionActive = active
+            if let guest { guest.interaction(active) } else { store.sidebarInteractionActive = active }
         }
-        .onDisappear { store.sidebarInteractionActive = false }
+        .onDisappear { if let guest { guest.interaction(false) } else { store.sidebarInteractionActive = false } }
     }
 
     // MARK: - Session space (registry-only, no creation or drop targets)
@@ -1020,7 +978,12 @@ struct BrowserWorkSpaceSidebarList: View {
             }
     }
 
-    private var spaceControls: some View {
+    /// W184 G2d：借用的那一邊側欄很矮（緊湊）＝這一排改在列表最後、跟著一起捲（BrowserSidebarGuest.compact）。
+    @ViewBuilder private var spaceControls: some View {
+        if guest?.compact != true { spaceRow }
+    }
+
+    private var spaceRow: some View {
         HStack(spacing: BrowserSidebarMetrics.rowHorizontalPadding) {
             Button { downloadsPresented.toggle() } label: {
                 Image(systemName: "arrow.down.circle")
@@ -1036,17 +999,33 @@ struct BrowserWorkSpaceSidebarList: View {
             }
             .accessibilityLabel("瀏覽器下載")
             .popover(isPresented: $downloadsPresented, arrowEdge: .bottom) { downloadsPopover }
+            .background { guest?.mark?("downloads") }
             WorkspaceSpaceControls {
-                    ForEach(store.spaces) { BrowserSpaceDot(store: store, space: $0, fallbackFill: folderFill, idleFill: palette.surfaceBorder) }
+                    // W184 G2d：借用的那一邊（私訊框）：圓點不給編輯（右鍵不改名、不換色、不刪），點＝交給它（記下使用者選的空間再切）。
+                    ForEach(store.spaces) { space in
+                        BrowserSpaceDot(store: store, space: space, fallbackFill: folderFill, idleFill: palette.surfaceBorder,
+                                        editable: guest == nil, choose: guest?.selectSpace)
+                            .background { guest?.mark?("space." + (space.registryID?.uuidString ?? String(space.id))) }
+                    }
                 Button(action: store.addSpace) {
                     Image(systemName: "plus").font(.system(size: WorkspaceSpaceControlMetrics.plusFontSize, weight: .bold)).foregroundStyle(.secondary)
                         .frame(width: WorkspaceSpaceControlMetrics.cellWidth, height: WorkspaceSpaceControlMetrics.cellHeight).contentShape(Rectangle())
                 }.accessibilityLabel("新增空間").accessibilityIdentifier("browser.space.add")
+                    .browserSidebarWhen(guest != nil) { plus in
+                        plus.disabled(true).opacity(BrowserSidebarMetrics.settingsDisabledOpacity).help(guest?.addSpaceOff ?? "")
+                            .accessibilityValue(guest?.addSpaceOff ?? "")
+                    }
+                    .background { guest?.mark?("space.add") }
             }
             Color.clear.frame(width: BrowserSidebarMetrics.footerControlSize, height: WorkspaceSpaceControlMetrics.cellHeight).accessibilityHidden(true)
         }
         .frame(height: WorkspaceSpaceControlMetrics.cellHeight)
         .buttonStyle(.plain).foregroundStyle(.secondary).padding(.horizontal, BrowserSidebarMetrics.dividerHorizontalInset)
+        .browserSidebarWhen(guest != nil) { row in
+            row.accessibilityElement(children: .contain).accessibilityLabel("切換空間")
+                .accessibilityValue(store.selectedSpace.name).accessibilityIdentifier(guest?.spacesIdentifier ?? "")
+        }
+        .background { guest?.mark?("spaces") }
     }
 
     private var downloadsPopover: some View {
@@ -1174,10 +1153,16 @@ struct BrowserWorkSpaceSidebarList: View {
                     Spacer(minLength: 0)
                 }.padding(BrowserSidebarMetrics.rowHorizontalPadding)
             }.buttonStyle(.plain)
+                .background { guest?.mark?("pinned") }
             if pinsExpanded {
-                ForEach(store.pinnedTabs) { tab in tabRow(tab).padding(.leading, BrowserSidebarMetrics.workspaceFaviconSize) }
+                // W184 G2d：借用的那一邊畫它自己的那一列（點＝開在它那邊、× 關它那邊的分頁；不關、不動主視窗釘選的分頁）。
+                ForEach(store.pinnedTabs) { tab in
+                    if let guest { guest.pinnedRow(tab).padding(.leading, BrowserSidebarMetrics.workspaceFaviconSize) }
+                    else { tabRow(tab).padding(.leading, BrowserSidebarMetrics.workspaceFaviconSize) }
+                }
             }
-        }.font(.system(size: BrowserSidebarMetrics.workspaceRowFontSize)).modifier(BrowserSidebarDrop(store: store, target: .pinned))
+        }.font(.system(size: BrowserSidebarMetrics.workspaceRowFontSize))
+            .browserSidebarWhen(guest == nil) { $0.modifier(BrowserSidebarDrop(store: store, target: .pinned)) }
     }
 
     private func beginFolderNaming() {
@@ -1211,25 +1196,33 @@ struct BrowserWorkSpaceSidebarList: View {
                                 }
                         }.padding(BrowserSidebarMetrics.rowHorizontalPadding)
                     } else {
-                        BrowserBookmarkFolderRow(store: store, folder: folder)
+                        BrowserBookmarkFolderRow(store: store, folder: folder, external: guest?.folder(folder))
                     }
                 }.font(.system(size: BrowserSidebarMetrics.workspaceRowFontSize))
                     .background(targetedFolderID == folder.id ? palette.surfaceBorder : .clear,
                                 in: RoundedRectangle(cornerRadius: BrowserSidebarMetrics.rowSpacing))
-                    .contextMenu {
-                        Button("新增書籤（目前分頁）") { store.saveBookmark(tabID: store.selectedID, into: folder.id) }
-                            .disabled(store.selectedRegistryID == nil)
+                    .background { guest?.mark?("folder.\(folder.id.uuidString)") }
+                    .browserSidebarWhen(guest == nil) { row in   // W184 G2d：借用的那一邊不存書籤、不拖不放
+                        row.contextMenu {
+                            Button("新增書籤（目前分頁）") { store.saveBookmark(tabID: store.selectedID, into: folder.id) }
+                                .disabled(store.selectedRegistryID == nil)
+                        }
+                        .dropDestination(for: String.self) { payloads, _ in
+                            store.saveDraggedTabs(payloads, into: folder.id)
+                        } isTargeted: { targeted in
+                            if targeted { targetedFolderID = folder.id }
+                            else if targetedFolderID == folder.id { targetedFolderID = nil }
+                        }
                     }
-                    .dropDestination(for: String.self) { payloads, _ in
-                        store.saveDraggedTabs(payloads, into: folder.id)
-                    } isTargeted: { targeted in
-                        if targeted { targetedFolderID = folder.id }
-                        else if targetedFolderID == folder.id { targetedFolderID = nil }
-                    }
-                if folder.expanded {
+                if guest?.folder(folder).expanded ?? folder.expanded {
                     ForEach(folder.bookmarks) { bookmark in
-                        BrowserBookmarkRow(store: store, bookmark: bookmark, folderID: folder.id) {
-                            IslandNotice.shared.info(title: "已刪除書籤", detail: "\($0)・側欄右鍵可復原", duration: 6)
+                        if let guest {
+                            BrowserBookmarkRow(store: store, bookmark: bookmark, folderID: folder.id, external: guest.bookmarks)
+                                .background { guest.mark?("bookmark.\(bookmark.id.uuidString)") }
+                        } else {
+                            BrowserBookmarkRow(store: store, bookmark: bookmark, folderID: folder.id) {
+                                IslandNotice.shared.info(title: "已刪除書籤", detail: "\($0)・側欄右鍵可復原", duration: 6)
+                            }
                         }
                     }
                 }
@@ -1238,13 +1231,17 @@ struct BrowserWorkSpaceSidebarList: View {
     }
 
     private var newTabButton: some View {
-        Button { store.addTab(); store.searchFocusRequest += 1 } label: {
+        Button { if let guest { guest.newTab() } else { store.addTab(); store.searchFocusRequest += 1 } } label: {
             Label("新分頁", systemImage: "plus")
                 .font(.system(size: BrowserSidebarMetrics.workspaceRowFontSize)).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(BrowserSidebarMetrics.rowHorizontalPadding)
-        }.buttonStyle(.plain).disabled(!store.canAddTab)
+                .browserSidebarWhen(guest != nil) { $0.contentShape(Rectangle()) }   // W184 G2d：借用的那一邊整列都按得到
+        }.buttonStyle(.plain).disabled(guest == nil && !store.canAddTab)
+            .browserSidebarWhen(guest != nil) { $0.help(guest?.newTabHelp ?? "") }
             .accessibilityLabel("新分頁")
-            .accessibilityIdentifier("browser.newTab")
+            .browserSidebarWhen(guest == nil) { $0.accessibilityIdentifier("browser.newTab") }
+            .browserSidebarWhen(guest != nil) { $0.accessibilityIdentifier(guest?.newTabIdentifier ?? "") }   // 借用的那一邊用它自己的
+            .background { guest?.mark?("newTab") }
     }
 
     private func tabRow(_ tab: BrowserWorkSpaceStore.Tab) -> some View {
@@ -1270,6 +1267,7 @@ struct BrowserWorkSpaceSidebarList: View {
                 if let id = tab.registryID { store.registry.addFavorite(tabID: id) }
             }
             Button("關閉分頁") { store.close(tab.id) }
+            BrowserWorkSpaceCloseMenu(store: store)
             Button("重新開啟關閉的分頁", action: store.reopenClosedTab).disabled(!store.canReopenClosedTab)
             Button("註解…") { store.showAnnotations(tab.id) }
         }

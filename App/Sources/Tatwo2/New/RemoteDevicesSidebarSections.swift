@@ -89,9 +89,20 @@ struct RemoteDeviceSectionContent: View {
     let section: RemoteSidebarSection
     /// W98c：專案列預設收合，展開狀態只活在這個 View（設備列一收合就整個丟掉），不持久化。
     @State private var expandedProjects: Set<UUID> = []
+    @ObservedObject private var spaces = CoderProjectSpaces.shared   // W180 E3：選了專案空間時只列放進來的遠端專案
 
     var body: some View {
-        if section.isOnline {
+        // W182 R4：離線但有離線副本時照樣列出最後同步的專案與串（整區變淡；點串打開唯讀、可以「在這台接著聊」）。
+        if section.isOnline || section.offlineSyncedAt != nil {
+            if !section.isOnline, let syncedAt = section.offlineSyncedAt {
+                Text("離線・最後同步 \(RemoteDeviceSidebarSection.seen(syncedAt))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .padding(.leading, 20)
+                    .help("「\(section.deviceName)」連不上：下面是最後同步到的專案與對話，可以看；要接著聊，打開一條按「在這台接著聊」")
+                    .accessibilityIdentifier("chat-sidebar-remote-offline-synced")
+            }
             if section.projects.isEmpty {
                 Text("這台還沒有專案")
                     .font(.system(size: 11))
@@ -139,6 +150,12 @@ struct RemoteDeviceSectionContent: View {
                         }
                     }
                 }
+                .coderSpaceHidden(model.mode == .chat && !spaces.showsRemote(project.id, deviceID: section.deviceID))   // W180 E3：只在 Coder 過濾
+                .opacity(section.isOnline ? 1 : 0.55)   // W182 R4：離線副本整區變淡
+            }
+            if model.mode == .chat, !section.projects.isEmpty,
+               !section.projects.contains(where: { spaces.showsRemote($0.id, deviceID: section.deviceID) }) {
+                Text("這個專案空間沒有放這台的專案").font(.system(size: 11)).foregroundStyle(.tertiary).padding(.leading, 20)   // W180 E3
             }
         } else {
             Text("離線・\(RemoteDeviceSidebarSection.seen(section.lastSeenAt))")
@@ -168,7 +185,12 @@ private struct RemoteThreadRowView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("拉到這台（複製一份到本機）") { _ = model.pullThreadFromDevice(deviceID, thread.id) }
+            // W182 R4：那台連不上時改成「在這台接著聊」（用離線副本複製一條到本機）。
+            if model.remoteOfflineCanContinue(deviceID: deviceID, threadID: thread.id) {
+                Button("在這台接著聊") { model.continueOfflineThreadHere(deviceID: deviceID, threadID: thread.id) }
+            } else {
+                Button("拉到這台（複製一份到本機）") { _ = model.pullThreadFromDevice(deviceID, thread.id) }
+            }
         }
     }
 

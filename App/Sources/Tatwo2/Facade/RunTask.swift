@@ -18,7 +18,7 @@ enum RunTask {
         let projectName = spec["project"] as? String ?? "任務"
         let workdir = spec["workdir"] as? String ?? NSHomeDirectory()
         let threadTitle = spec["thread"] as? String ?? projectName
-        let routeID = spec["route"] as? String ?? "gpt-5.6-sol"
+        let routeID = spec["route"] as? String ?? "gpt-6.1-sol"
         let prompt = spec["prompt"] as? String ?? ""
         let timeout = (spec["timeoutMinutes"] as? Double ?? 30) * 60
         Task { @MainActor in

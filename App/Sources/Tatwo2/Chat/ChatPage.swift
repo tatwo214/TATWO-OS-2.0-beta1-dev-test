@@ -8,14 +8,15 @@ import Darwin
 
 struct ChatPage: View {
     /// Standalone Browser mode keeps the app-wide workspace registry.
-    @StateObject var browserWorkSpaceStore: BrowserWorkSpaceStore
+    @StateObject private var browserLayout: ChatBrowserLayoutObservation
+    var browserWorkSpaceStore: BrowserWorkSpaceStore { browserLayout.store }
     /// Chat's inspector owns a separate registry and CEF profile.
-    @StateObject private var chatBrowserWorkSpaceStore: BrowserWorkSpaceStore
-    private let chatBrowserRuntime: BrowserWorkSpaceRuntime
+    private var chatBrowserWorkSpaceStore: BrowserWorkSpaceStore { browserLayout.inspectorStore }
+    private var chatBrowserRuntime: BrowserWorkSpaceRuntime { browserLayout.inspectorRuntime }
     @State var islandFooterHovering = false
     @State var globalNoteOpen = ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil && ["1", "2"].contains(ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_GLOBAL_NOTE"] ?? "")
     @Environment(\.tatwoSurfaceKind) var surface
-    @ObservedObject var model: ChatPageModel
+    @WorkspaceObservedObject var model: ChatPageModel
     private let retainedLifecycle: TatwoRetainedChatLifecycle?
     let quotaProviders: [UsageProviderStatus]
     let initialLiveQuotaSnapshot: LiveQuotaDeckSnapshot?
@@ -26,8 +27,8 @@ struct ChatPage: View {
     @State var showDeveloperInfo = false
     @State var showComputerUseInfo = false
     @State var showIPadConnection = false
-    @ObservedObject private var spaceSetupPreview = SpaceSetupPreviewState.shared
-    @ObservedObject private var feedback = FeedbackCoordinator.shared
+    @WorkspaceObservedObject private var spaceSetupPreview = SpaceSetupPreviewState.shared
+    @WorkspaceObservedObject private var feedback = FeedbackCoordinator.shared
     @State var showTabDesignPhilosophy = false
     @State var tabDesignPhilosophyHoverGeneration = 0
     @State var tabDesignPhilosophyCloseWorkItem: DispatchWorkItem?
@@ -110,10 +111,10 @@ struct ChatPage: View {
     @State var showLiveQuota = false
     @State var showThemePicker =
         ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_CHAT_THEME_PICKER"] == "1"
-    @ObservedObject var themeStore = TatwoThemeStore.shared
+    @WorkspaceObservedObject var themeStore = TatwoThemeStore.shared
     /// CLI 分頁的「進行中 loops」列與標題呼吸光暈的資料源（Work OS dispatch registry）。
     /// 和 app delegate 的中斷閘共用同一份判定，不另造事件系統。
-    @ObservedObject private var loopsActivity = TatwoLoopsActivityMonitor.shared
+    @WorkspaceObservedObject private var loopsActivity = TatwoLoopsActivityMonitor.shared
     /// CLI 左列 session 樹：Loops 段（進行中＋近 1h）；與 activity 同 registry。
     @State var cliLoopTreeRows: [CLILoopTreeRow] = []
     /// 點 loop 列後主區顯示詳情（非終端）。
@@ -190,12 +191,8 @@ struct ChatPage: View {
         self.gatewayLiveStatus = gatewayLiveStatus
         _rightPanelPreference = rightPanelPreference
         _isRightPanelOpen = isRightPanelOpen
-        _model = ObservedObject(wrappedValue: model)
-        _browserWorkSpaceStore = StateObject(wrappedValue: BrowserWorkSpaceStore(registry: model.browserTabRegistry))
-        let chatRegistry = BrowserTabRegistry.chatInspectorRegistry(source: model.browserTabRegistry)
-        _chatBrowserWorkSpaceStore = StateObject(wrappedValue: BrowserWorkSpaceStore(registry: chatRegistry))
-        chatBrowserRuntime = BrowserWorkSpaceRuntime.forChat("chat-browser-inspector", registry: chatRegistry,
-            adoptsWorkSpaceTabs: true)
+        _model = WorkspaceObservedObject(wrappedValue: model, forwardWhenHidden: ChatPageModel.presentationChanges, shouldForward: { $0.mode != .browser })
+        _browserLayout = StateObject(wrappedValue: ChatBrowserLayoutObservation(model: model))
     }
 
     @AppStorage("chat.sharedBrowserPanelWidth") private var sharedBrowserPanelWidth = 0.0
@@ -204,7 +201,14 @@ struct ChatPage: View {
     @State private var sharedBrowserDragStart: CGFloat?
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("ChatPage.body")
+        let _ = ChatRenderProbe.enabled ? (ChatRenderProbe.browserStore = browserWorkSpaceStore) : ()
+        #endif
         GeometryReader { proxy in
+            #if DEBUG
+            let _ = ChatRenderProbe.record("ChatPage.geometry")
+            #endif
             let layout = ChatBrowserInspectorLayout.resolve(windowWidth: proxy.size.width)
             // /goal 101 G5：CEF 是原生 NSView，會壓在所有 SwiftUI 浮層之上；設定頁是蓋滿工作區的 SwiftUI overlay，
             // 聊天旁瀏覽器開著時會把它擠成半截又壓住。設定頁開著就讓瀏覽器面板讓位（狀態保留，關掉設定自動回來）。
@@ -234,7 +238,7 @@ struct ChatPage: View {
                 }
             }
             .onChange(of: visible && layout.canDock ? Double(width + ChatBrowserInspectorLayout.dividerWidth) : 0, initial: true) { _, docked in
-                dockedBrowserWidthSignal = docked
+                if dockedBrowserWidthSignal != docked { dockedBrowserWidthSignal = docked }
             }
             // W104：切換討論串、或一輪回覆結束（AI 可能剛改完檔）就重讀這條聊天的變更數。
             .onChange(of: model.selectedThreadID, initial: true) { _, _ in model.refreshWorkspaceChangeSummary() }
@@ -248,6 +252,7 @@ struct ChatPage: View {
                 }
             }
         }
+        .coderScrollIndicators(model.mode == .chat || model.mode == .cli)
         .onChange(of: model.mode) { _, mode in
             if mode == .browser {
                 browserInspectorPresented = false
@@ -387,7 +392,7 @@ struct ChatPage: View {
                         // 2026-09-02 使用者：常駐鈕、資訊卡、工具箱三顆一起放在頂右、紅綠燈基準線。
                         .overlay(alignment: .topTrailing) {
                             // W177：ChatGPT Space 不掛 Coder 的資訊卡／瀏覽器／工具箱（它自己有「打開網頁版」）。
-                            if !isPanel && model.mode != .browser && model.mode != .chatgpt {
+                            if !isPanel && model.mode != .tatwo && model.mode != .browser && model.mode != .chatgpt {
                                 rightPanelControlStrip(showsThreadControls: hasThreadInfo)
                                     .padding(.trailing, 14)
                                     .offset(y: -WindowChromeMetrics.chromeRowLift)
@@ -513,10 +518,13 @@ struct ChatPage: View {
                         tatwoSettingsOverlay
                     }
                 }
+                // W179 UI：設定、搜尋、筆記、模型／協作面板、資訊卡開著時，私訊圓鈕與停靠框先收起（只回報，不改畫面）。
+                .globalDMCovers(globalDMCoversMainWindow, id: "chat")
                 // W177：ChatGPT 的圖片放大是整個視窗的燈箱（使用者 09-25 #128「點空白處要可以退出」）。
                 .overlay {
                     if model.mode == .chatgpt && !isPanel && !showSettingsPage {
                         ChatGPTImageLightbox(model: ChatGPTSpaceModel.shared)
+                        GlobalDMLightboxCover(model: ChatGPTSpaceModel.shared)
                     }
                 }
                 .onAppear {
@@ -583,6 +591,7 @@ struct ChatPage: View {
                 artifact: model.activePlanArtifact,
                 isPresented: $planInspectorPresented,
                 isWriting: model.isRunning,
+                isExecuting: model.isActivePlanExecutionRunning,
                 selection: model.planFlowSelectionProjection?.selection,
                 localActionPresentation:
                     model.planWorkOSLocalActionPresentation,
@@ -604,13 +613,16 @@ struct ChatPage: View {
                 onExecute: model.confirmActivePlan,
                 onStart: model.startActivePlan,
                 onFeedbackSubmitted: model.finishFeedbackPlan,
-                onDistillSubmission: model.saveDistillSubmission,
+                distillActions: model.distillCanvasActions,   // W180 E4
                 onPRSubmit: model.submitActivePRPlan,
-                onPRDiscuss: model.returnActivePRToDiscussion)
+                onPRDiscuss: model.returnActivePRToDiscussion,
+                onPRRetry: model.retryActivePRSubmission,
+                onExitMode: model.exitActiveCanvasMode)
                 .id(model.activePlanArtifact?.planID)
         }
         .onAppear {
             model.updateGatewayLiveStatus(gatewayLiveStatus)
+            if model.isLive { DMBrowserSpaces.shared.adopt(browserWorkSpaceStore) }   // W184 G2：私訊框 Browser 的書籤、珍藏、切換空間跟主視窗側欄同一份
             // 容器關閉＝使用者已過 LoopsInterruptGate 確認。這裡除了停 chat runner，
             // 還要顯式收掉 CLI 分頁的 shell，不留給 dealloc（規格：中斷不得靜默遺失）。
             retainedLifecycle?.registerStopHandler {
@@ -663,6 +675,9 @@ struct ChatPage: View {
                 model.ensureNativeTerminal()
             }
         }
+        .onChange(of: globalDMCoversMainWindow || showOSMenu || showLiveQuota || showThemePicker || planInspectorPresented, initial: true) { _, overlayVisible in
+            _model.forwardOrdinaryUpdates(overlayVisible)
+        }
         .onChange(of: browserWorkSpaceStore.focusMode) { _, _ in
             resetChatProjectHover()
         }
@@ -693,8 +708,9 @@ struct ChatPage: View {
         .onReceive(
             NotificationCenter.default.publisher(for: .tatwoChatAllowMCPTool)
         ) { notification in
-            guard let tool = notification.object as? String else { return }
-            model.allowMCPTool(named: tool)
+            // W180 D3：寫進那則訊息所屬的討論串（通知帶著它），不是 Coder 目前選中的那條。
+            guard let request = notification.object as? ChatMCPAllowRequest else { return }
+            model.allowMCPTool(named: request.tool, threadID: request.threadID)
         }
         // 2026-08-24 D 工作流：plan 問題膠囊（ChatBubble 選項→通知→
         // 答案回送同 session 續跑，不重貼使用者訊息）。
@@ -742,5 +758,15 @@ struct ChatPage: View {
                 model.stop()
             }
         }
+    }
+}
+
+// W179 UI：主視窗有東西整頁蓋上來時，私訊圓鈕與停靠框先收起（GlobalDMPanelController 訂閱）。只讀狀態，不改畫面。
+extension ChatPage {
+    var globalDMCoversMainWindow: Bool {
+        // 模型／協作浮層的條件同 chatFloatingPanelOverlay：計劃書側欄開著時浮層不畫，也就不算蓋層。
+        surface == .window && (showSettingsPage || showChatSearch || globalNoteOpen
+            || (!planInspectorPresented && (showUltraworkPanel || showSingleModelPanel || ultraworkRolePickerTarget != nil))
+            || (infoCardFloatingOpen && model.mode == .chat && model.selectedThreadID != nil))
     }
 }

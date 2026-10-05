@@ -345,3 +345,4 @@ App/Sources/Tatwo2/Facade/EngineLinks.swift | macos username | 設定頁引擎�
 tests/w162-scan.test.mjs | macos username | 掃描測試用的合成路徑，使用者名稱是單一字母佔位，不是真的帳號 | ^(?:x)$
 tests/w177-chatgpt-space.test.mjs | email address | W177 帳號測試用 invalid 範例網域的合成信箱，不是個人信箱 | ^(?:user\x40example\.invalid)$
 tests/w177-chatgpt-space.test.mjs | macos username | W177 測試假資料的 name／username 欄位：ChatGPT 工具與外掛的產品名、MCP 工具名、合成檔名與 fixture 帳號，不是作業系統帳號 | ^(?:PDF|GitHub|github|Search|canva|Canva|Notion|triage|Triage|search_repos|create_issue|delete_branch|list_prs|hidden|secret|image_gen|Tasks|Sketch|Study|notes\.md|Folder|a\.png|fixture)$
+Engines/chatgpt-hands/fixtures/wire.json | macos username | W183 兩房共用接口範例（主導定）：name 欄位是 MCP 工具名稱，不是作業系統帳號 | ^(?:read_file|memory_inbox_save)$

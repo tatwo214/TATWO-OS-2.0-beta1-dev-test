@@ -29,12 +29,12 @@ struct OSOverviewPage: View {
                           lines: ["目標：一句話＋issue 卡", "討論：/plan 只講不動手", "派工：/plg 開子對話與工作副本", "驗收：主導親自重跑、逐條對齊"],
                           lamp: .clear, action: "")
                     block(symbol: "brain", title: "記憶",
-                          lines: ["GBrain（MCP）：raw → curated → truth", "蒸餾由 Claude 對話做，不是 App 自動", gbrainLine],
+                          lines: ["GBrain（MCP）：raw → curated → truth", "整理由 AI 對話做，不是 App 自動", gbrainLine],
                           lamp: gbrainLamp, action: "")
                     block(symbol: "laptopcomputer.and.iphone", title: "設備",
                           lines: deviceLines, lamp: deviceLamp, action: "devices")
                     block(symbol: "wrench.and.screwdriver", title: "技能與工具",
-                          lines: ["skillet.md：常用技能，$skillet 叫出", "技能根：~/Library/Application Support/tatwo2/skills", "MCP：瀏覽器橋、tatwo2_os、GitHub、GBrain（資訊卡勾）"],
+                          lines: ["skillet.md：常用技能，$skillet 叫出", "/蒸餾：做完的對話整理成技能，確認才寫入", "技能根：~/Library/Application Support/tatwo2/skills", "MCP：瀏覽器橋、tatwo2_os、GitHub、GBrain（資訊卡勾）"],
                           lamp: .clear, action: "os")
                 }
 
@@ -46,11 +46,15 @@ struct OSOverviewPage: View {
                             Circle().fill(st.isLoggedIn ? Color.green : Color.secondary.opacity(0.35)).frame(width: 7, height: 7)
                             Text(Self.engineName(st.kind)).font(.subheadline)
                             Text(st.isLoggedIn ? (st.account ?? "已登入") : "未登入").font(.caption).foregroundStyle(.secondary)
-                            if model.isEngineDisabled(st.kind) { Text("已禁用 API").font(.caption2).foregroundStyle(.red) }
+                            // W181 R3：勾了只是不用 API 金鑰，訂閱照用（跟設定 › 登入同一行字；不起子程序）。
+                            if let optOut = EngineDisableStore.optOutLabel(st.kind, optedOut: model.disabledEngines) {
+                                Text(optOut.text)
+                                    .font(.caption2).foregroundStyle(optOut.blocked ? Color.red : Color.secondary)
+                            }
                             Spacer()
                         }
                     }
-                    Button("模型登入…") { openSettings("modelAccess") }
+                    Button("登入…") { openSettings("modelAccess") }
                         .buttonStyle(.link).controlSize(.small)
                 }
                 .padding(14)

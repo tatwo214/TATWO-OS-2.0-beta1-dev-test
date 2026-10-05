@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,31 @@ const stagingScriptPath = path.join(
   "script",
   "build_staging_app.sh",
 );
+// Explicit fixture roots prevent /Volumes defaults (or inherited staging
+// overrides) from rejecting the request before the port contract is reached.
+function stagingEnvironment() {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("TATWO_STAGING_")));
+  const base = path.join(repoRoot, ".build", "staging-port-fixtures");
+  mkdirSync(base, { recursive: true });
+  const root = mkdtempSync(path.join(base, "port-"));
+  const runtime = path.join(root, "fixture-runtime");
+  const license = path.join(root, "fixture-license.txt");
+  writeFileSync(runtime, '#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = "--version" ] || exit 91\nprintf "port-fixture 1.0\\n"\n', { mode: 0o755 });
+  writeFileSync(license, "Synthetic port preflight fixture\n");
+  return {
+    ...env,
+    TATWO_STAGING_ROOT: root,
+    TATWO_STAGING_RUNTIME_ROOT: mkdtempSync(path.join(os.tmpdir().startsWith("/Volumes/") ? "/tmp" : os.tmpdir(), "staging-port-runtime-")),
+    TATWO_SUBSCRIPTION_RUNTIME_SOURCE: runtime,
+    TATWO_SUBSCRIPTION_CODE_MODE_HOST_SOURCE: runtime,
+    TATWO_SUBSCRIPTION_THIRD_PARTY_NOTICES_SOURCE: license,
+    TATWO_CLAUDE_SUBSCRIPTION_RUNTIME_SOURCE: runtime,
+    TATWO_CLAUDE_SUBSCRIPTION_LICENSE_SOURCE: license,
+    TATWO_GROK_VENDOR_RUNTIME_SOURCE: runtime,
+    TATWO_GROK_SUBSCRIPTION_RUNTIME_SOURCE: runtime,
+  };
+}
+
 const modelRuntimeScriptPath = path.join(
   repoRoot,
   "scripts",
@@ -49,7 +75,7 @@ test("staging bundle records one App MCP port in launch environment and receipt"
   );
   assert.match(
     source,
-    /STAGING_RUNTIME_ROOT="\$\{TATWO_STAGING_RUNTIME_ROOT:-\$\(/,
+    /STAGING_RUNTIME_ROOT="\$\{TATWO_STAGING_RUNTIME_ROOT:-\$STAGING_ROOT\/runtime\}"/,
   );
   assert.match(source, /APP_SUPPORT="\$STAGING_RUNTIME_ROOT\/app-support"/);
   assert.match(source, /APP_STATE="\$STAGING_RUNTIME_ROOT\/state"/);
@@ -102,7 +128,7 @@ test("staging build rejects external mutable runtime before Swift build", () => 
   const result = spawnSync(stagingScriptPath, {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...stagingEnvironment(),
       TATWO_STAGING_RUNTIME_ROOT: "/Volumes/tatwo-forbidden-runtime",
     },
     encoding: "utf8",
@@ -120,7 +146,7 @@ test("staging build rejects an invalid App MCP port before Swift build", () => {
   const result = spawnSync(stagingScriptPath, {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...stagingEnvironment(),
       TATWO_STAGING_APP_MCP_PORT: "0",
     },
     encoding: "utf8",
@@ -145,7 +171,7 @@ test("staging build rejects an occupied App MCP port before Swift build", async 
   const result = spawnSync(stagingScriptPath, {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...stagingEnvironment(),
       TATWO_STAGING_APP_MCP_PORT: String(address.port),
     },
     encoding: "utf8",

@@ -121,8 +121,8 @@ function label(row) {
   return `${row.file} :: ${row.names.join(' > ')}${row.occurrence > 1 ? ` [${row.occurrence}]` : ''}`;
 }
 
-export function formatReport(rounds, result, identity) {
-  const lines = [`SOURCE ${identity.head} sha256=${identity.sha256}`, 'COMMAND node --test --test-concurrency=2 tests/*.test.mjs'];
+export function formatReport(rounds, result, identity, concurrency = 2) {
+  const lines = [`SOURCE ${identity.head} sha256=${identity.sha256}`, `COMMAND node --test --test-concurrency=${concurrency} tests/*.test.mjs`];
   for (const [i, round] of rounds.entries()) {
     const c = round.summary.counts;
     lines.push(`ROUND ${i + 1}: tests=${c.tests} pass=${c.passed} fail=${c.failed} cancelled=${c.cancelled} skip=${c.skipped} todo=${c.todo} exit=${round.exitCode}`);
@@ -142,9 +142,9 @@ export function formatReport(rounds, result, identity) {
   return lines.join('\n') + '\n';
 }
 
-async function runNode(root, files, out, number) {
+async function runNode(root, files, out, number, concurrency) {
   const stem = path.join(out, `round-${number}`);
-  const args = ['--test', '--test-concurrency=2', '--test-reporter=tap',
+  const args = ['--test', `--test-concurrency=${concurrency}`, '--test-reporter=tap',
     `--test-reporter=${fileURLToPath(import.meta.url)}`,
     `--test-reporter-destination=${stem}.tap`, `--test-reporter-destination=${stem}.jsonl`, ...files];
   const fd = fs.openSync(`${stem}.stderr.log`, 'wx');
@@ -175,11 +175,17 @@ async function runNode(root, files, out, number) {
 async function main(args) {
   if (args.length > 1 || args.some(arg => arg.startsWith('-'))) {
     console.error('Usage: scripts/tatwo-test-thrice.sh [new-output-directory-outside-repository]');
+    console.error('TATWO_TEST_CONCURRENCY=1|2 (default: 2; all test files run in each of three rounds)');
     return args.length === 1 && ['-h', '--help'].includes(args[0]) ? 0 : 2;
   }
   const root = fs.realpathSync(fileURLToPath(new URL('../', import.meta.url)));
   let out;
   try {
+    const requestedConcurrency = process.env.TATWO_TEST_CONCURRENCY ?? '2';
+    if (!['1', '2'].includes(requestedConcurrency)) {
+      throw new Error('TATWO_TEST_CONCURRENCY must be exactly 1 or 2 (unset defaults to 2)');
+    }
+    const concurrency = Number(requestedConcurrency);
     const base = args[0] ? path.dirname(path.resolve(args[0])) : fs.realpathSync(os.tmpdir());
     const parent = fs.realpathSync(base);
     if (parent === root || parent.startsWith(root + path.sep)) throw new Error('evidence must be outside the source tree');
@@ -188,18 +194,18 @@ async function main(args) {
     const files = fs.readdirSync(path.join(root, 'tests')).filter(name => name.endsWith('.test.mjs')).sort().map(name => `tests/${name}`);
     if (!files.length) throw new Error('no tests/*.test.mjs files');
     const identity = sourceIdentity(root);
-    fs.writeFileSync(path.join(out, 'source.json'), JSON.stringify({ ...identity, node: process.version, testFiles: files }, null, 2) + '\n');
+    fs.writeFileSync(path.join(out, 'source.json'), JSON.stringify({ ...identity, node: process.version, concurrency, testFiles: files }, null, 2) + '\n');
     console.log(`EVIDENCE ${out}`);
     const rounds = [];
     for (let number = 1; number <= 3; number++) {
       if (!sameIdentity(identity, sourceIdentity(root))) throw new Error(`source drift before round ${number}`);
-      console.log(`RUN ${number}/3 (${files.length} complete test files)`);
-      rounds.push(await runNode(root, files, out, number));
+      console.log(`RUN ${number}/3 (${files.length} complete test files; concurrency=${concurrency})`);
+      rounds.push(await runNode(root, files, out, number, concurrency));
       if (!sameIdentity(identity, sourceIdentity(root))) throw new Error(`source drift during round ${number}`);
     }
     const result = compareRounds(rounds);
-    fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ identity, rounds: rounds.map(({ summary, exitCode }) => ({ summary, exitCode })), ...result }, null, 2) + '\n');
-    const report = formatReport(rounds, result, identity);
+    fs.writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ identity, concurrency, rounds: rounds.map(({ summary, exitCode }) => ({ summary, exitCode })), ...result }, null, 2) + '\n');
+    const report = formatReport(rounds, result, identity, concurrency);
     fs.writeFileSync(path.join(out, 'summary.txt'), report);
     process.stdout.write(report);
     return result.exitCode;

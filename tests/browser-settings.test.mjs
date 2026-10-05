@@ -11,23 +11,56 @@ const read = p => fs.readFileSync(path.join(app, p), 'utf8');
 const settings = read('Shell/ChatPageSettings.swift');
 const section = (a, b) => settings.slice(settings.indexOf(a), settings.indexOf(b, settings.indexOf(a)));
 
-test('W57e seven ordered sections replace the open-session card; W50 stays embedded', () => {
-  const body = section('private var browserSettingsContent:', 'private func browserSettingsCard');
-  let last = -1;
-  for (const title of ['Browser work space', '快捷鍵', 'Session 瀏覽器', '密碼', '擴充功能', '引擎與安全', '診斷']) {
-    const index = body.indexOf(title);
-    assert.ok(index > last, `${title} order`);
-    last = index;
-  }
-  assert.match(body, /BrowserPasswordsSettingsView\(\)/);
-  const sources = fs.readdirSync(app, {recursive:true}).filter(p => p.endsWith('.swift'));
-  for (const p of sources) assert.doesNotMatch(read(p).split("\n").filter(line => !line.trim().startsWith("//")).join("\n"), /OpenBrowsersCard/);
-  assert.match(settings, /spaces\.filter \{ !\$0\.isSessionSpace \}/);
-  assert.match(settings, /openSessions\.count/);
-  assert.match(settings, /tatwo\.browser\.openSessionSpace/);
-  assert.match(settings, /tatwo\.browser\.openImport/);
-  assert.match(settings, /registry: model\.browserTabRegistry/);
-  assert.match(read('Browser/BrowserManagementView.swift'), /Text\("工作階段資料"\)/);
+test('actual Browser settings builder orders cards and reads the observed registry', { timeout: 60_000 }, () => {
+  const dir = testScratch('browser-settings-builder-');
+  const builder = section('    private func browserSettingsContent(', '    private func browserSettingsCard');
+  fs.writeFileSync(path.join(dir, 'Checks.swift'), `import SwiftUI
+@MainActor enum Capture { static var cards: [String] = []; static var reads = 0 }
+@MainActor final class BrowserTabRegistry {}
+enum TatwoSettingsPageMetrics { static let sectionSpacing: CGFloat = 8; static let inset: CGFloat = 16 }
+enum LiquidGlassTokens { static let browserMutedInk = Color.secondary }
+struct TatwoSettingsPageHeader: View { let title: String; var body: some View { EmptyView() } }
+struct BrowserShortcutsSettingsView: View { var body: some View { EmptyView() } }
+struct BrowserPasswordsSettingsView: View {
+    init() { Capture.cards.append("密碼") }
+    var body: some View { EmptyView() }
+}
+struct BrowserProtectedMediaSettingsView: View { var body: some View { EmptyView() } }
+struct SpotifyConnectSettingsView: View { var body: some View { EmptyView() } }
+struct Settings: View {
+    let registry: BrowserTabRegistry
+    var browserSettingsError: String? = nil
+    var body: some View { browserSettingsContent(registry) }
+    ${builder}
+    private func browserSettingsCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        Capture.cards.append(title); return content()
+    }
+    private func browserWorkSpaceSettings(_ value: BrowserTabRegistry) -> some View {
+        precondition(value === registry); Capture.reads += 1; return EmptyView()
+    }
+    private func browserSessionSettings(_ value: BrowserTabRegistry) -> some View {
+        precondition(value === registry); Capture.reads += 1; return EmptyView()
+    }
+    private func browserDiagnosticsSettings(_ value: BrowserTabRegistry) -> some View {
+        precondition(value === registry); Capture.reads += 1; return EmptyView()
+    }
+    private var browserSecuritySettings: some View { EmptyView() }
+}
+@main struct Checks {
+    @MainActor static func main() {
+        _ = Settings(registry: BrowserTabRegistry()).body
+        precondition(Capture.cards == ["Browser work space", "快捷鍵", "對話瀏覽器", "密碼", "擴充功能", "音樂與影片", "引擎與安全", "診斷"])
+        precondition(Capture.reads == 3)
+        print("SETTINGS BUILDER PASS")
+    }
+}
+`);
+  const binary = path.join(dir, 'checks');
+  const compile = spawnSync('swiftc', ['-parse-as-library', '-swift-version', '6', '-num-threads', '2', path.join(dir, 'Checks.swift'), '-o', binary], { encoding: 'utf8', timeout: 45_000 });
+  assert.equal(compile.status, 0, compile.stderr);
+  const run = spawnSync(binary, [], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /SETTINGS BUILDER PASS/);
 });
 
 test('W51 honest extension copy, immutable AI column and W55 diagnostics', () => {
@@ -35,7 +68,7 @@ test('W51 honest extension copy, immutable AI column and W55 diagnostics', () =>
   assert.match(extensions, /2\.0\.7 尚未支援 Chrome 擴充功能/);
   assert.match(extensions, /導入時只會列出你原本的擴充功能，不會安裝/);
   assert.doesNotMatch(extensions, /Toggle|Picker|Button|TextField/);
-  const ai = section('private var browserAISecurityColumn:', 'private var browserDiagnosticsSettings:');
+  const ai = section('private var browserAISecurityColumn:', 'private func browserDiagnosticsSettings(');
   assert.doesNotMatch(ai, /Toggle|Picker|Button|TextField|Binding|Slider|Stepper/);
   assert.match(ai, /foregroundStyle\(LiquidGlassTokens.browserMutedInk\)/);
   assert.match(ai, /唯讀（跟隨共用設定）/);
@@ -43,7 +76,6 @@ test('W51 honest extension copy, immutable AI column and W55 diagnostics', () =>
   assert.equal((human.match(/Toggle\(/g) ?? []).length, 2);
   assert.match(settings, /變更在下一個新分頁生效/);
   assert.match(settings, /Button\("打開診斷頁"\) \{ browserDiagnosticsPresented = true \}/);
-  assert.match(settings, /BrowserDiagnosticsView\(registry: model.browserTabRegistry\)/);
 });
 
 test('swiftc: settings round-trip, engine URLs, policy reload, metadata and Netscape export', {

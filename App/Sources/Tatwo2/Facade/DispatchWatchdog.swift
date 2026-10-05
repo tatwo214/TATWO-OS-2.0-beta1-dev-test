@@ -32,19 +32,24 @@ final class DispatchWatchdog {
 
     func stop() { timer?.invalidate(); timer = nil }
 
-    func tick() {
+    func tick(now: Date = Date(), uptime: TimeInterval = HandsMonotonic.now()) {
         guard let engine else { return }
-        checkLiveness(engine)
+        checkLiveness(engine, now: now, uptime: uptime)
         checkPressure(engine)
         engine.onChange?()
     }
 
     // MARK: - 活性
 
-    private func checkLiveness(_ engine: ChatLiveEngine) {
+    private func checkLiveness(_ engine: ChatLiveEngine, now: Date, uptime: TimeInterval) {
         for t in engine.doc.threads where t.subStatus == "running" {
             guard let parentID = t.parentThreadID else { continue }
-            let liveness = ThreadLiveness.from(status: t.subStatus, lastOutputAt: t.lastOutputAt) ?? .active
+            guard t.engine != ChatLiveEngine.handsEngine else { continue }   // W183 R1：ChatGPT 手腳照人的速度動，不收、不提醒
+            if engine.chatGPTDispatcher?.isActive(caller: t.id, uptime: uptime) == true {
+                idleWarned.remove(t.id)
+                continue
+            }
+            let liveness = ThreadLiveness.from(status: t.subStatus, lastOutputAt: t.lastOutputAt, now: now) ?? .active
             switch liveness {
             case .stalled:
                 engine.stop(threadID: t.id)

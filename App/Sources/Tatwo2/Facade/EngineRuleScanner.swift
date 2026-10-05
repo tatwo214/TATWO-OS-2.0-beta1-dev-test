@@ -38,10 +38,17 @@ enum EngineRuleScanner {
         if FileManager.default.fileExists(atPath: home + "/.claude.json") { paths.insert(home + "/.claude.json") }
         let entryRoot = entry.root.resolvingSymlinksInPath().path
         var items: [EngineRuleScanItem] = []
-        for path in paths.sorted() where !EngineRuleAudit.isNoise(path) && !path.hasPrefix(entryRoot) {
+        for path in paths.sorted() where !EngineRuleAudit.isNoise(path) && !path.hasPrefix(entryRoot)
+            && !inChatGPTWorkspace(path, entryRoot: entryRoot) {
             let name = (path as NSString).lastPathComponent
             guard let kind = name == ".claude.json" ? .mcp : EngineRuleAudit.kind(ofFileNamed: name) else { continue }
             let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            // W183 R6c：連到入口 chatgpt/（外部 AI 寫的）的不算「連到入口」、內容不讀，直接標出來。
+            if inChatGPTWorkspace(path, entryRoot: entryRoot, resolvingLinks: true) {
+                items.append(.init(path: path, kind: kind, linkedToEntry: false, findings: [chatGPTLinkFinding]))
+                if items.count >= limit { break }
+                continue
+            }
             let linked = resolved.hasPrefix(entryRoot + "/")
             var findings: [EngineRuleAudit.Finding] = []
             if !linked, let handle = FileHandle(forReadingAtPath: path) {
@@ -53,4 +60,14 @@ enum EngineRuleScanner {
         }
         return items
     }
+
+    /// W183 R6c：入口的 chatgpt/ 是外部 AI（ChatGPT 手腳）的工作區——掃描一律跳過，裡面的東西不當規則、不讀。
+    /// 審查後改用共用判定（ExternalWorkspacePolicy：不分大小寫、檔案系統身分）；resolvingLinks＝false 只看寫的路徑（放在裡面的跳過），
+    /// true 連捷徑一起解開（放在外面、連進去的標出來）。
+    static func inChatGPTWorkspace(_ path: String, entryRoot: String, resolvingLinks: Bool = false) -> Bool {
+        ExternalWorkspacePolicy.contains(path, entries: [entryRoot], resolvingLinks: resolvingLinks)
+    }
+
+    static let chatGPTLinkFinding = EngineRuleAudit.Finding(line: 0, category: "外來指示",
+                                                            note: "連到入口的 chatgpt 資料夾（ChatGPT 手腳的工作區，外部 AI 寫的內容），不能當規則")
 }

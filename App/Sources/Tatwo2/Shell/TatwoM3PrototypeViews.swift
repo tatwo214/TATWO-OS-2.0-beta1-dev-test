@@ -572,13 +572,13 @@ struct QuotaHubBottomFoldouts: View {
                 VStack(alignment: .leading, spacing: 7) {
                     if let activitySourceFailure {
                         Text(activitySourceLastGoodAt.map {
-                            "Codex session activity 暫不可用（\(activitySourceFailure.rawValue)）；最後成功 \(Self.dateLabel($0))"
-                        } ?? "Codex session activity 暫不可用（\(activitySourceFailure.rawValue)）")
+                            "Codex 對話活動暫不可用（\(activitySourceFailure.rawValue)）；最後成功 \(Self.dateLabel($0))"
+                        } ?? "Codex 對話活動暫不可用（\(activitySourceFailure.rawValue)）")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
                     if activitySourceAccess == .notEnabled {
-                        Text("Codex session activity 未啟用外接卷；目前只顯示本機派工來源。")
+                        Text("Codex 對話活動未啟用外接卷；目前只顯示本機派工來源。")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -586,8 +586,8 @@ struct QuotaHubBottomFoldouts: View {
                         Text(activitySourceFailure == nil && activitySourceAccess != .notEnabled
                             ? "近 2 天無 agent 派工紀錄；今天的新派工會顯示於此。"
                             : activitySourceAccess == .notEnabled
-                              ? "Codex session activity 尚未啟用；目前無法判斷外接卷上的派工紀錄。"
-                              : "Codex session activity 暫不可用；請掛載外接卷或檢查權限。")
+                              ? "Codex 對話活動尚未啟用；目前無法判斷外接卷上的派工紀錄。"
+                              : "Codex 對話活動暫不可用；請掛載外接卷或檢查權限。")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                     } else {
@@ -726,7 +726,7 @@ struct QuotaActivityRow: View {
         case .dispatchRegistry:
             return record.statusText
         case .codexSessionJSONL:
-            return record.modelConfidence == .explicitTurnContext ? "Codex session JSONL" : "Codex session JSONL（model 未寫入 turn_context）"
+            return record.modelConfidence == .explicitTurnContext ? "Codex 對話紀錄" : "Codex 對話紀錄（model 未寫入 turn_context）"
         }
     }
 }
@@ -887,7 +887,7 @@ var cleanQuotaBackground: some View {
         )
 }
 
-struct LiveQuotaDeckSnapshot: Sendable {
+struct LiveQuotaDeckSnapshot: Sendable, Equatable {
     var loadedAt: Date?
     var rows: [String: LiveQuotaDisplay]
 
@@ -915,7 +915,7 @@ struct LiveQuotaDeckSnapshot: Sendable {
     }()
 }
 
-struct LiveQuotaDisplay: Identifiable, Sendable {
+struct LiveQuotaDisplay: Identifiable, Sendable, Equatable {
     let id: String
     let displayName: String
     let planLabel: String

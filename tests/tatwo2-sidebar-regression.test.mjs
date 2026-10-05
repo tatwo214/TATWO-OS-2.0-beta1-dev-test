@@ -31,7 +31,15 @@ test('sidebar empty state and local project actions use existing controls', () =
   assert.match(section, /threadRow\(project: project, thread: row\.thread,/);
   assert.match(sidebar, /ChatSidebarThreadTreeRow\.rows\(model\.sidebarStandaloneThreads\)/);
   const engine = read('App/Sources/Tatwo2/Facade/ChatLiveEngine.swift');
-  assert.match(engine, /var d = store\.load\(\)\s*d\.prepareChatHierarchy\(\)/);
+  // W194 將讀檔失敗／副本較新的判斷集中到 store；候選仍須在正規化及保存前取得。
+  assert.match(engine, /var d = store\.load\(\)\s*let original = d\s*let initialRecoveryCandidate = store\.restorableBackup\(\)\s*d\.prepareChatHierarchy\(\)/);
+  assert.match(engine, /if d != original \{ store\.save\(d\) \}/);
+  assert.match(engine, /availableRecoveryCandidate = initialRecoveryCandidate/);
+  assert.match(engine, /var recoveryCandidate: URL\? \{\s*guard let candidate = availableRecoveryCandidate, store\.shouldOfferBackup\(candidate\) else \{ return nil \}\s*return candidate/);
+  const store = read('App/Sources/Tatwo2/Facade/ChatLiveStore.swift');
+  const backups = store.slice(store.indexOf('func restorableBackup()'), store.indexOf('static func backupDate('));
+  assert.match(backups, /guard let data = Self\.backupData\(file\), data != current,[\s\S]*?decoder\.decode\(LiveDocumentRecord\.self, from: data\)\) != nil else \{ return false \}\s*return shouldOfferBackup\(file\)/);
+  assert.match(backups, /func shouldOfferBackup\(_ candidate: URL\) -> Bool \{\s*if loadState == \.readFailed \|\| loadState == \.decodeFailed \{ return true \}\s*guard let currentDate = \(try\? FileManager\.default\.attributesOfItem\(atPath: url\.path\)\)\?\[\.modificationDate\] as\? Date else \{ return false \}\s*return Self\.backupDate\(candidate\) > currentDate/);
   assert.match(engine, /generalProjectID: doc\.generalProjectID/);
 });
 
@@ -97,21 +105,40 @@ struct ChatMessage {
     var role: ChatMessageRole
     var text: String
     var status: String?
+    var modelID: String? = nil
+    var modelDisplayName: String? = nil
     var eventKind: TatwoNativeChatEventKind
     var turnID: String?
     var createdAt: Date
-    var modelID: String? = nil
+    var runtimeAdapterID: String? = nil
+    var engineErrorDetails: String? = nil
 }
 // Unchanged payload types are outside this test; real record decoding,
 // projection, JSON I/O, pin and new-thread methods below are production code.
 struct ChatNativeGoal: Codable, Equatable { var value: String }
 struct TatwoIssueListEntryV1: Codable, Equatable { var body: String }
-enum TatwoPermissionPreset: String, Codable { case fullAccess }
+enum TatwoPermissionPreset: String, Codable { case fullAccess, askFirst }
+enum TatwoChatRuntimeAdapter: String { case chatgptTap = "chatgpt-tap" }
+struct CoderImportSource: Codable, Equatable { var engine: String }   // W180 E3：匯入出處（這裡只要能解碼存回）
 struct TatwoGitHubRepoBinding: Sendable, Equatable, Hashable { var url: String }
 enum BotLibraryError: Error { case invalid(String) }
+// Model catalog selection is outside this hierarchy fixture; newThread only
+// needs the cold defaults. Model routing is exercised by the W189 model tests.
+enum ChatModelPreferences {
+    struct Route { let id = "gpt-6.1-sol" }
+    enum Speed: String { case fast }
+    struct Defaults { let route = Route(); let effort = "medium"; let speed = Speed.fast }
+    static func selection(_ thread: LiveThreadRecord?) -> Defaults {
+        precondition(thread == nil); return Defaults()
+    }
+}
 enum ThreadLiveness {
     static func from(status: String?, lastOutputAt: Date?) -> String? { status }
+    // W183 R1：正式碼改呼叫 forThread（手腳房間不看時間）；這個替身跟 from 一樣只回狀態。
+    static func forThread(engine: String?, status: String?, lastOutputAt: Date?, dispatchActive: Bool = false) -> String? { status }
 }
+// W205：派工期限內算活動；這個階層測試沒有派工。
+struct ChatGPTDispatchActivityStub { func isActive(caller: UUID) -> Bool { false } }
 struct TatwoNativeChatThread: Sendable, Equatable, Hashable {
     var id = UUID()
     var title = "chat"
@@ -134,7 +161,11 @@ ${documentType}
 typealias Document = TatwoNativeChatStoreDocument
 ${productionTree}
 ${storeSource}
+${read('App/Sources/Tatwo2/Facade/ChatDocumentRecovery.swift')}
+// W180 E1：側欄預覽跳過「用了 N 條記憶」那一列（正式定義在 Memory/TatwoMemoryTurn.swift）。
+extension LiveMessageRecord { var isMemoryUsageRow: Bool { role == "system" && status == "info|記憶" } }
 final class HierarchyEngine {
+    let chatGPTDispatcher: ChatGPTDispatchActivityStub? = nil
     var doc: LiveDocumentRecord
     let store: ChatLiveStore
     var messages: [UUID: [ChatMessage]] = [:]

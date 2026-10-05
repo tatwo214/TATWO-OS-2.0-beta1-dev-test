@@ -1,4 +1,5 @@
 import { testScratch } from './helpers/test-scratch.mjs';
+import { protectedMediaFixture, protectedMediaChecks } from './fixtures/browser-diagnostics-media.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -25,7 +26,7 @@ test('swiftc: real ring, redaction, helper roles/process sampling, audit tail, t
   fs.mkdirSync(dir, {recursive:true});
   const source = path.join(dir, 'main.swift');
   const binary = path.join(dir, 'fixture');
-  fs.writeFileSync(source, String.raw`
+  fs.writeFileSync(source, protectedMediaFixture() + protectedMediaChecks + String.raw`
 import Foundation
 import Darwin
 if CommandLine.arguments.contains("--child") {
@@ -183,6 +184,7 @@ test('swiftc: backend timestamps and actual diagnostics refresh stop when page t
   fs.writeFileSync(fixture, `
 import Foundation
 import Combine
+${protectedMediaFixture()}
 ${read(app+'Browser/BrowserTabRegistry.swift').split('struct BrowserSpace:')[0]}
 @MainActor final class BrowserTabRegistry {
     static let shared = BrowserTabRegistry()

@@ -140,14 +140,14 @@ extension BrowserWorkSpaceDesignView {
         Button("重設此網站的多檔下載權限") { send(.resetDownloadPermission) }
         Divider()
         Button("搜尋分頁…", action: openTabSearch)
-        Button(store.focusMode ? "展開側欄" : "收合側欄", action: store.toggleSidebar)
+        Button(sidebarStore.focusMode ? "展開側欄" : "收合側欄", action: sidebarStore.toggleSidebar)
         Divider()
         Button("關閉目前分頁") { store.close(store.selectedID) }
         Button("重新開啟關閉的分頁", action: store.reopenClosedTab).disabled(!store.canReopenClosedTab)
         Button("復原刪除的書籤", action: store.undoBookmarkDeletion).disabled(store.lastRemovedBookmark == nil)
         Button("診斷…") { diagnosticsPresented = true }
-        Button("新增 space", action: store.addSpace)
-        Button("從其他瀏覽器導入…", action: store.requestImport)
+        Button("新增 space", action: sidebarStore.addSpace)
+        Button("從其他瀏覽器導入…", action: sidebarStore.requestImport)
         Divider()
         Button("擴充功能…") { extensionsPresented = true }
         Menu("工作區") {
@@ -162,12 +162,7 @@ extension BrowserWorkSpaceDesignView {
     /// 獨立 Browser work space 保留 W66／W67 已核准的可見「瀏覽器功能」選單；
     /// 聊天旁 chrome 放不下，同一份動作改掛在新增分頁的右鍵選單上。
     var browserActionsButton: some View {
-        Menu { browserActionsMenu } label: {
-            Image(systemName: "ellipsis.circle")
-                .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .accessibilityLabel("瀏覽器功能")
+        BrowserActionsButton { browserActionsMenu }
     }
 
     /// 聊天旁 chrome 的圓鈕：與 ⌃ 同尺寸、同材質、同陰影，浮在網頁上，沒有底板。
@@ -279,4 +274,19 @@ extension BrowserWorkSpaceDesignView {
     }
 
     var embeddedToolsOpen: Bool { embeddedToolsHovered || embeddedToolsPanelHovered || embeddedToolsPinned }
+}
+
+/// 工具列的「瀏覽器功能」⋯ 鈕（選單內容由外面給）。W184 G2d：主視窗 Browser work space 與私訊框的 Browser 用同一顆
+/// （使用者 09-30：「你就只是把現成的browser space做成duo自適應尺寸而已」）。
+struct BrowserActionsButton<Items: View>: View {
+    @ViewBuilder let items: () -> Items
+
+    var body: some View {
+        Menu { items() } label: {
+            Image(systemName: "ellipsis.circle")
+                .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .accessibilityLabel("瀏覽器功能")
+    }
 }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -153,19 +154,28 @@ test('D9/D11/D18 wiring and private skill export boundaries', () => {
   for (const text of ['基本附件十個', 'results/<uuid>.json', '重新啟動以更新', 'keptUserEdited']) assert.ok(skill.includes(text));
 });
 
-test('D23 all 337 reviewed allowances constrain every detected value; unknown values fail closed', () => {
+const reviewedAllowanceFingerprint = '5215c82a6b709eaca2894ce2666ed64ed1ab6adddd4224a87cc4b45ba0ad8085';
+const allowanceFingerprint = lines => createHash('sha256')
+  .update([...lines].sort().join('\n') + '\n').digest('hex');
+
+test('D23 every reviewed allowance is inventoried and constrains every detected value; unknown values fail closed', () => {
   const policy = read('scripts/public-safety-allow.txt').split('\n').filter(s => s && !s.startsWith('#'));
-  // v2.0.8 has 324 entries; W71–W83 appended 9 reviewed fixture allowances.
-  // W84 adds none and restores the immutable W61 prefix (public-privacy.test).
-  // W95b (2026-09-18) appends 1 reviewed allowance for scripts/rooms/functional-check.py.
-  // W143 (2026-09-21) appends 2 for the W110 transcript fixtures: the engines' own tool-call
-  // names ("Bash", "shell") and the product's own Codex originator string.
-  // Retain an exact count and check EVERY entry, including those additions.
-  assert.equal(policy.length, 337);
+  // Independent reviewed snapshot at 406eb7aa (344 entries), not a count derived
+  // from the policy under test. Pins every path, category, reason and expression.
+  // The seven additions cover W110, EntryBackup, EngineLinks, W162, W177 and W183.
+  // A removal, addition or same-count regex widening requires explicit re-review.
+  // The production policy and immutable W61 prefix remain untouched.
+  assert.equal(allowanceFingerprint(policy), reviewedAllowanceFingerprint);
+  const keys = new Set();
   for (const line of policy) {
+    const [file, label, reason] = line.split('|').slice(0, 3).map(s => s.trim());
+    assert.ok(file && label && reason);
+    const key = `${file}|${label}`;
+    assert.equal(keys.has(key), false, `duplicate reviewed allowance: ${key}`);
+    keys.add(key);
     const regex = line.split('|').slice(3).join('|').trim();
-    assert.ok(regex.startsWith('^') && regex.endsWith('$'));
-    assert.equal(new RegExp(regex).test('unreviewed-value'), false);
+    assert.ok(regex.startsWith('^') && regex.endsWith('$'), key);
+    assert.equal(new RegExp(regex).test('unreviewed-value'), false, key);
   }
   const root = fs.mkdtempSync(join(tmpdir(), 'w29b-scan-'));
   const rel = 'App/Sources/Tatwo2/Facade/BrowserRuntimeAcceptance.swift';
@@ -179,6 +189,18 @@ test('D23 all 337 reviewed allowances constrain every detected value; unknown va
   const known = read(rel).split('\n').find(s => s.includes('@'));
   fs.writeFileSync(join(root, rel), known + ' "unreviewed' + String.fromCharCode(64) + 'example.invalid"');
   assert.equal(scan().status, 1);
+});
+
+test('D23 reviewed inventory detects deletion, addition and same-count widening', () => {
+  const policy = read('scripts/public-safety-allow.txt').split('\n').filter(s => s && !s.startsWith('#'));
+  assert.equal(allowanceFingerprint([...policy].reverse()), reviewedAllowanceFingerprint);
+  assert.notEqual(allowanceFingerprint(policy.slice(1)), reviewedAllowanceFingerprint);
+  assert.notEqual(allowanceFingerprint([...policy, policy[0]]), reviewedAllowanceFingerprint);
+  for (let index = 0; index < policy.length; index++) {
+    const widened = [...policy];
+    widened[index] = policy[index].split('|').slice(0, 3).join('|') + ' | ^.*$';
+    assert.notEqual(allowanceFingerprint(widened), reviewedAllowanceFingerprint, `entry ${index}`);
+  }
 });
 
 test('D16 actual async registry scan records completion time, not its supplied entry clock', () => {

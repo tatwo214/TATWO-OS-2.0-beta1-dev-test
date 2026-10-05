@@ -130,8 +130,9 @@ test('D7 failed pre-transaction stage is archived; age sweep excludes transactio
     spawnSync('touch',['-t','202001010000',p]);
   }
   const retention=install.split('# TEMP-RETENTION-BEGIN\n')[1].split('# TEMP-RETENTION-END')[0];
-  const sweep=shell(`trash() { exit 90; }\n${transaction}\n${hygiene}\n${retention}\narchive_old_downloads`,{HOME:dir,TMPDIR:dir,DEST:join(dir,'App.app')});
+  const sweep=shell(`trash() { exit 90; }\n${transaction}\n${hygiene}\nremove_update_archive_tree() { touch \"$HOME/.removal-called\"; return 1; }\n${retention}\narchive_old_downloads`,{HOME:dir,TMPDIR:dir,DEST:join(dir,'App.app')});
   assert.equal(sweep.status,0,sweep.stderr);
+  assert.ok(!existsSync(join(dir,'.removal-called')));
   assert.ok(existsSync(join(dir,'.tatwo-update.orphan.noindex')));
   assert.ok(existsSync(join(dir,'.tatwo-update.transaction.noindex/transaction.json')));
 });

@@ -472,11 +472,10 @@ enum ChatCodeBlockHorizontalViewer {
         style.lineBreakMode = .byClipping
         codeView.defaultParagraphStyle = style
 
-        let scrollView = NSScrollView(
+        let scrollView = CoderOverlayScrollView(
             frame: NSRect(x: 0, y: 0, width: 720, height: 420))
         scrollView.hasHorizontalScroller = true
         scrollView.hasVerticalScroller = true
-        scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.documentView = codeView
         return scrollView

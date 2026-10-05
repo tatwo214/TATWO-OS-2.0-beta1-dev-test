@@ -4,14 +4,14 @@ struct UltraworkRoleConfiguration: Codable, Equatable {
     var primaryModelID: String
     var auxiliaryModelIDs: [String]
 
-    /// 與憲法 §4 一致，改表先改憲法。模型 ID 沿用路由命名；
-    /// gpt-6-astra = GPT-6，grok-build = Grok 4.7，opus-5.5 = Opus 5.5（2026-09-23 取代 Opus 5）。審查使用與主導不同家的 GPT-6。
+    /// 沿用憲法 §4 分工；使用者 2026-10-03 指定 loops／審查換代為 GPT-6.1 Sol。
+    /// 模型 ID 沿用路由命名；其餘角色不變，已存的自訂設定不遷移。審查使用與主導不同家的 GPT 系。
     static let constitutionSection4 = (
         lead: "fable-5.1",
-        loops: "gpt-6-astra",
+        loops: "gpt-6.1-sol",
         refinement: "opus-5.5",
         mechanic: "grok-build",
-        reviewer: "gpt-6-astra"
+        reviewer: "gpt-6.1-sol"
     )
 
     static let defaultValue = UltraworkRoleConfiguration(

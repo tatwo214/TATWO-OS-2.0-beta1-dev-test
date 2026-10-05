@@ -134,6 +134,84 @@ test("production durable writer discovery matches the reviewed source snapshot",
   assert.match(result.fingerprint, /^[a-f0-9]{64}$/);
 });
 
+// Independent review inventory: these scripts have real writes, including
+// delegated install/build effects and Python embedded in shell. Do not turn
+// scripts/rooms into a blanket ephemeral/verification-artifact exclusion.
+const reviewedScriptPolicies = [
+  ["scripts/build-cef-proprietary.sh", "localOnly", ["machine.runtime-state"]],
+  ["scripts/bundle-spotify.py", "localOnly", ["machine.runtime-state", "machine.signed-bundles"]],
+  ["scripts/cef-local-patches.sh", "localOnly", []],
+  ["scripts/clean-install-gate.sh", "verificationArtifact", []],
+  ["scripts/public-push-gate.sh", "localOnly", []],
+  ["scripts/rooms/build-room.sh", "localOnly", ["machine.runtime-state"]],
+  ["scripts/rooms/install-candidate.sh", "localOnly", ["machine.signed-bundles", "app.installed-runtime"]],
+  ["scripts/rooms/job-runner.sh", "localOnly", []],
+  ["scripts/rooms/make-offline-release.py", "localOnly", ["machine.signed-bundles"]],
+  ["scripts/rooms/terminal-run.sh", "localOnly", ["machine.runtime-state"]],
+  ["scripts/rooms/thrice-candidate-full.sh", "localOnly", ["machine.runtime-state"]],
+];
+
+function assertReviewedScriptPolicies(discovery) {
+  for (const [file, decision, surfaceIDs] of reviewedScriptPolicies) {
+    const policies = discovery.pathPolicies.filter(policy => policy.path === file);
+    assert.equal(policies.length, 1, `exact reviewed policy required: ${file}`);
+    const [policy] = policies;
+    assert.equal(policy.pathPrefix, undefined, file);
+    assert.equal(policy.decision, decision, file);
+    assert.deepEqual(policy.surfaceIDs ?? [], surfaceIDs, file);
+    assert.ok(Array.isArray(policy.writtenPaths) && policy.writtenPaths.length > 0, file);
+    assert.ok(policy.writtenPaths.every(value => typeof value === "string" && value.trim()), file);
+    assert.equal(new Set(policy.writtenPaths).size, policy.writtenPaths.length, file);
+    assert.equal(policy.reviewedSourceSHA256, crypto.createHash("sha256")
+      .update(fs.readFileSync(path.join(repositoryRoot, file))).digest("hex"),
+    `re-review the complete script, including delegated writes: ${file}`);
+  }
+}
+
+test("new build, install, queue and verification writers retain their reviewed paths and sync decisions", () => {
+  const discovery = JSON.parse(fs.readFileSync(discoveryPath, "utf8"));
+  assertReviewedScriptPolicies(discovery);
+  const sites = scanDurableWriterSites(repositoryRoot, discovery);
+  for (const [file] of reviewedScriptPolicies) {
+    assert.ok(sites.some(site => site.path === file), `writer remains scanned: ${file}`);
+  }
+});
+
+test("every newly reviewed writer fails closed when its policy is removed or its writes change", () => {
+  const discovery = JSON.parse(fs.readFileSync(discoveryPath, "utf8"));
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+  const sites = scanDurableWriterSites(repositoryRoot, discovery);
+  for (const [file] of reviewedScriptPolicies) {
+    const missing = structuredClone(discovery);
+    missing.pathPolicies = missing.pathPolicies.filter(policy => policy.path !== file);
+    assert.throws(() => validateDurableWriterDiscovery(missing, catalog, sites),
+      /unclassified durable writer paths/, file);
+    const extraWrite = { ...sites.find(site => site.path === file), occurrence: 999 };
+    assert.throws(() => validateDurableWriterDiscovery(discovery, catalog, [...sites, extraWrite]),
+      /durable writer source snapshot changed/, file);
+    const weakened = structuredClone(discovery);
+    weakened.pathPolicies.find(policy => policy.path === file).decision = "ephemeral";
+    assert.throws(() => assertReviewedScriptPolicies(weakened), assert.AssertionError, file);
+    const undocumented = structuredClone(discovery);
+    delete undocumented.pathPolicies.find(policy => policy.path === file).writtenPaths;
+    assert.throws(() => assertReviewedScriptPolicies(undocumented), assert.AssertionError, file);
+  }
+});
+
+test("a new room script is not silently covered by its reviewed neighbours", () => {
+  const discovery = JSON.parse(fs.readFileSync(discoveryPath, "utf8"));
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+  const sites = [...scanDurableWriterSites(repositoryRoot, discovery), {
+    path: "scripts/rooms/future-writer.sh", primitive: "shell-redirection",
+    signature: 'printf "%s" "$payload" > "$destination"', occurrence: 1,
+  }];
+  // Even approving the fingerprint cannot substitute for a data/sync policy.
+  discovery.reviewedSiteCount = sites.length;
+  discovery.reviewedFingerprint = computeDurableWriterFingerprint(sites);
+  assert.throws(() => validateDurableWriterDiscovery(discovery, catalog, sites),
+    /unclassified durable writer paths: scripts\/rooms\/future-writer\.sh/);
+});
+
 test("durable writer fingerprint uses locale-independent codepoint ordering", () => {
   const sites = [
     {

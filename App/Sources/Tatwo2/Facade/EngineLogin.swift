@@ -7,6 +7,7 @@ struct EngineLoginStatus: Identifiable, Equatable {
     let isLoggedIn: Bool
     let account: String?
     let detail: String
+    var executableChoice: EngineRuntimeSelection.Choice? = nil
 
     var id: String { kind.rawValue }
 }
@@ -64,7 +65,11 @@ final class EngineLogin: @unchecked Sendable {
     }
 
     func statuses() -> [EngineLoginStatus] {
-        Self.kinds.map(status(for:))
+        Self.kinds.map { kind in
+            var status = status(for: kind)
+            status.executableChoice = paths.cachedSelection(for: kind)
+            return status
+        }
     }
 
     func status(for kind: ClaudeSidecar.Kind) -> EngineLoginStatus {

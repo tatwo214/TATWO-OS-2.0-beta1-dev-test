@@ -50,7 +50,7 @@ struct EmbeddedBrowserSiteDataMaintenanceCoordinator {
 
 enum EmbeddedBrowserSessionLifecycleError: Error, Equatable, Sendable {
     case invalidSessionID
-    var visibleMessage: String { "CEF session 維護尚未接回" }
+    var visibleMessage: String { "瀏覽器對話維護尚未接回" }
 }
 
 struct EmbeddedBrowserSessionLifecycleReceipt: Equatable, Sendable {}

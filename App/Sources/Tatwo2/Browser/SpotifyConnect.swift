@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Network
 
 /// W176（使用者 2026-09-23）：「可以做進App 不要叫測試 叫TATWO OS 並且預設用os開啟時就是tatwo os播放 不要手動再喬」。
 /// OS 瀏覽器的 Spotify 網頁播放器只能播約 10 秒（Spotify 的授權只給有 Google 正式 VMP 簽章的瀏覽器）。
@@ -22,23 +23,34 @@ final class SpotifyConnect: ObservableObject {
         didSet { if isPlaying != oldValue { BrowserAudibleTabs.shared.setPlayingElsewhere(host: Self.spotifyHost, isPlaying) } }
     }
     @Published private(set) var isActive = false
+    @Published private(set) var playbackNotice: String?
 
     private var process: Process?
     private var input: FileHandle?
     private var buffer = Data()
-    private var pendingTransfer = false
+    private struct Transfer {
+        let id = UUID().uuidString
+        var reason: String
+        var retries = 0
+        var deadline: Date?
+    }
+    private var pendingTransfer: Transfer?
+    private var inFlight: Transfer?
+    private var deviceID: String?
+    private var lastDeviceWasActive = false
+    private var lastGesture: Date?
+    private var retakes: [Date] = []
     private var pendingLogin = false
     private var crashes: [Date] = []
     private var stopping = false
-    /// 打開 Spotify 分頁後由 TATWO OS 接手播放。2026-09-23～24 實測：接手後約 1 秒被搶回，兇手是別的瀏覽器（Dia）開著的
-    /// Spotify 網頁播放器，不是 OS 自己的分頁；關掉那一頁後直接接手就不再被搶。
-    /// 等網頁載入完才接手；打開後 30 秒內又被搶走就再接手（最多 3 次），之後使用者自己換裝置不會被搶。
-    /// （曾試過在網頁裡自動點「連接裝置」：頁面快照的防誤點過濾把 Spotify 播放列按鈕判成被遮住，抓不到，已移除。）
-    static let handoffDelay: TimeInterval = 4
-    static let handoffGuard: TimeInterval = 30
-    private var handoffUntil: Date?
-    private var handoffRetries = 0
     private var terminationObserver: NSObjectProtocol?
+    private var pathMonitor: NWPathMonitor?
+    private var networkSatisfied: Bool?
+    private let transport: ((String) -> Void)?
+    private let now: () -> Date
+    private let log: (String) -> Void
+    private var running: Bool { transport != nil || process?.isRunning == true }
+    private var canStart: Bool { transport != nil || (Self.isBundled && Self.hasCredentials) }
 
     static var helperURL: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tatwo-spotify") }
     static var cacheDirectory: URL { EnginePaths().appSupportRoot.appendingPathComponent("spotify", isDirectory: true) }
@@ -55,39 +67,121 @@ final class SpotifyConnect: ObservableObject {
         try? ((previous.isEmpty ? "" : previous + "\n") + "\(stamp) \(message)\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private init() {
-        status = !Self.isBundled ? .unavailable : Self.hasCredentials ? .connecting : .signedOut
-        terminationObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
-            MainActor.assumeIsolated { SpotifyConnect.shared.stop() }
+    init(transport: ((String) -> Void)? = nil, now: @escaping () -> Date = Date.init,
+         log: @escaping (String) -> Void = SpotifyConnect.trace) {
+        self.transport = transport
+        self.now = now
+        self.log = log
+        status = transport != nil ? .connecting : !Self.isBundled ? .unavailable : Self.hasCredentials ? .connecting : .signedOut
+        if transport == nil {
+            terminationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stop() }
+            }
         }
     }
 
     /// App 啟動：登入過就先開好，手機等其他裝置也看得到「TATWO OS」。
     func startIfSignedIn() {
-        guard Self.isBundled, Self.hasCredentials else { return }
+        guard canStart else { return }
         start()
     }
 
-    /// OS 瀏覽器的分頁第一次打開 Spotify（每個分頁一次，之後在網頁裡換頁不再搶）。
     func spotifyTabOpened() {
-        guard Self.isBundled, Self.hasCredentials else { return }
-        Self.trace("tab opened; status=\(status) active=\(isActive)")
-        handoffUntil = Date().addingTimeInterval(Self.handoffGuard)
-        handoffRetries = 0
-        if process?.isRunning != true { start() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.handoffDelay) {
-            SpotifyConnect.shared.requestTransfer()
-        }
+        guard canStart else { return }
+        if !running { start() }
+        requestTransfer(reason: "tab-open")
     }
 
-    private func requestTransfer() {
-        guard status == .connected, process?.isRunning == true else {
-            Self.trace("transfer deferred; status=\(status)"); pendingTransfer = true; return
+    /// CEF 原生輸入監聽呼叫；不注入網頁腳本、不合成點擊。
+    func spotifyGesture(host: String?) {
+        guard host?.lowercased() == Self.spotifyHost, canStart else { return }
+        lastGesture = now()
+        if !running { start() }
+        requestTransfer(reason: "gesture")
+    }
+
+    static func isMediaKeyDown(_ event: NSEvent) -> Bool {
+        event.type == .systemDefined && event.subtype.rawValue == 8
+            && ((event.data1 >> 8) & 0xff) == 0x0a
+            && [16, 17, 18, 19, 20].contains((event.data1 >> 16) & 0xffff)
+    }
+
+    func spotifyPageChanged(host: String?) { if host?.lowercased() != Self.spotifyHost { playbackNotice = nil } }
+
+    func spotifyInput(_ event: NSEvent, host: String?, isPageTarget: Bool) {
+        guard isPageTarget,
+              [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
+                || Self.isMediaKeyDown(event) else { return }
+        spotifyGesture(host: host)
+    }
+
+    func networkChanged(satisfied: Bool) {
+        let restored = networkSatisfied == false && satisfied
+        networkSatisfied = satisfied
+        guard restored, canStart, running, !stopping, status != .signedOut else { return }
+        log("network restored; reconnect requested")
+        send("reconnect")
+    }
+
+    private func requestTransfer(reason: String) {
+        let cancelResume = reason == "gesture"
+            && (inFlight?.reason == "reconnect-resume" || pendingTransfer?.reason == "reconnect-resume")
+        if cancelResume {
+            log("transfer reason=reconnect-resume result=cancelled-by-gesture")
+            inFlight = nil; pendingTransfer = nil
         }
-        guard !isActive else { Self.trace("transfer skipped; already active"); return }
-        Self.trace("transfer requested")
-        send("transfer")
+        guard !isActive || reason == "reconnect-resume" || cancelResume else {
+            if playbackNotice != nil { playbackNotice = nil }
+            return
+        }
+        // Only one transfer at a time. A new gesture supersedes deferred automatic resume.
+        if inFlight != nil || (reason == "gesture" && pendingTransfer?.reason == "gesture") { return }
+        let request = pendingTransfer ?? Transfer(reason: reason)
+        pendingTransfer = reason == "gesture" ? Transfer(reason: reason) : request
+        flushTransfer()
+    }
+
+    private func flushTransfer() {
+        guard var request = pendingTransfer else { return }
+        guard status == .connected, running else {
+            log("transfer reason=\(request.reason) result=deferred")
+            return
+        }
+        guard let deviceID, !deviceID.isEmpty else {
+            failTransfer(request, message: "helper connected without current device id")
+            return
+        }
+        pendingTransfer = nil
+        request.deadline = now().addingTimeInterval(12)
+        inFlight = request
+        log("transfer reason=\(request.reason) attempt=\(request.retries + 1) result=requested")
+        sendJSON(["command": "transfer", "id": request.id, "device_id": deviceID,
+                  "resume": request.reason == "reconnect-resume"])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.expireTransfer(id: request.id) }
+    }
+
+    func expireTransfer(id: String) {
+        let request = inFlight ?? pendingTransfer
+        guard let request, request.id == id, let deadline = request.deadline, now() >= deadline else { return }
+        failTransfer(request, message: "helper did not complete takeover")
+    }
+
+    private func failTransfer(_ request: Transfer, message: String) {
+        inFlight = nil
+        pendingTransfer = nil
+        playbackNotice = "Spotify 這次沒接手，再按一次播放"
+        log("transfer reason=\(request.reason) result=failed message=\(message)")
+        if request.reason == "reconnect-resume" { send("cancel_resume") }
+    }
+
+    private func retakeIfNeeded(web: Bool) {
+        guard web, !isActive, status == .connected, let lastGesture,
+              now().timeIntervalSince(lastGesture) <= 120 else { return }
+        retakes.removeAll { now().timeIntervalSince($0) >= 60 }
+        guard retakes.count < 2, inFlight == nil, pendingTransfer == nil else { return }
+        retakes.append(now())
+        requestTransfer(reason: "retake")
     }
 
     /// 設定頁的「登入 Spotify」：開官方登入頁，使用者按同意後自動連上。
@@ -101,11 +195,16 @@ final class SpotifyConnect: ObservableObject {
     func signOut() {
         send("logout")
         isPlaying = false
+        isActive = false
+        pendingTransfer = nil; inFlight = nil; deviceID = nil; playbackNotice = nil
+        lastGesture = nil; retakes = []
         status = .signedOut
     }
 
     func stop() {
         stopping = true
+        pathMonitor?.cancel(); pathMonitor = nil
+        pendingTransfer = nil; inFlight = nil
         send("quit")
         try? input?.close()
         let running = process
@@ -117,6 +216,7 @@ final class SpotifyConnect: ObservableObject {
     }
 
     private func start() {
+        if transport != nil { return }
         guard process?.isRunning != true, Self.isBundled else {
             if pendingLogin { send("login"); pendingLogin = false }
             return
@@ -140,12 +240,12 @@ final class SpotifyConnect: ObservableObject {
         let logURL = directory.appendingPathComponent("helper.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
         task.standardError = (try? FileHandle(forWritingTo: logURL)) ?? FileHandle.nullDevice
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+        stdoutPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            DispatchQueue.main.async { SpotifyConnect.shared.receive(data) }
+            DispatchQueue.main.async { [weak self] in self?.receive(data) }
         }
-        task.terminationHandler = { finished in
-            DispatchQueue.main.async { SpotifyConnect.shared.exited(finished) }
+        task.terminationHandler = { [weak self] finished in
+            DispatchQueue.main.async { self?.exited(finished) }
         }
         do {
             try task.run()
@@ -156,15 +256,31 @@ final class SpotifyConnect: ObservableObject {
         stopping = false
         process = task
         input = stdinPipe.fileHandleForWriting
+        if pathMonitor == nil {
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { [weak self] path in
+                let satisfied = path.status == .satisfied
+                DispatchQueue.main.async { self?.networkChanged(satisfied: satisfied) }
+            }
+            pathMonitor = monitor
+            monitor.start(queue: DispatchQueue(label: "tatwo.spotify.network"))
+        }
         if status != .signingIn { status = Self.hasCredentials ? .connecting : .signedOut }
     }
 
+    private func sendJSON(_ object: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let line = String(data: data, encoding: .utf8) else { return }
+        send(line)
+    }
+
     private func send(_ command: String) {
+        if let transport { transport(command + "\n"); return }
         guard let input, process?.isRunning == true else { return }
         try? input.write(contentsOf: Data((command + "\n").utf8))
     }
 
-    private func receive(_ data: Data) {
+    func receive(_ data: Data) {
         guard !data.isEmpty else { return }
         buffer.append(data)
         while let end = buffer.firstIndex(of: 10) {
@@ -187,31 +303,65 @@ final class SpotifyConnect: ObservableObject {
               let event = object["event"] as? String else { return }
         switch event {
         case "needs_login":
+            if let request = inFlight ?? pendingTransfer { failTransfer(request, message: "helper needs login") }
             if pendingLogin { pendingLogin = false; status = .signingIn; send("login") } else { status = .signedOut }
         case "starting", "reconnecting":
+            deviceID = nil
+            lastDeviceWasActive = false
+            isActive = false; isPlaying = false
             if status != .signingIn { status = .connecting }
         case "logged_in":
             status = .connecting
         case "connected":
             status = .connected
-            if pendingTransfer { pendingTransfer = false; requestTransfer() }
+            deviceID = object["device_id"] as? String
+            if object["resume"] as? Bool == true, pendingTransfer?.reason != "gesture" {
+                if pendingTransfer != nil {
+                    pendingTransfer?.reason = "reconnect-resume"
+                    flushTransfer()
+                } else { requestTransfer(reason: "reconnect-resume") }
+            } else { flushTransfer() }
         case "login_failed":
             status = .failed("登入沒有完成：\(object["message"] as? String ?? "")")
         case "logged_out":
             status = .signedOut
         case "active":
+            playbackNotice = nil
             isActive = true
+            lastDeviceWasActive = true
         case "inactive":
             isActive = false
             isPlaying = false
-            if let until = handoffUntil, until > Date(), handoffRetries < 3 {
-                handoffRetries += 1
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { SpotifyConnect.shared.requestTransfer() }
-            }
-        case "playing": isPlaying = true
-        case "paused", "stopped", "unavailable": isPlaying = false
+        case "device":
+            let wasActive = lastDeviceWasActive
+            let active = object["active"] as? Bool == true
+            if isActive != active { isActive = active }
+            lastDeviceWasActive = isActive
+            if !isActive && isPlaying { isPlaying = false }
+            if wasActive && !isActive { retakeIfNeeded(web: object["web"] as? Bool == true) }
+        case "transferred":
+            guard let request = inFlight, object["id"] as? String == request.id else { return }
+            inFlight = nil
+            playbackNotice = nil
+            log("transfer reason=\(request.reason) result=success")
+        case "transfer_failed":
+            guard var request = inFlight, object["id"] as? String == request.id else { return }
+            let missing = object["not_found"] as? Bool == true
+            if missing && request.retries == 0 {
+                request.retries += 1
+                request.deadline = now().addingTimeInterval(45)
+                inFlight = nil
+                pendingTransfer = request
+                deviceID = nil
+                status = .connecting
+                log("transfer reason=\(request.reason) result=retry-after-connected")
+                send("reconnect")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in self?.expireTransfer(id: request.id) }
+            } else { failTransfer(request, message: object["message"] as? String ?? "unknown") }
+        case "playing": if !isPlaying { isPlaying = true }
+        case "paused", "stopped", "unavailable": if isPlaying { isPlaying = false }
         case "error":
-            if let message = object["message"] as? String { Self.trace("helper error: \(message)") }
+            if let message = object["message"] as? String { log("helper error: \(message)") }
         default: break
         }
     }
@@ -220,13 +370,14 @@ final class SpotifyConnect: ObservableObject {
         guard finished === process || process == nil else { return }
         process = nil
         input = nil
-        isPlaying = false
+        isPlaying = false; isActive = false; deviceID = nil
+        if let request = inFlight { failTransfer(request, message: "helper exited") }
         guard !stopping else { return }
         // 意外結束：十分鐘內最多自動重開三次。
         crashes = crashes.filter { $0.timeIntervalSinceNow > -600 } + [Date()]
         if crashes.count <= 3, Self.hasCredentials {
             status = .connecting
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { SpotifyConnect.shared.start() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.start() }
         } else {
             status = Self.hasCredentials ? .failed("Spotify 裝置程式一直停止，請到設定重新登入") : .signedOut
         }

@@ -37,6 +37,7 @@ struct TatwoChatSearchOverlay: View {
                 .padding(.top, 70)
                 .frame(maxHeight: .infinity, alignment: .top)
         }
+        .coderScrollIndicators()
         .onAppear {
             index = indexProvider()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { fieldFocused = true }

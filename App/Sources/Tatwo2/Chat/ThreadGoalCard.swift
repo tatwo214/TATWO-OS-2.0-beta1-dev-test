@@ -161,7 +161,9 @@ struct ThreadGoalCard: View {
         let rows = siblings.compactMap { sibling -> (UUID, String, [ThreadGoal], (Int, Int))? in
             let list = store.list(sibling.id)
             let open = list.goals.filter { $0.status != .done && !$0.proposed && $0.parent == nil }
-            return open.isEmpty ? nil : (sibling.id, sibling.title, open, ThreadGoalRules.progress(list))
+            guard !open.isEmpty else { return nil }
+            let progress = ThreadGoalRules.progress(list)
+            return (sibling.id, sibling.title, open, (progress.done, progress.total))
         }
         return CappedScroll(maxHeight: 300) {
             VStack(alignment: .leading, spacing: 8) {

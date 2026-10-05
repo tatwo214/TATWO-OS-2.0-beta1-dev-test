@@ -14,8 +14,10 @@ test('collapsed Browser unmounts the entire rail, not a narrow empty Browser col
   assert.match(host, /&& \(model.mode != \.browser \|\| !browserWorkSpaceStore.focusMode\)/);
   assert.doesNotMatch(host + sidebar, /browserFocusWidth/);
   // 獨立 Browser（onClose == nil）保留 W66 的側欄控制與紅綠燈讓位；聊天旁 chrome 不佔這段。
-  assert.match(header, /if onClose == nil \{ BrowserSidebarControls\(store: store\) \}/);
-  assert.match(header, /if store.focusMode && onClose == nil \{\s*Color.clear.frame\(width: WindowChromeMetrics.trafficLightSafeWidth\)/);
+  assert.match(header, /if onClose == nil \{ BrowserSidebarControls\(store: sidebarStore\) \}/);
+  assert.match(header, /if sidebarStore.focusMode && onClose == nil \{\s*Color.clear.frame\(width: WindowChromeMetrics.trafficLightSafeWidth\)/);
+  assert.match(workspace, /_sidebarStore = ObservedObject\(wrappedValue: sidebarStore \?\? store\)/);
+  assert.match(chrome, /action: sidebarStore.toggleSidebar/);
   assert.match(chrome, /Menu\("工作區"\)/);
   assert.match(chrome, /name: \.tatwoChatSelectMode, object: mode.rawValue/);
 });
@@ -29,7 +31,7 @@ test('toolbar consumes real layout height above native page, including empty/ses
   assert.match(header, /\.frame\(height: onClose == nil \? BrowserOmniboxMetrics.toolbarHeight : BrowserChatChromeMetrics.toolbarHeight\)/);
   assert.match(read('Chat/ChatPage+Panels.swift'), /BrowserWorkSpaceDesignView[\s\S]*?ignoresSafeArea\(\.container, edges: \.top\)/);
   assert.match(read('Shell/AppShell.swift'), /if chatModel.mode != \.browser \{\s*TatwoWindowPageRail/);
-  assert.match(host, /if !isPanel && model.mode != \.browser/);
+  assert.match(host, /if !isPanel && (?:model.mode != \.tatwo && )?model.mode != \.browser/);
 });
 
 test('space title is text only, while native Menu remains accessible and functional', () => {
@@ -76,7 +78,12 @@ test('new and restored blank tabs retain the original centered search page', () 
   assert.match(content, /if store.showsStartPage \{ page \}/);
   assert.match(workspace, /store\.showsStartPage \? "" : store\.selectedTab\.url/);
   assert.match(workspace, /if store.showsStartPage \{ store.navigateFromStartPage\(to: url\) \}/);
-  assert.match(workspace, /accessibilityIdentifier\("browser.startSearch"\)/);
+  // W184 G2d：置中的搜尋框本體在 BrowserStartSearch.swift（主視窗不改識別碼，照舊 browser.startSearch）。
+  const start = read('Browser/BrowserStartSearch.swift');
+  assert.match(start, /var identifier = "browser\.startSearch"/);
+  assert.match(start, /\.accessibilityIdentifier\(identifier\)/);
+  assert.match(workspace, /private var page: some View \{\s*BrowserStartSearch\(/);
+  assert.doesNotMatch(workspace.split('private var page: some View {')[1].split('func send(')[0], /identifier:/);
 });
 
 test('centered search focus does not open the separate address popup', () => {

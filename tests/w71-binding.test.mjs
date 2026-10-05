@@ -26,6 +26,7 @@ function fixture() {
     writeFileSync(join(root, 'os.md'), '# Obsolete bundled constitution: must never be seeded\n');
     writeFileSync(driver, String.raw`
 import Foundation
+enum ClaudeSidecar { enum Kind: String { case claude, codex, grok } }
 
 @main struct W71BindingChecks {
     static func main() throws {
@@ -66,7 +67,8 @@ import Foundation
     }
 }
 `);
-    const files = ['Facade/TatwoResources.swift', 'Facade/EnginePaths.swift', 'Facade/TatwoEntry.swift',
+    const files = ['Facade/TatwoResources.swift', 'Facade/EnginePaths.swift', 'Facade/EngineRuntimeSelection.swift',
+      'Engine/NativeStagingIsolation.swift', 'Facade/TatwoEntry.swift',
       'Facade/OSUpstreamBinding.swift', 'Facade/OSBindingPreview.swift'];
     execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
       ...files.map(file => join(repo, app, file)), driver, '-o', binary],

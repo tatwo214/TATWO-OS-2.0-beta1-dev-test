@@ -21,7 +21,11 @@ extension ChatPage {
     }
     func mainPane(contentMaxWidth: CGFloat?, forceCompactToolbar: Bool = false) -> some View {
         VStack(spacing: mainPaneVerticalSpacing) {
-            if model.mode == .bot {
+            if model.mode == .tatwo {
+                // W180 E2：分頁 host（對話／全域狀態／專案地圖）；側欄收起或面板模式時頁首多一排分頁 chip。
+                AssistantSpaceTabHost(model: model, showsTabChips: isPanel || !isChatProjectRailPinned) { AssistantSpacePane(model: model) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.mode == .bot {
                 // 金樣快照維持 Gen-4 12 場景（凍結的視覺基線不動）；
                 // 互動 runtime 走 Gen-5 工作室版（2026-09-09 使用者收斂）。
                 if BotPageRootView.snapshotExportMode && !BotStudioRootView.exportGen5 {
@@ -49,14 +53,14 @@ extension ChatPage {
             } else if model.mode == .chatgpt {
                 // W177：ChatGPT Space 自己有對話與輸入框；視窗裡分享／⋯／臨時聊天在紅綠燈那一列的右上（ChatPage 的頂右 overlay），
                 // 對話直接從那一列下面開始（使用者 09-25 #125「上方chatgpt的空間空太多 文字都被擠在下面」）。
-                ChatGPTSpaceMainPane(model: ChatGPTSpaceModel.shared, showsHeader: surface != .window)
+                ChatGPTSpaceMainPane(model: ChatGPTSpaceModel.shared, osModel: model, showsHeader: surface != .window)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.mode == .cli {
                 // 2026-08-23 sol 一致性收尾 R2：loops 僅留在 chat 右欄；
                 // CLI 主畫面固定為右上、多卡向下排列的終端工作區。
                 if model.cliHistoryPresented {
                     CLITranscriptHistoryView(sources: model.cliTranscriptSources,
-                        projects: model.document.projects.map { (name: $0.name, workdir: $0.workdir) },
+                        projects: model.document.coderProjects.map { (name: $0.name, workdir: $0.workdir) },
                         onResume: model.resumeCLITranscript, onClose: { model.cliHistoryPresented = false })
                         .padding(.top, surface == .window ? WindowChromeMetrics.bandHeight : 0)
                 } else {
@@ -74,8 +78,10 @@ extension ChatPage {
                     .frame(maxWidth: contentMaxWidth ?? composerMaxWidth)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
-            if model.mode != .cli, model.mode != .bot, model.mode != .browser, model.mode != .chatgpt {
+            // TATWO owns its composer so Coder's draft, attachments and selection stay untouched.
+            if model.mode != .tatwo, model.mode != .cli, model.mode != .bot, model.mode != .browser, model.mode != .chatgpt {
                 composer(contentMaxWidth: contentMaxWidth, forceCompactToolbar: forceCompactToolbar)
+                    .modifier(RemoteOfflineComposerSwap(model: model, focus: $composerFocused))   // W182 R4：那台離線時換成說明＋「在這台接著聊」
                     .frame(maxWidth: contentMaxWidth ?? composerMaxWidth)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.bottom, 18)
@@ -86,11 +92,12 @@ extension ChatPage {
         .overlay(alignment: .bottom) { chatFloatingPanelOverlay(contentMaxWidth: contentMaxWidth) }
     }
 
+    /// W184 H4 修正（GPT-6 H4 審查 #7）：模式卡（showUltraworkPanel）不再畫在這裡——掛在輸入框上（ChatPage+Composer 的
+    /// tatwoComposerModeCard，量輸入框真的上緣、點外面不吞那一下）；這裡只剩舊的模型清單、角色清單浮層。
     @ViewBuilder
     func chatFloatingPanelOverlay(contentMaxWidth: CGFloat?) -> some View {
         if !planInspectorPresented
-            && (showUltraworkPanel || showSingleModelPanel
-                || ultraworkRolePickerTarget != nil)
+            && (showSingleModelPanel || ultraworkRolePickerTarget != nil)
         {
             ZStack(alignment: .bottom) {
                 // 點面板外關閉（協作滑桿拖曳中不關）。scrim 在最底層。
@@ -99,7 +106,6 @@ extension ChatPage {
                     .onTapGesture {
                         guard !(collaborationSliderEditing || collaborationSliderSettling) else { return }
                         withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
-                            showUltraworkPanel = false
                             showSingleModelPanel = false
                             ultraworkRolePickerTarget = nil
                         }
@@ -116,8 +122,6 @@ extension ChatPage {
                                 .frame(
                                     width: modelPickerPanelWidth,
                                     alignment: .leading)
-                        } else if showUltraworkPanel {
-                            ultraworkCollaborationPanel.frame(width: ultraworkPanelWidth)
                         } else if showSingleModelPanel {
                             modelPickerPanel.frame(width: modelPickerPanelWidth, alignment: .leading)
                         }
@@ -1411,7 +1415,6 @@ extension ChatPage {
 
             Label(model.activeGoalHeaderProgressLabel, systemImage: "checkmark.seal")
                 .font(.system(size: 9, weight: .bold, design: .rounded))
-                .foregroundStyle(LiquidGlassTokens.brandAccent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
                 .padding(.horizontal, 8)

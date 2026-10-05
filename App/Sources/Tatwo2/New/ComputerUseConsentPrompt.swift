@@ -49,21 +49,73 @@ typealias ComputerUseIslandContent = IslandNoticeContent
 
 struct IslandNoticeContent: View {
     @ObservedObject private var prompt = IslandNotice.shared
+    @ObservedObject private var externalComputer = HandsComputerUse.shared
     let isExpanded: Bool
+
+    init(prompt: IslandNotice? = nil, isExpanded: Bool) {
+        _prompt = ObservedObject(wrappedValue: prompt ?? .shared)
+        self.isExpanded = isExpanded
+    }
 
     var body: some View {
         switch ComputerUseIslandContentKind.select(
-            isExpanded: isExpanded, hasPendingConsent: prompt.current != nil
+            isExpanded: isExpanded, hasPendingConsent: prompt.current != nil || prompt.displayMeter != nil
         ) {
         case .consent:
             if let request = prompt.current {
                 ComputerUseConsentCard(request: request)
+            } else if let meter = prompt.displayMeter?.meter {
+                IslandDisplayFeedbackContent(meter: meter)
             }
         case .blankTemplate:
-            IslandBlankTemplate()
+            if externalComputer.isOperating, let request = externalComputer.current {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("ChatGPT 正在操作〈\(request.appDisplayName)〉").font(.headline)
+                    Text("只操作核准的 App；停止後須重新由你核准").font(.caption)
+                    Button("停止", role: .destructive) { externalComputer.stop() }
+                        .accessibilityLabel("停止 ChatGPT 操作畫面")
+                }
+                .padding()
+                .frame(width: LiquidGlassTokens.islandNoticeWidth)
+                .padding(.top, LiquidGlassTokens.islandNoticeTopInset)
+            } else {
+                IslandBlankTemplate()
+            }
         case .collapsed:
             EmptyView()
         }
+    }
+}
+
+/// Content only: the original Island surface still owns the notch, glass and geometry.
+struct IslandDisplayFeedbackContent: View {
+    let meter: IslandNotice.Meter
+    private var percentage: Double { meter.percentage.isFinite ? min(100, max(0, meter.percentage)) : 0 }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: meter.symbol)
+                    .accessibilityLabel(meter.symbol == "sun.max.fill" ? "亮度" : "音量")
+                Text(meter.displayName).lineLimit(1)
+                Spacer(minLength: 8)
+                Text("\(Int(percentage.rounded()))%")
+                    .monospacedDigit()
+            }
+            .font(.system(size: 13, weight: .semibold))
+            GeometryReader { geometry in
+                Capsule().fill(Color.primary.opacity(0.12))
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(LiquidGlassTokens.brandAccent)
+                            .frame(width: geometry.size.width * percentage / 100)
+                    }
+            }
+            .frame(height: 3)
+            .accessibilityLabel("\(Int(percentage.rounded()))%")
+        }
+        .padding(.horizontal, 26)
+        .frame(width: LiquidGlassTokens.islandBlankWidth, height: LiquidGlassTokens.islandBlankHeight)
+        .padding(.top, LiquidGlassTokens.islandNoticeTopInset)
     }
 }
 

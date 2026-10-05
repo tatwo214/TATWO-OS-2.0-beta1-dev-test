@@ -40,6 +40,9 @@ extension ChatPage {
             composerTextMaximumHeight,
             max(composerTextMinimumHeight, composerTextHeight))
         return VStack(alignment: .leading, spacing: 8) {
+            if model.selectedRemote == nil, let notice = model.localConversationReadOnlyNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
             if model.mode != .cli {
                 pendingHandoffChip
             }
@@ -189,6 +192,17 @@ extension ChatPage {
                     ? TatwoChatTranscriptVisualMetrics.windowComposerMinimumHeight
                     : TatwoChatTranscriptVisualMetrics.panelComposerMinimumHeight)
             .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusPrimary)
+            .globalDMComposerFrame(.coder, active: surface == .window)
+            // W184 H4 修正（GPT-6 H4 審查 #7）：主視窗 Coder 也跟私訊框、助理頁、Space 一樣，模式卡浮在整個輸入框（玻璃卡）上方 8、
+            // 右緣對齊，量的是輸入框真的上緣（多行、附件長高了卡跟著往上）——不再掛在視窗內浮層固定離底 104（會蓋住長高的輸入框）。
+            // 點卡以外的地方收卡不吞那一下（本機事件監看，點送出＝收卡並照常送出）；Esc、鍵盤、收卡後焦點回輸入框同一套。只留這一套。
+            // 計劃書側欄開、關的當下收起（Plan 畫布裡那張 ultraworkOnly 照舊在側欄裡）。
+            .tatwoComposerModeCard(isPresented: $showUltraworkPanel) {
+                TatwoComposerModeCard(mode: coderComposerMode(), metrics: .main)
+            }
+            .onChange(of: planInspectorPresented) { _, _ in
+                if showUltraworkPanel { showUltraworkPanel = false }
+            }
 
             // 輸入框下方的狀態抽屜常駐，避免介面結構隨狀態跳動。
             // 普通執行進度仍留在 transcript；無抽屜專屬提醒時顯示中性 fallback。
@@ -275,7 +289,10 @@ extension ChatPage {
         // 方框移除／8/7 footer 改版遺孤），幾十處 flashComposerHint 全在
         // 對空氣喊話——這就是兩輪驗收「靜默丟棄」的顯示層真兇。hint
         // 借道既有抽屜顯示（不造新形狀），優先於中性狀態。
-        let hint = model.composerHint?
+        // W184 H4 修正第三輪：沒送到、但輸入框已經有新的字的那一句：抽屜一直顯示「上一句沒送到：…」＋「放回輸入框」（不會自己消失，
+        // 按了或換掉才收），優先於一般提示。
+        let undelivered = model.coderUndeliveredNotice
+        let hint = (undelivered ?? model.chatGPTStartupNotice ?? model.composerHint)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let showsHint = !(hint ?? "").isEmpty
         let showsFeedbackLoginError = showsHint && hint == "請先登入github才能提交issue"
@@ -311,6 +328,20 @@ extension ChatPage {
                 // 2026-09-11 使用者：沒有提醒時不要有字，但圓點恢復常駐。
                 .opacity(isQuiet ? 0 : 1)
             Spacer(minLength: 0)
+            if undelivered != nil {
+                // 玻璃 chip（不是藍色系統鈕）：把那一句接回輸入框前面，不送出。
+                Button { model.restoreUndeliveredDraft() } label: {
+                    Text("放回輸入框")
+                        .font(.system(size: 10, weight: .semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .frame(height: 20)
+                        .chatGlassChip()
+                }
+                .buttonStyle(.plain)
+                .help("把沒送到的那一句接回輸入框前面（不會送出）")
+                .accessibilityIdentifier("tatwo.chat.undelivered.restore")
+            }
         }
         .padding(.horizontal, 12)
         // 2026-09-11 使用者：梯形大小維持原樣（露出 28pt，總高同舊版 33），只把字調到露出段正中。
@@ -443,9 +474,10 @@ extension ChatPage {
 
             if model.mode == .cli {
                 chip(systemImage: "terminal", text: "命令輸入直送")
-            } else {
+            } else if model.routeChoice.runtimeAdapter != .chatgptTap {
                 codexPermissionMenu(compact: compactToolbar)
             }
+            // W184 H4：記憶強度收進右邊的「模式選擇」chip（照舊只在 Coder 對話：CLI、Bot 串不顯示——TatwoComposerMode.coder）。
 
             if model.queuedChatTurnCount > 0 {
                 if model.chatQueuePaused {
@@ -466,17 +498,37 @@ extension ChatPage {
                 }
             }
 
+            if let label = model.canvasModeLabel {
+                HStack(spacing: 4) {
+                    Text(label).font(.system(size: 10, weight: .bold))
+                    Button(action: model.exitActiveCanvasMode) { Image(systemName: "xmark.circle") }
+                        .buttonStyle(.plain).help("離開模式，保留畫布")
+                        .accessibilityIdentifier("composer-exit-canvas-mode")
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.10), in: Capsule())
+            }
+            if !model.archivedPlanCanvases.isEmpty {
+                Menu("封存畫布") {
+                    ForEach(model.archivedPlanCanvases, id: \.planID) { plan in
+                        Button("\(plan.kind ?? "plan") · \(plan.objective)") { model.restoreArchivedCanvas(plan.planID) }
+                    }
+                }.accessibilityIdentifier("composer-archived-canvases")
+            }
+
             // 「工作中」已搬到下方梯形（2026-09-11 使用者）。
 
             Spacer(minLength: compactToolbar ? 8 : 14)
 
             if model.mode != .cli {
-                modelCollaborationComposerPill(compact: compactToolbar)
+                // W184 H4：記憶、模型、ultrawork、速度收進一顆「模式選擇」（原本的模型 chip＋ultrawork 膠囊＋左邊的記憶 chip）。
+                composerModeChip(compact: compactToolbar)
             }
 
-            // 使用者 09-19（同 Codex App）：回覆中同一顆鈕——沒字是終止，一打字就變送出（插話），不並排兩顆。
-            if model.isRunning && !model.canSend {
+            // 一般回覆沿用送出／停止單顆鈕；保留畫布的串另留停止入口，避免草稿遮住停止。
+            if model.isRunning && (model.routeChoice.runtimeAdapter == .chatgptTap || !model.canSend || model.activePlanArtifact != nil) {
                 composerStopButton
+                if model.canSend { composerSendButton(compactToolbar: compactToolbar) }
             } else {
                 composerSendButton(compactToolbar: compactToolbar)
             }
@@ -489,7 +541,7 @@ extension ChatPage {
             .accessibilityIdentifier("chat-composer-send")
             .accessibilityValue(model.sendAvailabilityDiagnostic)
             .accessibilityAction { model.send() }
-            .help(model.isLocalIssueCommand || model.isLocalDiscussionCommand || model.isRunning
+            .help(model.routeChoice.runtimeAdapter == .chatgptTap || model.isLocalIssueCommand || model.isLocalDiscussionCommand || model.isRunning
                   ? model.sendAvailabilityDiagnostic : "送出")
     }
 
@@ -633,6 +685,104 @@ extension ChatPage {
             y: LiquidGlassTokens.shadowOffsetY
         )
         .help("停止")
+    }
+
+    // MARK: W184 H4：模式選擇
+
+    /// 「模式選擇」chip：模型（含速度或推理強度）・記憶・ultrawork 的摘要；按了開模式卡（ULTRAWORK 卡擴充）。卡照舊浮在視窗內的
+    /// chatFloatingPanelOverlay（showUltraworkPanel；點面板外關閉），模型清單、角色清單都在卡裡換頁。
+    func composerModeChip(compact: Bool) -> some View {
+        let mode = coderComposerMode()
+        return ChatComposerModeChip(segments: mode.segments, selected: showUltraworkPanel, help: mode.help) {
+            toggleComposerModeCard()
+        }
+        .layoutPriority(1)
+    }
+
+    func toggleComposerModeCard() {
+        let willShow = !showUltraworkPanel
+        if willShow { model.refreshChatGPTTapModels() }
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            showUltraworkPanel = willShow
+            showSingleModelPanel = false
+            ultraworkRolePickerTarget = nil
+            if willShow { collaborationControlExpanded = true }
+        }
+    }
+
+    /// Coder 的模式：值照舊在 ChatPageModel；角色模型照舊走這個畫面的角色設定（collaborationRoleModelID／selectCollaborationRoleModel），
+    /// 換模型照舊走 selectRouteChoice（推理強度、速度跟著新模型允許的檔位）。
+    func coderComposerMode(ultraworkOnly: Bool = false) -> TatwoComposerMode {
+        let mode = TatwoComposerMode.coder(
+            model: model,
+            roleModelID: { collaborationRoleModelID(for: $0) },
+            chooseRole: { choice, slot in
+                // W184 H4 修正（查核 #4）：計劃書側欄開著時輸入框上方那張卡換完角色照樣開著（selectCollaborationRoleModel 在 Plan 時收浮層）。
+                let keepsCard = planInspectorPresented && showUltraworkPanel
+                selectCollaborationRoleModel(choice, for: slot)
+                if keepsCard { showUltraworkPanel = true }
+            },
+            chooseModel: { selectRouteChoice($0) },
+            ultraworkOnly: ultraworkOnly)
+        return Self.tapAwareCoderMode(mode, model: model, ultraworkOnly: ultraworkOnly)
+    }
+
+    /// 接在既有模式卡的資料邊界；非 TAP 的控制、角色與選擇回呼保持原樣。
+    static func tapAwareCoderMode(_ original: TatwoComposerMode, model: ChatPageModel,
+                                  ultraworkOnly: Bool = false) -> TatwoComposerMode {
+        var mode = original
+        let route = model.routeChoice
+        let isTap = route.runtimeAdapter == .chatgptTap
+        mode.models = mode.models.compactMap { row in
+            if isTap && row.id != "single" { return nil }
+            let options = row.options.compactMap { option -> TatwoComposerMode.ModelOption? in
+                guard option.brand == .chatgptTap else { return option }
+                // TAP 回合不執行 CLI 協作角色，不能把它選成 CLI 的主導或副審。
+                guard row.id == "single" else { return nil }
+                let reason = model.tapModelSelectionUnavailableReason(ChatRouteChoice.resolve(option.id))
+                return TatwoComposerMode.ModelOption(
+                    id: option.id, title: reason.map { "\(option.title) · \($0)" } ?? option.title,
+                    brand: option.brand, isSelected: option.isSelected,
+                    isDisabled: reason != nil, isPending: option.isPending)
+            }
+            return TatwoComposerMode.ModelRow(
+                id: row.id, role: row.role, tint: row.tint,
+                title: isTap ? route.commandLabel : row.title, detail: isTap ? nil : row.detail,
+                identifier: row.identifier, isEnabled: row.isEnabled, options: options, choose: row.choose)
+        }
+        if !ultraworkOnly, let reason = model.chatGPTTapUnavailableReason {
+            mode.modelNoteAction = { model.openChatGPTForModelSelection() }
+            mode.modelNote = [mode.modelNote, "ChatGPT：\(reason)"].compactMap { $0 }.joined(separator: "\n")
+        }
+        guard isTap else { return mode }
+        mode.speed = nil
+        mode.collaboration = nil
+        mode.badge = nil
+        mode.footnote = nil
+        mode.eyebrow = "ChatGPT"
+        mode.title = "單模型模式"
+        if !ultraworkOnly {
+            // 避免 TAP 同名 effort 觸發共用拉條的 Codex Ultra 警告／代理特例。
+            let effortPrefix = "tap-effort:"
+            mode.effort = route.tapEfforts.isEmpty ? nil : TatwoComposerMode.Steps(
+                title: "推理強度",
+                options: route.tapEfforts.map { .init(id: effortPrefix + $0.id, title: ChatGPTTapModelCatalog.effortTitle($0)) },
+                selectedID: model.tapEffortIDForSend.map { effortPrefix + $0 },
+                isEnabled: model.tapModelUnavailableReason(route) == nil,
+                identifier: "tatwo.composer.mode.effort",
+                choose: { id in
+                    guard id.hasPrefix(effortPrefix) else { return }
+                    model.selectTapEffort(String(id.dropFirst(effortPrefix.count)))
+                })
+        }
+        mode.segments = mode.segments.filter { $0.id != "ultrawork" }.map { segment in
+            guard segment.id == "model" else { return segment }
+            return TatwoComposerMode.modelSegment(
+                title: route.commandLabel, suffix: nil, accessibilityTitle: route.commandLabel,
+                identifier: segment.identifier, dimmed: model.tapModelUnavailableReason(route) != nil)
+        }
+        mode.help = "模式選擇：ChatGPT 模型、推理強度、記憶"
+        return mode
     }
 
     func modelCollaborationComposerPill(compact: Bool) -> some View {
@@ -831,8 +981,8 @@ extension ChatPage {
     }
 
     var modelPickerRouteListHeight: CGFloat {
-        let sections = ChatRouteChoice.brandSections(selectedID: model.selectedModel)
-        let rowHeight = CGFloat(ChatRouteChoice.all.count) * 27
+        let sections = ChatRouteChoice.brandSections(selectedID: model.selectedModel, deviceID: model.modelSelectionDeviceID)
+        let rowHeight = CGFloat(ChatRouteChoice.choices(deviceID: model.modelSelectionDeviceID).count) * 27
         let headerHeight = CGFloat(sections.count) * 22
         return min(rowHeight + headerHeight, 238)
     }
@@ -841,7 +991,9 @@ extension ChatPage {
         // Keep Ultrawork controls on one stable width from first open through
         // drag/release. Changing width while the pointer is dragging, or when
         // Off becomes S/M/L/XL/XXL, makes the popover anchor visibly shake.
-        return 282
+        // W184 H4：面板換成模式卡（固定寬，同卡自己的寬）；拉條探針照舊 282。
+        if sliderWindowRouteProbeEnabled || sliderArchProbeEnabled { return 282 }
+        return TatwoComposerModeMetrics.main.width
     }
 
     var sliderArchProbeEnabled: Bool {
@@ -865,6 +1017,7 @@ extension ChatPage {
         return Button {
             withAnimation(.spring(response: 0.20, dampingFraction: 0.86)) {
                 let willShow = !showSingleModelPanel
+                if willShow { model.refreshChatGPTTapModels() }
                 showUltraworkPanel = false
                 collaborationSliderRevealProgress = 0
                 showSingleModelPanel = willShow
@@ -898,6 +1051,7 @@ extension ChatPage {
     }
 
     func compactRouteLabel(_ route: ChatRouteChoice) -> String {
+        if route.runtimeAdapter == .chatgptTap { return route.commandLabel }
         if route.title == "GPT-5.5" { return "5.5" }
         if route.title.hasPrefix("GPT-") { return route.title.replacingOccurrences(of: "GPT-", with: "") }
         if route.title.count > 8 { return String(route.title.prefix(8)) }
@@ -912,7 +1066,14 @@ extension ChatPage {
             modelPickerRouteFooter(route: route)
 
             // 推理強度 row（顯示當前強度，chevron 展開選項）
-            if route.supportsNativeReasoningControl {
+            if route.runtimeAdapter == .chatgptTap && !route.tapEfforts.isEmpty {
+                modelPickerSectionDivider
+                Text("推理強度")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                ForEach(route.tapEfforts) { modelPickerTapEffortRow($0) }
+            } else if route.supportsNativeReasoningControl {
                 modelPickerSectionDivider
                 modelPickerHeaderRow(
                     title: "推理強度",
@@ -998,19 +1159,26 @@ extension ChatPage {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
     var ultraworkCollaborationPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if sliderWindowRouteProbeEnabled {
-                sliderWindowRouteProbePanel
-            } else if sliderArchProbeEnabled {
-                sliderArchitectureProbePanel
-            } else {
-                collaborationStrengthSlider(level: model.collaborationLevel)
+        if sliderWindowRouteProbeEnabled || sliderArchProbeEnabled {
+            VStack(alignment: .leading, spacing: 0) {
+                if sliderWindowRouteProbeEnabled {
+                    sliderWindowRouteProbePanel
+                } else {
+                    sliderArchitectureProbePanel
+                }
             }
+            .padding(10)
+            // #46/#47：改用真 /liquid-glass-dashboard WebGL 玻璃底板（透明、有折射）。
+            .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusCard)
+        } else {
+            // W184 H4：模式卡＝ULTRAWORK 卡擴充（S～XXL 舊版漸層拉條一律直接畫、身份與模型、速度、推理強度、記憶；卡自己有玻璃底）。
+            // Plan 畫布裡那張只放協作那幾區（同原本那張卡）。W184 H4 修正（查核 #3、#11）：浮層裡那張從下緣往上長，
+            // 視窗矮時中間那一段自己捲、S～XXL 固定在上面；Plan 畫布那張由上往下排、側欄自己會捲，不量。
+            TatwoComposerModeCard(mode: coderComposerMode(ultraworkOnly: planInspectorPresented), metrics: .main,
+                                  fitsAbove: !planInspectorPresented)
         }
-        .padding(10)
-        // #46/#47：改用真 /liquid-glass-dashboard WebGL 玻璃底板（透明、有折射）。
-        .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusCard)
     }
 
     @ViewBuilder
@@ -1227,7 +1395,7 @@ extension ChatPage {
     }
 
     func modelPickerRouteFooter(route: ChatRouteChoice) -> some View {
-        let brandSections = ChatRouteChoice.brandSections(selectedID: model.selectedModel)
+        let brandSections = ChatRouteChoice.brandSections(selectedID: model.selectedModel, deviceID: model.modelSelectionDeviceID)
         return VStack(spacing: 0) {
             Button {
                 withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
@@ -1264,6 +1432,12 @@ extension ChatPage {
                     VStack(spacing: 0) {
                         ForEach(brandSections) { section in
                             modelPickerBrandHeader(section.brand)
+                            if section.brand == .chatgptTap, let reason = model.chatGPTTapUnavailableReason {
+                                Text(reason)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 14)
+                            }
                             ForEach(section.choices) { choice in
                                 modelPickerInlineRouteRow(choice)
                                     .padding(.leading, 6)
@@ -1287,6 +1461,12 @@ extension ChatPage {
     }
 
     func selectRouteChoice(_ choice: ChatRouteChoice) {
+        // 模式卡與選單都走這裡：休眠中的 ChatGPT 模型可以選，選了就喚醒（.052 實機：這裡還用舊檢查，選了沒反應）。
+        if let reason = model.tapModelSelectionUnavailableReason(choice) {
+            model.flashComposerHint(reason)
+            return
+        }
+        guard model.prepareTapSelection(choice) else { return }
         // Close the picker first, then mutate the route on the next runloop
         // tick. modelPickerPanelWidth/modelPickerCompactPanelWidth read
         // model.routeChoice, so mutating it before the popover has started
@@ -1296,19 +1476,15 @@ extension ChatPage {
             showSingleModelPanel = false
         }
         DispatchQueue.main.async {
-            model.setSingleModel(choice.id, syncCollaborationLead: model.collaborationLevel != .off)
-            if choice.supportsNativeReasoningControl, !choice.allowedEfforts.contains(model.selectedEffort) {
-                model.selectedEffort = choice.defaultEffort
-            }
-            if choice.supportsNativeSpeedControl, !choice.allowedSpeedTiers.contains(model.selectedSpeedTier) {
-                model.selectedSpeedTier = choice.defaultSpeedTier ?? choice.allowedSpeedTiers.first ?? .fast
-            }
+            // W184 H4：同一套規則搬到 TatwoComposerMode.applyCoderRoute（模式卡與自測共用）：換路由，推理強度、速度不在新模型允許的檔位就換預設。
+            TatwoComposerMode.applyCoderRoute(choice, to: model)
         }
     }
 
     func modelPickerInlineRouteRow(_ choice: ChatRouteChoice) -> some View {
         let isSelected = model.selectedModel == choice.id
         let isPending = model.pendingModelID == choice.id
+        let unavailableReason = model.tapModelSelectionUnavailableReason(choice)
         return Button {
             selectRouteChoice(choice)
         } label: {
@@ -1327,7 +1503,7 @@ extension ChatPage {
                 }
             }
             .foregroundStyle(
-                isSelected || isPending
+                unavailableReason != nil ? Color.secondary : isSelected || isPending
                     ? LiquidGlassTokens.brandAccent
                     : Color.primary)
             .padding(.horizontal, 14)
@@ -1336,6 +1512,25 @@ extension ChatPage {
             .chatMenuRowHover(isSelected: isSelected)
         }
         .buttonStyle(.plain)
+        .disabled(unavailableReason != nil)
+        .help(unavailableReason ?? choice.commandLabel)
+    }
+
+    func modelPickerTapEffortRow(_ effort: TapEffort) -> some View {
+        Button {
+            model.selectTapEffort(effort.id)
+        } label: {
+            HStack {
+                Text(ChatGPTTapModelCatalog.effortTitle(effort))
+                Spacer()
+                if model.tapEffortIDForSend == effort.id { Image(systemName: "checkmark") }
+            }
+            .font(.system(size: 13))
+            .padding(.horizontal, 14)
+            .frame(height: 28)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.tapModelUnavailableReason(model.routeChoice) != nil)
     }
 
     func modelPickerSpeedRow(_ speed: TatwoModelSpeedTier) -> some View {

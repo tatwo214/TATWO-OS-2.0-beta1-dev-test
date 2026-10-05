@@ -61,7 +61,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if r: time.sleep(0.05)
         try: self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError): pass
-server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+# The default transport opens 24 ranges at once (up to 32 with an override).
+# Python 3.9's five-connection backlog can make this otherwise-good fixture reject
+# connections under full-suite load. Deliberate broken/resume responses still test failures.
+class Server(http.server.ThreadingHTTPServer):
+    request_queue_size = 128
+server = Server(('127.0.0.1', 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()
 `;
@@ -246,7 +251,7 @@ test('W87a real threaded HTTP Range fixture: join, resume, reject, fallback and 
     await t.test('both transports use the same default and invalid-override fallback', async () => {
       const count = Number(install.match(/TATWO_OS_DOWNLOAD_PARTS:-([0-9]+)/)[1]);
       const hash = createHash('sha256').update(payload).digest('hex');
-      for (const configured of ['', 'invalid']) {
+      for (const configured of ['', 'invalid', '0', '33', '999999999999999999999']) {
         for (const client of ['shell', 'swift']) {
           const label = `${client}-${configured || 'default'}`;
           const output = join(root, label + '.zip'), path = `/good/${label}.zip`;
@@ -254,11 +259,13 @@ test('W87a real threaded HTTP Range fixture: join, resume, reject, fallback and 
           if (configured === '') delete env.TATWO_OS_DOWNLOAD_PARTS;
           if (client === 'shell') {
             writeFileSync(output + '.sha256', `${hash}  archive.zip\n`);
-            await run('retry_download "$OUTPUT" "$BASE$ASSET_PATH"', {
+            const receipt = await run('retry_download "$OUTPUT" "$BASE$ASSET_PATH"\nphases_json', {
               ...env, TEMP: root, OUTPUT: output, BASE: base, ASSET_PATH: path,
               DOWNLOAD_SIZE: String(payload.length), TATWO_OS_MIRROR_BASE: '', TATWO_OS_OFFLINE_RELEASE: '',
               TATWO_OS_DOWNLOAD_PARTS: configured,
             });
+            const phase = JSON.parse(receipt).download.find(item => item.name === label + '.zip');
+            assert.equal(phase?.parts, count, label + ' receipt must preserve the default range count');
           } else {
             const result = spawnSync(join(root, 'probe'), [base + path, output, String(payload.length), hash], {
               encoding: 'utf8', timeout: 60000, env,
@@ -269,7 +276,7 @@ test('W87a real threaded HTTP Range fixture: join, resume, reject, fallback and 
           assert.equal(createHash('sha256').update(readFileSync(output)).digest('hex'), hash);
           const requests = readFileSync(join(root, 'requests'), 'utf8').trim().split('\n').map(JSON.parse)
             .filter(r => r.path === path && r.method === 'GET');
-          assert.equal(requests.length, count, label);
+          assert.equal(requests.length, count, `${label}: GET ranges ${JSON.stringify(requests.map(r => r.range))}`);
           assert.ok(requests.every(r => r.range !== null));
         }
       }

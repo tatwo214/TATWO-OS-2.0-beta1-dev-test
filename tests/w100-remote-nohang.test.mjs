@@ -128,7 +128,8 @@ test('W100 d: 沒有快取時對話區顯示「連線中…」', () => {
   const view = readFileSync(resolve('App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift'), 'utf8');
   const area = body(view, 'func messageArea(contentMaxWidth: CGFloat?) -> some View');
   assert.match(area, /model\.isRemoteTranscriptLoading/);
-  assert.match(area, /ProgressView\("連線中…"\)/);
+  // W201（10-03 使用者：「不要一直報備連線狀態」）：沒快取時寫「載入對話…」，仍然不是空白。
+  assert.match(area, /ProgressView\("載入對話…"\)/);
   // 沿用既有空狀態的樣子，不另外做一套。
   assert.match(area, /ProgressView\("載入對話"\)/);
 });

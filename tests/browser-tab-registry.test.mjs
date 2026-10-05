@@ -14,7 +14,7 @@ test('one owner registry, no stored facade dictionary or workspace demo folders'
   assert.doesNotMatch(facade + model, /(?:@Published\s+)?var browserLanesBySession[^\n]*=\s*\[:\]/);
   assert.match(facade, /browserTabRegistry\.storeLanes/);
   assert.match(facade, /browserTabRegistry\.closeAll\(ownedBy:/);
-  assert.match(model, /browserTabRegistry\.changes\.sink/);
+  assert.doesNotMatch(model, /browserTabRegistry\.changes\.sink/);
   for (const path of ['Chat/ChatPage.swift', 'Browser/BrowserWorkSpaceDesignView.swift']) {
     assert.doesNotMatch(read(`App/Sources/Tatwo2/${path}`), /"新聞"|"工具"|"參考資料"|"待讀"|"購物"/);
   }

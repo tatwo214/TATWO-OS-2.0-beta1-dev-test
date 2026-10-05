@@ -59,11 +59,36 @@ struct Root: View {
     }
     withExtendedLifetime(coordinator) {}
   }
-  let p = Process(); p.executableURL=URL(fileURLWithPath:"/usr/sbin/screencapture")
-  p.arguments=["-x","-o","-l",String(window.windowNumber),${JSON.stringify(join(root, 'window.png'))}]
-  try! p.run(); p.waitUntilExit()
-  precondition(p.terminationStatus == 0 && FileManager.default.fileExists(atPath: ${JSON.stringify(join(root, 'window.png'))}),
-    "native visual evidence must be captured")
+  // Render only this fixture's real AppKit frame and native buttons. Launching
+  // the separate screencapture program requires unrelated desktop-capture
+  // permission; this test must neither request it nor read another App's window.
+  guard let frameView = window.contentView?.superview else { fatalError("missing native frame") }
+  frameView.layoutSubtreeIfNeeded(); frameView.displayIfNeeded()
+  guard let image = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds)
+    else { fatalError("native frame bitmap unavailable") }
+  frameView.cacheDisplay(in: frameView.bounds, to: image)
+  precondition(image.pixelsWide >= 500 && image.pixelsHigh >= 300)
+  guard let png = image.representation(using: .png, properties: [:]), png.count > 1000
+    else { fatalError("native visual evidence is empty") }
+  try! png.write(to: URL(fileURLWithPath: ${JSON.stringify(join(root, 'window.png'))}))
+  for (index, type) in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].enumerated() {
+    let button = window.standardWindowButton(type)!
+    guard let pixels = button.bitmapImageRepForCachingDisplay(in: button.bounds)
+      else { fatalError("native button bitmap unavailable") }
+    button.cacheDisplay(in: button.bounds, to: pixels)
+    var colors = Set<String>()
+    for x in 0..<pixels.pixelsWide {
+      for y in 0..<pixels.pixelsHigh {
+        if let color = pixels.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), color.alphaComponent > 0.1 {
+          colors.insert("\\(Int(color.redComponent * 255)),\\(Int(color.greenComponent * 255)),\\(Int(color.blueComponent * 255))")
+        }
+      }
+    }
+    precondition(colors.count > 1, "native button must draw nonempty detail")
+    try! pixels.representation(using: .png, properties: [:])!.write(to:
+      URL(fileURLWithPath: ${JSON.stringify(root)}).appendingPathComponent("button-\\(index).png"))
+  }
+  print("NATIVE FRAME EVIDENCE " + ${JSON.stringify(join(root, 'window.png'))})
   window.orderOut(nil)
   print("TRAFFIC LIGHTS PASS")
  }

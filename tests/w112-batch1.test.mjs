@@ -16,7 +16,11 @@ test('額度：不替不認得的時窗取名字；原始回傳只有代號與�
   assert.doesNotMatch(quota.slice(quota.indexOf('detail.rawLines ='), quota.indexOf('detail.rawLines =') + 420), /token|accessToken|Bearer/i);
   // W120（使用者 09-21：「查看原始回傳不用」）：卡片不再有原始回傳；重置券改成「券符號 ×N」，0 張變暗不能點。
   const card = read('New/EngineLoginCard.swift');
-  assert.doesNotMatch(card, /DisclosureGroup\(/);   // 註解裡會引用使用者原話，所以釘元件，不釘字樣
+  // W192c 允許預設收合的執行檔「詳細」；W120 的原始額度回傳仍不可畫出。
+  assert.doesNotMatch(card, /\brawLines\b/);
+  assert.equal((card.match(/DisclosureGroup\(/g) ?? []).length, 1);
+  assert.match(card, /DisclosureGroup\("詳細", isExpanded: Binding\(\s*get: \{ expandedDetails\.contains\(kind\) \}/);
+  assert.match(card, /@State private var expandedDetails: Set<ClaudeSidecar\.Kind> = \[\]/);
   assert.match(card, /Image\(systemName: "ticket"\)/);
   assert.match(card, /\.disabled\(tickets <= 0\)/);
   assert.match(card, /\.opacity\(tickets > 0 \? 1 : 0\.35\)/);
@@ -39,7 +43,8 @@ test('空間：顏色欄位舊檔相容、刪除先封存、右鍵開 Dia 式選
   assert.equal((menu.match(/"(graphite|green|blue|purple|yellow|pink|red|orange)"/g) || []).length >= 16, true);
   for (const text of ['改名…', '刪除…', '至少要留一個空間']) assert.ok(menu.includes(text), text);
   assert.match(menu, /event\.type == \.rightMouseDown \|\| \(event\.type == \.leftMouseDown && event\.modifierFlags\.contains\(\.control\)\)/);
-  assert.match(read('Browser/BrowserWorkSpaceDesignView.swift'), /ForEach\(store\.spaces\) \{ BrowserSpaceDot\(store: store, space: \$0,/);
+  // W184 G2d：同一顆 BrowserSpaceDot（私訊框借用時多兩個參數：不給編輯、它自己的選擇回呼）。
+  assert.match(read('Browser/BrowserWorkSpaceDesignView.swift'), /ForEach\(store\.spaces\) \{ space in\s*BrowserSpaceDot\(store: store, space: space,/);
 });
 
 test('Chat 固定鈕：搬到左上（同 Browser 字形與尺寸），右上不再有；拖曳區讓出那一格', () => {
@@ -52,7 +57,11 @@ test('Chat 固定鈕：搬到左上（同 Browser 字形與尺寸），右上不
   // W114：Browser 的側欄被滑鼠喚出時也要有這顆鈕（與紅綠燈）。
   assert.match(read('Chat/ChatPage.swift'), /\.overlay\(alignment: \.topLeading\) \{\s*if !isPanel && \(model\.mode != \.browser \|\| browserWorkSpaceStore\.hoverRailShown\) \{\s*sidebarPinButton\(/);
   assert.match(read('Chat/ChatPage.swift'), /browserWorkSpaceStore\.hoverRailShown = shown/);
-  assert.match(read('Browser/BrowserWorkSpaceDesignView.swift'), /sidebarVisible: !store\.focusMode \|\| store\.sidebarInteractionActive \|\| store\.hoverRailShown,/);
+  const design = read('Browser/BrowserWorkSpaceDesignView.swift');
+  assert.match(design, /@ObservedObject var sidebarStore: BrowserWorkSpaceStore/);
+  assert.match(design, /_sidebarStore = ObservedObject\(wrappedValue: sidebarStore \?\? store\)/);
+  assert.match(design, /sidebarVisible: !sidebarStore\.focusMode \|\| sidebarStore\.sidebarInteractionActive \|\| sidebarStore\.hoverRailShown,/);
+  assert.doesNotMatch(design, /sidebarVisible: !store\.focusMode/);
   assert.match(panels, /if browserRail \{ browserWorkSpaceStore\.toggleSidebar\(\) \} else \{ sidebarPinnedPref\.toggle\(\) \}/);
   assert.match(read('Shell/AppShell.swift'), /WorkspaceSidebarMetrics\.width \+ ChatPage\.sidebarPinButtonReserve/);
 });

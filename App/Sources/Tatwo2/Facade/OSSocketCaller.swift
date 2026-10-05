@@ -16,6 +16,9 @@ enum OSSocketCaller: Equatable {
     case job(UUID)
     case helper
     case ssh
+    /// W183 R1／R1b：ChatGPT 手腳的關口（App 在 Seatbelt 裡直接啟動的關口本人）。不綁對話（接口 v2 §1：授權一律看 grant）；
+    /// 只准 `HandsContract.externalAIMethods`；它開的子行程不沿用這個身分（一律 `.other`）。
+    case externalAI
     case other(pid: pid_t?)
 
     /// App 在行程內登記的程序根。
@@ -23,32 +26,41 @@ enum OSSocketCaller: Equatable {
         case engine(UUID)
         case job(UUID)
         case helper
+        case externalAI   // W183 R1／R1b：不綁對話
     }
 
     /// 程序根連同登記當下的啟動時間：pid 被別的程序重用、或 App 重開後舊工作已不是它的子程序，都對不上。
     struct RootEntry: Equatable {
         let root: Root
         let startTime: UInt64
-    }
-
-    var isTrusted: Bool {
-        if case .other = self { return false }
-        return true
-    }
-
-    /// App 自己或它登記的程序根（不含 SSH 轉進來的）。
-    var isLocalApp: Bool {
-        switch self {
-        case .app, .engine, .job, .helper: return true
-        case .ssh, .other: return false
+        /// W183 R1：子孫是否沿用這個身分。外部 AI 的關口不沿用——只有登記的那個 pid 本人算，它開的程式一律 `.other`。
+        var inheritable: Bool {
+            if case .externalAI = root { return false }
+            return true
         }
     }
 
-    /// 引擎與背景指令只能以自己那條對話的身分呼叫。
+    /// 自己人＝App、它登記的引擎／背景工作／探針、系統 sshd 轉進來的已配對設備。外部 AI 與其他程式都不算。
+    var isTrusted: Bool {
+        switch self {
+        case .app, .engine, .job, .helper, .ssh: return true
+        case .externalAI, .other: return false   // W183 R1：外部 AI 明確不算自己人
+        }
+    }
+
+    /// App 自己或它登記的程序根（不含 SSH 轉進來的、不含外部 AI）。
+    var isLocalApp: Bool {
+        switch self {
+        case .app, .engine, .job, .helper: return true
+        case .ssh, .externalAI, .other: return false
+        }
+    }
+
+    /// 引擎、背景指令只能以自己那條對話的身分呼叫。外部 AI 不綁對話（W183 R1b：授權看 grant，thread 參數一律忽略）。
     var boundThread: UUID? {
         switch self {
         case .engine(let thread), .job(let thread): return thread
-        default: return nil
+        case .app, .helper, .ssh, .externalAI, .other: return nil
         }
     }
 
@@ -59,6 +71,7 @@ enum OSSocketCaller: Equatable {
         case .job(let thread): "job(\(thread.uuidString.prefix(8)))"
         case .helper: "helper"
         case .ssh: "ssh"
+        case .externalAI: "externalAI"
         case let .other(pid): "other(\(pid.map(String.init) ?? "?"))"
         }
     }
@@ -87,6 +100,8 @@ enum OSSocketCaller: Equatable {
         helperLock.lock()
         for (pid, startTime) in helpers { roots[pid] = RootEntry(root: .helper, startTime: startTime) }
         helperLock.unlock()
+        // W183 R1：ChatGPT 手腳的關口（HandsContract.swift 登記；一次只有一個）。
+        for (pid, entry) in externalAIRoots() { roots[pid] = entry }
         return roots
     }
 
@@ -110,10 +125,13 @@ enum OSSocketCaller: Equatable {
         for _ in 0..<64 {
             if let entry = roots[current] {
                 guard parentPID(of: current) == appPID, processStartTime(current) == entry.startTime else { break }
+                // W183 R1：不沿用的根（外部 AI 關口）只認本人；找到它時對方若是它的子孫，一律不算。
+                guard entry.inheritable || current == pid else { break }
                 switch entry.root {
                 case .engine(let thread): return .engine(thread)
                 case .job(let thread): return .job(thread)
                 case .helper: return .helper
+                case .externalAI: return .externalAI
                 }
             }
             guard current > 1, let parent = parentPID(of: current), parent != current, parent != appPID else { break }

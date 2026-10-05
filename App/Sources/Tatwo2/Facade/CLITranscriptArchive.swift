@@ -238,7 +238,7 @@ enum CLITranscriptArchive {
     }
 
     static func resumeBlockedReason(_ session: CLITranscriptSession, now: Date = Date()) -> String? {
-        if UUID(uuidString: session.sessionID) == nil { return "這個檔沒有可用的 session id" }
+        if UUID(uuidString: session.sessionID) == nil { return "這個檔沒有可用的對話代號" }
         if now.timeIntervalSince(session.modifiedAt) <= liveWindow { return "五分鐘內還在寫入，可能正在別處進行" }
         return nil
     }

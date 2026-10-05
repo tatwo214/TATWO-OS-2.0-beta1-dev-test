@@ -13,7 +13,7 @@ struct UpdateAvailableCard: View {
             HStack {
                 Text("App 更新").font(.headline)
                 Spacer()
-                Button(checker.isChecking ? "檢查中…" : "檢查更新") {
+                OSChipButton(title: checker.isChecking ? "檢查中…" : "檢查更新") {
                     checker.checkForUpdatesFromUser()
                 }
                 .disabled(checker.isChecking)
@@ -54,25 +54,23 @@ struct UpdateAvailableCard: View {
                 if let notice = updater.networkNotice {
                     Text(notice).font(.footnote).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Button(UpdateNetworkPolicy.downloadNowLabel) {
+                    OSChipButton(title: UpdateNetworkPolicy.downloadNowLabel) {
                         updater.downloadNowIgnoringMetering(to: release.tag_name, repository: checker.repository)
                     }
-                    .font(.footnote)
                 }
                 Text(updater.updateMarkTitle)
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
-                    Button(updater.updateMarkTitle) {
+                    OSChipButton(title: updater.updateMarkTitle, isPrimary: true) {
                         Task {
                             await updater.activateUpdateMark(to: release.tag_name, repository: checker.repository)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
                     .disabled(updater.updateMarkDisabled)
                     .help(updater.updateMarkHelp)
                     Spacer()
-                    Button("稍後") { checker.dismissForLaunch() }
+                    OSChipButton(title: "稍後") { checker.dismissForLaunch() }
                         .disabled(updater.phase == .handedOff)
                 }
                 if case .failed(let reason) = updater.phase {
@@ -85,7 +83,7 @@ struct UpdateAvailableCard: View {
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
-                        Button("複製指令") {
+                        OSChipButton(title: "複製指令") {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(checker.terminalInstallCommand, forType: .string)
                         }
@@ -118,7 +116,6 @@ struct UpdateAvailableCard: View {
 struct SidebarUpdateShortcut: View {
     @ObservedObject private var checker = GitHubReleaseUpdateChecker.shared
     @ObservedObject private var updater = InAppUpdater.shared
-    let openUpdateSettings: () -> Void
     var body: some View {
         if let release = checker.availableRelease, !checker.dismissed {
             Button {

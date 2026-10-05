@@ -7,7 +7,7 @@ import SwiftUI
 @MainActor
 final class BrowserChatSessionSelection: ObservableObject {
     static let shared = BrowserChatSessionSelection()
-    struct Pick: Equatable { let spaceID: UUID; let tabID: UUID }
+    struct Pick: Hashable { let spaceID: UUID; let tabID: UUID }
     /// 目前在 Session space 裡點開的聊天旁分頁；nil＝顯示原本的 session 內容。
     @Published var pick: Pick?
     /// ChatPage 提供：討論串 UUID →（專案名，討論串標題）。Browser 這層不認識聊天資料。
@@ -95,53 +95,31 @@ struct BrowserChatSessionsSection: View {
     }
 }
 
-/// Session space 裡點開的聊天旁分頁：用聊天旁自己的 runtime（同一個 profile，登入照舊）直接顯示那一頁。
-/// 聊天模式下面板不在畫面上，所以不會跟面板搶同一個 CEF 容器。
+/// 只適配既有 session 選取；完整 chrome、網頁與快捷鍵仍由同一個 DesignView 提供。
 struct BrowserChatSessionSurface: View {
-    let pick: BrowserChatSessionSelection.Pick
-    let source: BrowserTabRegistry
-    @State private var command: EmbeddedBrowserCommand?
+    @ObservedObject var sidebarStore: BrowserWorkSpaceStore
+    @StateObject private var session: BrowserSessionProjection
 
-    var body: some View {
+    init(pick: BrowserChatSessionSelection.Pick, source: BrowserTabRegistry, sidebarStore: BrowserWorkSpaceStore) {
+        self.sidebarStore = sidebarStore
         let registry = BrowserTabRegistry.chatInspectorRegistry(source: source)
-        let runtime = BrowserWorkSpaceRuntime.forChat("chat-browser-inspector", registry: registry, adoptsWorkSpaceTabs: true)
-        VStack(spacing: 0) {
-            // 上方那條工具列綁的是獨立 Browser 的分頁，在這裡不會作用；聊天旁的頁面用自己這一排導覽鈕。
-            BrowserChatSessionControls(runtime: runtime, tabID: pick.tabID) { command = EmbeddedBrowserCommand(action: $0) }
-            BrowserWorkSpaceCEFSurface(tabID: pick.tabID, spaceID: pick.spaceID, command: command, onPopup: { _, _ in },
-                runtime: runtime)
-                .id(pick.tabID)
-        }
-        .onChange(of: pick) { _, _ in command = nil }
-    }
-}
-
-private struct BrowserChatSessionControls: View {
-    @ObservedObject var runtime: BrowserWorkSpaceRuntime
-    let tabID: UUID
-    let send: (EmbeddedBrowserCommand.Action) -> Void
-
-    var body: some View {
-        let state = runtime.navigationTabID == tabID ? runtime.navigationState : .blank
-        HStack(spacing: BrowserOmniboxMetrics.controlGap) {
-            button("chevron.left", "上一頁", state.canGoBack, .goBack)
-            button("chevron.right", "下一頁", state.canGoForward, .goForward)
-            button(state.isLoading ? "xmark" : "arrow.clockwise", state.isLoading ? "停止載入" : "重新載入", true,
-                   state.isLoading ? .stopLoading : .reload)
-            Text(BrowserOmniboxPresentation.domain(for: state.urlString))
-                .font(.system(size: BrowserOmniboxMetrics.domainFontSize)).lineLimit(1).truncationMode(.middle)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
-        .frame(height: BrowserOmniboxMetrics.collapsedHeight)
+        _session = StateObject(wrappedValue: BrowserSessionProjection(pick: pick, registry: registry))
     }
 
-    private func button(_ symbol: String, _ label: String, _ enabled: Bool, _ action: EmbeddedBrowserCommand.Action) -> some View {
-        Button { send(action) } label: {
-            Image(systemName: symbol).font(.system(size: BrowserOmniboxMetrics.iconSize))
-                .frame(width: BrowserOmniboxMetrics.collapsedHeight, height: BrowserOmniboxMetrics.collapsedHeight)
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(!enabled).help(label).accessibilityLabel(label)
+    // 明確擦除這一個路由邊界的型別，避免 DesignView → Surface → DesignView 的 opaque Body 遞迴。
+    var body: AnyView {
+        AnyView(Group {
+            if session.isUsable {
+                BrowserWorkSpaceDesignView(store: session.store, runtime: session.runtime,
+                    sidebarStore: sidebarStore, session: session)
+            } else {
+                VStack(alignment: .leading, spacing: BrowserOmniboxMetrics.zero) {
+                    BrowserSidebarControls(store: sidebarStore)
+                        .frame(height: BrowserOmniboxMetrics.toolbarHeight)
+                    Text("此對話分頁已關閉或不再屬於原討論串")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        })
     }
 }

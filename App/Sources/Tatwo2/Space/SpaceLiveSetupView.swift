@@ -45,8 +45,7 @@ struct SpaceEmptyDomainView: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 260)
                 .onSubmit(create)
-            Button(SpaceCreation.createTitle, action: create)
-                .buttonStyle(.borderedProminent)
+            OSChipButton(title: SpaceCreation.createTitle, isPrimary: true, action: create)
                 .disabled(!canCreate)
             if let failure {
                 Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled)

@@ -41,15 +41,45 @@ archive_backup_valid() {
   [[ -d "$app" && ! -L "$app" && ! -L "$app/Contents" && ! -L "$app/Contents/Info.plist" ]] &&
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null)" == ai.tatwo.tatwo2 ]]
 }
-trash_update_archive() {
-  local root="$1" item="$2" reason="$3" manifest="$1/cleanup-manifest.md"
+# W180 B3: superseded update material is removed in place instead of going to the Trash
+# (it filled the Trash with 1 GB app copies per update). Only updater-owned children of
+# UpdateArchives qualify; the newest rollback backups and failure are kept by the callers.
+# The item is first renamed (one atomic step) to a reserved .discard.* name that can never
+# count as a backup, so an interrupted removal cannot leave a half-deleted "valid" backup;
+# leftovers are removed again at the start of the next cleanup.
+remove_update_archive_tree() {
+  /bin/rm -Rfx -- "$1"
+}
+discard_child_safe() {
+  local root="$1" item="$2" name="${2##*/}"
+  [[ "$root" == "$(cd "$HOME" && pwd -P)/Library/Application Support/TATWO OS/UpdateArchives" ]] || return 1
+  [[ -d "$item" && ! -L "$item" && -O "$item" && "$(dirname "$item")" == "$root" ]] || return 1
+  [[ "$name" =~ ^\.discard\.[A-Fa-f0-9-]+$ ]]
+}
+discard_update_archive() {
+  local root="$1" item="$2" reason="$3" manifest="$1/cleanup-manifest.md" doomed
   archive_child_safe "$root" "$item" || return 1
   [[ ! -L "$manifest" && ( ! -e "$manifest" || -f "$manifest" ) ]] || return 1
-  command -v trash >/dev/null || return 1
-  printf '\n- Source: `%s`\n  Reason: %s\n  Restore: macOS Trash > Put Back to the original path. Permanent removal requires a different human/AI review.\n' "$item" "$reason" >> "$manifest" || return 1
-  # Recheck at the destructive boundary. Moving to Trash does not follow nested symlinks.
+  doomed="$root/.discard.$(uuidgen)"
+  [[ ! -e "$doomed" && ! -L "$doomed" ]] || return 1
+  printf '\n- Removing: `%s`\n  Reason: %s\n  Restore: not kept. If that version is still on its GitHub Release it can be reinstalled (older versions need TATWO_OS_ALLOW_DOWNGRADE=1). The newest rollback backups stay in this folder.\n' "$item" "$reason" >> "$manifest" || return 1
+  # Recheck at the destructive boundary. rm -R removes nested symlinks without following them.
   archive_child_safe "$root" "$item" || return 1
-  trash "$item"
+  mv "$item" "$doomed" || return 1
+  if remove_update_archive_tree "$doomed"; then
+    printf '  Result: removed.\n' >> "$manifest" || true
+  else
+    printf '  Result: incomplete; the rest is removed at the next cleanup.\n' >> "$manifest" || true
+    return 1
+  fi
+}
+purge_discarded_update_archives() {
+  local root="$1" dir
+  for dir in "$root"/.discard.*; do
+    discard_child_safe "$root" "$dir" || continue
+    # A leftover that still cannot be removed must not block the rest of the cleanup.
+    remove_update_archive_tree "$dir" || true
+  done
 }
 retain_update_archives() (
   local root dir name backup target owner started modified backup_rank priority failures=0 backups=0 current="${1:-}"
@@ -57,6 +87,8 @@ retain_update_archives() (
   [[ ! -L "$root/.retention.lock" ]] || return 1
   exec 8>>"$root/.retention.lock"
   /usr/bin/lockf -s -t 0 8 || return 1
+  # W180 B3: finish removals an earlier cleanup could not complete.
+  purge_discarded_update_archives "$root"
   # Extract rollback bundles out of old mixed stages BEFORE pruning their chunks.
   for dir in "$root"/.tatwo-update.* "$root"/failed-.tatwo-update.*; do
     archive_child_safe "$root" "$dir" || continue
@@ -92,7 +124,7 @@ retain_update_archives() (
       touch -t "$(date -r "${modified%%.*}" +%Y%m%d%H%M.%S)" "$target" || return 1
     done
     if [[ "${dir##*/}" != failed-* ]]; then
-      trash_update_archive "$root" "$dir" 'Completed update scratch; rollback bundles separated.' || return 1
+      discard_update_archive "$root" "$dir" 'Completed update scratch; rollback bundles separated.' || return 1
     fi
   done
   # Names are validated before sorting, so whitespace/newlines cannot create extra paths.
@@ -102,7 +134,7 @@ retain_update_archives() (
     if [[ "$name" == .tatwo-update.backup.* ]]; then
       archive_backup_valid "$dir/previous.app.disabled" || continue
       backups=$((backups + 1))
-      [[ "$backups" -le "$UPDATE_BACKUP_RETENTION" ]] || trash_update_archive "$root" "$dir" 'Older rollback backup; latest two retained.' || return 1
+      [[ "$backups" -le "$UPDATE_BACKUP_RETENTION" ]] || discard_update_archive "$root" "$dir" 'Older rollback backup; latest two retained.' || return 1
     elif [[ "$name" == failed-* ]]; then
       # Never count or delete protected rollback/transaction material or another live run.
       [[ ! -e "$dir/previous.app.disabled" && ! -L "$dir/previous.app.disabled" && ! -e "$dir/previous-retained.app.disabled" && ! -L "$dir/previous-retained.app.disabled" ]] || continue
@@ -119,7 +151,7 @@ retain_update_archives() (
         fi
       fi
       failures=$((failures + 1))
-      [[ "$failures" -le "$UPDATE_FAILED_RETENTION" ]] || trash_update_archive "$root" "$dir" 'Older failed update; most recent failure retained for diagnosis.' || return 1
+      [[ "$failures" -le "$UPDATE_FAILED_RETENTION" ]] || discard_update_archive "$root" "$dir" 'Older failed update; most recent failure retained for diagnosis.' || return 1
     fi
   done < <(for dir in "$root"/.tatwo-update.* "$root"/failed-.tatwo-update.*; do
     archive_child_safe "$root" "$dir" || continue
@@ -309,7 +341,7 @@ archive_old_downloads() {
   local dir archives phase owner started target
   archives="$(update_archives_root)" || { printf '封存暫存失敗，保留原位置。\n' >&2; return 0; }
   # Preserve the existing non-destructive recovery of stale locks and interrupted
-  # transactions. Nothing outside UpdateArchives is ever sent to Trash.
+  # transactions. Nothing outside UpdateArchives is ever removed.
   while IFS= read -r -d '' dir; do
     [[ ! -L "$dir" && -O "$dir" && ! -L "$dir/owner" ]] || continue
     owner_file_active "$dir" && continue
@@ -1016,6 +1048,43 @@ SWITCH_STARTED=$SECONDS
 [[ ! -e "$DEST.new" && ! -L "$DEST.new" ]] || fail "保留的新版候選需先人工檢查"
 if [[ -e "$DEST.old" ]]; then mv "$DEST.old" "$STAGE/previous-retained.app.disabled"; fi
 OLD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$DEST/Contents/Info.plist" 2>/dev/null || true)"
+# 切換 App 前確實保留對話；備份失敗就停止安裝，本次副本與最新四份舊備份合計保留五份。
+LIVE_DOC="$HOME/Library/Application Support/tatwo2/live/document.json"
+for LIVE_PARENT in "$HOME" "$HOME/Library" "$HOME/Library/Application Support" "$HOME/Library/Application Support/tatwo2" "$(dirname "$LIVE_DOC")"; do
+  if [[ -d "$LIVE_PARENT" && ! -x "$LIVE_PARENT" ]]; then
+    fail "對話紀錄目錄沒有讀取權限，無法確認是否需要備份；已停止安裝。原檔：$LIVE_DOC"
+  fi
+done
+if [[ -e "$LIVE_DOC" || -L "$LIVE_DOC" ]]; then
+  [[ -f "$LIVE_DOC" && ! -L "$LIVE_DOC" ]] || fail "對話紀錄不是一般檔案，無法確認備份；已停止安裝。原檔：$LIVE_DOC"
+  LIVE_BACKUPS="$(dirname "$LIVE_DOC")/backups"
+  [[ ! -L "$LIVE_BACKUPS" ]] || fail "對話紀錄備份目錄是捷徑；已停止安裝。原檔：$LIVE_DOC"
+  mkdir -p "$LIVE_BACKUPS" || fail "對話紀錄備份目錄無法建立；請確認儲存空間與權限，已停止安裝。原檔：$LIVE_DOC"
+  LIVE_BACKUP_TIME="$(date -u +%Y%m%d-%H%M%S)" || fail "對話紀錄備份時間無法取得；已停止安裝"
+  LIVE_BACKUP_UUID="$(uuidgen)" || fail "對話紀錄備份唯一碼無法建立；已停止安裝"
+  [[ -n "$LIVE_BACKUP_UUID" ]] || fail "對話紀錄備份唯一碼是空的；已停止安裝"
+  LIVE_BACKUP="$LIVE_BACKUPS/document-$LIVE_BACKUP_TIME-$LIVE_BACKUP_UUID.json"
+  [[ ! -e "$LIVE_BACKUP" && ! -L "$LIVE_BACKUP" ]] || fail "對話紀錄備份名稱重複；已停止安裝，不覆寫既有備份"
+  cp -p "$LIVE_DOC" "$LIVE_BACKUP" || fail "對話紀錄備份沒有成功；請確認儲存空間與權限，已停止安裝。原檔：$LIVE_DOC"
+  cmp -s "$LIVE_DOC" "$LIVE_BACKUP" || fail "對話紀錄備份內容比對不一致；已停止安裝。原檔：${LIVE_DOC}；副本：${LIVE_BACKUP}"
+  # This transaction's copy never participates in pruning. Legacy -from- names use local time;
+  # newer UUID names use UTC. Compare their timestamps on the same epoch scale.
+  for stale in "$LIVE_BACKUPS"/document-*.json; do
+    [[ "$stale" != "$LIVE_BACKUP" && -f "$stale" ]] || continue
+    LIVE_OLD_NAME="${stale##*/}"
+    LIVE_OLD_TIME="${LIVE_OLD_NAME:9:15}"
+    if [[ "$LIVE_OLD_NAME" == document-????????-??????-from-*.json ]]; then
+      LIVE_OLD_EPOCH="$(command date -j -f '%Y%m%d-%H%M%S' "$LIVE_OLD_TIME" '+%s' 2>/dev/null)" || fail "舊對話備份日期無法確認；已停止安裝"
+    else
+      LIVE_OLD_EPOCH="$(command date -u -j -f '%Y%m%d-%H%M%S' "$LIVE_OLD_TIME" '+%s' 2>/dev/null)" || fail "舊對話備份日期無法確認；已停止安裝"
+    fi
+    printf '%s\t%s\n' "$LIVE_OLD_EPOCH" "$stale"
+  done | LC_ALL=C sort -rn | tail -n +5 | cut -f2- | while IFS= read -r stale; do
+    rm -f -- "$stale" || fail "對話紀錄備份已完成，但舊備份無法整理；已停止安裝"
+  done
+  [[ -f "$LIVE_BACKUP" && ! -L "$LIVE_BACKUP" ]] && cmp -s "$LIVE_DOC" "$LIVE_BACKUP" \
+    || fail "對話紀錄備份整理後不存在或內容比對不一致；已停止安裝。原檔：${LIVE_DOC}；副本：${LIVE_BACKUP}"
+fi
 EXPECTED_RELEASE_SHA="$(awk '$2 == "TATWO-OS.zip" {print $1}' "$TEMP/install-ready")"
 if [[ "${LEGACY_READY:-0}" == 1 ]]; then read -r EXPECTED_RELEASE_SHA _ < "$TEMP/TATWO-OS.zip.sha256" || true; fi
 [[ "$EXPECTED_RELEASE_SHA" =~ ^[[:xdigit:]]{64}$ ]] || fail "install-ready 缺少完整候選 SHA"

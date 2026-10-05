@@ -133,12 +133,13 @@ try MainActor.assumeIsolated { try fixture() }
 `;
   writeFileSync(path.join(root, 'fixture.swift'), swift);
   const lock = path.join(repo, 'scripts/tatwo-build-lock.sh');
-  const acquisition = run('/bin/bash', [lock, 'acquire', '--timeout', '1', '--pid', String(process.pid)]);
+  const acquisition = run('/bin/bash', [lock, 'acquire', '--timeout', '120', '--pid', String(process.pid)], { timeout: 130_000 });
   assert.equal(acquisition.status, 0, acquisition.stderr);
   const token = acquisition.stdout.match(/^token=(.+)$/m)?.[1];
   assert.ok(token);
   let compiled;
   try {
+    assert.equal(run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level']).stdout.trim(), '1', 'No compiler under resource pressure after waiting');
     compiled = run('/usr/bin/time', ['-l', '/usr/bin/nice', '-n', '10', '/usr/bin/xcrun', 'swiftc',
       '-swift-version', '5', path.join(root, 'fixture.swift'), '-o', path.join(root, 'fixture')], {
       env: { ...process.env, TMPDIR: root },

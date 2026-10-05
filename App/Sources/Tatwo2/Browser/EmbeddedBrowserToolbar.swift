@@ -499,6 +499,8 @@ struct EmbeddedBrowserToolbar: View {
     /// 浮動面板在聊天旁拿不到鍵盤焦點（.014 自測：焦點落到左側欄搜尋、送出不換頁）；
     /// 外層用這個值把分頁列讓出來。
     var isEditing: Binding<Bool> = .constant(false)
+    /// W184 G2d：私訊框的 Browser 用同一條導覽列；流程分頁（授權頁、配對頁、Pod）不給重新載入（主視窗＝true，照舊）。
+    var reloadAllowed = true
     // 提示只能顯示使用者實際綁定的快捷鍵。⌘L 是系統保留鍵且不在 defaults 裡，
     // 寫死「⌘L 編輯」等於向使用者宣告一個按下去沒反應的功能。
     @State private var addressShortcutHint: String? = EmbeddedBrowserToolbar.focusAddressHint()
@@ -540,7 +542,7 @@ struct EmbeddedBrowserToolbar: View {
         HStack(spacing: BrowserOmniboxMetrics.controlGap) {
             control("chevron.left", "上一頁", enabled && state.canGoBack, .goBack)
             control("chevron.right", "下一頁", enabled && state.canGoForward, .goForward)
-            control(state.isLoading ? "xmark" : "arrow.clockwise", state.isLoading ? "停止載入" : "重新載入", enabled && showsAddress, state.isLoading ? .stopLoading : .reload)
+            control(state.isLoading ? "xmark" : "arrow.clockwise", state.isLoading ? "停止載入" : "重新載入", enabled && showsAddress && reloadAllowed, state.isLoading ? .stopLoading : .reload)
             if showsAddress && compactChrome && isExpanded {
                 addressField
                     .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
@@ -586,6 +588,8 @@ struct EmbeddedBrowserToolbar: View {
         // AppKit 知道這塊不是拖視窗區。聊天旁的 chrome 由外層浮動工具列統一登記，
         // 這裡只負責獨立 Browser 自己那條導覽列。
         .background(BrowserChromeHitLayer())
+        // 導覽列自己的識別碼留在容器上，不覆蓋裡面的網址按鈕／輸入欄。
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("browser-navigation-bar")
         .overlay(alignment: compactChrome ? .topLeading : .top) {
             if showsAddress && isExpanded && !compactChrome {

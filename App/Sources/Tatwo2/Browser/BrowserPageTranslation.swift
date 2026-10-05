@@ -185,23 +185,32 @@ struct BrowserTranslateButton: View {
     @ObservedObject var translator: BrowserPageTranslator
     let host: String?
     let size: CGFloat
+    /// W184 G2d：私訊框的 Browser 用同一顆；它的網頁（授權頁、配對頁、私訊框開的網頁都是敏感頁，不注入東西）不能翻譯——
+    /// 給原因＝變暗、按不下去、說明寫原因。主視窗＝nil（照舊）。
+    var unavailableReason: String? = nil
 
     var body: some View {
         Button(action: translator.toggleAuto) {
             Group {
-                if case .translating = translator.phase { ProgressView().controlSize(.mini) }
+                if case .translating = translator.phase, unavailableReason == nil { ProgressView().controlSize(.mini) }
                 else { Image(systemName: "translate").foregroundStyle(tint).opacity(unavailable ? 0.3 : 1) }
             }
             .frame(width: size, height: size).contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(label).accessibilityLabel(label).accessibilityIdentifier("browser.translate")
         .accessibilityValue(translator.autoEnabled ? "開" : "關")
+        .disabled(unavailableReason != nil)
     }
 
     // 使用者 09-20：「不要按了顯示警示 按下不能翻譯就符號顯示變暗」——不能翻就只是變暗，不跳警示符號。
-    private var unavailable: Bool { if case .failed = translator.phase { return true }; return false }
-    private var tint: Color { translator.autoEnabled ? Color.accentColor : LiquidGlassTokens.browserOmniboxInk }
+    private var unavailable: Bool {
+        if unavailableReason != nil { return true }
+        if case .failed = translator.phase { return true }
+        return false
+    }
+    private var tint: Color { translator.autoEnabled && unavailableReason == nil ? Color.accentColor : LiquidGlassTokens.browserOmniboxInk }
     private var label: String {
+        if let unavailableReason { return unavailableReason }
         if !translator.autoEnabled {
             if case .offer = translator.phase { return "這一頁是外語；點一下開啟自動翻譯" }
             return "開啟自動翻譯（由 Apple 裝置端翻譯，內容不離開這台設備）"

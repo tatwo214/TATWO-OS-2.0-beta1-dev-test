@@ -17,18 +17,20 @@ final class SpaceSetupPreviewState: ObservableObject {
             guard !rawValue.isEmpty else { return nil }
             self.rawValue = rawValue
         }
+        static let tatwo = Self(rawValue: "tatwo")!
         static let chat = Self(rawValue: "Chat")!
         static let cli = Self(rawValue: "CLI")!
         static let bot = Self(rawValue: "Bot")!
         static let browser = Self(rawValue: "Browser")!
         static let chatgpt = Self(rawValue: "ChatGPT")!
-        static let allCases: [Self] = [.chat, .cli, .bot, .browser, .chatgpt]
+        static let allCases: [Self] = [.tatwo, .chat, .cli, .bot, .browser, .chatgpt]
         var id: String { rawValue }
         /// W170：畫面上的名稱；存檔仍用 rawValue（"Chat"）。
-        var displayName: String { self == .chat ? "Coder" : rawValue }
+        var displayName: String { self == .tatwo ? "TATWO" : self == .chat ? "Coder" : rawValue }
         var isCustom: Bool { !Self.allCases.contains(self) }
         var symbol: String {
             switch self {
+            case .tatwo: "sparkles"
             case .chat: "bubble.left"
             case .cli: "terminal"
             case .bot: "person.crop.square"

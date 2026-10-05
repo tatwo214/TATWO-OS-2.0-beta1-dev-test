@@ -31,13 +31,16 @@ test('latest is only claimed after a successful comparison; errors remain visibl
   assert.ok(card.indexOf('Text(checker.status)') < card.indexOf('!checker.dismissed'));
 });
 
-test('repository is selectable fixed text, with no UI writes and compatible defaults reads', () => {
+test('repository is selectable fixed text; feedback defaults cannot redirect App updates', () => {
   assert.match(accounts, /Text\(FeedbackSettings\.defaultRepository\)\s*\.textSelection\(\.enabled\)/);
   assert.doesNotMatch(accounts, /@AppStorage|feedbackRepository|格式 owner\/repo|TextField\("owner\/repo"/);
   assert.ok(accounts.includes('問題回報與更新檢查都走這個公開倉庫。'));
   assert.match(feedback, /repositoryKey = "tatwo2\.feedback\.repository"/);
   assert.match(feedback, /defaults\.string\(forKey: repositoryKey\)/);
-  assert.match(checker, /defaults\.string\(forKey: "tatwo2\.feedback\.repository"\)/);
+  assert.match(checker, /var repository: String \{[\s\S]*?Self\.defaultRepository\s*\}/);
+  assert.match(checker, /static let defaultRepository = "tatwo214\/TATWO-OS-2\.0-beta1-dev-test"/);
+  assert.doesNotMatch(checker, /defaults\.string\(forKey: "tatwo2\.feedback\.repository"\)/);
+  assert.match(checker, /URLSession\(configuration: \.ephemeral, delegate: UpdateRedirectDelegate\.shared/);
 });
 
 test('account actions live in one ellipsis menu and preserve default-account switching', () => {
@@ -77,7 +80,8 @@ test('permissions describe actual scopes instead of claiming ungranted access', 
 test('folder section uses plain language, supports folder drops, and retains removable rows', () => {
   assert.ok(accounts.includes('哪些資料夾用這個帳號'));
   assert.ok(accounts.includes('拖入或輸入資料夾路徑，例如 ~/Projects/example'));
-  assert.match(accounts, /Button\("加入"\)[\s\S]*model\.addGitHubFolderMapping/);
+  // W180 D1：設定頁的按鈕是玻璃 chip。
+  assert.match(accounts, /OSChipButton\(title: "加入"\)[\s\S]*model\.addGitHubFolderMapping/);
   assert.match(accounts, /ForEach\(account\.folderMappings, id: \\\.self\)/);
   assert.match(accounts, /Button\("移除"\) \{ model\.removeGitHubFolderMapping/);
   assert.match(accounts, /\.dropDestination\(for: URL\.self\)/);
@@ -91,31 +95,44 @@ test('footer has the exact two requested secondary-text lines', () => {
   assert.doesNotMatch(accounts, /規則：網址帶帳號名|OS 不插手/);
 });
 
-// Compile the production check body; only transport/channel/updater are isolated doubles.
+// Compile the production check, channel, redirect and repository policy.
+// Only transport/updater are doubles; the writable repository seam additionally
+// exercises the check body's invalid-input guard (the product property is fixed).
 test('check completion timestamps success and failure, clears busy, and deduplicates in-flight checks', () => {
   const body = checker.slice(checker.indexOf('    func check() async {'), checker.lastIndexOf('\n}'));
-  const compare = checker.slice(checker.indexOf('enum ReleaseVersionCompare'), checker.indexOf('/// A credential stays'));
+  const extract = (start, end) => {
+    const from = checker.indexOf(start), to = checker.indexOf(end, from);
+    assert.ok(from >= 0 && to > from, `checker extraction: ${start} -> ${end}`);
+    return checker.slice(from, to);
+  };
+  const compare = extract('enum ReleaseVersionCompare', '// UPDATE-TRANSPORT-BEGIN');
+  const redirect = extract('final class UpdateRedirectDelegate:', 'enum UpdateReleaseRevalidation');
+  const repository = extract('    var repository: String {', '    private let installedVersion:');
+  const defaultRepository = checker.match(/    static let defaultRepository = "[^"]+"/)?.[0];
+  assert.ok(defaultRepository);
   const releaseStart = checker.indexOf('    struct Release:');
   const release = checker.slice(releaseStart, checker.indexOf('    static let shared', releaseStart));
   const root = mkdtempSync(join(tmpdir(), 'w29b-checker-'));
   writeFileSync(join(root, 'fixture.swift'), `import Foundation
 ${compare}
-struct UpdateChannel {
-  let isPrivate = false, requestedPrivate = false
-  static func current() -> Self { Self() }
-  static func currentOffMain() async -> Self { current() }   // W107：產品端在主執行緒改用這個
-  func authorize(_ request: inout URLRequest) {}
+${redirect}
+struct RepositoryProbe {
+ ${defaultRepository}
+ let defaults: UserDefaults
+ ${repository}
 }
 @MainActor final class InAppUpdater {
   static let shared = InAppUpdater()
   func invalidateCandidate() {}
   func prefetch(to: String, repository: String) {}
 }
-final class UpdateRedirectDelegate: NSObject, URLSessionTaskDelegate { static let shared = UpdateRedirectDelegate() }
 @MainActor final class Transport {
   var calls = 0, fail = false
   func data(for request: URLRequest, delegate: URLSessionTaskDelegate? = nil) async throws -> (Data, URLResponse) {
     calls += 1
+    precondition(request.value(forHTTPHeaderField: "Authorization") == nil)
+    precondition(delegate === UpdateRedirectDelegate.shared)
+    precondition(request.url?.absoluteString == "https://api.github.com/repos/" + RepositoryProbe.defaultRepository + "/releases/latest")
     try await Task.sleep(nanoseconds: 30_000_000)
     if fail { throw URLError(.notConnectedToInternet) }
     return (Data(#"{"tag_name":"v2.0.5","draft":false,"prerelease":false}"#.utf8), HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
@@ -131,7 +148,39 @@ final class UpdateRedirectDelegate: NSObject, URLSessionTaskDelegate { static le
 }
 @main struct Main {
  @MainActor static func main() async {
+  let defaults = UserDefaults(suiteName: "fixture.update." + UUID().uuidString)!
+  defaults.setVolatileDomain(["tatwo2.feedback.repository": "invalid"], forName: UserDefaults.argumentDomain)
+  precondition(defaults.string(forKey: "tatwo2.feedback.repository") == "invalid")
+  let probe = RepositoryProbe(defaults: defaults)
+  precondition(probe.repository == RepositoryProbe.defaultRepository)
+  defaults.setVolatileDomain(["tatwo2.feedback.repository": UpdateChannel.privateRepository], forName: UserDefaults.argumentDomain)
+  precondition(defaults.string(forKey: "tatwo2.feedback.repository") == UpdateChannel.privateRepository)
+  precondition(probe.repository == RepositoryProbe.defaultRepository)
+  let channel = await UpdateChannel.currentOffMain()
+  precondition(!channel.isPrivate && !channel.requestedPrivate && channel.token == nil && channel.username == nil)
+  var request = URLRequest(url: URL(string: "https://example.test/release")!)
+  request.setValue("fixture-only", forHTTPHeaderField: "Authorization")
+  channel.authorize(&request)
+  precondition(request.value(forHTTPHeaderField: "Authorization") == nil)
+  // Test the real redirect delegate, including cross-host/scheme/port stripping.
+  let session = URLSession(configuration: .ephemeral)
+  let redirectTask = session.dataTask(with: request) // never resumed; no network
+  for target in ["https://example.test/next", "https://other.test/next", "http://example.test/next", "https://example.test:8443/next"] {
+    var next = URLRequest(url: URL(string: target)!)
+    next.setValue("fixture-only", forHTTPHeaderField: "Authorization")
+    let response = HTTPURLResponse(url: request.url!, statusCode: 302, httpVersion: nil, headerFields: nil)!
+    var called = false
+    UpdateRedirectDelegate.shared.urlSession(session, task: redirectTask, willPerformHTTPRedirection: response, newRequest: next) { redirected in
+      called = true
+      precondition(redirected != nil)
+      precondition(redirected?.value(forHTTPHeaderField: "Authorization") == (target == "https://example.test/next" ? "fixture-only" : nil))
+    }
+    precondition(called)
+  }
+  redirectTask.cancel()
+  session.invalidateAndCancel()
   let c = Checker()
+  c.repository = probe.repository
   let start = Date()
   let task = Task { await c.check() }
   while !c.isChecking { await Task.yield() }
@@ -151,6 +200,7 @@ final class UpdateRedirectDelegate: NSObject, URLSessionTaskDelegate { static le
   c.repository = "invalid"
   await c.check()
   precondition(!c.isChecking && c.status == "更新倉庫設定無效")
+  precondition(c.session.calls == 2, "invalid repository must not issue a request")
  }
 }`);
   const build = spawnSync('swiftc', ['-parse-as-library', join(root, 'fixture.swift'), '-o', join(root, 'fixture')], { encoding: 'utf8' });

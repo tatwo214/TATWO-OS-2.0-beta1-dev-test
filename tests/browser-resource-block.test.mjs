@@ -62,6 +62,8 @@ test('production resource callbacks isolate subresources and stale DNS errors', 
       'false', 'stale queued error dropped'],
     ['missing-navigation-finish', 'FinishNavigationFrameTelemetry(active_view);',
       '', 'current blocked navigation finishes telemetry'],
+    ['missing-protected-https', '(owner.sensitivePage || owner.httpsOnly)',
+      'owner.sensitivePage', 'sensitive and protected contexts both require HTTPS'],
   ]) {
     assert.ok(fixture.includes(before));
     const source = path.join(scratch, `${name}.mm`), binary = path.join(scratch, name);

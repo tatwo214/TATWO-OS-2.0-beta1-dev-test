@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 // W28 characterization retained where out of scope; W29a repair assertions replace repaired defects.
 // All writes stay in fresh fixture directories; retain them for inspection.
 import test from 'node:test';
@@ -129,7 +130,7 @@ with zipfile.ZipFile(root / "publisher.zip") as a, zipfile.ZipFile(root / "peer.
     assert a.read("fixture.txt") == b.read("fixture.txt")
     assert a.getinfo("fixture.txt").date_time == (1980,1,1,0,0,0)
 print("same payload, different archive bytes (fixture only)")
-`, root, new URL('../scripts/runtime-layer.py', import.meta.url).pathname],
+`, root, fileURLToPath(new URL('../scripts/runtime-layer.py', import.meta.url))],
   { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }, timeout: 30000 });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /same payload, different archive bytes/);

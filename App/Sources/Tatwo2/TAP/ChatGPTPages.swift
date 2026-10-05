@@ -70,7 +70,7 @@ enum ChatGPTLabels {
 // MARK: - 側欄：導覽列與帳號
 
 struct ChatGPTSidebarNavRow: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let page: ChatGPTPage
 
     var body: some View {
@@ -95,7 +95,7 @@ struct ChatGPTSidebarNavRow: View {
 
 /// 左下的帳號（跟網頁、桌面版一樣：頭像＋名字＋方案），點開有個人化、設定、說明。
 struct ChatGPTAccountRow: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
 
     var body: some View {
         Menu {
@@ -132,7 +132,7 @@ struct ChatGPTAccountRow: View {
 }
 
 struct ChatGPTAvatar: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let account: TapAccount?
     @State private var image: NSImage?
 
@@ -181,7 +181,7 @@ struct ChatGPTRemoteIcon: View {
 // MARK: - 頁面的共用外框
 
 struct ChatGPTPageScaffold<Content: View>: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let title: String
     var subtitle: String? = nil
     var trailing: AnyView? = nil
@@ -189,15 +189,8 @@ struct ChatGPTPageScaffold<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 22, weight: .semibold))
-                    if let subtitle { Text(subtitle).font(.system(size: 12.5)).foregroundStyle(.secondary) }
-                }
-                Spacer()
-                if let trailing { trailing }
-            }
-            .padding(.top, 18)
+            ChatGPTPageHeader(title: title, subtitle: subtitle, trailing: trailing)
+                .padding(.top, 18)
             if let notice = model.pageNotice {
                 Text(notice).font(.system(size: 12)).foregroundStyle(.secondary)
             }
@@ -220,6 +213,24 @@ struct ChatGPTPageScaffold<Content: View>: View {
     }
 }
 
+/// 頁面的標題列（標題、副標、右上角的鈕）。W183 R9 審查（Claude #4）：抽出來，自測照同一個元件畫出外掛頁的標題列。
+struct ChatGPTPageHeader: View {
+    let title: String
+    var subtitle: String? = nil
+    var trailing: AnyView? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 22, weight: .semibold))
+                if let subtitle { Text(subtitle).font(.system(size: 12.5)).foregroundStyle(.secondary) }
+            }
+            Spacer()
+            if let trailing { trailing }
+        }
+    }
+}
+
 private func chipButton(_ title: String, systemImage: String? = nil, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
     Button(role: role, action: action) {
         HStack(spacing: 5) {
@@ -237,7 +248,7 @@ private func chipButton(_ title: String, systemImage: String? = nil, role: Butto
 // MARK: - 排程
 
 struct ChatGPTScheduledView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
 
     var body: some View {
         ChatGPTPageScaffold(model: model, title: "排程", subtitle: "ChatGPT 會在指定時間自動執行，結果出現在對話裡",
@@ -376,8 +387,8 @@ enum ChatGPTSchedule {
 // MARK: - 外掛
 
 struct ChatGPTPluginsView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject private var index = TranslationIndex.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject private var index = TranslationIndex.shared
     @State private var expanded: Set<String> = []
 
     /// 版面照網頁版 Plugins（09-25 對照）：「已安裝」一排圖示，下面是 ChatGPT 的各分類（精選、新上架…）。
@@ -401,8 +412,18 @@ struct ChatGPTPluginsView: View {
         }
     }
 
+    /// W183 R9 審查（Claude #4）：外掛頁的標題列（自測照同一份畫出來）。
+    static let title = "外掛"
+    static let subtitle = "在你常用的工具裡使用 ChatGPT"
+    static func newMenuTrailing(_ menu: ChatGPTPluginNewMenu) -> AnyView { AnyView(ChatGPTPluginNewMenuButton(menu: menu)) }
+
     private var catalog: some View {
-        ChatGPTPageScaffold(model: model, title: "外掛", subtitle: "在你常用的工具裡使用 ChatGPT") {
+        // W183 R9：右上角「新增 ▾」（網頁版同位置；三項都在私訊框 Browser 的 ChatGPT Dev 分頁打開網頁的對話框）。
+        ChatGPTPageScaffold(model: model, title: Self.title, subtitle: Self.subtitle, trailing: Self.newMenuTrailing(.shared)) {
+            ChatGPTPluginNewMenuMessage(menu: .shared)   // W183 R9 審查（Claude #4）：那一句話放在標題列下面，不撐高標題列
+            // W183 R11（主導 A：外掛頁要有一眼看懂的「連線」）：讓 ChatGPT 用這台的 Codex 和記憶；連上＝「已連線・Codex、記憶」。
+            HandsConnectEntryButton(identifier: "chatgpt.plugins.handsConnect", alignment: .leading,
+                                    insets: EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
             Text("已安裝").font(.system(size: 15, weight: .semibold)).padding(.top, 6).padding(.bottom, 8)
             if model.installedPlugins.isEmpty, !model.pageLoading {
                 Text("還沒有安裝外掛").font(.system(size: 13)).foregroundStyle(.secondary).padding(.bottom, 10)
@@ -493,8 +514,8 @@ struct ChatGPTPluginsView: View {
 
 /// 外掛詳細頁（照網頁 /plugins/<外掛>：說明、範例、工具〔讀取／寫入〕、技能、截圖、連結）。原生畫面，不開網頁。
 struct ChatGPTPluginDetailView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject private var index = TranslationIndex.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject private var index = TranslationIndex.shared
     let plugin: TapPlugin
 
     private var detail: TapPluginDetail? { model.pluginDetail }
@@ -732,8 +753,10 @@ struct ChatGPTPluginDetailView: View {
 /// 輸入框裡的附件，照 ChatGPT（09-25 使用者附圖 #122；網頁 file tile：圖片 9rem 方形、檔案 15rem 寬）：
 /// 圖片是 144pt 方形縮圖（圓角 16、細框、填滿裁切），其他檔案是 240pt 寬的檔案卡（彩色類型方塊＋檔名＋類型）；
 /// 滑鼠移上去才在右上角出現 ×。
+/// W184 G3：ChatGPT Space 與私訊框共用（尺寸看 metrics：Space 照舊 .space；私訊框 .dmPhone 縮圖小一號、玻璃底、手機字級）。
 struct ChatGPTAttachmentTile: View {
-    let file: TapAttachment
+    let file: ChatGPTAttachmentItem
+    var metrics: ChatGPTComposerMetrics = .space
     let remove: () -> Void
     @State private var hovering = false
     @State private var thumbnail: NSImage?
@@ -742,15 +765,16 @@ struct ChatGPTAttachmentTile: View {
     static let fileWidth: CGFloat = 240
     static let fileHeight: CGFloat = 56
 
-    var isImage: Bool { file.mime.lowercased().hasPrefix("image/") }
+    var isImage: Bool { file.isImage }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             if isImage { imageTile } else { fileTile }
             Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 8.5, weight: .bold)).foregroundStyle(ChatGPTPalette.primary)
-                    .frame(width: 22, height: 22)
-                    .background(ChatGPTPalette.surface, in: Circle())
+                Image(systemName: "xmark").font(.system(size: metrics.tileCloseGlyph, weight: .bold))
+                    .foregroundStyle(metrics.chrome.primaryText)
+                    .frame(width: metrics.tileClose, height: metrics.tileClose)
+                    .background { closeBackground }
                     .overlay(Circle().strokeBorder(Color.black.opacity(0.15), lineWidth: 0.5))
                     .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
                     .contentShape(Circle())
@@ -762,19 +786,23 @@ struct ChatGPTAttachmentTile: View {
             .accessibilityLabel("移除 \(file.name)")
         }
         .onHover { hovering = $0 }
-        .task(id: file.id) { if isImage { thumbnail = Self.thumbnail(file.data, maxPixel: Self.imageSize * 2) } }
+        .task(id: file.id) { if isImage { thumbnail = Self.thumbnail(file.data, maxPixel: metrics.tileImage * 2) } }
+    }
+
+    @ViewBuilder private var closeBackground: some View {
+        if metrics.chrome == .glass { GlobalDMGlassCircle() } else { Circle().fill(ChatGPTPalette.surface) }
     }
 
     private var imageTile: some View {
         ZStack {
-            ChatGPTPalette.surface
+            metrics.chrome.tileSurface
             if let thumbnail {
                 Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fill)
             }
         }
-        .frame(width: Self.imageSize, height: Self.imageSize)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.black.opacity(0.1), lineWidth: 0.5))
+        .frame(width: metrics.tileImage, height: metrics.tileImage)
+        .clipShape(RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous).strokeBorder(Color.black.opacity(0.1), lineWidth: 0.5))
         .accessibilityElement()
         .accessibilityLabel("圖片：\(file.name)")
         // × 平常隱藏（透明的元件輔助使用也看不到）：方塊本身帶「移除」動作，VoiceOver／鍵盤也能移除（09-25 實機）。
@@ -784,20 +812,20 @@ struct ChatGPTAttachmentTile: View {
     private var fileTile: some View {
         let kind = Self.kind(file)
         return HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous).fill(kind.color)
-                .frame(width: 40, height: 40)
-                .overlay(Image(systemName: kind.symbol).font(.system(size: 17, weight: .medium)).foregroundStyle(.white))
+            RoundedRectangle(cornerRadius: metrics.tileFileIcon / 4, style: .continuous).fill(kind.color)
+                .frame(width: metrics.tileFileIcon, height: metrics.tileFileIcon)
+                .overlay(Image(systemName: kind.symbol).font(.system(size: metrics.tileFileGlyph, weight: .medium)).foregroundStyle(.white))
             VStack(alignment: .leading, spacing: 2) {
-                Text(file.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(ChatGPTPalette.primary)
+                Text(file.name).font(.system(size: metrics.tileName, weight: .semibold)).foregroundStyle(metrics.chrome.primaryText)
                     .lineLimit(1).truncationMode(.middle)
-                Text(kind.label).font(.system(size: 12)).foregroundStyle(ChatGPTPalette.tertiary)
+                Text(kind.label).font(.system(size: metrics.tileKind)).foregroundStyle(metrics.chrome.secondaryText)
             }
             Spacer(minLength: 0)
         }
         .padding(8)
-        .frame(width: Self.fileWidth, height: Self.fileHeight, alignment: .leading)
-        .background(ChatGPTPalette.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(Color.black.opacity(0.1), lineWidth: 0.5))
+        .frame(width: metrics.tileFileWidth, height: metrics.tileFileHeight, alignment: .leading)
+        .background(metrics.chrome.tileSurface, in: RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: metrics.tileRadius, style: .continuous).strokeBorder(Color.black.opacity(0.1), lineWidth: 0.5))
         .accessibilityElement()
         .accessibilityLabel("檔案：\(file.name)")
         .accessibilityAction(named: "移除", remove)
@@ -810,7 +838,7 @@ struct ChatGPTAttachmentTile: View {
     }
 
     /// 檔案類型：顏色與名稱（PDF 紅、文件藍、試算表綠、簡報橘、程式碼紫，其他灰）。
-    static func kind(_ file: TapAttachment) -> Kind {
+    static func kind(_ file: ChatGPTAttachmentItem) -> Kind {
         let ext = (file.name as NSString).pathExtension.lowercased()
         let mime = file.mime.lowercased()
         let rgb: (UInt32) -> Color = { Color(nsColor: ChatGPTPalette.rgb($0)) }
@@ -840,7 +868,7 @@ struct ChatGPTAttachmentTile: View {
 /// 圖片放大，照 Coder 的圖片預覽（共用 ChatImagePreviewSurface；使用者 09-25 #126）：深色底、點空白或按 Esc 關閉、
 /// 右上下載與關閉、下方縮放；同一則訊息有好幾張圖時左右切換。
 struct ChatGPTImagePreview: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let image: NSImage
     /// 表單（小面板）才給固定大小；視窗裡是整個視窗的燈箱。
     var inSheet = false
@@ -875,7 +903,7 @@ struct ChatGPTImagePreview: View {
 /// 圖片放大的燈箱：蓋住整個視窗（跟 ChatGPT 一樣），圖片以外哪裡點都關（使用者 09-25 #128「點空白處要可以退出」）；
 /// Esc 也關——自己接 Esc、不讓它落到主視窗（主視窗收到 Esc 會關掉）。
 struct ChatGPTImageLightbox: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     @State private var escapeMonitor: Any?
 
     var body: some View {
@@ -909,16 +937,19 @@ struct ChatGPTImageLightbox: View {
 }
 
 /// 送出鈕照 ChatGPT：黑色圓鈕、白色向上箭頭；不能送時淡灰。
+/// W184 G3：ChatGPT Space 與私訊框共用（ChatGPTSendSlot 裡；大小看 metrics，私訊框 36、識別碼 tatwo.dm.send）。
 struct ChatGPTSendButton: View {
     let enabled: Bool
+    var metrics: ChatGPTComposerMetrics = .space
+    var identifier = "chatgpt.send"
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "arrow.up")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(enabled ? Color(nsColor: .windowBackgroundColor) : ChatGPTPalette.tertiary)
-                .frame(width: 30, height: 30)
+                .font(.system(size: metrics.send.glyph, weight: .semibold))
+                .foregroundStyle(enabled ? Color(nsColor: .windowBackgroundColor) : metrics.chrome.secondaryText)
+                .frame(width: metrics.send.size, height: metrics.send.size)
                 .background(enabled ? Color.primary : Color.primary.opacity(0.08), in: Circle())
                 .contentShape(Circle())
         }
@@ -926,7 +957,7 @@ struct ChatGPTSendButton: View {
         .disabled(!enabled)
         .help("送出")
         .accessibilityLabel("送出")
-        .accessibilityIdentifier("chatgpt.send")
+        .accessibilityIdentifier(identifier)
     }
 }
 
@@ -938,7 +969,7 @@ struct ChatGPTLink: Identifiable {
 
 /// 外掛商店底下的一行小字：說明是誰翻的；翻不了時寫原因。
 struct ChatGPTTranslationNote: View {
-    @ObservedObject var index: TranslationIndex
+    @WorkspaceObservedObject var index: TranslationIndex
 
     var body: some View {
         HStack(spacing: 6) {
@@ -979,7 +1010,7 @@ struct ChatGPTRemotePicture: View {
 // MARK: - 網站
 
 struct ChatGPTSitesView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
 
     var body: some View {
         ChatGPTPageScaffold(model: model, title: "網站", subtitle: "在對話裡用「網站」工具做的網頁") {
@@ -1019,7 +1050,7 @@ struct ChatGPTSitesView: View {
 // MARK: - 個人化（自訂指令、記憶）
 
 struct ChatGPTPersonalizationView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
 
     var body: some View {
         ChatGPTPageScaffold(model: model, title: "個人化", subtitle: "ChatGPT 的自訂指令與記憶（跟網頁版同一份）") {
@@ -1116,7 +1147,7 @@ struct ChatGPTPersonalizationView: View {
 // MARK: - 分享
 
 struct ChatGPTShareSheet: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let request: ChatGPTSpaceModel.ShareRequest
 
     var body: some View {
@@ -1177,39 +1208,46 @@ struct ChatGPTShareSheet: View {
 // MARK: - 即時語音
 
 /// 語音模式：聲音在 ChatGPT 網頁裡跑（Pod），這裡是原生的畫面與結束鈕。
-struct ChatGPTVoiceOverlay: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+/// W184 G3：ChatGPT Space 與私訊框共用（狀態看 ChatGPTVoiceShowing；私訊框蓋在 ChatGPT 那一欄、手機字級）。
+struct ChatGPTVoiceOverlay<Voice: ChatGPTVoiceShowing>: View {
+    @WorkspaceObservedObject var model: Voice
+    @Environment(\.tatwoWorkspaceVisible) private var workspaceVisible
+    var metrics: ChatGPTComposerMetrics = .space
+    var identifier = "chatgpt.voice"
+    var stopIdentifier: String? = nil
     @State private var pulse = false
 
     var body: some View {
         VStack(spacing: 22) {
             Spacer()
             ZStack {
-                Circle().fill(LiquidGlassTokens.brandAccent.opacity(0.14)).frame(width: 150, height: 150)
+                Circle().fill(LiquidGlassTokens.brandAccent.opacity(0.14)).frame(width: metrics.voiceRing, height: metrics.voiceRing)
                     .scaleEffect(model.voiceLive && pulse ? 1.12 : 0.94)
-                Circle().fill(LiquidGlassTokens.brandAccent.opacity(model.voiceLive ? 0.55 : 0.25)).frame(width: 96, height: 96)
-                Image(systemName: "waveform").font(.system(size: 30, weight: .medium)).foregroundStyle(.white)
+                Circle().fill(LiquidGlassTokens.brandAccent.opacity(model.voiceLive ? 0.55 : 0.25)).frame(width: metrics.voiceDot, height: metrics.voiceDot)
+                Image(systemName: "waveform").font(.system(size: metrics.voiceGlyph, weight: .medium)).foregroundStyle(.white)
             }
-            .animation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: pulse)
-            .onAppear { pulse = true }
-            Text("語音模式").font(.system(size: 17, weight: .semibold))
-            Text(model.voiceStatus).font(.system(size: 13)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            .animation(workspaceVisible ? .easeInOut(duration: 1.1).repeatForever(autoreverses: true) : nil, value: pulse)
+            .onChange(of: workspaceVisible, initial: true) { _, visible in pulse = visible }
+            Text("語音模式").font(.system(size: metrics.voiceTitle, weight: .semibold))
+            Text(model.voiceStatus).font(.system(size: metrics.voiceStatus)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
             Spacer()
+            // W184 G3：結束中（還沒確認麥克風停了）鈕一直在；再按一下＝直接關掉語音那一頁。
             Button { model.stopVoice() } label: {
-                Label("結束語音", systemImage: "xmark")
-                    .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 18).frame(height: 36)
+                Label(model.voiceStopping ? "直接關掉" : "結束語音", systemImage: "xmark")
+                    .font(.system(size: metrics.voiceButton, weight: .semibold))
+                    .padding(.horizontal, 18).frame(height: metrics.voiceButtonHeight)
             }
             .buttonStyle(.plain)
             .chatGlassChip(isSelected: true)
             .keyboardShortcut(.cancelAction)
+            .chatGPTOptionalIdentifier(stopIdentifier)
             .padding(.bottom, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.ultraThinMaterial)
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("chatgpt.voice")
+        .accessibilityIdentifier(identifier)
     }
 }
 
@@ -1248,22 +1286,37 @@ enum ChatGPTPalette {
     static let hover = dynamic(0x000000, 0.05, dark: 0xFFFFFF, 0.10)
     /// 圓鈕外框 --border-heavy（黑 15%）
     static let thumbBorder = dynamic(0x000000, 0.15, dark: 0xFFFFFF, 0.20)
+    /// W184 G3b（私訊框的 ChatGPT 對象，照 ChatGPT iPhone App；深淺照主題）：抽屜底、反白的膠囊（「聊天」、自己的泡泡）。
+    /// （W184 G3c：輸入框改回私訊框的玻璃膠囊，跟其他對象一致；原本的實心灰底 composerFill 拿掉。）
+    static let drawerFill = dynamic(0xFFFFFF, dark: 0x1C1C1C)
+    static let inverseFill = dynamic(0x0D0D0D, dark: 0xF4F4F4)
+    static let inverseText = dynamic(0xFFFFFF, dark: 0x0D0D0D)
+}
+
+/// 思考強度面板的尺寸與動畫（網頁的數值）；ChatGPT Space 與私訊框共用。
+enum ChatGPTEffortCardMetrics {
+    static let width: CGFloat = 260
+    static let radius: CGFloat = 24
+    /// 網頁的開合動畫：0.32 秒 cubic-bezier(.23,1,.32,1)。
+    static let motion = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.32)
 }
 
 /// 思考強度面板，照 ChatGPT 網頁版（09-25 使用者「思考模型ui只是像 但細節完全不對」→ 改成照網頁自己的 CSS／元件逐項對）：
 /// 寬 260、圓角 24、白底＋陰影（shadow-long）；上面置中「High ›」（16pt、中粗；帶版本時「6」黑字、「Pro」灰字，最高檔紫色），
 /// 右上角「↺」回到 ChatGPT 的預設；下面是滑桿。點「High ›」換成版本與其他模型的清單。臨時聊天不在這裡（網頁在右上角）。
-struct ChatGPTEffortCard: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+/// W184 G3：ChatGPT Space 與私訊框共用（資料與動作看 ChatGPTModelPicking：Space 記自己的選擇；私訊框只在記憶體、不動 Space 的）。
+/// 私訊框（metrics .dmPhone）：App 的玻璃面板、品牌色滑桿、手機字級。
+struct ChatGPTEffortCard<Model: ChatGPTModelPicking>: View {
+    @WorkspaceObservedObject var model: Model
+    var metrics: ChatGPTComposerMetrics = .space
     let dismiss: () -> Void
     @State private var showsModels = false
     @State private var maxNotice = false
     @State private var noticeTask: Task<Void, Never>?
 
-    static let width: CGFloat = 260
-    static let radius: CGFloat = 24
-    /// 網頁的開合動畫：0.32 秒 cubic-bezier(.23,1,.32,1)。
-    static let motion = Animation.timingCurve(0.23, 1, 0.32, 1, duration: 0.32)
+    private var motion: Animation { ChatGPTEffortCardMetrics.motion }
+    private var primary: Color { metrics.chrome.primaryText }
+    private var secondary: Color { metrics.chrome.secondaryText }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -1275,12 +1328,8 @@ struct ChatGPTEffortCard: View {
                     .transition(.opacity.combined(with: .offset(y: -24)))
             }
         }
-        .frame(width: Self.width)
-        .background(RoundedRectangle(cornerRadius: Self.radius, style: .continuous).fill(ChatGPTPalette.surface))
-        .clipShape(RoundedRectangle(cornerRadius: Self.radius, style: .continuous))
-        // shadow-long：0 8px 12px #00000014，外加 0 0 1px 的細邊。
-        .overlay(RoundedRectangle(cornerRadius: Self.radius, style: .continuous).strokeBorder(Color.black.opacity(0.10), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 8)
+        .frame(width: ChatGPTEffortCardMetrics.width)
+        .modifier(ChatGPTEffortCardSurface(chrome: metrics.chrome, radius: metrics.cardRadius))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chatgpt.modelPopover")
         .onDisappear { noticeTask?.cancel() }
@@ -1289,23 +1338,23 @@ struct ChatGPTEffortCard: View {
     // MARK: 滑桿頁（網頁的 simple view）
 
     private var simpleView: some View {
-        let efforts = model.currentModel?.efforts ?? []
+        let efforts = model.pickerModel?.efforts ?? []
         return VStack(spacing: 0) {
             ZStack {
                 if maxNotice {
                     // 拖到最高檔時，標題位置閃一下「用量消耗較快」（網頁：Consumes usage limits faster，紫色流光字）。
-                    ChatGPTShimmerText(text: "用量消耗較快")
+                    ChatGPTShimmerText(text: "用量消耗較快", size: metrics.cardRow)
                         .transition(.opacity)
                 } else {
                     headerButton.transition(.opacity)
                 }
                 HStack {
                     Spacer()
-                    if model.canResetSelection, !maxNotice {
-                        Button { withAnimation(Self.motion) { model.resetSelection() } } label: {
+                    if model.pickerCanReset, !maxNotice {
+                        Button { withAnimation(motion) { model.pickerReset() } } label: {
                             Image(systemName: "arrow.counterclockwise")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(ChatGPTPalette.tertiary)
+                                .font(.system(size: metrics.cardSmall, weight: .medium))
+                                .foregroundStyle(secondary)
                                 .frame(width: 32, height: 32)
                                 .contentShape(Rectangle())
                         }
@@ -1322,10 +1371,11 @@ struct ChatGPTEffortCard: View {
             if efforts.count > 1 {
                 ChatGPTEffortSlider(
                     count: efforts.count,
-                    index: efforts.firstIndex { $0.id == model.effectiveEffortID } ?? efforts.count - 1,
+                    index: efforts.firstIndex { $0.id == model.pickerEffortID } ?? efforts.count - 1,
                     maxIndex: efforts.lastIndex { $0.isMax },
-                    titles: efforts.map { ChatGPTLabels.effort($0.level.isEmpty ? $0.title : $0.level) }) { index in
-                        withAnimation(Self.motion) { model.selectedEffortID = efforts[index].id }
+                    titles: efforts.map { ChatGPTLabels.effort($0.level.isEmpty ? $0.title : $0.level) },
+                    accent: metrics.chrome == .web ? ChatGPTPalette.accent : LiquidGlassTokens.brandAccent) { index in
+                        withAnimation(motion) { model.pickerChoose(effort: efforts[index].id) }
                         if efforts[index].isMax { flashMaxNotice() }
                     }
                     .padding(.horizontal, 12)
@@ -1335,23 +1385,23 @@ struct ChatGPTEffortCard: View {
         .padding(.bottom, 10)
     }
 
-    /// 「High ›」：帶版本時版本黑字、檔位灰字；只有名字時名字黑字；最高檔（Pro）名字紫色。16pt、中粗。
+    /// 「High ›」：帶版本時版本黑字、檔位灰字；只有名字時名字黑字；最高檔（Pro）名字紫色。16pt、中粗（私訊框 17）。
     private var headerButton: some View {
         let label = model.pickerLabel
-        return Button { withAnimation(Self.motion) { showsModels = true } } label: {
+        return Button { withAnimation(motion) { showsModels = true } } label: {
             HStack(spacing: 0) {
                 if let version = label.version {
-                    Text(version).foregroundStyle(ChatGPTPalette.primary)
-                    Text(" " + label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : ChatGPTPalette.tertiary)
+                    Text(version).foregroundStyle(primary)
+                    Text(" " + label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : secondary)
                 } else {
-                    Text(label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : ChatGPTPalette.primary)
+                    Text(label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : primary)
                 }
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(ChatGPTPalette.tertiary)
+                    .font(.system(size: metrics.cardChevron, weight: .medium))
+                    .foregroundStyle(secondary)
                     .padding(.leading, 6)
             }
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: metrics.cardTitle, weight: .medium))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .frame(minHeight: 32)
@@ -1376,18 +1426,18 @@ struct ChatGPTEffortCard: View {
     // MARK: 模型清單（網頁的 advanced view）
 
     private var modelList: some View {
-        let versions = model.models.filter { $0.id.hasPrefix("version:") }
-        let others = model.models.filter { !$0.id.hasPrefix("version:") }
+        let versions = model.pickerModels.filter { $0.id.hasPrefix("version:") }
+        let others = model.pickerModels.filter { !$0.id.hasPrefix("version:") }
         // 伺服器給每個舊模型同一句說明（09-25：都是「我們最新且最先進的模型」）→ 重複的就不顯示。
         let repeated = Set(Dictionary(grouping: others, by: \.detail).filter { $0.value.count > 1 }.keys)
         return VStack(alignment: .leading, spacing: 0) {
-            Button { withAnimation(Self.motion) { showsModels = false } } label: {
+            Button { withAnimation(motion) { showsModels = false } } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .medium))
-                    Text("思考強度").font(.system(size: 13, weight: .medium))
+                    Image(systemName: "chevron.left").font(.system(size: metrics.cardChevron, weight: .medium))
+                    Text("思考強度").font(.system(size: metrics.cardSmall, weight: .medium))
                     Spacer()
                 }
-                .foregroundStyle(ChatGPTPalette.tertiary)
+                .foregroundStyle(secondary)
                 .padding(.horizontal, 12)
                 .frame(height: 32)
                 .contentShape(Rectangle())
@@ -1397,33 +1447,33 @@ struct ChatGPTEffortCard: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(versions) { item in
-                        option(title: ChatGPTLabels.version(item.title), detail: "", selected: item.id == model.effectiveModelID) {
-                            model.selectedModelID = item.id
-                            withAnimation(Self.motion) { showsModels = false }
+                        option(title: ChatGPTLabels.version(item.title), detail: "", selected: item.id == model.pickerModelID) {
+                            model.pickerChoose(model: item.id)
+                            withAnimation(motion) { showsModels = false }
                         }
                     }
                     if !others.isEmpty {
                         Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1).padding(.horizontal, 6).padding(.vertical, 6)
                         ForEach(others) { item in
                             option(title: item.title, detail: repeated.contains(item.detail) ? "" : item.detail,
-                                   selected: item.id == model.effectiveModelID) {
-                                model.selectedModelID = item.id
+                                   selected: item.id == model.pickerModelID) {
+                                model.pickerChoose(model: item.id)
                                 dismiss()
                             }
                         }
                     }
-                    if model.canResetSelection {
+                    if model.pickerCanReset {
                         Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1).padding(.horizontal, 6).padding(.vertical, 6)
                         Button {
-                            model.resetSelection()
-                            withAnimation(Self.motion) { showsModels = false }
+                            model.pickerReset()
+                            withAnimation(motion) { showsModels = false }
                         } label: {
                             HStack(spacing: 8) {
-                                Image(systemName: "arrow.counterclockwise").font(.system(size: 13, weight: .medium))
-                                Text("回到 ChatGPT 的預設").font(.system(size: 14))
+                                Image(systemName: "arrow.counterclockwise").font(.system(size: metrics.cardSmall, weight: .medium))
+                                Text("回到 ChatGPT 的預設").font(.system(size: metrics.cardRow))
                                 Spacer()
                             }
-                            .foregroundStyle(ChatGPTPalette.primary)
+                            .foregroundStyle(primary)
                             .padding(.horizontal, 12)
                             .frame(height: 36)
                             .contentShape(Rectangle())
@@ -1441,14 +1491,14 @@ struct ChatGPTEffortCard: View {
         Button(action: action) {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 14)).foregroundStyle(ChatGPTPalette.primary)
+                    Text(title).font(.system(size: metrics.cardRow)).foregroundStyle(primary)
                     if !detail.isEmpty {
-                        Text(detail).font(.system(size: 12)).foregroundStyle(ChatGPTPalette.tertiary).lineLimit(2)
+                        Text(detail).font(.system(size: metrics.cardDetail)).foregroundStyle(secondary).lineLimit(2)
                     }
                 }
                 Spacer(minLength: 8)
                 if selected {
-                    Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(ChatGPTPalette.primary)
+                    Image(systemName: "checkmark").font(.system(size: metrics.cardCheck, weight: .semibold)).foregroundStyle(primary)
                 }
             }
             .padding(.horizontal, 12)
@@ -1459,6 +1509,29 @@ struct ChatGPTEffortCard: View {
         .buttonStyle(ChatGPTHoverButtonStyle(cornerRadius: 12))
         .accessibilityLabel(detail.isEmpty ? title : "\(title)、\(detail)")
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// 面板的底：網頁（白底、細邊、shadow-long）；私訊框是 App 的玻璃面板（玻璃參數沿用既有 token）。
+private struct ChatGPTEffortCardSurface: ViewModifier {
+    let chrome: ChatGPTComposerMetrics.Chrome
+    let radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch chrome {
+        case .web, .phone:   // W184 G3b：私訊框的 ChatGPT 對象照原版（白色面板）
+            content
+                .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(ChatGPTPalette.surface))
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                // shadow-long：0 8px 12px #00000014，外加 0 0 1px 的細邊。
+                .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(Color.black.opacity(0.10), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.08), radius: 6, x: 0, y: 8)
+        case .glass:
+            content
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                .liquidGlassPanelSurface(cornerRadius: radius)
+        }
     }
 }
 
@@ -1488,11 +1561,12 @@ private struct ChatGPTHoverBackground<Content: View>: View {
 /// 紫色流光字（網頁 MaximumNoticeText：purple-400→200→75→200→400 的漸層從右掃到左一次）。
 struct ChatGPTShimmerText: View {
     let text: String
+    var size: CGFloat = 14
     @State private var phase: CGFloat = 1
 
     var body: some View {
         Text(text)
-            .font(.system(size: 14))
+            .font(.system(size: size))
             .foregroundStyle(LinearGradient(stops: Self.stops(phase), startPoint: .leading, endPoint: .trailing))
             .frame(height: 32)
             .onAppear { withAnimation(.easeOut(duration: 1.1)) { phase = 0 } }
@@ -1518,6 +1592,8 @@ struct ChatGPTEffortSlider: View {
     let index: Int
     let maxIndex: Int?
     let titles: [String]
+    /// 已選那一段的顏色：網頁是主題藍（ChatGPT Space 照舊）；私訊框用品牌色（W184 G3：不要藍色）。
+    var accent: Color = ChatGPTPalette.accent
     let onChange: (Int) -> Void
     @State private var dragIndex: Int?
     @State private var burstStart: Date?
@@ -1543,7 +1619,7 @@ struct ChatGPTEffortSlider: View {
                             .frame(width: width)
                             .transition(.opacity)
                     } else {
-                        ChatGPTPalette.accent
+                        accent
                             .frame(width: max(0, centerX))
                     }
                     ForEach(0..<count, id: \.self) { tick in
@@ -1627,6 +1703,7 @@ struct ChatGPTEffortSlider: View {
 /// 最高檔的紫色：網頁用 12 色的流動漸層（WebGL）＋白色星點；這裡用幾團緩慢移動的柔光疊在
 /// linear-gradient(90deg, #250e7a, #c775e9 55%, #7849d1) 上，星點是 14 顆白 72% 的小點，緩緩往左飄、忽明忽暗。
 struct ChatGPTMaxFill: View {
+    @Environment(\.tatwoWorkspaceVisible) private var workspaceVisible
     private static let blobs: [(UInt32, CGFloat, CGFloat, CGFloat)] = [
         (0x9763F1, 0.20, 0.38, 0.9), (0xD4B5F3, 0.52, 0.30, 1.1), (0x9700FE, 0.78, 0.44, 0.8),
         (0xC775E9, 0.36, 0.60, 1.3), (0x6636D1, 0.64, 0.26, 1.0), (0xE1B0FF, 0.88, 0.58, 0.7),
@@ -1640,7 +1717,7 @@ struct ChatGPTMaxFill: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(paused: !workspaceVisible)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             Canvas { canvas, size in
                 let base = Gradient(stops: [.init(color: Color(nsColor: ChatGPTPalette.rgb(0x250E7A)), location: 0),
@@ -1675,6 +1752,7 @@ struct ChatGPTMaxFill: View {
 
 /// 剛拖到最高檔時從圓鈕迸出的 16 顆紫色粒子（網頁 Burst：0.62 秒，#752aff／#8f5cff／#9d6bff）。
 struct ChatGPTMaxBurst: View {
+    @Environment(\.tatwoWorkspaceVisible) private var workspaceVisible
     let start: Date
     private static let offsets: [(CGFloat, CGFloat, UInt32)] = [
         (-3, -34, 0x752AFF), (15, -29, 0x752AFF), (30, -19, 0x8F5CFF), (34, -2, 0x752AFF), (26, 20, 0x9D6BFF),
@@ -1683,7 +1761,7 @@ struct ChatGPTMaxBurst: View {
     ]
 
     var body: some View {
-        TimelineView(.animation) { context in
+        TimelineView(.animation(paused: !workspaceVisible)) { context in
             let progress = min(1, context.date.timeIntervalSince(start) / 0.62)
             Canvas { canvas, size in
                 guard progress < 1 else { return }
@@ -1704,7 +1782,43 @@ struct ChatGPTMaxBurst: View {
     }
 }
 
-/// 臨時聊天的圖示：照網頁右上角那顆（虛線的對話泡泡，左下角是尾巴）。
+/// 臨時聊天的字（照 ChatGPT 網頁版）：ChatGPT Space 與私訊框共用（W184 G3c 抽出來，不各寫一份）。
+enum ChatGPTTemporaryChatText {
+    static let title = "臨時聊天"
+    /// 跟網頁版臨時聊天的說明一樣。
+    static let note = "臨時聊天不會出現在紀錄裡，不會使用或更新 ChatGPT 的記憶，也不會用來訓練模型。為了安全，副本最多可能保留 30 天。"
+    static let personalizedNote = "個人化臨時聊天可使用外掛、參考既有記憶與自訂指示；不會出現在紀錄裡，也不會新增或更新記憶。僅適用這一則聊天。"
+    static func help(active: Bool) -> String { active ? "關閉臨時聊天" : "開啟臨時聊天：不會出現在紀錄裡" }
+    static func label(active: Bool) -> String { active ? "關閉臨時聊天" : "開啟臨時聊天" }
+}
+
+/// 既有臨時聊天鈕的單次選擇，不另加工具列按鈕；關閉＝保留原本不個人化，不代表同意。
+struct ChatGPTTemporaryPersonalizationChoice: View {
+    var width: CGFloat = 290
+    let allow: () -> Void
+    let dismiss: () -> Void
+    @Environment(\.dmFrameProbes) private var probes
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("這次臨時聊天要使用外掛嗎？").font(.headline)
+            Text("個人化可參考既有記憶與自訂指示；仍不進聊天紀錄，也不新增記憶。")
+                .font(.subheadline).foregroundStyle(.secondary)
+            Button("允許個人化，僅此聊天", action: allow)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chatgpt.temporary.allowPersonalized")
+                .background { if probes { DMFrameProbe(key: "temporary.allow") } }
+            Button("保持不個人化", action: dismiss)
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("chatgpt.temporary.keepUnpersonalized")
+                .background { if probes { DMFrameProbe(key: "temporary.keep") } }
+        }
+        .padding(16)
+        .frame(width: width)
+    }
+}
+
+/// 臨時聊天的圖示：照網頁右上角那顆（虛線的對話泡泡，左下角是尾巴）。ChatGPT Space 與私訊框（W184 G3c）共用。
 struct ChatGPTTemporaryChatIcon: View {
     var active = false
 

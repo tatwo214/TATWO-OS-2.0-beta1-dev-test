@@ -356,7 +356,8 @@ test('W26 SIGKILL inside production rename window is recovered by the next insta
   writeFileSync(join(dir,'install-ready'),'a'.repeat(64)+'  TATWO-OS.zip\n');
   const functions=install.split('# TRANSACTION-BEGIN\n')[1].split('# TRANSACTION-END')[0];
   const replace=install.slice(install.indexOf('# Staging and destination'), install.indexOf('# Candidate was verified'));
-  const env={...process.env,DEST:dest,STAGE:stage,TEMP:dir,TAG:'v2.0.6',REPO:'fixture/repo'};
+  // The replace slice now includes the conversation backup; it must only ever see a fixture HOME.
+  const env={...process.env,HOME:dir,DEST:dest,STAGE:stage,TEMP:dir,TAG:'v2.0.6',REPO:'fixture/repo'};
   let r=spawnSync('bash',['-c',`set -eu
     ${functions}
     fail() { echo "$1" >&2; exit 1; }
@@ -379,9 +380,11 @@ test('W26/W64 retention leaves legacy temp directories outside UpdateArchives un
   const r=spawnSync('bash',['-c',`set -eu
     trash() { exit 90; }
     ${hygiene}
+    remove_update_archive_tree() { touch "$HOME/.removal-called"; return 1; }
     ${code}
     archive_old_downloads`],{encoding:'utf8',env:{...process.env,HOME:dir,TMPDIR:dir,DEST:join(dir,'App.app')}});
   assert.equal(r.status,0,r.stderr);
+  assert.ok(!existsSync(join(dir,'.removal-called')));
   for(const name of ['tatwo-install.old','tatwo-install.active','tatwo-install.fresh','keep-other']) assert.ok(existsSync(join(dir,name)));
 });
 

@@ -120,11 +120,9 @@ struct CLISessionTree: View {
                         if let badge = segmentBadge(segment) {
                             Text(badge)
                                 .font(.caption2.monospacedDigit().weight(.black))
-                                .foregroundStyle(isActive ? LiquidGlassTokens.brandAccent : Color.secondary)
                         }
                     }
                     .font(.caption.weight(.black))
-                    .foregroundStyle(isActive ? LiquidGlassTokens.brandAccent : Color.secondary)
                     .frame(maxWidth: .infinity, minHeight: 26)
                     .contentShape(Rectangle())
                     .chatGlassChip(isSelected: isActive)
@@ -140,7 +138,7 @@ struct CLISessionTree: View {
 
     private func segmentHelp(_ segment: CLISessionTreeSegment) -> String {
         switch segment {
-        case .terminal: return "CLI 專案與 session"
+        case .terminal: return "CLI 專案與對話"
         case .loops: return "本機進行中與近 1 小時的 loops"
         case .remote: return "跨裝置算力 loops"
         }
@@ -279,10 +277,10 @@ struct CLISessionTree: View {
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
-            .help("在此專案新增 CLI session")
+            .help("在此專案新增 CLI 對話")
 
             if project.sessions.isEmpty {
-                emptyState("此專案尚無 CLI session")
+                emptyState("此專案尚無 CLI 對話")
             } else {
                 ForEach(project.sessions) { session in
                     terminalRow(projectID: project.id, session: session)

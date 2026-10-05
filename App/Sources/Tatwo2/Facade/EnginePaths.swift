@@ -8,9 +8,13 @@ struct EnginePaths: Sendable {
     let claudeConfigDirectory: URL
     let grokHome: URL
     let runtimeBinDirectory: URL
-    let codexExecutable: URL
-    let claudeExecutable: URL
-    let grokExecutable: URL
+    private let bundledCodex: URL
+    private let bundledClaude: URL
+    private let bundledGrok: URL
+    private let engineEnvironment: [String: String]
+    var codexExecutable: URL { selection(for: .codex).executable }
+    var claudeExecutable: URL { selection(for: .claude).executable }
+    var grokExecutable: URL { selection(for: .grok).executable }
     let userHome: URL
 
     init(
@@ -53,13 +57,14 @@ struct EnginePaths: Sendable {
             }
             ?? Bundle.main.resourceURL
             ?? Bundle.main.bundleURL
-        self.runtimeBinDirectory = resources.appendingPathComponent(
+        self.engineEnvironment = environment
+        self.runtimeBinDirectory = environment["TATWO2_RUNTIME_BIN"].map { URL(fileURLWithPath: $0, isDirectory: true) } ?? resources.appendingPathComponent(
             "runtime/bin",
             isDirectory: true
         )
-        self.codexExecutable = runtimeBinDirectory.appendingPathComponent("codex")
-        self.grokExecutable = runtimeBinDirectory.appendingPathComponent("grok")
-        self.claudeExecutable = resources
+        self.bundledCodex = runtimeBinDirectory.appendingPathComponent("codex")
+        self.bundledGrok = runtimeBinDirectory.appendingPathComponent("grok")
+        self.bundledClaude = resources
             .appendingPathComponent("claude-sidecar", isDirectory: true)
             .appendingPathComponent(
                 "node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude"
@@ -67,6 +72,29 @@ struct EnginePaths: Sendable {
         self.userHome = environment["HOME"].flatMap {
             $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true)
         } ?? fileManager.homeDirectoryForCurrentUser
+    }
+
+    private func runtimeURLs(for kind: ClaudeSidecar.Kind) -> (bundled: URL, home: URL) {
+        switch kind {
+        case .codex: return (bundledCodex, codexHome)
+        case .claude: return (bundledClaude, claudeConfigDirectory)
+        case .grok: return (bundledGrok, grokHome)
+        }
+    }
+    func cachedSelection(for kind: ClaudeSidecar.Kind) -> EngineRuntimeSelection.Choice {
+        let urls = runtimeURLs(for: kind)
+        return EngineRuntimeSelection.cached(kind: kind, bundled: urls.bundled, userHome: userHome,
+            engineHome: urls.home, environment: engineEnvironment)
+    }
+    func selectionAsync(for kind: ClaudeSidecar.Kind, forceVerification: Bool = false) async throws -> EngineRuntimeSelection.Choice {
+        let urls = runtimeURLs(for: kind)
+        return try await EngineRuntimeSelection.resolveAsync(kind: kind, bundled: urls.bundled, userHome: userHome,
+            engineHome: urls.home, environment: engineEnvironment, forceVerification: forceVerification)
+    }
+    func selection(for kind: ClaudeSidecar.Kind, forceVerification: Bool = false) -> EngineRuntimeSelection.Choice {
+        let urls = runtimeURLs(for: kind)
+        return EngineRuntimeSelection.resolve(kind: kind, bundled: urls.bundled, userHome: userHome,
+            engineHome: urls.home, environment: engineEnvironment, forceVerification: forceVerification)
     }
 
     var codexAuth: URL {

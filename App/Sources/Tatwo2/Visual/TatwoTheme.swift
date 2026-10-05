@@ -50,6 +50,10 @@ struct TatwoThemePalette: Sendable {
     let surfaceBorder: Color
     /// 圓角縮放（1.0=極光原值圓潤；fable5=0.5 較方正，貼近 Claude R 角）。使用者 2026-07-12「claude的r角比較方正」。
     let radiusScale: Double
+
+    /// W184 AB（.031 真機：深色模式下 fable5 的紙底照樣淺米色、字卻跟著系統變白，對比約 1.2 倍）：紙底寫死淺色的主題（matte 牛皮紙：
+    /// 實底 surfaceFill、canvasBase 都是固定的淺色）＝整個 App 固定用淺色外觀；玻璃主題（極光）跟系統走。
+    var fixedLightAppearance: Bool { !usesGlass }
 }
 
 struct TatwoTheme: Identifiable, Sendable {
@@ -144,6 +148,24 @@ final class TatwoThemeStore: ObservableObject {
         TatwoActivePalette.current = theme.palette
         TatwoActivePalette.commemorativeText = theme.commemorativeText
         UserDefaults.standard.set(activeThemeID.rawValue, forKey: Self.key)
+        applyAppearance()
+    }
+
+    /// W184 AB：紙底寫死淺色的主題（fable5）＝App 固定淺色外觀（NSApp.appearance＝aqua：系統切深色時字不會變白、紙底照樣淺）；
+    /// 主導裁決（GPT-6 第三輪 #6）：fable5＝整個 App 一致的淺色紙主題（Browser 網址列的玻璃、選單也跟著淺色）；本來就跟著系統明暗的
+    /// 元件（Island）照舊跟系統（TatwoSystemAppearance.follow）。
+    /// 其他主題（極光）＝還原成跟系統（nil）。已經明確指定外觀的元件（例如 AppShell 的 darkAqua）照舊。App 還沒建好就等下一輪再設。
+    private func applyAppearance() {
+        guard let app = NSApp else {
+            DispatchQueue.main.async { MainActor.assumeIsolated { TatwoThemeStore.shared.applyAppearance() } }
+            return
+        }
+        var wanted: NSAppearance.Name? = active.palette.fixedLightAppearance ? .aqua : nil
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST_DARK"] == "1" { wanted = .darkAqua }
+        #endif
+        guard app.appearance?.name != wanted else { return }
+        app.appearance = wanted.flatMap { NSAppearance(named: $0) }
     }
 }
 
@@ -163,6 +185,13 @@ enum TatwoPaperGrain {
             kCIInputSaturationKey: 0.0
         ])
         let cropped = mono.cropped(to: CGRect(x: 0, y: 0, width: side, height: side))
+        // W184 F3：Core Image 只算一次，存成點陣圖（NSCIImageRep 在離屏的點陣圖畫布上每畫一次就重算一次 Core Image：
+        // 私訊框換形態拍圖時一張 tile 一次，拍一個框要上百毫秒）。同一張噪點，看起來一樣。
+        if let space = CGColorSpace(name: CGColorSpace.sRGB),
+           let bitmap = CIContext(options: [.outputColorSpace: space]).createCGImage(cropped, from: cropped.extent, format: .RGBA8,
+                                                                                     colorSpace: space) {
+            return NSImage(cgImage: bitmap, size: size)
+        }
         let rep = NSCIImageRep(ciImage: cropped)
         let img = NSImage(size: size)
         img.addRepresentation(rep)

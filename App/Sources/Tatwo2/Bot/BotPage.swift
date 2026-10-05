@@ -1235,7 +1235,6 @@ struct BotPageRootView: View {
             .lineLimit(1)
             .padding(.horizontal, 8)
             .frame(height: 24)
-            .foregroundStyle(.secondary)
             .chatGlassChip()
     }
 
@@ -1249,7 +1248,6 @@ struct BotPageRootView: View {
                 Spacer(minLength: 0)
                 Text("\(total)")
                     .font(.system(size: 9, weight: .black, design: .rounded))
-                    .foregroundStyle(total > 0 ? LiquidGlassTokens.brandAccent : Color.secondary)
                     .padding(.horizontal, 6)
                     .frame(height: 18)
                     .chatGlassChip(isSelected: total > 0)
@@ -1261,11 +1259,9 @@ struct BotPageRootView: View {
                         HStack(spacing: 6) {
                             Image(systemName: "doc")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.secondary)
                                 .frame(width: 12)
                             Text(file)
                                 .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -1340,7 +1336,6 @@ struct BotPageRootView: View {
                     .frame(width: 16, height: 16)
                 Text(title)
                     .font(.system(size: 10, weight: .black, design: .rounded))
-                    .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
 
@@ -1364,12 +1359,10 @@ struct BotPageRootView: View {
         VStack(alignment: .leading, spacing: 2) {
             Label(title, systemImage: systemImage)
                 .font(.system(size: 9, weight: .black, design: .rounded))
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .labelStyle(.titleAndIcon)
             Text(value.isEmpty ? "—" : value)
                 .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -1390,7 +1383,6 @@ struct BotPageRootView: View {
                         .foregroundStyle(.primary)
                     Text("\(state.registeredSkills.count)")
                         .font(.system(size: 9, weight: .black, design: .rounded))
-                        .foregroundStyle(state.registeredSkills.isEmpty ? Color.secondary : LiquidGlassTokens.brandAccent)
                         .padding(.horizontal, 6)
                         .frame(height: 18)
                         .chatGlassChip(isSelected: !state.registeredSkills.isEmpty)
@@ -1399,7 +1391,6 @@ struct BotPageRootView: View {
                         if state.registeredSkills.isEmpty {
                             Text("無常駐")
                                 .font(.system(size: 9, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.secondary)
                         } else {
                             HStack(spacing: 4) {
                                 ForEach(Array(state.registeredSkills.prefix(2))) { skill in
@@ -1408,13 +1399,11 @@ struct BotPageRootView: View {
                                         .lineLimit(1)
                                         .padding(.horizontal, 6)
                                         .frame(height: 18)
-                                        .foregroundStyle(LiquidGlassTokens.brandAccent)
                                         .chatGlassChip(isSelected: true)
                                 }
                                 if state.registeredSkills.count > 2 {
                                     Text("+\(state.registeredSkills.count - 2)")
                                         .font(.system(size: 9, weight: .black, design: .rounded))
-                                        .foregroundStyle(.secondary)
                                 }
                             }
                             .frame(maxWidth: 112, alignment: .trailing)
@@ -1423,7 +1412,6 @@ struct BotPageRootView: View {
                     }
                     Image(systemName: botInfoPluginsExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2.weight(.black))
-                        .foregroundStyle(.secondary)
                         .frame(width: 11)
                 }
                 .contentShape(Rectangle())
@@ -1433,7 +1421,6 @@ struct BotPageRootView: View {
 
             Text("Bot 展示：登記＝授權引用 skillet 主根，不複製；真正調用走白名單，需底層代接入。")
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if botInfoPluginsExpanded {
@@ -1441,7 +1428,6 @@ struct BotPageRootView: View {
                     HStack {
                         Text("管理")
                             .font(.system(size: 9, weight: .black, design: .rounded))
-                            .foregroundStyle(.secondary)
                             .textCase(.uppercase)
                         Spacer()
                         Button {
@@ -1456,7 +1442,6 @@ struct BotPageRootView: View {
                     if pocketSkillCatalog.isEmpty {
                         Text(pocketEmptyCatalogHint)
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
                     } else {
                         ForEach(pocketSkillCatalog.prefix(7)) { skill in
                             botPluginToggle(skill)
@@ -1684,7 +1669,7 @@ struct BotPageRootView: View {
             VStack(spacing: 3) {
                 Text(principal.name)
                     .font(.system(size: 13, weight: .semibold))
-                Text("書籤頁・bot sessions")
+                Text("書籤頁・Bot 對話")
                     .font(.system(size: 9.5)).foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .center)
@@ -1876,7 +1861,6 @@ struct BotPageRootView: View {
 
             Text(state.usesLiveBots ? "bot" : "未接入・未派工")
                 .font(.caption2.weight(.black))
-                .foregroundStyle(.secondary)
                 .padding(.horizontal, 9)
                 .frame(height: 24)
                 .chatGlassChip()
@@ -2387,7 +2371,6 @@ struct BotPageRootView: View {
                                 Image(systemName: "chevron.left").font(.system(size: 10, weight: .bold))
                                 Text("成員清單").font(.caption2.weight(.bold))
                             }
-                            .foregroundStyle(.secondary)
                             .padding(.horizontal, 8).frame(height: 24)
                             .contentShape(Capsule())
                         }
@@ -2443,7 +2426,6 @@ struct BotPageRootView: View {
                                 Image(systemName: "photo.circle").font(.system(size: 11, weight: .bold))
                                 Text("更換頭貼").font(.caption2.weight(.black))
                             }
-                            .foregroundStyle(.secondary)
                             .padding(.horizontal, 9)
                             .frame(height: 24)
                             .contentShape(Capsule())

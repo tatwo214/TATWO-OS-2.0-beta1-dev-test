@@ -314,6 +314,23 @@ final class DeviceRegistry: @unchecked Sendable {
         }
     }
 
+    /// W183 R8 實機（加入端補記主設備簽章那把；GPT-6 審查：綁這次呼叫）：同一把鎖裡核對「主機金鑰還是呼叫前記下的那一把、
+    /// 客戶端那把還空著、沒有待修的指紋」才補；任何一項不符＝不補（回 false），不覆蓋、不放寬、不動 needsFingerprintRepair。
+    func recordClientFingerprint(id: String, expectedHost: String, fingerprint: String, source: String, now: Date = Date()) throws -> Bool {
+        guard fingerprint.hasPrefix("SHA256:"), fingerprint.count > "SHA256:".count,
+              expectedHost.hasPrefix("SHA256:") else { throw RegistryError.invalidPublicKey }
+        return try lock.withLock {
+            var rows = try readUnlocked()
+            guard let index = rows.firstIndex(where: { $0.id.lowercased() == id.lowercased() }),
+                  rows[index].hostKeyFingerprint == expectedHost, rows[index].clientKeyFingerprint == nil,
+                  !rows[index].needsFingerprintRepair else { return false }
+            rows[index].clientKeyFingerprint = fingerprint
+            rows[index].clientKeyFingerprintSource = DeviceFingerprintProvenance(source: source, recordedAt: now)
+            try writeUnlocked(rows)
+            return true
+        }
+    }
+
     /// Re-pairing the same SSH key must retain its UUID; a peer cannot claim another key's ID.
     func pairingDeviceID(publicKey: String, requestedID: String?, localDeviceID: String) throws -> String {
         let fingerprint = try Self.fingerprint(publicKey: publicKey)

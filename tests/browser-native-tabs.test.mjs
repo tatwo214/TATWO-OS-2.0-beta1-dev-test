@@ -55,11 +55,12 @@ test('actual tab host and close aggregation with controlled native callbacks', {
 import AppKit
 import SwiftUI
 struct EmbeddedBrowserRuntimeProfile: Hashable { let registryKey = UUID(); var dataStoreIdentifier: UUID? { registryKey } }
+enum BrowserProfilePolicyTag { case humanPersistent }
 struct EmbeddedChromiumBrowserMountIdentity: Equatable {
     let profile: EmbeddedBrowserRuntimeProfile
-    var profilePolicyTag: Int { 1 }
+    var profilePolicyTag: BrowserProfilePolicyTag { .humanPersistent }
 }
-struct EmbeddedBrowserCommand { enum Action { case load(URL), goBack, goForward, reload, stopLoading, printPage, printPDF, openPDF, find(String, forward:Bool, matchCase:Bool), stopFinding, zoom(Double) }; let id=UUID();let action:Action; var agentNavigation:BrowserAgentNavigation? = nil }
+struct EmbeddedBrowserCommand { enum Action { case load(URL), goBack, goForward, reload, stopLoading, printPage, printPDF, openPDF, resetDownloadPermission, find(String, forward:Bool, matchCase:Bool), stopFinding, zoom(Double) }; let id=UUID();let action:Action; var agentNavigation:BrowserAgentNavigation? = nil }
 final class BrowserAgentNavigation { let url=URL(string:"https://example.test/")!; let request=UUID() }
 struct BrowserAgentRequestError: Error { init(_ message:String) {} }
 @MainActor final class BrowserAgentBridge {
@@ -73,15 +74,51 @@ struct BrowserAgentRequestError: Error { init(_ message:String) {} }
 }
 @MainActor final class BrowserHumanInteraction {
     static let shared=BrowserHumanInteraction()
-    func configure(_ browser:TatwoCEFBrowserView, onPopup:@escaping(URL)->Void) {}
+    func configure(_ browser:TatwoCEFBrowserView, onForegroundTab:@escaping(URL)->Void, onPopup:@escaping(URL)->Void) {}
+    static func resetDownloadPermission(_ browser:TatwoCEFBrowserView) { preconditionFailure("not a download permission test") }
 }
 // New collaborators are outside this host lifecycle test and never access host data.
+enum BrowserSensitivePageError: Error { case unavailable, busy }
+enum BrowserTabReturnReason { case closing, command, takenBack, fullscreen(started:Bool) }
+struct BrowserLendableTab {
+    struct Native {
+        let isHuman:Bool, agentControlled:Bool, sensitivePage:Bool, httpsOnly:Bool, isPod:Bool, isOnScreen:Bool
+        let navigationGeneration:UInt64
+        let pageURL:String?
+    }
+}
+enum BrowserLentKeys { static func claims(_ event:NSEvent)->Bool { preconditionFailure("not a lending key test") } }
+enum BrowserNativeMenuAction: String {
+    case printPage = "menu:printPage", printPDF = "menu:printPDF", openPDF = "menu:openPDF"
+}
+struct BrowserShortcutMap {}
+enum BrowserKeyCombo {
+    struct Invocation { let message:String }
+    static func invocation(event:NSEvent, shortcuts:BrowserShortcutMap)->Invocation? { preconditionFailure("not a shortcut test") }
+}
+@MainActor final class BrowserAudibleTabs {
+    static let shared=BrowserAudibleTabs()
+    func set(_ tabID:String, audible:Bool) { preconditionFailure("not an audio test") }
+    func forget(_ tabID:String) {}
+}
+@MainActor final class BrowserVideoTabs {
+    static let shared=BrowserVideoTabs()
+    func set(_ tabID:String, playing:Bool) { preconditionFailure("not a video test") }
+    func forget(_ tabID:String) {}
+}
+@MainActor enum ChromeStyleSpike { static func installOnce() {} }
+@MainActor final class SpotifyConnect {
+    static let shared=SpotifyConnect()
+    static let spotifyHost="spotify.invalid"
+    func spotifyTabOpened() { preconditionFailure("not a media integration test") }
+}
 @MainActor final class BrowserPasswordAssist { init(bridge:TatwoCEFBrowserView) {}; func invalidate() {} }
 @MainActor final class BrowserWebFeatures { init(browser:TatwoCEFBrowserView,container:NSView) {}; func invalidate() {}; func requestPDF(download:Bool) { preconditionFailure("not a PDF test") } }
 enum TatwoActivePalette { struct Palette { let canvasBase=Color.white }; static let current=Palette() }
 struct BrowserGeneralSettings {
  struct Engine { let title="Search"; func queryURL(_ text:String)->URL { URL(string:"https://example.test/")! } }
  var zoomByHost:[String:Double]=[:]; let searchEngine=Engine()
+ let shortcuts=BrowserShortcutMap()
  static func load()->Self { .init() }; func save() throws { preconditionFailure("not a settings test") }
 }
 actor BrowserHistoryStore { static let shared=BrowserHistoryStore(); func recordVisit(url:URL,title:String) throws { preconditionFailure("not a history test") } }
@@ -89,6 +126,7 @@ struct BrowserMemorySettings { static func load()->Self { .init() }; func limit(
 struct VisibleError { let message:String; static func runtimeMessage(_ s:String)->Self { .init(message:s) } }
 struct EmbeddedBrowserNavigationState {
     var urlString:String?; var canGoBack:Bool; var canGoForward:Bool; var visibleError:VisibleError?
+    var isPDF=false
     static var blank:Self { .init(urlString:nil,canGoBack:false,canGoForward:false,visibleError:nil) }
 }
 struct EmbeddedChromiumNavigationStateProjector {
@@ -96,7 +134,7 @@ struct EmbeddedChromiumNavigationStateProjector {
         .init(urlString:committedMainFrameURLString,canGoBack:canGoBack,canGoForward:canGoForward,visibleError:visibleError.map{.runtimeMessage($0)})
     }
 }
-struct Location { let profilePolicyTag=1; let rootCachePath="";let helperExecutablePath="";let logFilePath="";let persistentProfilePath:String?=nil }
+struct Location { let profilePolicyTag=BrowserProfilePolicyTag.humanPersistent; let rootCachePath="";let helperExecutablePath="";let logFilePath="";let persistentProfilePath:String?=nil }
 @MainActor enum TatwoCEFProfileLocationResolver {
     static func resolve(profile:EmbeddedBrowserRuntimeProfile, actor: TatwoCEFBrowserActor = .human)throws->Location? { Location() }
     static func prepareForRuntime(_ location:Location)throws->TatwoCEFProfileLeaseRegistry.Lease? { TatwoCEFProfileLeaseRegistry.shared.acquire() }
@@ -131,6 +169,14 @@ enum TatwoCEFBrowserErrorKind { case none }
     var onDailyShortcut:((String)->Void)?
     var onFindResult:((Int,Int)->Void)?
     var onContextMenuAction:((String,String)->Void)?
+    var onBrowserKeyEquivalent:((NSEvent)->Bool)?
+    var onAudibleChange:((Bool)->Void)?
+    var onVideoPlayingChange:((Bool)->Void)?
+    var onFullscreenModeChange:((Bool)->Void)?
+    var onPopupCreated:((TatwoCEFBrowserView)->Void)?
+    var onContainedPopup:((TatwoCEFBrowserView)->Void)?
+    var preventsAutomaticSleep=false, currentDocumentIsPDF=false, sensitivePage=false, httpsOnly=false, isPod=false
+    func translateOperation(_ operation:String,payload:String?,limit:Int,completion:@escaping(String?)->Void) { preconditionFailure("not a translation test") }
     func cancelWebFeatures() {}
     func cancelAgentLogin() {}
     func stopFinding() {}

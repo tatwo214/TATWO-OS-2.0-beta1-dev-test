@@ -55,14 +55,16 @@ struct SpaceManagedTab: RawRepresentable, Codable, CaseIterable, Hashable {
         guard !rawValue.isEmpty else { return nil }
         self.rawValue = rawValue
     }
+    static let tatwo = Self(rawValue: "tatwo")!
     static let chat = Self(rawValue: "chat")!
     static let cli = Self(rawValue: "cli")!
     static let bot = Self(rawValue: "bot")!
     static let browser = Self(rawValue: "browser")!
     static let chatgpt = Self(rawValue: "chatgpt")!
-    static let allCases: [Self] = [.chat, .cli, .bot, .browser, .chatgpt]
+    static let allCases: [Self] = [.tatwo, .chat, .cli, .bot, .browser, .chatgpt]
     var modeRawValue: String {
         switch self {
+        case .tatwo: "tatwo"
         case .chat: "Chat"
         case .cli: "CLI"
         case .bot: "Bot"
@@ -115,7 +117,9 @@ struct SpaceDomainRecord: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         tabOrder = try c.decodeIfPresent([SpaceManagedTab].self, forKey: .tabOrder) ?? []
-        // Legacy three-tab documents append newly introduced builtins, preserving order.
+        // Add TATWO before the user's existing order in every legacy domain.
+        if !tabOrder.contains(.tatwo) { tabOrder.insert(.tatwo, at: 0) }
+        // Other missing builtins still append; custom/user ordering stays intact.
         for tab in SpaceManagedTab.allCases where !tabOrder.contains(tab) { tabOrder.append(tab) }
         disabledTabs = try c.decodeIfPresent(Set<SpaceManagedTab>.self, forKey: .disabledTabs) ?? []
         draft = try c.decodeIfPresent(SpaceBuilderDraft.self, forKey: .draft) ?? SpaceBuilderDraft()

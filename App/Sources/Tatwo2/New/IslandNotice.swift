@@ -8,6 +8,11 @@ final class IslandNotice: ObservableObject {
 
     enum Decision: Equatable, Sendable { case allow, cancel, timeout }
     enum Kind: Equatable, Sendable { case ask, confirm, info }
+    struct Meter: Equatable, Sendable {
+        let displayName: String
+        let symbol: String
+        let percentage: Double
+    }
     struct Request: Identifiable, Equatable, Sendable {
         let id: UUID
         let kind: Kind
@@ -19,6 +24,9 @@ final class IslandNotice: ObservableObject {
         /// W178：要使用者看完整內容才能按允許（AI 代跑的指令）。Island 那一行放不下時，允許鍵換成「查看」，
         /// 按了才開視窗顯示完整內容，在那裡決定；絕不讓人對著被截掉的內容按允許。
         var fullTextRequired = false
+        /// W180 D2：這則請求是哪一條討論串發的（私訊框「到 Island 查看」只定位屬於自己對象的那一則）；不知道是 nil。
+        var threadID: UUID? = nil
+        var meter: Meter? = nil
 
         /// Island 那一行顯示的內容：最多兩行（指令＋位置）接成一行；指令本身有換行就沒有一行版，一定要開「查看」。
         var summaryLine: String? {
@@ -33,10 +41,56 @@ final class IslandNotice: ObservableObject {
     typealias FullView = @MainActor (Request, @escaping (Decision) -> Void) -> (() -> Void)?
 
     @Published private(set) var current: Request?
+    @Published private(set) var displayMeter: Request?
+    /// W179: includes queued/fallback requests, but never their details or callbacks.
+    var pendingRequestTitles: [String] {
+        let now = Date()
+        return ([active].compactMap { $0 } + queue)
+            .filter { $0.request.kind != .info && $0.request.deadline > now }
+            .map { String($0.request.title.prefix(200)) }
+    }
+    /// W180 D2：還在等人決定的請求（不含 info），依顯示順序：目前那一則在前、再來是排隊的。只給 id。
+    var pendingRequestIDs: [UUID] {
+        let now = Date()
+        return ([active].compactMap { $0 } + queue)
+            .filter { $0.request.kind != .info && $0.request.deadline > now }
+            .map(\.request.id)
+    }
+
+    /// W180 D2：同上，但只要記著是這條討論串發的那幾則（沒記討論串的請求一律不算）。
+    func pendingRequestIDs(threadID: UUID) -> [UUID] {
+        let now = Date()
+        return ([active].compactMap { $0 } + queue)
+            .filter { $0.request.kind != .info && $0.request.deadline > now && $0.request.threadID == threadID }
+            .map(\.request.id)
+    }
+
+    /// W180 D2：私訊框「到 Island 查看」定位到這一則。正在顯示：把 Island 展開停住（沒有 Island 時把確認框所在的視窗
+    /// 帶到前面）；還在排隊：排到下一則，並展開 Island 讓人先處理眼前這一則。已經結束或找不到回 false。
+    @discardableResult
+    func reveal(id: UUID) -> Bool {
+        if let entry = active, entry.request.id == id, entry.request.deadline > Date() {
+            if hostAvailable, current?.id == id {
+                holdOpen(true)
+            } else if let app = NSApp {
+                app.activate(ignoringOtherApps: true)
+                app.windows.first { $0.attachedSheet != nil }?.makeKeyAndOrderFront(nil)
+            }
+            return true
+        }
+        guard let index = queue.firstIndex(where: { $0.request.id == id && $0.request.kind != .info }),
+              queue[index].request.deadline > Date() else { return false }
+        let entry = queue.remove(at: index)
+        queue.insert(entry, at: 0)
+        if hostAvailable, current != nil { holdOpen(true) }
+        return true
+    }
+
     var hostAvailable = false {
         didSet {
-            guard !hostAvailable, current != nil, let active else { return }
+            guard !hostAvailable, current != nil || displayMeter != nil, let active else { return }
             current = nil
+            displayMeter = nil
             // 「查看」視窗已經開著：就在那裡決定，不再疊開一個備援視窗（Island 的展開鎖照樣放掉）。
             guard active.dismiss == nil else { holdOpen(false); return }
             presentFallback(active)
@@ -73,15 +127,17 @@ final class IslandNotice: ObservableObject {
         self.fullView = fullView
         // Default resolved inside the @MainActor init: a default-argument closure is
         // nonisolated and cannot touch the main-actor Island shell.
-        self.holdOpen = holdOpen ?? { IslandExceptionsNavigation.shell?.holdOpen($0) }
+        self.holdOpen = holdOpen ?? { IslandExceptionsNavigation.shell?.holdOpen($0 || HandsComputerUse.shared.isOperating) }
         self.log = log
     }
 
+    /// `threadID`：發這則請求的討論串（W180：私訊框「到 Island 查看」靠它定位；不知道就不給）。
     func ask(title: String, detail: String, allowLabel: String, timeout: TimeInterval,
-             requestID: UUID = UUID(), fullTextRequired: Bool = false) async -> Decision {
+             requestID: UUID = UUID(), fullTextRequired: Bool = false, threadID: UUID? = nil) async -> Decision {
         var request = makeRequest(id: requestID, kind: .ask, title: title, detail: detail,
                                   allow: allowLabel, cancel: "取消", timeout: timeout)
         request.fullTextRequired = fullTextRequired
+        request.threadID = threadID
         return await wait(request)
     }
 
@@ -104,6 +160,22 @@ final class IslandNotice: ObservableObject {
         guard hostAvailable else { log("info skipped: Island host unavailable"); return }
         enqueue(makeRequest(kind: .info, title: title, detail: detail,
                             allow: "", cancel: "", timeout: duration), completion: { _ in })
+    }
+
+    /// One live meter, even across repeated keys or switching between brightness and volume.
+    func showDisplayMeter(_ meter: Meter) {
+        guard hostAvailable else { return }
+        let existing = ([active].compactMap { $0 } + queue).first { $0.request.meter != nil }
+        var request = makeRequest(id: existing?.request.id ?? UUID(), kind: .info,
+                                  title: meter.displayName, detail: "", allow: "", cancel: "", timeout: 1)
+        request.meter = meter
+        if let existing {
+            existing.request = request
+            scheduleTimeout(existing)
+            if active === existing { displayMeter = request }
+        } else {
+            enqueue(request, completion: { _ in })
+        }
     }
 
     /// Use the same callback-backed async operation, not a main-actor Task: a nested
@@ -141,6 +213,7 @@ final class IslandNotice: ObservableObject {
             entry.timer?.invalidate()
             active = nil
             current = nil
+            displayMeter = nil
             entry.dismiss?()
             entry.completion(outcome)
             presentNext()
@@ -172,11 +245,12 @@ final class IslandNotice: ObservableObject {
                          completion: @escaping (Decision) -> Void) {
         let entry = Entry(request, window: window, completion: completion)
         queue.append(entry)
-        if request.kind != .info { scheduleTimeout(entry) }
+        if request.kind != .info || request.meter != nil { scheduleTimeout(entry) }
         presentNext()
     }
 
     private func scheduleTimeout(_ entry: Entry) {
+        entry.timer?.invalidate()
         let request = entry.request
         let timer = Timer(fire: request.deadline, interval: 0, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.resolve(.timeout, id: request.id) }
@@ -192,14 +266,15 @@ final class IslandNotice: ObservableObject {
         active = entry
         // info.duration is reading time, not a request deadline: do not silently
         // discard a heads-up while it waits behind an interactive confirmation.
-        if entry.request.kind == .info {
+        if entry.request.kind == .info && entry.request.meter == nil {
             entry.request.deadline = Date().addingTimeInterval(entry.duration)
             scheduleTimeout(entry)
         }
         let request = entry.request
         guard request.deadline > Date() else { resolve(.timeout, id: request.id); return }
         if hostAvailable {
-            current = request
+            if request.meter != nil { displayMeter = request }
+            else { current = request }
             holdOpen(true)
         } else {
             presentFallback(entry)

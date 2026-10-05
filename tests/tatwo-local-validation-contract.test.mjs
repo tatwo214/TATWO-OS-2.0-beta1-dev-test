@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -81,4 +82,28 @@ assert.match(
 const workflowFiles = fs.existsSync(workflowsRoot)
   ? fs.readdirSync(workflowsRoot).filter((name) => name.endsWith(".yml") || name.endsWith(".yaml"))
   : [];
-assert.deepEqual(workflowFiles, [], "GitHub is backup-only; validation workflows must stay disabled");
+assert.equal(contract.authority, "local_dual_device_validation");
+const policySource = fs.readFileSync(path.join(root, "docs/protocol/LOCAL_VALIDATION_POLICY.md"), "utf8");
+const policy = JSON.parse(policySource.match(/```json\n([\s\S]*?)\n```/)[1]);
+assert.equal(policy.scope, "local_validation_authority");
+assert.equal(policy.replacesDeviceReceipt, false);
+assert.equal(policy.grantsPromotion, false);
+assert.deepEqual(policy.workflows.map(row => row.path), [".github/workflows/update-policy.yml"]);
+
+function verifySupplementalWorkflows(files, read = name => fs.readFileSync(path.join(workflowsRoot, name))) {
+  assert.deepEqual([...files].sort(), ["update-policy.yml"], "unknown or missing hosted workflow requires policy review");
+  const source = read("update-policy.yml");
+  assert.equal(createHash("sha256").update(source).digest("hex"), policy.workflows[0].sha256,
+    "only the reviewed read-only supplemental workflow is permitted; do not grant CI release authority");
+  assert.match(String(source), /permissions:\s*contents: read/);
+  assert.doesNotMatch(String(source), /secrets\.|write-all|contents: write|pull_request_target|workflow_run|gh release|productionPromotionGranted/);
+}
+verifySupplementalWorkflows(workflowFiles);
+assert.throws(() => verifySupplementalWorkflows([...workflowFiles, "publish.yml"]));
+assert.throws(() => verifySupplementalWorkflows([]));
+const approvedWorkflow = fs.readFileSync(path.join(workflowsRoot, "update-policy.yml"), "utf8");
+for (const changed of [
+  approvedWorkflow.replace("contents: read", "contents: write"),
+  approvedWorkflow.replace("pull_request:", "pull_request_target:"),
+  approvedWorkflow + "\n  publish:\n    steps:\n      - run: gh release create v1\n",
+]) assert.throws(() => verifySupplementalWorkflows(workflowFiles, () => changed));

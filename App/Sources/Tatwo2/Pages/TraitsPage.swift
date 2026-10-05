@@ -7,7 +7,7 @@ struct TraitsPage: View {
     let dimensions: [TraitEvaluationDimension]
     let modelTraits: [ModelTrait]
     @State private var selectedLeadModelID = "fable-5.1"
-    @State private var selectedSecondaryModelID = "gpt-6-astra"
+    @State private var selectedSecondaryModelID = "gpt-6.1-sol"
     @State private var selectedSubModelID = "sonnet-5"
     @State private var selectedScoreModelID = "opus-5.5"
     @State private var selectedEvidenceModelID = "fable-5"
@@ -96,7 +96,10 @@ struct TraitsPage: View {
 
     private static let visibleTraitModelIDs: [String] = [
         "fable-5.1",
+        "gpt-6.1-sol",
         "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6-sol",
         "opus-5.5",
         "sonnet-5",
@@ -107,7 +110,10 @@ struct TraitsPage: View {
 
     private static let evidenceModelOrder: [String] = [
         "fable-5.1",
+        "gpt-6.1-sol",
         "gpt-6-astra",
+        "gpt-6-sol",
+        "gpt-6-luna",
         "gpt-5.6",
         "opus-5.5",
         "sonnet-5",

@@ -125,6 +125,12 @@ rl.on('close',()=>process.exit(0));
       .filter(event => event.ev === 'sdk' && event.msg?.type === 'result' && event.msg.is_error);
     assert.equal(terminalErrors.length, 1);
     assert.match(terminalErrors[0].msg.result, /unsupported effort fixture/);
+    // W184 H4 修正第二輪（GPT-6 H4b 審查 #1）：turn/start 收下的每一輪都回一聲 turn_accepted（帶 App 的 client_turn_id）——App 等這一聲
+    // （或第一個回覆）才算送到、才清草稿；被拒的那一輪（four）沒有這一聲，只有失敗的結果（App 當沒送到、草稿留著）。
+    const accepted = stdout.trim().split('\n').map(JSON.parse)
+      .filter(event => event.ev === 'sdk' && event.msg?.subtype === 'turn_accepted')
+      .map(event => event.msg.client_turn_id);
+    assert.deepEqual(accepted, ['one', 'two', 'three']);
     assert.match(stdout, /must be non-empty strings/);
     const exited = once(child, 'exit');
     child.stdin.end();

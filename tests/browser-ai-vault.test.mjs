@@ -52,7 +52,8 @@ test('W58 actor identity survives initial blank tab, mixed contexts and wake wit
   assert.match(backend, /let agentMount = selectedIsAgentTab/);
   assert.match(backend, /if !sameActorEntries.isEmpty && source == nil/);
   assert.match(backend, /if profileLease == nil/);
-  assert.match(backend, /guard source != nil \|\| closingCount == 0 else/);
+  // W183 R5b：私訊框的敏感頁面開著時在 closingCount 佔一格（租約留著）；它們不算「在關」。
+  assert.match(backend, /guard source != nil \|\| closingCount == sensitivePages\.count else/);
   assert.match(backend, /revokeRequests\(\)[\s\S]*?cancelAgentLogin\(\)[\s\S]*?guard browser.browserActor == .human/);
   assert.match(backend, /persistentProfile: nil,\s+initialURL: startupURL, actor: .agent/);
   assert.doesNotMatch(backend, /let agentMount = pendingCommand/);

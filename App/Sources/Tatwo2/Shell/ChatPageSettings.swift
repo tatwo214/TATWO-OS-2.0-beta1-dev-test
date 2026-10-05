@@ -110,7 +110,7 @@ struct TatwoSettingsShell<Content: View>: View {
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 14)
                 .padding(.bottom, 2)
-            ForEach(Section.allCases) { item in
+            ForEach(Section.allCases.filter { $0 != .github }) { item in
                 Button {
                     section = item
                 } label: {
@@ -149,6 +149,24 @@ struct TatwoSettingsShell<Content: View>: View {
 
 }
 
+/// Subscribe at the registry-reading leaf without forwarding tab changes through Coder.
+private struct BrowserSettingsRegistryContent<Content: View>: View {
+    @ObservedObject var registry: BrowserTabRegistry
+    let content: (BrowserTabRegistry) -> Content
+
+    init(registry: BrowserTabRegistry, @ViewBuilder content: @escaping (BrowserTabRegistry) -> Content) {
+        self.registry = registry
+        self.content = content
+    }
+
+    var body: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("BrowserSettingsRegistryContent.body")
+        #endif
+        content(registry)
+    }
+}
+
 /// TATWO OS 設定整頁：左列直行導覽，右側內容區。
 struct TatwoSettingsPage: View {
     @ObservedObject private var themeStore = TatwoThemeStore.shared
@@ -168,6 +186,7 @@ struct TatwoSettingsPage: View {
         case tatwoIsland
         case computerUse
         case devices
+        case display
         case plugin
         case github
         case os
@@ -181,12 +200,13 @@ struct TatwoSettingsPage: View {
             case .issueList: "Issue List"
             case .browserManagement: "瀏覽器"
             case .agentAccounts: "代理帳戶＆錢包"
-            case .modelAccess: "模型登入"
+            case .modelAccess: "登入"
             case .tatwoIsland: "Tatwo Island"
             case .computerUse: "Computer Use"
             case .devices: "設備"
+            case .display: "顯示器"
             case .plugin: "Plugin"
-            case .github: "GitHub"
+            case .github: "環境登入"   // W183 R3：原「GitHub」；rawValue github 不動（側欄更新鈕、開始使用、匯出都綁這個值）
             case .os: "OS"
             }
         }
@@ -202,6 +222,7 @@ struct TatwoSettingsPage: View {
             case .tatwoIsland: "capsule"
             case .computerUse: "cursorarrow.rays"
             case .devices: "laptopcomputer.and.iphone"
+            case .display: "display"
             case .plugin: "puzzlepiece.extension"
             case .github: "chevron.left.forwardslash.chevron.right"
             case .os: "point.3.connected.trianglepath.dotted"
@@ -212,10 +233,13 @@ struct TatwoSettingsPage: View {
     @State private var section: Section = {
         let requested = ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_SETTINGS_SECTION"] ?? ""
         // W160：「文件」併進 OS；舊的 documents 請求落到 OS。
-        let mapped = ["ipadUse", "pocket"].contains(requested) ? "plugin" : requested == "documents" ? "os" : requested
+        let mapped = ["ipadUse", "pocket"].contains(requested) ? "plugin" : requested == "documents" ? "os"
+            : ["github", "cloudflare", "envLogin"].contains(requested) ? "modelAccess" : requested   // W183 R3：環境登入
         return Section(rawValue: mapped) ?? .issueList
     }()
     @State private var issueTab: ChatPage.IssueSettingsTab = .all
+    @State private var environmentTarget: EnvironmentLoginTarget?
+    @State private var loginRequest = UUID()
     @State private var pendingRemove: TatwoIssueListEntryV1?
 
     var body: some View {
@@ -229,11 +253,17 @@ struct TatwoSettingsPage: View {
         }
         .onAppear {
             SetupChecklist.shared.refresh(logins: model.engineLogins)
-            if let initialSection { section = initialSection }
+            if let initialSection { open(initialSection) }
             else if SetupChecklist.shared.remaining > 0 { section = .start }
             model.reloadIssueList()
         }
-        .onChange(of: section) { _ in SetupChecklist.shared.refresh(logins: model.engineLogins) }
+        // W183 R3：設定已經開著時也要切頁（例：TAP › ChatGPT 導去 環境登入 › Cloudflare）；以前只在 onAppear 讀一次 initialSection。
+        .onReceive(NotificationCenter.default.publisher(for: .tatwoOpenSettingsSection)) { notification in
+            guard let raw = notification.object as? String, let target = Section(rawValue: raw) else { return }
+            open(target, focus: (notification.userInfo?["environmentTarget"] as? String).flatMap(EnvironmentLoginTarget.init(rawValue:)))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tatwoCloseSettingsPage)) { _ in onClose() }   // W183 R3
+        .onChange(of: section) { if $0 != .modelAccess { environmentTarget = nil }; SetupChecklist.shared.refresh(logins: model.engineLogins) }
         .onChange(of: model.engineLogins) { SetupChecklist.shared.refresh(logins: $0) }
         .confirmationDialog(
             "移除這筆 issue？",
@@ -253,11 +283,18 @@ struct TatwoSettingsPage: View {
         }
     }
 
+    private func open(_ target: Section, focus: EnvironmentLoginTarget? = nil) {
+        environmentTarget = target == .github ? (focus ?? EnvironmentLoginTarget.pending ?? .update) : nil
+        EnvironmentLoginTarget.pending = nil
+        loginRequest = UUID()
+        section = target == .github ? .modelAccess : target
+    }
+
     @ViewBuilder
     private var rightContent: some View {
         switch section {
         case .start:
-            SetupGuidePage(model: model, open: { section = $0 })
+            SetupGuidePage(model: model, open: { open($0) })
         case .space:
             if SpaceSetupPreviewState.isEnabled {
             SpaceSetupPreviewView(opensSettings: true, onOpenBuilder: {
@@ -273,7 +310,9 @@ struct TatwoSettingsPage: View {
         case .issueList:
             issueListContent
         case .browserManagement:
-            browserSettingsContent
+            BrowserSettingsRegistryContent(registry: model.browserTabRegistry) { registry in
+                browserSettingsContent(registry)
+            }
         case .agentAccounts:
             AgentAccountsSettingsView(
                 changePassword: { id in BrowserAgentBridge.shared.changeAIPassword(id) },
@@ -282,27 +321,20 @@ struct TatwoSettingsPage: View {
                     BrowserDiagnosticsView(registry: model.browserTabRegistry)
                 }
         case .modelAccess:
-            EngineLoginCard(model: model, onClose: onClose)
+            EngineLoginCard(model: model, environmentTarget: environmentTarget)
+                .id(loginRequest)
         case .tatwoIsland:
             tatwoIslandContent
         case .computerUse:
             ComputerUseSettingsView(onClose: onClose)
         case .devices:
             DevicesCard(model: model)
+        case .display:
+            DisplaySettingsView()
         case .plugin:
             PluginSettingsView(model: model)
         case .github:
-            ScrollView {
-                VStack(alignment: .leading, spacing: TatwoSettingsPageMetrics.sectionSpacing) {
-                    TatwoSettingsPageHeader(
-                        title: "GitHub",
-                        subtitle: "登入 GitHub 後，AI 和終端機會依網址或資料夾選對帳號，幫你下載或上傳程式碼，不用手動切換。")
-                    GitHubBackupSetupBanner()
-                    UpdateAvailableCard()
-                    GitHubAccountsCard(model: model)
-                }
-                .padding(TatwoSettingsPageMetrics.inset)
-            }
+            EngineLoginCard(model: model, environmentTarget: .update)
         case .os:
             OSSettingsPage(model: model, showingDocuments: ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_SETTINGS_SECTION"] == "documents")
         }
@@ -312,13 +344,13 @@ struct TatwoSettingsPage: View {
     @State private var browserSecurity = BrowserSecuritySettings.load()
     @State private var browserSettingsError: String?
 
-    private var browserSettingsContent: some View {
+    private func browserSettingsContent(_ registry: BrowserTabRegistry) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: TatwoSettingsPageMetrics.sectionSpacing) {
                 TatwoSettingsPageHeader(title: "瀏覽器")
-                browserSettingsCard("Browser work space") { browserWorkSpaceSettings }
+                browserSettingsCard("Browser work space") { browserWorkSpaceSettings(registry) }
                 browserSettingsCard("快捷鍵") { BrowserShortcutsSettingsView() }
-                browserSettingsCard("Session 瀏覽器") { browserSessionSettings }
+                browserSettingsCard("對話瀏覽器") { browserSessionSettings(registry) }
                 // 密碼：直接使用 W50 的完整卡片。
                 BrowserPasswordsSettingsView()
                 browserSettingsCard("擴充功能") {
@@ -328,7 +360,7 @@ struct TatwoSettingsPage: View {
                 }
                 browserSettingsCard("音樂與影片") { BrowserProtectedMediaSettingsView(); Divider(); SpotifyConnectSettingsView() }
                 browserSettingsCard("引擎與安全") { browserSecuritySettings }
-                browserSettingsCard("診斷") { browserDiagnosticsSettings }
+                browserSettingsCard("診斷") { browserDiagnosticsSettings(registry) }
                 if let browserSettingsError {
                     Text(browserSettingsError).foregroundStyle(.red)
                 }
@@ -356,7 +388,7 @@ struct TatwoSettingsPage: View {
     private func browserSectionNumber(_ title: String) -> Int? {
         switch title {
         case "Browser work space": 1
-        case "Session 瀏覽器": 2
+        case "對話瀏覽器": 2
         case "密碼": 3
         case "擴充功能": 4
         case "引擎與安全": 5
@@ -365,17 +397,17 @@ struct TatwoSettingsPage: View {
         }
     }
 
-    private var browserWorkSpaceSettings: some View {
+    private func browserWorkSpaceSettings(_ registry: BrowserTabRegistry) -> some View {
         VStack(alignment: .leading, spacing: BrowserSidebarMetrics.settingsRowSpacing) {
             BrowserDefaultBrowserRow()
-            BrowserSettingsKVRow(title: "預設 space", value: model.browserTabRegistry.spaces.first { $0.id == browserGeneral.defaultSpaceID }?.name ?? "自動") {
+            BrowserSettingsKVRow(title: "預設 space", value: registry.spaces.first { $0.id == browserGeneral.defaultSpaceID }?.name ?? "自動") {
                 Picker("預設 space", selection: generalBinding(\.defaultSpaceID)) {
                     Text("自動").tag(nil as UUID?)
-                    ForEach(model.browserTabRegistry.spaces.filter { !$0.isSessionSpace }) { space in
+                    ForEach(registry.spaces.filter { !$0.isSessionSpace }) { space in
                         Text(space.name).tag(Optional(space.id))
                     }
                     if let id = browserGeneral.defaultSpaceID,
-                       !model.browserTabRegistry.spaces.contains(where: { $0.id == id && !$0.isSessionSpace }) {
+                       !registry.spaces.contains(where: { $0.id == id && !$0.isSessionSpace }) {
                         Text("原 space 已移除，請重新選擇").tag(Optional(id))
                     }
                 }
@@ -404,10 +436,10 @@ struct TatwoSettingsPage: View {
         }
     }
 
-    private var browserSessionSettings: some View {
+    private func browserSessionSettings(_ registry: BrowserTabRegistry) -> some View {
         VStack(alignment: .leading, spacing: BrowserSidebarMetrics.settingsRowSpacing) {
-            BrowserSettingsKVRow(title: "開著的 session", value: "\(model.browserTabRegistry.openSessions.count) 條 session 開著瀏覽器") {
-                Button("去 Session space 管理") {
+            BrowserSettingsKVRow(title: "開著的對話", value: "\(registry.openSessions.count) 條對話開著瀏覽器") {
+                Button("去對話空間管理") {
                     onClose()
                     NotificationCenter.default.post(name: Notification.Name("tatwo.browser.openSessionSpace"), object: nil)
                 }
@@ -471,15 +503,15 @@ struct TatwoSettingsPage: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private var browserDiagnosticsSettings: some View {
+    private func browserDiagnosticsSettings(_ registry: BrowserTabRegistry) -> some View {
         VStack(alignment: .leading, spacing: BrowserSidebarMetrics.settingsRowSpacing) {
             BrowserSettingsKVRow(title: "引擎", value: BrowserRuntimeVersion.bundledDescription) {
                 Button("打開診斷頁") { browserDiagnosticsPresented = true }
             }
-            BrowserSettingsKVRow(title: "目前分頁數", value: "\(model.browserTabRegistry.tabs.count)") { EmptyView() }
+            BrowserSettingsKVRow(title: "目前分頁數", value: "\(registry.tabs.count)") { EmptyView() }
         }
         .sheet(isPresented: $browserDiagnosticsPresented) {
-            BrowserDiagnosticsView(registry: model.browserTabRegistry)
+            BrowserDiagnosticsView(registry: registry)
         }
     }
 

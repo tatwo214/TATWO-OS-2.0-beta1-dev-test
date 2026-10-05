@@ -10,6 +10,7 @@ extension ChatLiveEngine: DispatchRoomMessaging {}
 
 enum DispatchRoomActions {
     @MainActor static func recordMerge(_ context: DispatchGitContext, sha: String, messenger: any DispatchRoomMessaging) {
+        eventsDecision(context, result: "套用", messenger: messenger)
         messenger.appendSystemMessage(threadID: context.id,
             text: "已合併子任務 \(context.title)（\(context.branch)），合併 commit \(sha)", status: "info|派工合併")
     }
@@ -17,6 +18,7 @@ enum DispatchRoomActions {
         try context.requireLocal()
         let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw DispatchGitFailure(message: "請填退回原因") }
+        eventsDecision(context, result: "退回", messenger: messenger)
         messenger.markSubStatus(context.id, "running")
         messenger.send(threadID: context.id, text: "【退回重做】" + text, model: nil, engine: engine, systemPrompt: nil, attachments: [])
     }

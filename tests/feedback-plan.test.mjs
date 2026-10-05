@@ -24,7 +24,8 @@ test('nonempty feedback uses the canvas and ordinary send; bare feedback keeps t
   assert.match(handler, /FeedbackCoordinator\.shared\.present\(source: "Chat", initialText: argument\)/);
   assert.match(handler, /rejectRemoteWrite\("\/feedback"\)/);
   assert.match(handler, /!engine\.isRunning\(id\), !pendingPR\.contains\(id\)/);
-  assert.match(model, /func send\(\) \{\s+if handleFeedbackCommand\(\) \{ return \}/);
+  // W192c 唯讀先擋住；原本的退出畫布 → TAP 拒絕 → feedback 順序照舊。
+  assert.match(model, /func send\(\) \{\s+if selectedRemote == nil && localConversationReadOnlyNotice != nil \{ return \}\s+if handleCanvasExitCommand\(\) \{ return \}\s+if routeChoice\.runtimeAdapter == \.chatgptTap, CanvasCommandPolicy\.command\(in: prompt\) != nil \{\s+flashComposerHint\(CanvasCommandPolicy\.tapUnsupported\); return\s+\}\s+if handleFeedbackCommand\(\) \{ return \}/);
   assert.match(model, /func confirmActivePlan\(\)[\s\S]*?plan\.kind != "feedback"/);
 });
 

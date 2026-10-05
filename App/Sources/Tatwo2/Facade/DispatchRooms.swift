@@ -11,13 +11,20 @@ struct DispatchRoom: Identifiable, Equatable {
     let reportAvailable: Bool
     let deviceLabel: String?
     let isRunning: Bool
-    var needsAttention: Bool { liveness == .failed || liveness == .stalled || (!isRunning && liveness != .done) }
+    /// W183 R1：「ChatGPT 手腳」的房間（不是本機引擎在跑；兩次呼叫之間等 ChatGPT 是正常的，不算要注意）。
+    let isHands: Bool
+    var needsAttention: Bool {
+        if isHands { return liveness == .failed }
+        return liveness == .failed || liveness == .stalled || (!isRunning && liveness != .done)
+    }
     var statusLabel: String {
+        if isHands { return liveness == .active ? "ChatGPT 動手中" : liveness == .done ? "已交件・待審" : liveness == .failed ? "已失敗" : "等 ChatGPT" }
         if isRunning { return liveness == .idle ? "工作中 · 暫無輸出" : "工作中" }
         return liveness == .done ? "已完成" : liveness == .failed ? "已失敗" : "狀態待確認"
     }
 
-    init(id: UUID, title: String, engineLabel: String, liveness: ThreadLiveness, lastOutputAt: Date?, reportAvailable: Bool, deviceLabel: String? = nil, isRunning: Bool? = nil) {
+    init(id: UUID, title: String, engineLabel: String, liveness: ThreadLiveness, lastOutputAt: Date?, reportAvailable: Bool, deviceLabel: String? = nil, isRunning: Bool? = nil, isHands: Bool = false) {
+        self.isHands = isHands
         self.id = id
         self.title = title
         self.engineLabel = engineLabel
@@ -55,7 +62,8 @@ extension ChatPageModel {
                 let label = record?.deviceID.flatMap { id in
                     try? RemoteDeviceLookup(root: live?.store.url.deletingLastPathComponent()).device(id: id).name
                 }
-                return DispatchRoom(id: t.id, title: t.title, engineLabel: t.engineLabel ?? "", liveness: t.liveness ?? .idle, lastOutputAt: t.lastOutputAt, reportAvailable: t.liveness == .done, deviceLabel: label, isRunning: live?.isRunning(t.id) ?? false)
+                let hands = t.engineLabel == ChatLiveEngine.handsEngine   // W183 R1：手腳房間「在跑」＝有 ChatGPT 的呼叫進行中
+                return DispatchRoom(id: t.id, title: t.title, engineLabel: t.engineLabel ?? "", liveness: t.liveness ?? .idle, lastOutputAt: t.lastOutputAt, reportAvailable: t.liveness == .done, deviceLabel: label, isRunning: hands ? t.liveness == .active : (live?.isRunning(t.id) ?? false), isHands: hands)
             }
     }
 

@@ -1,0 +1,13 @@
+App/Sources/Tatwo2/Events/*
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+App/Sources/Tatwo2/Facade/HandsChatGPTRoom.swift
+App/Sources/Tatwo2/Facade/BackgroundJobManager.swift
+App/Sources/Tatwo2/Facade/ThreadGoalStore.swift
+App/Sources/Tatwo2/New/DispatchRoomMessaging.swift
+App/Sources/Tatwo2/Tatwo2App.swift
+App/Sources/Tatwo2/**/*Acceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/*
+docs/specs/226-os-events-clock/*
+!App/Sources/Tatwo2/**/Group*.swift

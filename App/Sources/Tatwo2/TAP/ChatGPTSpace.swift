@@ -17,13 +17,54 @@ final class ChatGPTSpaceModel: ObservableObject {
     static let pageModelKey = "tatwo.tap.chatgpt.pageModel"
     static let pageEffortKey = "tatwo.tap.chatgpt.pageEffort"
 
-    let tap = ChatGPTTap.shared
+    let tap: ChatGPTTap
     @Published private(set) var conversations: [TapConversation] = []
     @Published private(set) var total = 0
     @Published private(set) var pinned: [TapFolder] = []
     @Published private(set) var projects: [TapFolder] = []
+    @Published private(set) var projectsLoadState: ChatGPTListLoadState = .idle
+    private var projectsLoad: Task<Void, Never>?
+    @Published var showsProjectCreation = false
+    @Published var projectName = ""
+    @Published private(set) var creatingProject = false
+    @Published private(set) var projectCreationFailure: String?
+    var canCreateProject: Bool { !creatingProject && !projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    func beginProjectCreation() {
+        guard !creatingProject else { return }
+        projectName = ""; projectCreationFailure = nil; showsProjectCreation = true
+    }
+
+    func createProject() {
+        guard showsProjectCreation, canCreateProject else { return }
+        let name = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        creatingProject = true; projectCreationFailure = nil
+        Task { @MainActor in
+            let lease = tap.acquireLease(backgroundWork: true)
+            defer { creatingProject = false; tap.releaseLease(lease) }
+            do {
+                if tap.connection == .needsLogin { throw TapError.remote("請先登入 ChatGPT，再建立專案") }
+                try await readyForDirectory()
+                let folder = try await tap.createProject(name: name, description: "")
+                projectsLoad?.cancel(); projectsLoad = nil
+                projects.removeAll { $0.id == folder.id }; projects.insert(folder, at: 0)
+                projectsLoadState = .loaded
+                projectConversations[folder.id] = []; projectLoadStates[folder.id] = .loaded
+                if showsProjectCreation {
+                    expandedProjects.insert(folder.id); newChat(with: folder)
+                    showsProjectCreation = false
+                }
+            } catch { projectCreationFailure = "建立失敗：" + error.localizedDescription }
+        }
+    }
     @Published private(set) var projectConversations: [String: [TapConversation]] = [:]
     @Published private(set) var expandedProjects: Set<String> = []
+    @Published private(set) var projectLoadStates: [String: ChatGPTListLoadState] = [:]
+    @Published private(set) var listFailure: String?
+    @Published private(set) var searchLoadState: ChatGPTListLoadState = .idle
+    private var projectLoads: [String: Task<Void, Never>] = [:]
+    private var listTicket: UUID?
+    private var directoryGeneration = 0
     @Published private(set) var selectedID: String?
     @Published private(set) var messages: [TapMessage] = []
     @Published private(set) var models: [TapModel] = []
@@ -49,13 +90,56 @@ final class ChatGPTSpaceModel: ObservableObject {
         didSet { UserDefaults.standard.set(selectedEffortID, forKey: Self.effortKey) }
     }
     @Published var draft = ""
+    /// 未送出的完整草稿只留記憶體；換頁或新草稿衝突時，不能只留附件檔名。
+    struct UnsentDraft {
+        let text: String
+        let files: [TapAttachment]
+        let tool: TapTool?
+        let conversationID: String?
+        let gpt: TapFolder?
+        let temporary: Bool
+        var temporaryPersonalized = false
+        let branchLeaf: String?
+    }
+    @Published private(set) var unsentDrafts: [UnsentDraft] = []
+    var canRestoreUnsentDraft: Bool {
+        !isSending && draft.isEmpty
+            && attachments.isEmpty && selectedTool == nil
+    }
+    func restoreUnsentDraft() {
+        guard canRestoreUnsentDraft, let saved = unsentDrafts.first else { return }
+        if let id = saved.conversationID { select(id) }
+        else { newChat(with: saved.gpt); temporaryChat = saved.temporary }
+        temporaryPersonalized = saved.temporaryPersonalized
+        branchLeaf = saved.branchLeaf
+        draft = saved.text
+        attachments = saved.files
+        selectedTool = saved.tool
+        unsentDrafts.removeFirst()
+        failure = "未送出的內容已放回輸入框，尚未重新送出"
+    }
     /// 側欄搜尋：打字 0.35 秒後問 ChatGPT 伺服器（搜得到還沒載入的舊對話）；失敗就只搜已載入的標題。
     @Published var search = "" { didSet { scheduleSearch() } }
     @Published private(set) var searchResults: [TapConversation]?
     private var searchTask: Task<Void, Never>?
+    private var searchResultQuery = ""
     /// 對話選項（跟網頁版一樣）：重新命名、封存、刪除（刪除要再確認一次）。
     /// 「＋」裡的 ChatGPT 工具（生圖、網路搜尋…）；選了會在輸入框出現小卡，送出時帶上。
+    /// W184 G3b 第二輪：「＋」與「/」的清單一律是 TAP 從 ChatGPT 網頁讀到的這一份；這次開 App 還沒讀到時先用上次讀到的（toolsCacheKey，
+    /// 只有名稱、說明與分層旗標），從沒讀過＝空的（畫面寫一行說明，不自己編預設清單）。
     @Published private(set) var tools: [TapTool] = []
+    /// Space 與私訊框沿用同一份 $tools；刷新只經這個入口，舊連線回應不能寫回目錄或快取。
+    private lazy var toolCatalog = ChatGPTToolCatalog<[TapTool]>(
+        load: { [weak self] in
+            guard let self else { throw CancellationError() }
+            return try await self.tap.tools()
+        },
+        publish: { [weak self] loaded in
+            guard let self else { return }
+            self.tools = loaded
+            Self.cacheTools(loaded, in: .standard)
+        }
+    )
     @Published var selectedTool: TapTool?
     /// 新對話頁：ChatGPT 自己的問候語與建議。
     @Published private(set) var greeting: String?
@@ -65,12 +149,23 @@ final class ChatGPTSpaceModel: ObservableObject {
     @Published private(set) var activeGPT: TapFolder?
     /// 暫時對話（網頁版右上角的開關）：這則新對話不存進紀錄；送出一次後就是那則對話的狀態。
     @Published var temporaryChat = false
+    /// 只屬於這一則；必須從臨時聊天選單明確選擇，不沿用全域偏好。
+    @Published var temporaryPersonalized = false
     /// 目前這則是暫時對話（有編號但不在紀錄裡）：標題顯示「暫時對話」、不列進側欄、沒有對話選項。
     @Published private(set) var temporaryConversationID: String?
     /// 正在看的不是 ChatGPT 目前那一支（切換過版本）時，這一支最末端的節點；接著送出就接在它後面。
     @Published private(set) var branchLeaf: String?
     /// 側欄的頁面（跟網頁一樣：圖庫、排程、外掛、網站；帳號選單裡的個人化）；nil＝對話。
     @Published private(set) var page: ChatGPTPage?
+    var dotsPresented: Bool { tap.dotsState != .closed }
+    private var dotsTask: Task<Void, Never>?
+#if DEBUG
+    /// 無 Chromium 的隔離自測只替換網頁表面；導覽、租約與原生按鈕仍走正式碼。
+    var dotsPageForSelfTest: AnyView?
+    var dotsBrowserOpenForSelfTest: ((URL) -> Void)?
+    var dotsControlFramesForSelfTest: [String: CGRect] = [:]
+    var failureNoticeForSelfTest: ((String) -> Void)?
+#endif
     var showingLibrary: Bool { page == .library }
     // 排程、外掛、網站、個人化、帳號（使用者 09-25「2全要」）。
     @Published private(set) var automations: [TapAutomation] = []
@@ -107,11 +202,14 @@ final class ChatGPTSpaceModel: ObservableObject {
     @Published private(set) var sharing = false
     @Published private(set) var shareFailure: String?
     /// 在 Space 裡打開網頁版的某一頁（設定、外掛登入…）。
-    /// 即時語音（網頁的語音模式在 Pod 裡跑，這裡蓋原生畫面）。
-    @Published private(set) var voiceActive = false
-    @Published private(set) var voiceLive = false
-    @Published private(set) var voiceStatus = ""
-    private var voiceWatch: Task<Void, Never>?
+    /// 即時語音（網頁的語音模式在 Pod 裡跑，這裡蓋原生畫面）。W184 G3：開始、看狀態、結束抽成 ChatGPTVoiceMode（私訊框同一套）；
+    /// Space 照舊看自己的 voiceActive／voiceLive／voiceStatus（變動轉發出去，畫面照常更新）。
+    let voice: ChatGPTVoiceMode
+    private var voiceForward: AnyCancellable?
+    var voiceActive: Bool { voice.voiceActive }
+    var voiceLive: Bool { voice.voiceLive }
+    var voiceStatus: String { voice.voiceStatus }
+    var voiceStopping: Bool { voice.voiceStopping }
     @Published var libraryTab: TapLibraryTab = .suggested {
         didSet { if libraryTab != oldValue { reloadLibrary() } }
     }
@@ -124,9 +222,17 @@ final class ChatGPTSpaceModel: ObservableObject {
     private var libraryTask: Task<Void, Never>?
     /// 最近在「＋」選過的 App（跟網頁版一樣排在前面）。
     static let recentAppsKey = "tatwo.tap.chatgpt.recentApps"
+    /// W184 G3b 第二輪：最後一次從 ChatGPT 讀到的工具與 App（讀不到時用；只有代號、名稱、一行說明與分層旗標，沒有對話內容）。
+    static let toolsCacheKey = "tatwo.tap.chatgpt.toolsCache"
+    /// 對話清單在 TAP 上更新了（私訊框在新對話送完、別的地方在這則送完）：抽屜與側欄的清單跟著更新。
+    private var conversationUpdateWatch: AnyCancellable?
+    private var mappedConversationLoad: Task<Void, Never>?
     /// 要附上的檔案（只在記憶體；送出時交給 ChatGPT 網頁自己上傳）。合計上限 20 MB。
     @Published private(set) var attachments: [TapAttachment] = []
-    static let attachmentLimit = 20 * 1024 * 1024
+    nonisolated static let attachmentLimit = 20 * 1024 * 1024
+    /// W184 G3 第三輪（修正核對 #5）：圖片最多讀 200 MB（讀進來照舊由 admit 轉成 ChatGPT 看得懂的 JPEG，合計 20 MB 的規矩不變）；
+    /// 其他檔案最多 20 MB。以前轉 JPEG 後收得下的大張 HEIC／TIFF／RAW 照樣收得下。
+    nonisolated static let imageReadLimit = 200 * 1024 * 1024
     /// 圖片只放記憶體（對話內容不落地）。
     private let imageCache = NSCache<NSString, NSImage>()
     /// 點圖片放大看。
@@ -146,6 +252,7 @@ final class ChatGPTSpaceModel: ObservableObject {
     /// 開過（或預載過）的對話留在記憶體，再開立刻顯示、同時拿最新的換上（使用者 09-25「chatgpt的載入速度需要加快」）。
     /// 只在記憶體、最多 cacheLimit 則；對話內容不落地。
     private var messageCache: [String: [TapMessage]] = [:]
+    private var conversationFailures: [String: TapMessage] = [:]
     private var messageCacheOrder: [String] = []
     private var messageLoads: [String: Task<[TapMessage]?, Never>] = [:]
     static let cacheLimit = 30
@@ -154,25 +261,47 @@ final class ChatGPTSpaceModel: ObservableObject {
     /// ChatGPT Space 正在畫面上（背景預熱時不要排休眠給正在看的人）。
     private var visible = false
     /// 每次換對話／開新對話加一：送出中切走之後，舊的送出不能再把畫面拉回它那則。
-    private var viewEpoch = 0
-    /// 語音：每次開始／結束加一；結束之後才回來的「開始」結果作廢。
-    private var voiceSession = 0
-    @Published var failure: String?
+    /// W180 A2：對話區也用它當識別——換則／開新對話就重建捲動區，不沿用上一則長對話的捲動位置
+    /// （09-27 實機：看過長對話再開新對話，新畫面與送出後的提問、錯誤訊息都落在看不到的位置）。
+    @Published private(set) var viewEpoch = 0
+    @Published private(set) var stopNotice: String?
+    @Published private var turnProgress = ChatGPTTurnProgress()
+    private(set) var thinking: ChatGPTThinking? {
+        get { turnProgress.thinking }
+        set { turnProgress.thinking = newValue }
+    }
+    @Published var failure: String? { didSet { if !writingTurnFailure { turnFailureRowID = nil } } }
+    /// 送出流程寫 failure 時記下那一回合的失敗列；其他任何寫入都會清掉記號（不比對文字）。
+    private var turnFailureRowID: String?
+    private var writingTurnFailure = false
+    private func showTurnFailure(_ text: String, rowID: String) {
+        writingTurnFailure = true; failure = text; writingTurnFailure = false
+        turnFailureRowID = rowID
+    }
+    /// 輸入框上方那一行：只有寫它的那一回合的失敗列還在畫面上時才不重複；其他操作的錯誤、或那一列已被換掉時照常顯示。
+    var composerFailure: String? {
+        ChatGPTFailureNotice.text(failure, rowID: turnFailureRowID, messages: messages)
+    }
     private var loadedOnce = false
     private var connectionWatch: AnyCancellable?
-    private var idleSleep: Task<Void, Never>?
+    private var foregroundWatch: AnyCancellable?
+    private var handsConnectionWatch: AnyCancellable?
+    private var visibilityLease: UUID?
+    private var requestID: String?
+    private var stopRequested = false
     /// 離開 ChatGPT Space 多久沒回來就讓 Pod 休眠（8 GB 機器上隱藏網頁約佔 150–300 MB）。
     static let idleSleepDelay: Duration = .seconds(15 * 60)
 
     private init() {
+        tap = .shared
+        voice = ChatGPTVoiceMode(tap: tap, holderNotice: "ChatGPT Space 的語音模式還開著")
+        tools = Self.cachedTools(in: .standard)
         selectedModelID = UserDefaults.standard.string(forKey: Self.modelKey)
         selectedEffortID = UserDefaults.standard.string(forKey: Self.effortKey)
         pageModelID = UserDefaults.standard.string(forKey: Self.pageModelKey)
         pageEffortID = UserDefaults.standard.string(forKey: Self.pageEffortKey)
-        connectionWatch = tap.$connection.removeDuplicates().sink { [weak self] connection in
-            guard connection == .ready else { return }
-            Task { @MainActor in await self?.refresh() }
-        }
+        observeDirectoryConnection()
+        observeForeground()
         selectionWatch = tap.$pageSelection.sink { [weak self] selection in
             guard let self, let selection else { return }
             self.pageModelID = selection.model
@@ -180,6 +309,116 @@ final class ChatGPTSpaceModel: ObservableObject {
             UserDefaults.standard.set(selection.model, forKey: Self.pageModelKey)
             UserDefaults.standard.set(selection.effort, forKey: Self.pageEffortKey)
         }
+        // W184 G3：語音在正在看的那則；結束後照舊重讀清單、換上那則（voiceFinished）。
+        voice.conversation = { [weak self] in self?.selectedID }
+        voice.finished = { [weak self] conversationID in self?.voiceFinished(conversationID: conversationID) }
+        voiceForward = voice.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        // W184 G3b 第二輪（審查 #5）：私訊框建的新對話（或清單裡還沒有的那則）送完了，清單重讀第一頁，抽屜才找得到它。
+        conversationUpdateWatch = tap.$conversationUpdate.compactMap { $0 }.sink { [weak self] update in
+            guard let self, !self.conversations.contains(where: { $0.id == update.conversationID }) else { return }
+            Task { @MainActor in await self.reloadConversationList() }
+        }
+        // 等本單例初始化完成才取得配對流程；testTap init 不訂閱正式流程，也不碰 shared Pod。
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.observeHandsConnection(HandsConnectFlow.shared.$phase.eraseToAnyPublisher())
+        }
+    }
+
+#if DEBUG
+    /// 不接 shared Pod、不讀寫偏好、不訂閱背景刷新，僅供隔離測試。
+    init(testTap: ChatGPTTap) {
+        tap = testTap
+        voice = ChatGPTVoiceMode(tap: testTap, holderNotice: "fixture")
+        observeDirectoryConnection(skipInitial: true)
+        observeForeground()
+    }
+
+#endif
+
+    private func observeForeground() {
+        foregroundWatch = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification).sink { [weak self] _ in
+            guard let self, self.visible else { return }
+            self.retryProjects()
+        }
+    }
+
+    /// hello 在 ready 時也可能是網頁重開；每次重新就緒都重讀已展開的專案。
+    private func observeDirectoryConnection(skipInitial: Bool = false) {
+        let states = tap.$connection.dropFirst(skipInitial ? 1 : 0)
+        connectionWatch = states.sink { [weak self] connection in
+            guard let self else { return }
+            self.directoryGeneration += 1
+            self.toolCatalog.connectionChanged(ready: connection == .ready, renewed: true)
+            guard connection == .ready else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.refresh()
+                if !self.search.isEmpty { self.scheduleSearch() }
+            }
+        }
+    }
+
+    /// 清單讀取持有背景租約，休眠時沿用 W195 喚醒與 60 秒期限。
+    private func readyForDirectory() async throws {
+        if case .failed = tap.connection { tap.start() }
+        try await tap.readyForSend()
+    }
+
+    private func directoryRead<T>(_ read: () async throws -> T) async throws -> T? {
+        let lease = tap.acquireLease(backgroundWork: true)
+        defer { tap.releaseLease(lease) }
+        try await readyForDirectory()
+        let generation = directoryGeneration
+        do {
+            let value = try await read()
+            try Task.checkCancellation()
+            return generation == directoryGeneration ? value : nil
+        } catch {
+            guard generation == directoryGeneration, !Task.isCancelled else { return nil }
+            throw error
+        }
+    }
+
+    func reloadConversationList() async {
+        let ticket = UUID()
+        listTicket = ticket
+        isLoadingList = true
+        listFailure = nil
+        defer { if listTicket == ticket { isLoadingList = false } }
+        do {
+            guard let page = try await directoryRead({ try await tap.conversations(offset: 0, limit: max(50, conversations.count)) }),
+                  listTicket == ticket else { return }
+            if conversations != page.items { conversations = page.items }
+            if total != page.total { total = page.total }
+            loadedOnce = true
+        } catch {
+            if listTicket == ticket { listFailure = "讀不到對話清單" }
+        }
+    }
+
+    /// 上次從 ChatGPT 讀到的工具與 App（沒有＝空的）。
+    static func cachedTools(in defaults: UserDefaults) -> [TapTool] {
+        (defaults.array(forKey: toolsCacheKey) as? [[String: Any]] ?? []).compactMap { item -> TapTool? in
+            guard let id = item["id"] as? String, !id.isEmpty, let title = item["title"] as? String, !title.isEmpty else { return nil }
+            var tool = TapTool(id: id, title: title, detail: item["detail"] as? String ?? "", primary: item["primary"] as? Bool ?? true)
+            tool.rank = (item["rank"] as? NSNumber)?.doubleValue
+            tool.isApp = item["app"] as? Bool ?? false
+            tool.headApp = item["head"] as? Bool ?? false
+            tool.hidden = item["hidden"] as? Bool ?? false
+            tool.firstPartyApp = item["firstParty"] as? Bool ?? false
+            return tool
+        }
+    }
+
+    /// 記下這次從 ChatGPT 讀到的工具與 App（下次讀不到時用）。
+    static func cacheTools(_ tools: [TapTool], in defaults: UserDefaults) {
+        defaults.set(tools.map { tool -> [String: Any] in
+            var item: [String: Any] = ["id": tool.id, "title": tool.title, "detail": tool.detail, "primary": tool.primary, "app": tool.isApp,
+                                       "head": tool.headApp, "hidden": tool.hidden, "firstParty": tool.firstPartyApp]
+            if let rank = tool.rank { item["rank"] = rank }
+            return item
+        }, forKey: toolsCacheKey)
     }
 
     /// 記住的代號在目前的選單裡找得到才算數（選單結構改版後，舊的記錄會對不上，09-24 實機）。
@@ -203,11 +442,8 @@ final class ChatGPTSpaceModel: ObservableObject {
         var isMax: Bool
     }
     var pickerLabel: PickerLabel {
-        if let effort = currentEffort {
-            let level = ChatGPTLabels.effort(effort.level.isEmpty ? effort.title : effort.level)
-            return PickerLabel(version: effort.showsVersion && !effort.version.isEmpty ? effort.version : nil, level: level, isMax: effort.isMax)
-        }
-        return PickerLabel(version: nil, level: currentModel?.title ?? "ChatGPT", isMax: false)
+        // W184 G3：規則抽成 PickerLabel.resolve（私訊框的膠囊同一條）。
+        .resolve(effort: currentEffort, model: currentModel, fallback: "ChatGPT")
     }
     /// 使用者在 Space 選的跟 ChatGPT 的「上次使用」不一樣時，面板右上角才出現「↺ 重設」（跟網頁一樣）。
     var canResetSelection: Bool {
@@ -246,21 +482,31 @@ final class ChatGPTSpaceModel: ObservableObject {
     var filteredConversations: [TapConversation] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return conversations }
-        if let searchResults { return searchResults }
+        if searchResultQuery == query, let searchResults { return searchResults }
         return conversations.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
+
+    func retrySearch() { scheduleSearch() }
 
     private func scheduleSearch() {
         searchTask?.cancel()
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { searchResults = nil; return }
-        searchResults = nil
+        guard !query.isEmpty else { searchResults = nil; searchResultQuery = ""; searchLoadState = .idle; return }
+        if searchResultQuery != query { searchResults = nil }
+        searchLoadState = .loading
         searchTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
             guard let self, !Task.isCancelled else { return }
-            let found = try? await self.tap.search(query: query)
-            guard !Task.isCancelled, self.search.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
-            self.searchResults = found
+            do {
+                guard let found = try await self.directoryRead({ try await self.tap.search(query: query) }),
+                      self.search.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+                self.searchResults = found
+                self.searchResultQuery = query
+                self.searchLoadState = .loaded
+            } catch {
+                guard !Task.isCancelled, self.search.trimmingCharacters(in: .whitespacesAndNewlines) == query else { return }
+                self.searchLoadState = .failed("讀不到搜尋結果")
+            }
         }
     }
 
@@ -365,6 +611,8 @@ final class ChatGPTSpaceModel: ObservableObject {
             messages = []
         }
     }
+    /// W180 A2：生圖這類非同步回答（串流結束時 ChatGPT 還在產生、正本還沒存好）：在等的那則對話。
+    @Published private(set) var awaitingAsyncReplyID: String?
     var waitingForFirstWords: Bool {
         isSending && (messages.last.map { $0.role == .assistant && $0.text.isEmpty } ?? false)
     }
@@ -374,33 +622,34 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     func appear() {
         visible = true
-        idleSleep?.cancel()
-        idleSleep = nil
+        tap.setSpaceVisible(true)
+        if visibilityLease == nil { visibilityLease = tap.acquireLease() }
         tap.start()
-        if tap.connection == .ready, !loadedOnce { Task { await refresh() } }
+        if tap.connection == .ready { Task { await refresh() } }
     }
 
     func disappear() {
+        closeDots()
         visible = false
+        tap.setSpaceVisible(false)
+        // W184 G3 第三輪（修正核對 #1）：Space 主畫面不在了（切到 Coder 等其他模式、關 ChatGPT 分頁）＝結束 Space 的即時語音，
+        // 跟私訊框同一條規則（語音畫面和停止鈕跟著看不到，不讓麥克風在背景開著、也不讓私訊框被沒人看得到的語音卡住）。
+        voice.endVoice()
+        if let visibilityLease { tap.releaseLease(visibilityLease) }
+        visibilityLease = nil
         scheduleIdleSleep()
     }
 
     private func scheduleIdleSleep() {
-        idleSleep?.cancel()
-        idleSleep = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.idleSleepDelay)
-            guard let self, !Task.isCancelled, !self.isSending, !self.tap.pod.isHosted else { return }
-            self.tap.sleep()
-        }
+        tap.scheduleIdleSleep(after: Self.idleSleepDelay)
     }
 
     func refresh() async {
-        guard tap.connection == .ready else { return }
         // 清單以外的（釘選、專案、模型、工具、GPTs、首頁建議）跟清單同時一起要、各自到了就顯示
-        // （使用者 09-25「chatgpt的載入速度需要加快」：以前一個等一個，每個都是一次網路來回）。讀不到不算錯：少一塊而已。
-        Task { if let loaded = try? await tap.pinned() { pinned = loaded } }
-        Task { if let loaded = try? await tap.projects() { projects = loaded } }
-        for id in expandedProjects { Task { await loadProject(id) } }
+        // （使用者 09-25「chatgpt的載入速度需要加快」：以前一個等一個，每個都是一次網路來回）。專案失敗保留清單並提供重試（W203）；同值不重寫（W202）。
+        Task { if let loaded = try? await tap.pinned(), pinned != loaded { pinned = loaded } }
+        retryProjects()
+        for id in expandedProjects { retryProject(id) }
         if models.isEmpty {
             Task {
                 guard models.isEmpty, let loaded = try? await tap.models() else { return }
@@ -409,7 +658,7 @@ final class ChatGPTSpaceModel: ObservableObject {
                 defaultEffortID = loaded.currentEffortID
             }
         }
-        if tools.isEmpty { Task { if let loaded = try? await tap.tools() { tools = loaded } } }
+        refreshToolCatalog()
         if gpts.isEmpty { Task { if let loaded = try? await tap.gpts() { gpts = loaded } } }
         if suggestions.isEmpty {
             Task {
@@ -418,15 +667,23 @@ final class ChatGPTSpaceModel: ObservableObject {
                 suggestions = Array(loaded.suggestions.prefix(4))
             }
         }
-        isLoadingList = true
-        defer { isLoadingList = false }
-        do {
-            let page = try await tap.conversations(offset: 0, limit: 50)
-            conversations = page.items
-            total = page.total
-            loadedOnce = true
-        } catch {
-            failure = "讀不到對話清單：\(error.localizedDescription)"
+        await reloadConversationList()
+    }
+
+    func retryProjects() {
+        projectsLoad?.cancel()
+        if projects.isEmpty && projectsLoadState != .loaded { projectsLoadState = .loading }
+        projectsLoad = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if !Task.isCancelled { projectsLoad = nil } }
+            do {
+                guard let loaded = try await directoryRead({ try await tap.projects() }) else { return }
+                if projects != loaded { projects = loaded }   // W202：同值不重寫，避免多一輪重畫
+                projectsLoadState = .loaded
+            } catch {
+                guard !Task.isCancelled else { return }
+                if projects.isEmpty && projectsLoadState != .loaded { projectsLoadState = .failed("讀不到專案清單") }
+            }
         }
     }
 
@@ -440,31 +697,57 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     func loadMore() async {
         guard !isLoadingList, conversations.count < total else { return }
-        isLoadingList = true
-        defer { isLoadingList = false }
-        if let page = try? await tap.conversations(offset: conversations.count, limit: 50) {
+        let ticket = UUID(); listTicket = ticket
+        isLoadingList = true; listFailure = nil
+        defer { if listTicket == ticket { isLoadingList = false } }
+        do {
+            guard let page = try await directoryRead({ try await tap.conversations(offset: conversations.count, limit: 50) }),
+                  listTicket == ticket else { return }
             let known = Set(conversations.map(\.id))
             conversations += page.items.filter { !known.contains($0.id) }
             total = page.total
-        }
+        } catch { if listTicket == ticket { listFailure = "讀不到更多對話" } }
     }
 
     func toggleProject(_ id: String) {
         if expandedProjects.contains(id) {
             expandedProjects.remove(id)
+            projectLoads[id]?.cancel()
+            projectLoads[id] = nil
+            if projectLoadStates[id] == .loading { projectLoadStates[id] = .idle }
         } else {
             expandedProjects.insert(id)
-            Task { await loadProject(id) }
+            retryProject(id)
+        }
+    }
+
+    /// 設定狀態在 Task 建立之前，展開的第一個畫面就看得到讀取中。
+    func retryProject(_ id: String) {
+        projectLoads[id]?.cancel()
+        projectLoadStates[id] = .loading
+        projectLoads[id] = Task { @MainActor [weak self] in
+            await self?.loadProject(id)
         }
     }
 
     private func loadProject(_ id: String) async {
-        if let items = try? await tap.conversations(inProject: id) { projectConversations[id] = items }
+        defer { if !Task.isCancelled { projectLoads[id] = nil } }
+        do {
+            guard let items = try await directoryRead({ try await tap.conversations(inProject: id) }) else { return }
+            if projectConversations[id] != items { projectConversations[id] = items }
+            projectLoadStates[id] = .loaded
+        } catch {
+            guard !Task.isCancelled else { return }
+            projectLoadStates[id] = .failed("讀不到這個專案的對話")
+        }
     }
 
     /// 送出中也能切到別則看（Pro 可能想好幾分鐘，跟網頁一樣邊等邊看別的）；只是不能再送第二則。
     func select(_ id: String) {
+        closeDots()
         guard id != selectedID || page != nil else { return }
+        mappedConversationLoad?.cancel()
+        mappedConversationLoad = nil
         page = nil
         guard id != selectedID else { return }
         viewEpoch += 1
@@ -476,22 +759,49 @@ final class ChatGPTSpaceModel: ObservableObject {
         let cached = messageCache[id]
         messages = cached ?? []
         isLoadingMessages = cached == nil
-        Task {
-            defer { if self.selectedID == id { self.isLoadingMessages = false } }
-            if let loaded = await loadMessages(id, reuseInFlight: cached == nil) {
-                if selectedID == id, messages != loaded { messages = loaded }
-            } else if selectedID == id, cached == nil {
+        loadSelected(id, reuseInFlight: cached == nil)
+    }
+
+    /// 從 Coder 跳來：select 會先喚醒再讀；已選同一則就強制重讀。
+    func openMappedConversation(_ id: String) {
+        let alreadySelected = selectedID == id
+        select(id)
+        guard alreadySelected else { return }
+        isLoadingMessages = messages.isEmpty
+        loadSelected(id, reuseInFlight: false)
+    }
+
+    /// 讀選到的那則：休眠時先喚醒（不會先閃「讀不到」再重讀）；畫面已有內容就不報錯。
+    private func loadSelected(_ id: String, reuseInFlight: Bool) {
+        mappedConversationLoad?.cancel()
+        mappedConversationLoad = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if !Task.isCancelled, selectedID == id { isLoadingMessages = false } }
+            let lease = tap.acquireLease(backgroundWork: true)
+            defer { tap.releaseLease(lease) }
+            try? await readyForDirectory()
+            guard !Task.isCancelled, selectedID == id else { return }
+            let loaded = await loadMessages(id, reuseInFlight: reuseInFlight)
+            guard !Task.isCancelled, selectedID == id else { return }
+            if let loaded {
+                if messages != loaded { messages = loaded }
+                failure = nil
+            } else if messages.isEmpty {
                 failure = "讀不到這則對話"
             }
         }
     }
 
     /// 讀一則對話並放進快取；reuseInFlight＝同一則正在預載就等那一次（不重複要）。
+    private var conversationProjects: [String: String] = [:]
+
     private func loadMessages(_ id: String, reuseInFlight: Bool) async -> [TapMessage]? {
         if reuseInFlight, let running = messageLoads[id] { return await running.value }
         let task = Task<[TapMessage]?, Never> { @MainActor [weak self] in
             guard let self else { return nil }
-            guard let loaded = try? await self.tap.messages(conversationID: id) else { return nil }
+            guard let thread = try? await self.tap.thread(conversationID: id, branch: nil) else { return nil }
+            if let projectID = thread.projectID { self.conversationProjects[id] = projectID }
+            let loaded = self.includingFailure(id, in: thread.messages)
             self.remember(id, loaded)
             return loaded
         }
@@ -505,7 +815,18 @@ final class ChatGPTSpaceModel: ObservableObject {
         messageCache[id] = loaded
         messageCacheOrder.removeAll { $0 == id }
         messageCacheOrder.append(id)
-        while messageCacheOrder.count > Self.cacheLimit { messageCache[messageCacheOrder.removeFirst()] = nil }
+        while messageCacheOrder.count > Self.cacheLimit {
+            let expired = messageCacheOrder.removeFirst()
+            messageCache[expired] = nil
+            conversationFailures[expired] = nil
+        }
+    }
+
+    private func includingFailure(_ id: String, in loaded: [TapMessage]) -> [TapMessage] {
+        guard let failed = conversationFailures[id] else { return loaded }
+        var result = loaded.filter { $0.id != failed.id }
+        result.append(failed)
+        return result
     }
 
     /// 滑鼠停在側欄的對話上：先在背景讀好（跟網頁滑過連結就預載一樣），點下去幾乎立刻出來。
@@ -515,18 +836,23 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     func newChat(with gpt: TapFolder? = nil) {
+        closeDots()
+        mappedConversationLoad?.cancel()
+        mappedConversationLoad = nil
         viewEpoch += 1
         page = nil
         branchLeaf = nil
         selectedID = nil
         messages = []
+        thinking = nil
         failure = nil
         activeGPT = gpt
         temporaryChat = false
+        temporaryPersonalized = false
     }
 
     var canSend: Bool {
-        tap.connection == .ready && !isSending
+        (tap.connection == .ready || tap.connection == .sleeping || tap.connection == .starting) && !isSending
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
     }
 
@@ -537,10 +863,12 @@ final class ChatGPTSpaceModel: ObservableObject {
         draft = ""
         attachments = []
         failure = nil
+        let before = (messages: messages, branchLeaf: branchLeaf)
         messages.append(TapMessage(id: "local-user-\(UUID().uuidString)", role: .user, text: text, files: files.map(\.name)))
         // 畫面上膠囊顯示哪一檔就送哪一檔（沒特別選時是 ChatGPT 的「上次使用」），不讓網頁自己另外挑。
         let effort = effectiveEffortID
-        let tool = selectedTool?.id
+        let chosenTool = selectedTool
+        let tool = chosenTool?.id
         selectedTool = nil
         // 新版選單的「版本」不是模型代號，不能直接送；檔位代號本身就帶模型（代號|強度）。
         let model = selectedModelID.flatMap { $0.hasPrefix("version:") ? nil : $0 }
@@ -551,9 +879,39 @@ final class ChatGPTSpaceModel: ObservableObject {
         branchLeaf = nil
         consume(tap.send(text: text, conversationID: selectedID, model: model, effort: effort, attachments: files,
                          tool: tool, gizmoID: selectedID == nil ? activeGPT?.id : nil,
-                         temporary: temporary, parentID: parent),
+                         temporary: temporary, parentID: parent, temporaryPersonalized: temporary && temporaryPersonalized),
                 startedIn: selectedID, failurePrefix: "送出沒有完成", temporary: temporary,
-                project: selectedID == nil && activeGPT?.kind == .project ? activeGPT : nil)
+                project: selectedID == nil && activeGPT?.kind == .project ? activeGPT : nil,
+                draft: (text, files, chosenTool), restore: before)
+    }
+
+    /// W180 A2：等非同步回答的正本（最後一則是 ChatGPT 的）存好；看著那則對話就換上畫面，沒在看也放進快取。
+    private func waitForSavedReply(_ conversationID: String, timeout: TimeInterval) async -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            try? await Task.sleep(for: .seconds(4))
+            guard let saved = try? await tap.messages(conversationID: conversationID),
+                  saved.last?.role == .assistant else { continue }
+            remember(conversationID, saved)
+            if selectedID == conversationID, !isSending { messages = saved }
+            return true
+        }
+        return false
+    }
+
+    /// W184 G3b：＋ 小卡的「照片」：只列圖片、從「圖片」資料夾開始。
+    func pickPhotos() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.image]
+        panel.directoryURL = URL.picturesDirectory
+        panel.prompt = "附上"
+        panel.begin { [weak self] response in
+            guard response == .OK else { return }
+            let urls = panel.urls
+            Task { @MainActor in self?.addFiles(urls) }
+        }
     }
 
     func pickFiles() {
@@ -569,14 +927,54 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     func addFiles(_ urls: [URL]) {
+        Self.attachFiles(urls, into: attachmentSink)
+    }
+
+    /// W184 G3：收到的照片與檔案交給誰（ChatGPT Space 自己的附件、私訊框 ChatGPT 對象的附件）；收的規則在下面這幾個 static，兩邊同一套。
+    struct AttachmentSink: Sendable {
+        let add: @MainActor @Sendable (Data, String, String) -> Void
+        let fail: @MainActor @Sendable (String) -> Void
+    }
+
+    private var attachmentSink: AttachmentSink {
+        AttachmentSink(add: { [weak self] data, name, mime in self?.addData(data, name: name, mime: mime) },
+                       fail: { [weak self] message in self?.failure = message })
+    }
+
+    /// 選的檔案：讀進記憶體（讀不到就說）；交給 sink 照 ChatGPT 的規矩收。
+    /// W184 G3 第三輪（修正核對 #4）：跟檔案承諾同一個讀法——開檔不跟隨連結、只收一般檔案、先看大小（圖片 200 MB、其他 20 MB）再讀。
+    static func attachFiles(_ urls: [URL], into sink: AttachmentSink) {
         for url in urls {
-            guard let raw = try? Data(contentsOf: url) else { failure = "讀不到「\(url.lastPathComponent)」"; continue }
+            guard let raw = readReceivedFile(url, in: url.deletingLastPathComponent(), limit: readLimit(for: url.lastPathComponent)) else {
+                sink.fail(refusedMessage(url.lastPathComponent))
+                continue
+            }
             let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
-            let file = Self.webCompatible(raw, name: url.lastPathComponent, mime: mime)
-            let total = attachments.reduce(0) { $0 + $1.data.count } + file.data.count
-            guard total <= Self.attachmentLimit else { failure = "附件合計超過 20 MB，「\(url.lastPathComponent)」沒有加入"; continue }
-            attachments.append(TapAttachment(name: file.name, mime: file.mime, data: file.data))
+            sink.add(raw, url.lastPathComponent, mime)
         }
+    }
+
+    /// 這個檔名最多讀多少：圖片 200 MB（之後轉 JPEG），其他 20 MB。
+    nonisolated static func readLimit(for name: String) -> Int {
+        UTType(filenameExtension: (name as NSString).pathExtension)?.conforms(to: .image) == true ? imageReadLimit : attachmentLimit
+    }
+
+    /// 沒收的那一句。
+    nonisolated static func refusedMessage(_ name: String) -> String {
+        "「\(name)」沒有加入：不是一般檔案、讀不到，或太大（圖片 200 MB、其他 20 MB）"
+    }
+
+    /// 收一個附件的規矩（W184 G3：私訊框的 ChatGPT 對象同一套）：ChatGPT 看不懂的圖片先轉 JPEG；加上它合計超過 20 MB 就不收。
+    static func admit(_ data: Data, name: String, mime: String, currentBytes: Int) -> Result<TapAttachment, AdmitRefusal> {
+        let file = webCompatible(data, name: name, mime: mime)
+        let total = currentBytes + file.data.count
+        guard total <= attachmentLimit else { return .failure(AdmitRefusal(message: "附件合計超過 20 MB，「\(name)」沒有加入")) }
+        return .success(TapAttachment(name: file.name, mime: file.mime, data: file.data))
+    }
+
+    /// 沒收的原因（一句話，畫面直接顯示）。
+    struct AdmitRefusal: Error, Equatable {
+        let message: String
     }
 
     /// ChatGPT 看得懂的圖片格式；其他圖片（iPhone 照片的 HEIC、TIFF、BMP…）先轉成 JPEG 再交給網頁上傳
@@ -607,10 +1005,12 @@ final class ChatGPTSpaceModel: ObservableObject {
     func regenerate(effort: String? = nil) {
         guard !isSending, tap.connection == .ready, let conversationID = selectedID, branchLeaf == nil else { return }
         failure = nil
+        let before = (messages: messages, branchLeaf: branchLeaf)
         if let last = messages.lastIndex(where: { $0.role == .assistant }) { messages.remove(at: last) }
         let temporary = conversationID == temporaryConversationID
-        consume(tap.regenerate(conversationID: conversationID, model: nil, effort: effort, temporary: temporary),
-                startedIn: conversationID, failurePrefix: "重新產生沒有完成", temporary: temporary)
+        consume(tap.regenerate(conversationID: conversationID, model: nil, effort: effort, temporary: temporary,
+                               temporaryPersonalized: temporary && temporaryPersonalized),
+                startedIn: conversationID, failurePrefix: "重新產生沒有完成", temporary: temporary, restore: before)
     }
 
     /// 版本切換（網頁的 ‹ 1/2 ›）：換到同一個位置的上一個／下一個版本，顯示那一支。
@@ -636,6 +1036,7 @@ final class ChatGPTSpaceModel: ObservableObject {
         guard !isSending, tap.connection == .ready, !text.isEmpty, let conversationID = selectedID,
               let parent = message.parentID, let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
         failure = nil
+        let before = (messages: messages, branchLeaf: branchLeaf)
         messages.removeSubrange(index...)
         messages.append(TapMessage(id: "local-user-\(UUID().uuidString)", role: .user, text: text))
         branchLeaf = nil
@@ -643,8 +1044,10 @@ final class ChatGPTSpaceModel: ObservableObject {
         let effort = effectiveEffortID
         let model = selectedModelID.flatMap { $0.hasPrefix("version:") ? nil : $0 }
         consume(tap.send(text: text, conversationID: conversationID, model: model, effort: effort, attachments: [],
-                         tool: nil, gizmoID: nil, temporary: conversationID == temporaryConversationID, parentID: parent),
-                startedIn: conversationID, failurePrefix: "編輯沒有送出", temporary: conversationID == temporaryConversationID)
+                         tool: nil, gizmoID: nil, temporary: conversationID == temporaryConversationID, parentID: parent,
+                         temporaryPersonalized: conversationID == temporaryConversationID && temporaryPersonalized),
+                startedIn: conversationID, failurePrefix: "編輯沒有送出", temporary: conversationID == temporaryConversationID,
+                restore: before)
     }
 
     /// 重答時可選的檔位：目前這一版的檔位（Instant、Medium、High、Extra High、Pro，跟網頁的 Switch model 一樣）。
@@ -654,31 +1057,47 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     // MARK: 「＋」選單（照網頁版分層：前 4 個有名次的工具、最近用過的 App，其他收進「更多」）
 
-    var plusTools: [TapTool] {
+    var plusTools: [TapTool] { Self.plusTools(tools) }
+
+    var plusApps: [TapTool] { Self.plusApps(tools, recent: UserDefaults.standard.stringArray(forKey: Self.recentAppsKey) ?? []) }
+
+    var moreTools: [TapTool] { Self.moreTools(tools, recent: UserDefaults.standard.stringArray(forKey: Self.recentAppsKey) ?? []) }
+
+    func choose(_ tool: TapTool) {
+        selectedTool = tool
+        Self.rememberApp(tool, in: .standard)
+    }
+
+    // W184 G3：分層規則抽成 static（私訊框的「＋」同一套；最近用過的 App 記在同一個地方）。
+
+    /// 有名次的前 4 個工具（網頁版「＋」第一層：生圖、網路搜尋、深入研究、Sketch）。
+    static func plusTools(_ tools: [TapTool]) -> [TapTool] {
         Array(tools.filter { $0.rank != nil && !$0.hidden && !$0.isApp }
             .sorted { ($0.rank ?? 0) < ($1.rank ?? 0) }.prefix(4))
     }
 
-    var plusApps: [TapTool] {
+    /// 最近用過的 App（最多 3 個；沒有最近的就用網頁優先列的；App 自家出的不放第一層）。
+    static func plusApps(_ tools: [TapTool], recent: [String]) -> [TapTool] {
         let apps = tools.filter { $0.isApp && !$0.hidden && !$0.firstPartyApp }
-        let recent = (UserDefaults.standard.stringArray(forKey: Self.recentAppsKey) ?? []).compactMap { id in apps.first { $0.id == id } }
+        let recent = recent.compactMap { id in apps.first { $0.id == id } }
         let head = apps.filter(\.headApp)
         var seen = Set<String>()
         return Array((recent + head).filter { seen.insert($0.id).inserted }.prefix(3))
     }
 
-    var moreTools: [TapTool] {
-        let shown = Set((plusTools + plusApps).map(\.id))
+    /// 其他收進「更多」。
+    static func moreTools(_ tools: [TapTool], recent: [String]) -> [TapTool] {
+        let shown = Set((plusTools(tools) + plusApps(tools, recent: recent)).map(\.id))
         return tools.filter { !$0.hidden && !shown.contains($0.id) }
     }
 
-    func choose(_ tool: TapTool) {
-        selectedTool = tool
+    /// 選了一個 App：排到最近用過的最前面（最多記 8 個；只有代號）。
+    static func rememberApp(_ tool: TapTool, in defaults: UserDefaults) {
         guard tool.isApp else { return }
-        var recent = UserDefaults.standard.stringArray(forKey: Self.recentAppsKey) ?? []
+        var recent = defaults.stringArray(forKey: recentAppsKey) ?? []
         recent.removeAll { $0 == tool.id }
         recent.insert(tool.id, at: 0)
-        UserDefaults.standard.set(Array(recent.prefix(8)), forKey: Self.recentAppsKey)
+        defaults.set(Array(recent.prefix(8)), forKey: recentAppsKey)
     }
 
     /// 新對話頁的大標題：ChatGPT 網頁挑的那句（網頁是英文就換成對應的中文），沒有就用「我們該從哪裡開始？」。
@@ -703,6 +1122,22 @@ final class ChatGPTSpaceModel: ObservableObject {
         "What can I do for you?": "我能為你做什麼？",
     ]
 
+    /// 使用者重開選單／外掛頁時重讀；失敗保留上次清單，且不改使用者已選的工具。
+    func refreshToolCatalog(invalidate: Bool = false) {
+        toolCatalog.connectionChanged(ready: tap.connection == .ready)
+        toolCatalog.refresh(invalidate: invalidate)
+    }
+
+    private func observeHandsConnection(_ phases: AnyPublisher<HandsConnectionPhase, Never>) {
+        handsConnectionWatch = phases.removeDuplicates().sink { [weak self] phase in
+            guard phase == .connected else { return }
+            self?.refreshToolCatalog(invalidate: true)
+            guard let self else { return }
+            for id in self.expandedProjects { self.retryProject(id) }
+            Task { await self.reloadConversationList() }
+        }
+    }
+
     // MARK: 資料庫
 
     func openLibrary() { open(.library) }
@@ -710,6 +1145,7 @@ final class ChatGPTSpaceModel: ObservableObject {
     /// 打開側欄的頁面；每次打開都重讀（排程、外掛等可能在網頁版改過）。
     func open(_ target: ChatGPTPage) {
         guard !isSending else { return }
+        closeDots()
         page = target
         pageFailure = nil
         pageNotice = nil
@@ -724,6 +1160,8 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     func loadPage(_ target: ChatGPTPage) async {
+        // 即使外掛頁本身讀取失敗，工具目錄仍可獨立刷新；OAuth 完成回來整理也走這裡。
+        if target == .plugins { refreshToolCatalog(invalidate: true) }
         pageLoading = true
         defer { pageLoading = false }
         do {
@@ -805,7 +1243,6 @@ final class ChatGPTSpaceModel: ObservableObject {
                     pageNotice = "「\(plugin.name)」要先授權：已在瀏覽器打開，完成後回來重新整理這頁"
                 }
                 await loadPage(.plugins)
-                tools = (try? await tap.tools()) ?? tools
             } catch {
                 pageFailure = "外掛沒有完成：\(error.localizedDescription)"
             }
@@ -1070,60 +1507,18 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     func startVoice() {
         guard !voiceActive, !isSending, tap.connection == .ready else { return }
-        voiceActive = true
-        voiceLive = false
-        voiceStatus = "連線中…（第一次會詢問麥克風權限）"
-        let startedIn = selectedID
-        voiceSession += 1
-        let session = voiceSession
-        Task {
-            do {
-                let state = try await tap.voice(start: startedIn)
-                // 連線中就按了結束：網頁那邊可能才剛開始，再送一次結束（不讓麥克風在背景開著；09-25 實機）。
-                guard session == voiceSession, voiceActive else {
-                    // 已經開了新的語音就不要去關它（審查 #12）；沒有才補送結束。
-                    if !voiceActive { try? await tap.voiceStop() }
-                    return
-                }
-                voiceLive = state.live
-                voiceStatus = state.live ? "正在聆聽，直接說話" : "還沒開始：請確認麥克風權限"
-                watchVoice(startedIn: startedIn)
-            } catch {
-                guard session == voiceSession else { return }
-                voiceStatus = "語音模式沒有開始：\(error.localizedDescription)"
-            }
-        }
-    }
-
-    private func watchVoice(startedIn: String?) {
-        voiceWatch?.cancel()
-        voiceWatch = Task { @MainActor [weak self] in
-            var wasLive = false
-            while let self, self.voiceActive, !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                guard let state = try? await self.tap.voiceState() else { continue }
-                self.voiceLive = state.live
-                if state.live { wasLive = true; self.voiceStatus = "正在聆聽，直接說話" }
-                if wasLive && !state.live { self.finishVoice(conversationID: state.conversationID ?? startedIn); return }
-            }
-        }
+        voice.startVoice()
     }
 
     func stopVoice() {
-        guard voiceActive else { return }
-        voiceSession += 1
-        let startedIn = selectedID
-        Task {
-            try? await tap.voiceStop()
-            let state = try? await tap.voiceState()
-            finishVoice(conversationID: state?.conversationID ?? startedIn)
-        }
+        voice.stopVoice()
     }
 
-    private func finishVoice(conversationID: String?) {
-        voiceWatch?.cancel()
-        voiceActive = false
-        voiceLive = false
+    /// 語音結束了（ChatGPTVoiceMode 回報）：重讀清單；語音在正在看的那則就換上存好的內容，不在就切過去。
+    /// W184 G3：網頁沒確認結束、關掉了語音那一頁時說一聲（麥克風停了）。
+    private func voiceFinished(conversationID: String?) {
+        if voice.voiceStatus.hasPrefix("語音沒開起來") { failure = voice.voiceStatus; return }
+        if voice.lastEnd == .forced { failure = "語音那一頁沒有回應，已經關掉那一頁（麥克風停了）；等一下就能再用" }
         Task {
             await refresh()
             guard let conversationID else { return }
@@ -1139,12 +1534,24 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     /// 貼上或拖到輸入框：Finder 的檔案、圖片資料、「照片」App 的檔案（檔案承諾）都收（09-25 使用者「照片抓不進去」）。
     func attach(from pasteboard: NSPasteboard) -> Bool {
+        Self.attach(from: pasteboard, into: attachmentSink)
+    }
+
+    /// 拖到對話區（不在輸入框上）：檔案網址或圖片。
+    func attach(providers: [NSItemProvider]) -> Bool {
+        Self.attach(providers: providers, into: attachmentSink)
+    }
+
+    // W184 G3：收照片與檔案的規則抽成 static（私訊框的 ChatGPT 對象同一套，交給它自己的 sink）。
+
+    /// 貼上或拖到輸入框：Finder 的檔案、圖片資料、「照片」App 的檔案（檔案承諾）都收。
+    static func attach(from pasteboard: NSPasteboard, into sink: AttachmentSink) -> Bool {
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            addFiles(urls)
+            Self.attachFiles(urls, into: sink)
             return true
         }
         if let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !receivers.isEmpty {
-            receivePromises(receivers)
+            Self.receivePromises(receivers, into: sink)
             return true
         }
         // 剪貼簿裡有原始的 PNG／JPEG／HEIC 就直接用原檔（不重新編碼、畫質不變；HEIC 之後會轉 JPEG）；其他格式才經 NSImage 轉 PNG。
@@ -1152,45 +1559,56 @@ final class ChatGPTSpaceModel: ObservableObject {
                                                ("public.heic", "貼上的照片.heic", "image/heic")]
         for (type, name, mime) in raw {
             if let data = pasteboard.data(forType: NSPasteboard.PasteboardType(type)), !data.isEmpty {
-                addData(data, name: name, mime: mime)
+                sink.add(data, name, mime)
                 return true
             }
         }
         if let image = NSImage(pasteboard: pasteboard), let png = Self.pngData(image) {
-            addData(png, name: "貼上的圖片.png", mime: "image/png")
+            sink.add(png, "貼上的圖片.png", "image/png")
             return true
         }
         return false
     }
 
     /// 拖到對話區（不在輸入框上）：檔案網址或圖片。
-    func attach(providers: [NSItemProvider]) -> Bool {
+    static func attach(providers: [NSItemProvider], into sink: AttachmentSink) -> Bool {
         var handled = false
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 handled = true
-                _ = provider.loadObject(ofClass: URL.self) { [weak self] url, _ in
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     guard let url else { return }
-                    Task { @MainActor in self?.addFiles([url]) }
+                    Task { @MainActor in Self.attachFiles([url], into: sink) }
                 }
             } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
                 handled = true
-                provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { [weak self] url, _ in
+                provider.loadFileRepresentation(forTypeIdentifier: UTType.image.identifier) { url, _ in
                     // 系統給的暫存檔只在這個回呼裡有效：當場讀進記憶體。
-                    guard let url, let data = try? Data(contentsOf: url) else { return }
-                    let name = url.lastPathComponent
-                    let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/png"
-                    Task { @MainActor in self?.addData(data, name: name, mime: mime) }
+                    guard let url else { return }
+                    Self.receiveProvidedFile(url, fallbackMime: "image/png", into: sink)
                 }
             }
         }
         return handled
     }
 
-    private func receivePromises(_ receivers: [NSFilePromiseReceiver]) {
+    /// W184 G3 第三輪（修正核對 #4）：拖到對話區、系統交來的檔案（loadFileRepresentation 的暫存檔）也走同一個安全讀法——
+    /// 不跟隨連結、只收一般檔、確認就在交來的那個資料夾裡、先看大小（圖片 200 MB、其他 20 MB）再讀；讀不了就說一句。
+    nonisolated static func receiveProvidedFile(_ url: URL, fallbackMime: String, into sink: AttachmentSink) {
+        let name = url.lastPathComponent
+        guard let data = readReceivedFile(url, in: url.deletingLastPathComponent(), limit: readLimit(for: name)) else {
+            let message = refusedMessage(name)
+            Task { @MainActor in sink.fail(message) }
+            return
+        }
+        let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? fallbackMime
+        Task { @MainActor in sink.add(data, name, mime) }
+    }
+
+    private static func receivePromises(_ receivers: [NSFilePromiseReceiver], into sink: AttachmentSink) {
         guard let directory = try? FileManager.default.url(for: .itemReplacementDirectory, in: .userDomainMask,
                                                             appropriateFor: FileManager.default.temporaryDirectory, create: true) else {
-            failure = "沒辦法接收拖進來的照片"
+            sink.fail("沒辦法接收拖進來的照片")
             return
         }
         let queue = OperationQueue()
@@ -1201,7 +1619,7 @@ final class ChatGPTSpaceModel: ObservableObject {
         // 保險：有照片一直沒回來也不能讓暫存留著（審查 #4）。
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { try? FileManager.default.removeItem(at: directory) }
         for receiver in receivers {
-            receiver.receivePromisedFiles(atDestination: directory, options: [:], operationQueue: queue) { [weak self] url, error in
+            receiver.receivePromisedFiles(atDestination: directory, options: [:], operationQueue: queue) { url, error in
                 lock.lock()
                 // 成功或失敗都算完成一張（以前只數成功的，有一張失敗就永遠等不到收尾、暫存也不刪；審查 #4）。
                 completed += 1
@@ -1212,22 +1630,67 @@ final class ChatGPTSpaceModel: ObservableObject {
                 lock.unlock()
                 // 讀進記憶體後就刪掉暫存（照片不留在磁碟上）。
                 guard done else { return }
-                if failedCount > 0 { Task { @MainActor in self?.failure = "有 \(failedCount) 張照片沒有收到" } }
-                let files = urls.compactMap { url -> (Data, String, String)? in
-                    guard let data = try? Data(contentsOf: url) else { return nil }
-                    return (data, url.lastPathComponent, UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
+                if failedCount > 0 { Task { @MainActor in sink.fail("有 \(failedCount) 張照片沒有收到") } }
+                // W184 G3（GPT-6 審查 3）：只收這次接收資料夾裡的一般檔案——符號連結、資料夾、裝置檔、資料夾外的路徑都不收，
+                // 開檔不跟隨連結、最多讀 20 MB（檔案承諾是別的 App 給的，不能讓它指到你的私人檔案）。
+                var files: [(Data, String, String)] = []
+                var refused = 0
+                for url in urls {
+                    guard let data = Self.readReceivedFile(url, in: directory, limit: Self.readLimit(for: url.lastPathComponent),
+                                                           singleLink: true) else { refused += 1; continue }
+                    files.append((data, url.lastPathComponent,
+                                  UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"))
                 }
                 try? FileManager.default.removeItem(at: directory)
-                Task { @MainActor in for file in files { self?.addData(file.0, name: file.1, mime: file.2) } }
+                let admitted = files
+                let rejected = refused
+                Task { @MainActor in
+                    for file in admitted { sink.add(file.0, file.1, file.2) }
+                    if rejected > 0 { sink.fail("有 \(rejected) 個拖進來的項目沒有加入：不是一般檔案，或太大（圖片 200 MB、其他 20 MB）") }
+                }
             }
         }
     }
 
+    /// W184 G3（GPT-6 審查 3）：讀一個檔案承諾交來的檔案——只讀接收資料夾「直接裡面」的一般檔案：
+    /// 所在資料夾（解開連結後）必須就是這次的接收資料夾；開檔不跟隨連結（O_NOFOLLOW，最後一層是連結就打不開）；
+    /// 開了之後再確認是一般檔案（不是資料夾、裝置、管線）；超過 limit 不讀。都不對就回 nil。
+    /// singleLink＝只收一個名字的檔案（檔案承諾：新寫進接收資料夾的檔案不會有別的硬連結；修正核對 #4(b)）。
+    nonisolated static func readReceivedFile(_ url: URL, in directory: URL, limit: Int, singleLink: Bool = false) -> Data? {
+        guard url.isFileURL else { return nil }
+        let name = url.lastPathComponent
+        let base = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let parent = url.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL.path
+        guard parent == base, !name.isEmpty, name != "..", name != ".", !name.contains("/") else { return nil }
+        let path = base + "/" + name
+        // POSIX 的 open／close／read 寫全名：ChatGPTSpaceModel 自己有 open(_:)（開側欄頁面），不寫全名會找到它。
+        let fd = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { Darwin.close(fd) }
+        var info = Darwin.stat()
+        guard Darwin.fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0, Int(info.st_size) <= limit,
+              !singleLink || info.st_nlink == 1 else { return nil }
+        var data = Data(count: Int(info.st_size))
+        var total = 0
+        let ok = data.withUnsafeMutableBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress else { return info.st_size == 0 }
+            while total < buffer.count {
+                let n = Darwin.read(fd, base + total, buffer.count - total)
+                if n < 0 { return false }
+                if n == 0 { break }
+                total += n
+            }
+            return true
+        }
+        guard ok else { return nil }
+        return data.prefix(total)
+    }
+
     func addData(_ data: Data, name: String, mime: String) {
-        let file = Self.webCompatible(data, name: name, mime: mime)
-        let total = attachments.reduce(0) { $0 + $1.data.count } + file.data.count
-        guard total <= Self.attachmentLimit else { failure = "附件合計超過 20 MB，「\(name)」沒有加入"; return }
-        attachments.append(TapAttachment(name: file.name, mime: file.mime, data: file.data))
+        switch Self.admit(data, name: name, mime: mime, currentBytes: attachments.reduce(0) { $0 + $1.data.count }) {
+        case .success(let file): attachments.append(file)
+        case .failure(let refusal): failure = refusal.message
+        }
     }
 
     static func pngData(_ image: NSImage) -> Data? {
@@ -1261,21 +1724,27 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     private func loadLibraryPage() async {
-        guard tap.connection == .ready else { libraryFailure = ChatGPTSpaceSidebarList.statusText(tap.connection); return }
         let tab = libraryTab
         let query = libraryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let cursor = libraryCursor
         libraryLoading = true
         defer { libraryLoading = false }
+        var reading = false
         do {
-            let page = try await tap.library(tab: tab, query: query, cursor: cursor)
-            guard !Task.isCancelled, tab == libraryTab else { return }
+            guard let page = try await directoryRead({
+                reading = true
+                return try await tap.library(tab: tab, query: query, cursor: cursor)
+            }) else { return }
+            guard tab == libraryTab else { return }
             let known = Set(libraryItems.map(\.id))
             libraryItems += page.items.filter { !known.contains($0.id) }
             libraryCursor = page.cursor
         } catch {
             guard !Task.isCancelled else { return }
-            libraryFailure = "讀不到資料庫：\(error.localizedDescription)"
+            if reading { libraryFailure = "讀不到資料庫：\(error.localizedDescription)"; return }
+            let status = ChatGPTSpaceSidebarList.statusText(tap.connection)
+            libraryFailure = status.isEmpty ? "ChatGPT 還沒準備好，稍後再試" : status
+            return
         }
     }
 
@@ -1389,41 +1858,173 @@ final class ChatGPTSpaceModel: ObservableObject {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// restore＝呼叫端改畫面之前的樣子（還在排隊就取消、又讀不到正本時換回去）。
+    /// draft＝這一輪送出時從輸入框拿走的（W184 G3 第三輪：排在語音後面太久、沒送出就放回去）。
     private func consume(_ stream: AsyncStream<TapStreamEvent>, startedIn: String?, failurePrefix: String, temporary: Bool = false,
-                         project: TapFolder? = nil) {
+                         project: TapFolder? = nil, draft returnable: (text: String, files: [TapAttachment], tool: TapTool?)? = nil,
+                         restore: (messages: [TapMessage], branchLeaf: String?)) {
         let startedAt = Date()
         let epoch = viewEpoch
+        let startedGPT = activeGPT ?? projects.first { folder in
+            projectConversations[folder.id]?.contains(where: { $0.id == startedIn }) == true
+        } ?? startedIn.flatMap { conversationProjects[$0] }.map { TapFolder(id: $0, title: "專案", kind: .project) }
+        let startedPersonalized = temporary && temporaryPersonalized
         isSending = true
+        turnProgress = ChatGPTTurnProgress(thinking: ChatGPTThinking())
+        requestID = nil
+        stopRequested = false
+        stopNotice = nil
         let placeholderID = "local-assistant-\(UUID().uuidString)"
         messages.append(TapMessage(id: placeholderID, role: .assistant, text: ""))
+        let initialMessages = messages
         Task {
+            // Keep this round independent of whichever conversation is on screen.
+            var turnMessages = initialMessages
             var conversationID = startedIn
             // 這一輪自己的結果（不從目前畫面推算：送出中可能切到別則；審查 #11）。
             var receivedText = false
+            // 這一輪有沒有真的交給網頁（還在排隊就被停掉的沒有）。
+            var dispatched = false
             var turnFailure: String?
+            var thoughtSeconds: Int?
+            // W184 G3 第三輪：排在語音後面太久、TAP 沒送出就交回來（放回輸入框）。
+            var returnedToDraft = false
+            var failureNotified = false
+            @MainActor func presentFailure(_ issue: ChatGPTTurnFailure) {
+                if let index = turnMessages.firstIndex(where: { $0.id == placeholderID }) { turnMessages[index].turnFailure = issue }
+                if let conversationID, let row = turnMessages.first(where: { $0.id == placeholderID }) {
+                    conversationFailures[conversationID] = row
+                    remember(conversationID, turnMessages)
+                }
+                if viewingTurn() { messages = turnMessages; thinking = nil; failure = nil }
+                if !failureNotified && !(NSApp.isActive && visible && page == nil && viewingTurn()) {
+                    failureNotified = true
+                    let title = "ChatGPT 沒有完成：" + issue.displayText
+                    IslandNotice.shared.info(title: title, detail: "")
+                    #if DEBUG
+                    failureNoticeForSelfTest?(title)
+                    #endif
+                }
+            }
             // 還在看這一輪那則嗎（新對話：還沒換過畫面）。
             @MainActor func viewingTurn() -> Bool { conversationID != nil ? selectedID == conversationID : viewEpoch == epoch }
             for await event in stream {
                 switch event {
-                case .accepted, .finished:
+                case .request(let id):
+                    requestID = id
+                    if stopRequested { tap.stop(requestID: id) }
+                case .queued:
+                    break // 保持 isSending；排隊不是失敗，仍可停止自己的這則。
+                case .accepted:
+                    dispatched = true
+                case .finished:
+                    if turnFailure == nil, let conversationID { conversationFailures[conversationID] = nil }
                     break
                 case .conversation(let id):
                     conversationID = id
                     if temporary { temporaryConversationID = id }
                     if selectedID == nil, viewEpoch == epoch { selectedID = id }
+                case .progress:
+                    if viewingTurn(), thinking != nil {
+                        var updated = turnProgress
+                        updated.apply(event, startIfMissing: false)
+                        if updated != turnProgress { turnProgress = updated }
+                    }
                 case .text(_, let full):
+                    if !full.isEmpty, thinking != nil, let index = messages.firstIndex(where: { $0.id == placeholderID }) {
+                        turnProgress.apply(event)
+                        thoughtSeconds = turnProgress.thoughtSeconds
+                        messages[index].thoughtSeconds = thoughtSeconds
+                    }
                     if !full.isEmpty { receivedText = true }
+                    if let index = turnMessages.firstIndex(where: { $0.id == placeholderID }) { turnMessages[index].text = full }
                     if let index = messages.firstIndex(where: { $0.id == placeholderID }) { messages[index].text = full }
                 case .title(let id, let title):
                     if let index = conversations.firstIndex(where: { $0.id == id }) { conversations[index].title = title }
-                case .failed(let message):
+                case .notSubmitted(let message):
+                    let userStopped = stopRequested
+                    // .accepted 只代表 Tap 已交給 Pod；這個事件另證明網站尚未送出。
+                    dispatched = false
+                    returnedToDraft = returnable != nil
+                    stopRequested = true
                     turnFailure = "\(failurePrefix)：\(message)"
-                    if viewingTurn() { failure = turnFailure }
+                    if !userStopped {
+                        presentFailure(ChatGPTTurnFailure(message: message, reason: "not_submitted", draft: returnable?.text ?? "",
+                            projectID: startedGPT?.id, files: returnable?.files ?? []))
+                    }
+                    if viewingTurn() {
+                        if userStopped { stopNotice = message; failure = nil }
+                        else if let turnFailure { showTurnFailure(turnFailure, rowID: placeholderID) }
+                    }
+                case .failed(let message, let reason):
+                    if message == ChatGPTTap.queueTimeoutReason, !dispatched, returnable != nil { returnedToDraft = true }
+                    turnFailure = "\(failurePrefix)：\(message)"
+                    presentFailure(ChatGPTTurnFailure(message: message, reason: reason,
+                        draft: returnable?.text ?? restore.messages.last(where: { $0.role == .user })?.text ?? "",
+                        projectID: startedGPT?.id, files: returnable?.files ?? []))
                 }
             }
             isSending = false
+            thinking = nil
+            requestID = nil
+            // 沒送出、交回來的那一則：放回輸入框（輸入框已經有新的字或附件就不蓋掉），畫面照「排隊中就停掉」換回去。
+            if returnedToDraft, let returnable {
+                let canReturn = viewingTurn()
+                    && draft.isEmpty
+                    && attachments.isEmpty && selectedTool == nil
+                if canReturn {
+                    draft = returnable.text
+                    attachments = returnable.files
+                    selectedTool = returnable.tool
+                }
+                if viewingTurn(), let turnFailure {
+                    let note = turnFailure + (canReturn ? "；已放回輸入框" : "；未覆蓋目前草稿，原訊息已暫存")
+                    if stopNotice != nil { stopNotice = note; failure = nil } else { showTurnFailure(note, rowID: placeholderID) }
+                }
+                // 保存完整內容，包括附件資料；舊對話已換走也不能丟稿。
+                if !canReturn {
+                    unsentDrafts.append(UnsentDraft(text: returnable.text, files: returnable.files,
+                        tool: returnable.tool, conversationID: startedIn, gpt: startedGPT,
+                        temporary: temporary, temporaryPersonalized: startedPersonalized, branchLeaf: restore.branchLeaf))
+                    if viewingTurn() {
+                        messages = restore.messages
+                        branchLeaf = restore.branchLeaf
+                    } else {
+                        messages.removeAll { $0.id == placeholderID && $0.text.isEmpty }
+                    }
+                    return
+                }
+                stopRequested = true   // 沒交給網頁就交回來＝照「排隊中就停掉」把畫面換回去（下一輪開始時會歸零）
+            }
             let streamedSomething = receivedText
-            messages.removeAll { $0.id == placeholderID && $0.text.isEmpty }
+            if stopRequested, dispatched, viewingTurn(),
+               let index = messages.firstIndex(where: { $0.id == placeholderID }) {
+                messages[index].stopNotice = "已停止"
+            }
+            messages.removeAll { $0.id == placeholderID && $0.text.isEmpty && $0.stopNotice == nil && $0.turnFailure == nil }
+            if stopRequested, dispatched { return }
+            // 還在排隊就取消（沒交給網頁，ChatGPT 上什麼都沒變）：不報「沒有收到回覆」、不發「回覆好了」通知；
+            // 但送出前先改過的畫面（本機的提問泡泡、重新產生先拿掉的回答、編輯截掉的後文）要換回來：
+            // 讀得到正本就用正本（排隊時私訊框可能在同一則加了新的一輪）；原本在看舊版本、或讀不到，就換回送出前的樣子。
+            // 讀的期間又送出了新的一則就不動畫面（那一則收尾時自己會讀正本）。
+            if stopRequested, !dispatched {
+                if let conversationID {
+                    guard selectedID == conversationID else { return }
+                    var saved: [TapMessage]?
+                    if restore.branchLeaf == nil { saved = await loadMessages(conversationID, reuseInFlight: false) }
+                    guard selectedID == conversationID, !isSending else { return }
+                    if let saved {
+                        messages = saved
+                    } else {
+                        messages = restore.messages
+                        branchLeaf = restore.branchLeaf
+                    }
+                } else if selectedID == nil, viewEpoch == epoch {
+                    messages = restore.messages
+                }
+                return
+            }
+            if turnFailure != nil { return }
             // 專案裡的新對話：網頁沒換到 /c/<編號> 時，去專案清單找剛建立的那則（09-25 實機：送出成功但拿不到編號）。
             if conversationID == nil, let project,
                let items = try? await tap.conversations(inProject: project.id),
@@ -1443,7 +2044,8 @@ final class ChatGPTSpaceModel: ObservableObject {
             var reloaded = false
             if let conversationID {
                 for attempt in 0..<3 where selectedID == conversationID {
-                    if let saved = try? await tap.messages(conversationID: conversationID), saved.last?.role == .assistant {
+                    if var saved = try? await tap.messages(conversationID: conversationID), saved.last?.role == .assistant {
+                        if let thoughtSeconds, !saved.isEmpty { saved[saved.count - 1].thoughtSeconds = thoughtSeconds }
                         // 等待期間可能切到別則：寫回畫面前再確認一次（審查 #11）。
                         if selectedID == conversationID { messages = saved }
                         reloaded = true
@@ -1452,9 +2054,17 @@ final class ChatGPTSpaceModel: ObservableObject {
                     if attempt < 2 { try? await Task.sleep(for: .milliseconds(1500)) }
                 }
             }
+            // W180 A2（09-27 實機）：專案裡生圖＝非同步回答，串流結束時圖還在產生，上面三次讀不到；
+            // 背景再等最多 3 分鐘（每 4 秒讀一次正本），好了就換上。這段期間不算失敗、也不擋下一則。
+            if !streamedSomething, !reloaded, turnFailure == nil, let conversationID {
+                awaitingAsyncReplyID = conversationID
+                reloaded = await waitForSavedReply(conversationID, timeout: 180)
+                if awaitingAsyncReplyID == conversationID { awaitingAsyncReplyID = nil }
+            }
             if !streamedSomething, !reloaded, turnFailure == nil {
-                turnFailure = "沒有收到 ChatGPT 的回覆；可以到 設定 › Plugin › TAP 打開網頁版看"
-                if viewingTurn() { failure = turnFailure }
+                turnFailure = "沒有收到 ChatGPT 的回覆；可以到 設定 › Plugin › TAP 看連線狀態"
+                presentFailure(ChatGPTTurnFailure(message: "沒有收到 ChatGPT 的回覆", reason: nil,
+                    draft: returnable?.text ?? "", projectID: startedGPT?.id, files: returnable?.files ?? []))
             }
             // 回覆好了：你不在這則對話上（App 不在前面、不在 ChatGPT 分頁、或正在看別則）就用 Island 通知；只放對話名稱。
             if turnFailure == nil, streamedSomething || reloaded,
@@ -1467,7 +2077,29 @@ final class ChatGPTSpaceModel: ObservableObject {
         }
     }
 
-    func stop() { tap.stop() }
+    func recover(_ failure: ChatGPTTurnFailure) {
+        guard !isSending else { return }
+        let recovered = ChatGPTDraftRecovery.merge(current: draft, returning: failure.draft)
+        let files = failure.files + attachments
+        if failure.isTooLong {
+            let project = failure.projectID.flatMap { id in
+                (projects + pinned).first { $0.id == id } ?? TapFolder(id: id, title: "專案", kind: .project)
+            }
+            newChat(with: project)
+        }
+        draft = recovered
+        for file in files where !attachments.contains(where: { $0.name == file.name && $0.mime == file.mime && $0.data == file.data }) {
+            addData(file.data, name: file.name, mime: file.mime)
+        }
+    }
+
+    func stop() {
+        guard isSending else { return }
+        stopRequested = true
+        stopNotice = "已停止"
+        failure = nil
+        if let requestID { tap.stop(requestID: requestID) }
+    }
 
     struct ConversationGroup: Identifiable {
         let title: String
@@ -1476,9 +2108,10 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     /// 對話清單依日期分組（今天／昨天／前 7 天／前 30 天／更早）。
-    var groupedConversations: [ConversationGroup] {
-        let calendar = Calendar.current
-        let now = Date()
+    var groupedConversations: [ConversationGroup] { Self.grouped(filteredConversations) }
+
+    /// W184 G3b：依日期分組的規則抽成 static（私訊框的對話抽屜用同一份）。
+    static func grouped(_ items: [TapConversation], now: Date = Date(), calendar: Calendar = .current) -> [ConversationGroup] {
         var groups: [ConversationGroup] = []
         func append(_ title: String, _ item: TapConversation) {
             if let index = groups.firstIndex(where: { $0.title == title }) {
@@ -1487,7 +2120,7 @@ final class ChatGPTSpaceModel: ObservableObject {
                 groups.append(ConversationGroup(title: title, items: [item]))
             }
         }
-        for item in filteredConversations {
+        for item in items {
             let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: item.updatedAt), to: calendar.startOfDay(for: now)).day ?? 999
             switch days {
             case ..<1: append("今天", item)
@@ -1501,13 +2134,123 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 }
 
+// MARK: - W184 G3b：私訊框的對話抽屜讀 ChatGPT Space 那一份清單（專案、依日期的對話；動作是私訊框自己的）
+
+extension ChatGPTSpaceModel: ChatGPTConversationDirectory {
+    var directoryConversations: [TapConversation] { conversations }
+    var directoryProjects: [TapFolder] { projects }
+    var directoryProjectsLoadState: ChatGPTListLoadState { projectsLoadState }
+    func directoryRetryProjects() { retryProjects() }
+    var directoryPinned: [TapFolder] { pinned }
+    var directorySuggestions: [TapSuggestion] { suggestions }
+    func directoryOpen(_ page: ChatGPTPage) { open(page) }
+    func directoryOpenSettings() { openTapSettings() }
+    var directoryExpandedProjects: Set<String> { expandedProjects }
+    func directoryConversations(inProject id: String) -> [TapConversation]? { projectConversations[id] }
+    func directoryToggleProject(_ id: String) { toggleProject(id) }
+    func directoryProjectLoadState(_ id: String) -> ChatGPTListLoadState { projectLoadStates[id] ?? .idle }
+    func directoryRetryProject(_ id: String) { retryProject(id) }
+    var directoryListLoadState: ChatGPTListLoadState {
+        if isLoadingList { return .loading }
+        if let listFailure { return .failed(listFailure) }
+        return loadedOnce ? .loaded : .idle
+    }
+    func directoryRetryList() { Task { await reloadConversationList() } }
+    /// 抽屜打開時：還沒讀過清單就讀一次（連上了才讀；Space 沒打開過也拿得到）。
+    func directoryPrepare() {
+        retryProjects()
+        if !loadedOnce { Task { await refresh() } }
+    }
+    /// W184 G3b 第二輪（審查 #5）：還有沒載入的舊對話；載入下一頁（同側欄）；搜尋問 ChatGPT 伺服器（查不了＝nil）。
+    var directoryHasMore: Bool { conversations.count < total }
+    func directoryLoadMore() async { await loadMore() }
+    func directorySearch(_ query: String) async -> [TapConversation]? {
+        do { return try await directoryRead { try await tap.search(query: query) } }
+        catch { return nil }
+    }
+}
+
+enum ChatGPTListLoadState: Equatable {
+    case idle, loading, loaded
+    case failed(String)
+}
+
+/// Space 與私訊框抽屜共用一行狀態；讀取中仍保留先前的對話。
+struct ChatGPTListStatusRow: View {
+    let state: ChatGPTListLoadState
+    let empty: Bool
+    let emptyText: String
+    let identifier: String
+    let retry: () -> Void
+    var body: some View {
+        Group {
+            switch state {
+            case .idle:
+                EmptyView()
+            case .loading:
+                Text("讀取中").foregroundStyle(.secondary)
+            case .failed(let text):
+                HStack(spacing: 6) {
+                    Text(text).foregroundStyle(.secondary)
+                    Button("重試", action: retry).buttonStyle(.plain)
+                        .padding(.horizontal, 8).padding(.vertical, 4).chatGlassChip(readable: true)
+                }
+            case .loaded:
+                if empty { Text(emptyText).foregroundStyle(.secondary) }
+            }
+        }
+        .font(.system(size: 11.5))
+        .padding(.vertical, 4)
+        .accessibilityIdentifier(identifier + ".status")
+    }
+}
+
+extension ChatGPTSpaceModel {
+    func openDots() {
+        guard !dotsPresented else { return }
+        // Dots 的真網頁可見性由 presentsPage 宿主決定；返回原生對話後收回 hidden。
+        // 送出、停止與返回載入仍由原本的工作租約喚醒，不靠看不到的宿主維持可見。
+        tap.setSpaceVisible(false)
+        // 原生對話、草稿、分支與頁面都留在原位；返回直接顯示原畫面。
+        var target = URLComponents(url: ChatGPTTap.homeURL, resolvingAgainstBaseURL: false)!
+        if let selectedID { target.path = "/c/" + selectedID }
+        let returnURL = target.url ?? ChatGPTTap.homeURL
+        dotsTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await tap.openDots(returnURL: returnURL)
+        }
+    }
+
+    func closeDots() {
+        guard dotsPresented else { return }
+        dotsTask?.cancel()
+        dotsTask = nil
+        tap.closeDots()
+    }
+
+    func openDotsInBrowser() {
+#if DEBUG
+        if let dotsBrowserOpenForSelfTest { dotsBrowserOpenForSelfTest(ChatGPTDotsState.url); return }
+#endif
+        NSWorkspace.shared.open(ChatGPTDotsState.url)
+    }
+}
+
 // MARK: - 側欄：釘選、專案、對話
 
 struct ChatGPTSpaceSidebarList: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject var tap = ChatGPTTap.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var tap: ChatGPTTap
+
+    init(model: ChatGPTSpaceModel) {
+        _model = WorkspaceObservedObject(wrappedValue: model)
+        _tap = WorkspaceObservedObject(wrappedValue: model.tap)
+    }
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("ChatGPTSpaceSidebarList.body")
+        #endif
         VStack(alignment: .leading, spacing: 10) {
             Button { model.newChat() } label: {
                 Label("新對話", systemImage: "square.and.pencil")
@@ -1523,10 +2266,9 @@ struct ChatGPTSpaceSidebarList: View {
             .accessibilityIdentifier("chatgpt.newChat")
 
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
-                TextField("搜尋對話", text: $model.search)
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(ChatGlassChipModifier.chipForeground)
+                ChatChipTextField(title: "搜尋對話", text: $model.search)
                     .font(ChatTypography.systemUI(12, weight: .regular))
-                    .textFieldStyle(.plain)
             }
             .padding(.horizontal, 8)
             .frame(height: 28)
@@ -1535,13 +2277,14 @@ struct ChatGPTSpaceSidebarList: View {
 
             // 跟網頁版側欄一樣：圖庫、排程、外掛、網站（使用者 09-25「2全要」）。
             VStack(spacing: 0) {
+                ChatGPTDotsSidebarRow(model: model)
                 ForEach(ChatGPTPage.sidebar) { page in ChatGPTSidebarNavRow(model: model, page: page) }
             }
             .padding(.horizontal, 12)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    if tap.connection != .ready {
+                    if !Self.statusText(tap.connection).isEmpty {
                         Text(Self.statusText(tap.connection))
                             .font(.system(size: 12)).foregroundStyle(.secondary)
                             .padding(.horizontal, 10).padding(.top, 6)
@@ -1551,14 +2294,28 @@ struct ChatGPTSpaceSidebarList: View {
                             sectionHeader("釘選")
                             ForEach(model.pinned) { folder in folderRows(folder, idPrefix: "pin") }
                         }
-                        if !model.projects.isEmpty {
-                            sectionHeader("專案")
-                            ForEach(model.projects) { folder in folderRows(folder, idPrefix: "project") }
+                        sectionHeader("專案")
+                        Button { model.beginProjectCreation() } label: {
+                            Label("新增專案", systemImage: "folder.badge.plus")
+                                .font(ChatTypography.systemUI(13, weight: .regular))
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).frame(height: 30)
                         }
+                        .buttonStyle(.plain).disabled(model.creatingProject)
+                        .accessibilityIdentifier("chatgpt.project.new")
+                        ChatGPTListStatusRow(state: model.projectsLoadState, empty: model.projects.isEmpty,
+                                             emptyText: "還沒有專案", identifier: "chatgpt.projects") { model.retryProjects() }
+                        ForEach(model.projects) { folder in folderRows(folder, idPrefix: "project") }
                         if !model.gpts.isEmpty {
                             sectionHeader("GPTs")
                             ForEach(model.gpts) { folder in folderRows(folder, idPrefix: "gpt").id("gpt-\(folder.id)") }
                         }
+                    }
+                    if model.search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ChatGPTListStatusRow(state: model.directoryListLoadState, empty: model.conversations.isEmpty,
+                                             emptyText: "還沒有對話", identifier: "chatgpt.list") { model.directoryRetryList() }
+                    } else {
+                        ChatGPTListStatusRow(state: model.searchLoadState, empty: model.filteredConversations.isEmpty,
+                                             emptyText: "找不到符合的對話", identifier: "chatgpt.search") { model.retrySearch() }
                     }
                     ForEach(model.groupedConversations) { group in
                         sectionHeader(group.title)
@@ -1643,11 +2400,9 @@ struct ChatGPTSpaceSidebarList: View {
                 .accessibilityLabel("在「\(folder.title)」開新對話")
                 .id("\(idPrefix)-\(folder.id)-new")
                 let items = model.projectConversations[folder.id] ?? []
-                if items.isEmpty {
-                    Text("讀取中或還沒有對話")
-                        .font(.system(size: 11.5)).foregroundStyle(.tertiary)
-                        .padding(.leading, 34).frame(height: 24)
-                }
+                ChatGPTListStatusRow(state: model.projectLoadStates[folder.id] ?? .idle, empty: items.isEmpty,
+                                     emptyText: "還沒有對話", identifier: "chatgpt.project." + folder.id) { model.retryProject(folder.id) }
+                    .padding(.leading, 34)
                 // 專案裡的對話也會出現在下方日期清單：給獨立識別碼，否則同一清單重複 id 會讓畫面錯亂（09-24 實機）。
                 ForEach(items) { item in
                     ChatGPTConversationRow(model: model, item: item)
@@ -1679,10 +2434,10 @@ struct ChatGPTSpaceSidebarList: View {
     static func statusText(_ connection: TapConnection) -> String {
         switch connection {
         case .off: "ChatGPT 已在 設定 › Plugin › TAP 停用"
-        case .starting: "正在連上 ChatGPT…"
+        case .starting: ""
         case .needsLogin: "還沒登入 ChatGPT"
         case .ready: ""
-        case .sleeping: "ChatGPT 休眠中，打開這一頁就會連上"
+        case .sleeping: ""
         case .failed(let message): message
         }
     }
@@ -1690,7 +2445,7 @@ struct ChatGPTSpaceSidebarList: View {
 
 /// 側欄的一則對話：外觀不變；滑過時右邊出現「⋯」（跟網頁版一樣），右鍵也有同一份選單。
 struct ChatGPTConversationRow: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let item: TapConversation
     var icon: String? = nil
     @State private var hovering = false
@@ -1750,7 +2505,7 @@ struct ChatGPTConversationRow: View {
 
 /// 對話裡的一張圖：第一次出現時才向 ChatGPT 取（只放記憶體），點一下放大。
 struct ChatGPTImageView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let image: TapImage
     let maxWidth: CGFloat
     /// 高度上限（使用者 09-25 #127「對話圖片太大張」：照網頁寬度，直式 2:3 的圖還是有 600 高）。
@@ -1813,7 +2568,7 @@ struct ChatGPTImageView: View {
 
 /// 自己的訊息：泡泡在右邊；滑過時下方出現拷貝、編輯（跟網頁版一樣）；有好幾個版本時顯示 ‹ 1/2 ›。
 struct ChatGPTUserMessageView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let message: TapMessage
     @State private var hovering = false
     @State private var editing = false
@@ -1932,7 +2687,7 @@ struct ChatGPTUserMessageView: View {
 
 /// 版本切換（網頁的 ‹ 1/2 ›）：重新產生或編輯之後，同一個位置有好幾個版本。
 struct ChatGPTVariantNav: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let message: TapMessage
     let variant: TapVariant
 
@@ -1964,7 +2719,7 @@ struct ChatGPTVariantNav: View {
 
 /// 回答引用的網頁（網頁版回答下方的 Sources）：點開列出來源，點一個用預設瀏覽器打開。
 struct ChatGPTSourcesButton: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let sources: [TapSource]
     @State private var showing = false
 
@@ -1973,7 +2728,7 @@ struct ChatGPTSourcesButton: View {
             HStack(spacing: 5) {
                 Image(systemName: "link").font(.system(size: 10.5)).accessibilityHidden(true)
                 Text("來源").font(.system(size: 12, weight: .medium))
-                Text("\(sources.count)").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("\(sources.count)").font(.system(size: 11)).foregroundStyle(ChatGlassChipModifier.chipForeground)
             }
             .padding(.horizontal, 10)
             .frame(height: 26)
@@ -2013,8 +2768,8 @@ struct ChatGPTSourcesButton: View {
 /// 資料庫（ChatGPT 網頁的 Library）：標題、搜尋、分頁（建議／圖片／全部）。
 /// 清單照網頁的「名稱｜最近活動」；圖片分頁用格狀（網頁的圖片分頁也只有格狀）。點圖片放大；PDF、文字檔在 App 裡預覽。
 struct ChatGPTLibraryView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject var tap = ChatGPTTap.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var tap = ChatGPTTap.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2022,8 +2777,8 @@ struct ChatGPTLibraryView: View {
                 .font(.system(size: 22, weight: .semibold))
                 .padding(.top, 18)
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(.secondary).accessibilityHidden(true)
-                TextField("搜尋圖庫", text: $model.libraryQuery)
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(ChatGlassChipModifier.chipForeground).accessibilityHidden(true)
+                ChatChipTextField(title: "搜尋圖庫", text: $model.libraryQuery)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
             }
@@ -2153,7 +2908,7 @@ struct ChatGPTLibraryView: View {
 
 /// 資料庫檔案的預覽（只在記憶體）：文字檔可選取、拷貝；PDF 用系統的 PDF 檢視；其他類型請到網頁版。
 struct ChatGPTLibraryPreviewView: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let preview: ChatGPTSpaceModel.LibraryPreview
 
     var body: some View {
@@ -2237,7 +2992,7 @@ struct ChatGPTPDFView: NSViewRepresentable {
 
 /// 資料庫的縮圖：圖片第一次出現時才取（只放記憶體）；其他檔案用類型圖示。size＝nil 時填滿格子（圖片分頁）。
 struct ChatGPTLibraryThumb: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let item: TapLibraryItem
     let size: CGFloat?
     @State private var image: NSImage?
@@ -2286,7 +3041,7 @@ struct ChatGPTLibraryThumb: View {
 
 /// 對話選項（側欄「⋯」、右鍵、標題列「⋯」共用）。
 struct ChatGPTConversationActions: View {
-    @ObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
     let item: TapConversation
 
     var body: some View {
@@ -2304,16 +3059,23 @@ struct ChatGPTConversationActions: View {
 /// 模型與思考強度在輸入框裡；左上角不放標題（使用者 09-25「新對話在左上角也很突兀」）。
 /// 視窗裡由 ChatPage 放在紅綠燈那一列的右上（使用者 09-25 #125）；小面板沒有那一列，放在對話上方。
 struct ChatGPTTopBarControls: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject var tap = ChatGPTTap.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    @WorkspaceObservedObject var tap = ChatGPTTap.shared
+    @State private var temporaryChoicePresented = false
 
     var body: some View {
         HStack(spacing: 6) {
+            // W183 R3：ChatGPT build的狀態小鈕（圖示＋狀態點、全文在 help；開著才出現；點了開 TAP › ChatGPT）。放在下面的 if 外面：登入畫面、圖庫頁也看得到。
+            ChatGPTHandsStatusButton { model.openTapSettings() }
             // 其他頁（圖庫、外掛…）與需要登入時不顯示。
             if model.page == nil, tap.connection != .needsLogin {
                 if model.selectedID == nil, model.activeGPT == nil {
                     // 臨時聊天：照網頁放在右上角、用網頁那顆虛線對話泡泡（使用者 09-25：原本的位置與圖標很突兀）。
-                    Button { model.temporaryChat.toggle() } label: {
+                    Button {
+                        model.temporaryChat.toggle()
+                        if !model.temporaryChat { model.temporaryPersonalized = false }
+                        temporaryChoicePresented = model.temporaryChat
+                    } label: {
                         ChatGPTTemporaryChatIcon(active: model.temporaryChat)
                             .frame(width: 20, height: 20)
                             .frame(width: 36, height: 36)
@@ -2321,9 +3083,19 @@ struct ChatGPTTopBarControls: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(ChatGPTHoverButtonStyle(cornerRadius: 18))
-                    .help(model.temporaryChat ? "關閉臨時聊天" : "開啟臨時聊天：不會出現在紀錄裡")
-                    .accessibilityLabel(model.temporaryChat ? "關閉臨時聊天" : "開啟臨時聊天")
+                    .help(ChatGPTTemporaryChatText.help(active: model.temporaryChat))
+                    .accessibilityLabel(ChatGPTTemporaryChatText.label(active: model.temporaryChat))
                     .accessibilityIdentifier("chatgpt.temporary")
+                    .popover(isPresented: $temporaryChoicePresented) {
+                        ChatGPTTemporaryPersonalizationChoice {
+                            guard !model.isSending, model.messages.isEmpty else { return }
+                            model.temporaryChat = true
+                            model.temporaryPersonalized = true
+                            temporaryChoicePresented = false
+                        } dismiss: {
+                            temporaryChoicePresented = false
+                        }
+                    }
                 }
                 // 臨時聊天不在紀錄裡：沒有分享、釘選、重新命名、封存、刪除（跟網頁版一樣）。
                 if let id = model.selectedID, id != model.temporaryConversationID {
@@ -2355,22 +3127,73 @@ struct ChatGPTTopBarControls: View {
                 }
             }
         }
+        .task { await ChatGPTHandsStatusButton.pollRemoteStatus() }   // W183 R3：副設備問主機的手腳狀態（掛在一定存在的列上；小鈕沒出現前也會問）
+    }
+}
+
+struct ChatGPTProjectCreationView: View {
+    @ObservedObject var model: ChatGPTSpaceModel
+    @FocusState private var nameFocused: Bool
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("建立專案").font(ChatTypography.systemUI(18, weight: .semibold))
+                Spacer()
+                Button { model.showsProjectCreation = false } label: {
+                    Image(systemName: "xmark").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain).chatGlassChip()
+                .accessibilityLabel("關閉").accessibilityIdentifier("chatgpt.project.cancel")
+            }
+            ChatChipTextField(title: "輸入專案名稱", text: $model.projectName)
+                .padding(10).chatGlassChip().focused($nameFocused)
+                .accessibilityIdentifier("chatgpt.project.name")
+                .onSubmit { model.createProject() }
+            if let failure = model.projectCreationFailure {
+                Text(failure).font(ChatTypography.systemUI(12, weight: .regular)).foregroundStyle(.secondary).lineLimit(1)
+                    .accessibilityIdentifier("chatgpt.project.error")
+            }
+            Button(model.creatingProject ? "建立中…" : "建立專案") { model.createProject() }
+                .buttonStyle(.plain).padding(.horizontal, 14).frame(height: 32).chatGlassChip(isSelected: true)
+                .disabled(!model.canCreateProject).accessibilityIdentifier("chatgpt.project.create")
+        }
+        .padding(24).frame(width: 380).background(Color(nsColor: .windowBackgroundColor))
+        .onAppear { nameFocused = true }
+        .onExitCommand { model.showsProjectCreation = false }
     }
 }
 
 struct ChatGPTSpaceMainPane: View {
-    @ObservedObject var model: ChatGPTSpaceModel
-    @ObservedObject var tap = ChatGPTTap.shared
+    @WorkspaceObservedObject var model: ChatGPTSpaceModel
+    var osModel: ChatPageModel? = nil
+    @WorkspaceObservedObject var tap: ChatGPTTap
+    let connectionEntry: HandsConnectEntry
+
+    init(model: ChatGPTSpaceModel, osModel: ChatPageModel? = nil, showsHeader: Bool = true, connectionEntry: HandsConnectEntry = .shared) {
+        _model = WorkspaceObservedObject(wrappedValue: model)
+        self.osModel = osModel
+        _tap = WorkspaceObservedObject(wrappedValue: model.tap)
+        self.showsHeader = showsHeader
+        self.connectionEntry = connectionEntry
+    }
     /// 視窗裡右上的鈕在紅綠燈那一列（ChatPage 畫）；只有小面板才在對話上方另放一列。
     var showsHeader = true
     @State private var composerHeight = TatwoChatTranscriptVisualMetrics.windowComposerTextMinimumHeight
     @State private var composerFocused = false
     @State private var dropTargeted = false
     @State private var showsModelPopover = false
-    @State private var pickerHover = false
+    /// W184 G3b：「＋」的快捷小視窗（ChatGPT 原版那種，不是系統選單）開著、換到「更多」那一頁。
+    @State private var showsPlusMenu = false
+    @State private var plusShowingMore = false
+    /// W184 G3b 第二輪（使用者：「快捷指令直接參照chatgpt那邊有什麼 這邊chatgpt space、duo就有什麼」）：「/」指令（私訊框同一份規則、
+    /// 同一個清單元件、同一份資料 model.tools）：鍵盤指著的那一列、Esc 收起時的草稿。
+    @State private var slashIndex = 0
+    @State private var slashDismissed: String?
     @State private var escapeMonitor: Any?
+    /// W184 G3：聽寫綁在 Space 的輸入框上（可取消；畫面消失就取消）。
+    @StateObject private var dictation = ChatGPTDictation()
 
-    /// Space 裡不放任何 ChatGPT 網頁（使用者 09-25「我要就像os原生」）：需要登入時顯示原生卡片，登入在 設定 › Plugin › TAP 做。
+    /// 對話仍用原生畫面；W197 的 Dots 第一版使用同一個 Pod 的網頁。
     private var needsLogin: Bool { tap.connection == .needsLogin }
 
     /// ChatGPT 的字級（桌面版內文約 15pt、行高約 1.5 倍）；Coder 的回答維持原本 13pt。
@@ -2380,22 +3203,29 @@ struct ChatGPTSpaceMainPane: View {
                                                      lineSpacing: bodyLineSpacing, paragraphScale: 1.8)
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("ChatGPTSpaceMainPane.body")
+        #endif
         GeometryReader { proxy in
             Group {
-                if needsLogin {
+                if model.dotsPresented {
+                    ChatGPTDotsPane(model: model)
+                } else if needsLogin {
                     loginCard
                 } else {
                     nativeContent
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
-            // Pod 的網頁永遠墊在畫面外（仍算看得見、不被節流），使用者看不到也點不到。
+            // 原生 Space 使用同一個 Pod；離開且沒有回合時另設 hidden，位移只負責不露出網頁。
             .background(alignment: .topLeading) {
-                TapPodHostView(pod: tap.pod)
-                    .frame(width: 1100, height: 800)
-                    .offset(x: -20_000)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                if !model.dotsPresented, tap.webPod != nil {
+                    TapPodHostView(pod: tap.pod, presentsPage: false)
+                        .frame(width: 1100, height: 800)
+                        .offset(x: -20_000)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .onAppear { model.appear() }
@@ -2406,6 +3236,9 @@ struct ChatGPTSpaceMainPane: View {
             if let image = model.zoomedImage {
                 ChatGPTImagePreview(model: model, image: image, inSheet: true)
             }
+        }
+        .sheet(isPresented: $model.showsProjectCreation) {
+            ChatGPTProjectCreationView(model: model)
         }
         .sheet(item: $model.libraryPreview) { preview in
             ChatGPTLibraryPreviewView(model: model, preview: preview)
@@ -2436,27 +3269,16 @@ struct ChatGPTSpaceMainPane: View {
         .accessibilityIdentifier("chatgpt.space")
     }
 
-    /// 需要登入：原生卡片；按「前往登入」打開 設定 › Plugin › TAP 並直接跳出登入（登完自動關、回到這裡）。
+    /// 未登入時只顯示主題色登入按鈕。
     private var loginCard: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "person.crop.circle.badge.questionmark")
-                .font(.system(size: 34, weight: .regular))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text("需要登入 ChatGPT").font(.system(size: 17, weight: .semibold))
-            Text("登入一次就好；登入只存在 ChatGPT 自己的獨立空間，不會碰到你其他瀏覽器的帳號。")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
-            Button { model.openTapSettings(login: true) } label: {
-                Text("前往登入").font(.system(size: 13, weight: .medium))
-                    .padding(.horizontal, 16).frame(height: 30)
-            }
-            .buttonStyle(.plain)
-            .chatGlassChip(isSelected: true)
-            .accessibilityIdentifier("chatgpt.login")
+        Button { model.openTapSettings(login: true) } label: {
+            Text("ChatGPT 登入").font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 20).frame(height: 40)
+                .background(LiquidGlassTokens.brandAccent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("chatgpt.login")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -2472,7 +3294,35 @@ struct ChatGPTSpaceMainPane: View {
                 }
             } else {
                 if showsHeader { header }
+                if let osModel {
+                    ChatGPTSessionMappingRow(pageModel: osModel, spaceModel: model, side: .chatGPT)
+                }
                 conversation
+                // W180 A2：錯誤放在輸入框上方、捲動區外面，不管捲到哪都看得到。
+                if let notice = tap.recoveryNotice ?? model.stopNotice {
+                    Text(notice).font(.system(size: 12)).foregroundStyle(.secondary)
+                        .frame(maxWidth: 760, alignment: .leading)
+                        .frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.bottom, 6)
+                        .accessibilityIdentifier("chatgpt.stopNotice")
+                }
+                if let failure = model.composerFailure {
+                    Text(failure)
+                        .font(.system(size: 12)).foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: 760, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 6)
+                        .accessibilityIdentifier("chatgpt.failure")
+                }
+                if !model.unsentDrafts.isEmpty {
+                    Button("取回未送出的草稿（\(model.unsentDrafts.count)）") { model.restoreUnsentDraft() }
+                        .disabled(!model.canRestoreUnsentDraft)
+                        .help("先處理目前輸入框的內容；取回只還原草稿，不會送出。關閉 App 前請取回。")
+                        .accessibilityIdentifier("chatgpt.restoreUnsentDraft")
+                }
+                // W199：只在需要使用者動手時顯示一行；健康與短暫核對不佔位。
+                HandsConnectEntryButton(entry: connectionEntry, identifier: "chatgpt.handsConnect.entry", insets: EdgeInsets(top: 0, leading: 0, bottom: 6, trailing: 0))
                 composer
             }
         }
@@ -2482,21 +3332,32 @@ struct ChatGPTSpaceMainPane: View {
             return model.attach(providers: providers)
         }
         .overlay {
-            if dropTargeted, model.page == nil {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(LiquidGlassTokens.brandAccent.opacity(0.6), style: StrokeStyle(lineWidth: 2, dash: [6, 5]))
-                    .background(LiquidGlassTokens.brandAccent.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay {
-                        Label("放開就加入照片或檔案", systemImage: "photo.on.rectangle.angled")
-                            .font(.system(size: 14, weight: .medium))
-                    }
-                    .padding(16)
-                    .allowsHitTesting(false)
-            }
+            // W184 G3：虛線框是共用元件（私訊框的 ChatGPT 那一欄同一個）；尺寸照舊。
+            if dropTargeted, model.page == nil { ChatGPTDropHighlight(metrics: .space) }
         }
         .overlayPreferenceValue(ChatGPTPickerAnchorKey.self) { anchor in effortCard(anchor) }
-        .onChange(of: showsModelPopover) { _, open in watchEscape(open) }
-        .onChange(of: model.page) { _, page in if page != nil { showsModelPopover = false } }
+        .overlayPreferenceValue(ChatGPTPopoverAnchorKey.self) { anchors in
+            ZStack {
+                plusCard(anchors[.plus])
+                slashCard(anchors[.slash])
+            }
+        }
+        .onChange(of: showsModelPopover) { _, open in watchEscape(open || showsPlusMenu || slashOpen) }
+        .onChange(of: showsPlusMenu) { _, open in
+            watchEscape(open || showsModelPopover || slashOpen)
+            if open { model.refreshToolCatalog() }
+        }
+        .onChange(of: slashOpen) { _, open in watchEscape(open || showsModelPopover || showsPlusMenu) }
+        // 即使舊目錄沒有匹配也要讀；僅在開始／重新開始指令輸入時刷新，不隨結果變動重入。
+        .onChange(of: slashQuery != nil, initial: true) { _, active in
+            if active { model.refreshToolCatalog() }
+        }
+        // 草稿改了：Esc 收起的那次作廢、鍵盤指著的那一列回到第一列。
+        .onChange(of: model.draft) { _, text in
+            if let dismissed = slashDismissed, dismissed != text { slashDismissed = nil }
+            slashIndex = 0
+        }
+        .onChange(of: model.page) { _, page in if page != nil { showsModelPopover = false; showsPlusMenu = false } }
         .onDisappear { watchEscape(false) }
         .overlay {
             if model.voiceActive { ChatGPTVoiceOverlay(model: model) }
@@ -2527,14 +3388,15 @@ struct ChatGPTSpaceMainPane: View {
                     ForEach(model.messages) { message in
                         messageRow(message).id(message.id)
                     }
-                    if model.waitingForFirstWords {
+                    if let waiting = model.awaitingAsyncReplyID, waiting == model.selectedID, !model.isSending {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
-                            Text("ChatGPT 思考中…").font(.system(size: 13)).foregroundStyle(.secondary)
+                            Text("ChatGPT 還在產生（例如圖片），好了會自動顯示").font(.system(size: 13)).foregroundStyle(.secondary)
                         }
+                        .accessibilityIdentifier("chatgpt.awaitingAsync")
                     }
-                    if let failure = model.failure {
-                        Text(failure).font(.system(size: 12)).foregroundStyle(.red)
+                    if model.waitingForFirstWords, let thinking = model.thinking {
+                        ChatGPTThinkingRow(thinking: thinking)
                     }
                     Color.clear.frame(height: 8).id("chatgpt.bottom")
                 }
@@ -2543,6 +3405,7 @@ struct ChatGPTSpaceMainPane: View {
                 .padding(.horizontal, 24)
                 .padding(.top, showsHeader ? 8 : 16)
             }
+            .id(model.viewEpoch)
             .onChange(of: model.messages.last?.text) { _, _ in
                 proxy.scrollTo("chatgpt.bottom", anchor: .bottom)
             }
@@ -2554,12 +3417,11 @@ struct ChatGPTSpaceMainPane: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Text(tap.connection == .ready ? (model.activeGPT?.title ?? (model.temporaryChat ? "臨時聊天" : model.headline))
-                 : ChatGPTSpaceSidebarList.statusText(tap.connection))
+            Text(model.activeGPT?.title ?? (model.temporaryChat ? "臨時聊天" : model.headline))
                 .font(.system(size: 22, weight: .semibold))
             if tap.connection == .ready, model.temporaryChat, model.activeGPT == nil {
-                // 跟網頁版臨時聊天的說明一樣。
-                Text("臨時聊天不會出現在紀錄裡，不會使用或更新 ChatGPT 的記憶，也不會用來訓練模型。為了安全，副本最多可能保留 30 天。")
+                // 跟網頁版臨時聊天的說明一樣（W184 G3c：字跟私訊框共用 ChatGPTTemporaryChatText）。
+                Text(model.temporaryPersonalized ? ChatGPTTemporaryChatText.personalizedNote : ChatGPTTemporaryChatText.note)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -2594,7 +3456,7 @@ struct ChatGPTSpaceMainPane: View {
                     .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 12).frame(height: 28).chatGlassChip()
             }
-            if tap.connection == .starting { ProgressView().controlSize(.small) }
+
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 120)
@@ -2606,8 +3468,11 @@ struct ChatGPTSpaceMainPane: View {
         case .user:
             ChatGPTUserMessageView(model: model, message: message)
         case .assistant:
-            if !message.text.isEmpty || !message.images.isEmpty {
+            if !message.text.isEmpty || !message.images.isEmpty || message.stopNotice != nil || message.turnFailure != nil {
                 VStack(alignment: .leading, spacing: 4) {
+                    if let note = ChatGPTThinking.doneText(message.thoughtSeconds) {
+                        Text(note).font(.system(size: 13)).foregroundStyle(.secondary)
+                    }
                     if !message.text.isEmpty {
                         ChatAssistantTranscriptBlockView(
                             document: TatwoAssistantTranscriptPresentation.document(markdown: message.text),
@@ -2618,7 +3483,12 @@ struct ChatGPTSpaceMainPane: View {
                     ForEach(message.images) { image in
                         ChatGPTImageView(model: model, image: image, maxWidth: 480, gallery: message.images.map(\.id))
                     }
-                    replyActions(message)
+                    if let failure = message.turnFailure {
+                        ChatGPTTurnFailureRow(failure: failure, draftInComposer: !failure.draft.isEmpty && model.draft.contains(failure.draft)) { model.recover(failure) }
+                    }
+                    if let note = message.stopNotice {
+                        Label(note, systemImage: "stop.circle").font(.caption).foregroundStyle(.secondary)
+                    } else if !message.text.isEmpty || !message.images.isEmpty { replyActions(message) }
                 }
             }
         }
@@ -2710,74 +3580,26 @@ struct ChatGPTSpaceMainPane: View {
     }
 
     /// 跟網頁版一樣的輸入框：左邊「＋」、中間輸入、右邊模型／推理強度選單與送出。
+    /// W184 G3：＋ 選單、工具小卡與附件縮圖、思考強度膠囊、語音輸入、語音模式／送出／停止都是共用元件（ChatGPTComposerKit.swift），
+    /// 私訊框對象是 ChatGPT 時用同一套（手機 token）；這裡照舊是 ChatGPT Space 的尺寸（.space）與排法（一排）。
     private var composer: some View {
-        VStack(spacing: 6) {
+        let files = model.attachments.map(\.composerItem)
+        return VStack(spacing: 6) {
           VStack(alignment: .leading, spacing: 8) {
             if !model.attachments.isEmpty || model.selectedTool != nil {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 8) {
-                        if let tool = model.selectedTool {
-                            HStack(spacing: 6) {
-                                Image(systemName: "wand.and.stars").font(.system(size: 11))
-                                    .foregroundStyle(LiquidGlassTokens.brandAccent).accessibilityHidden(true)
-                                Text(tool.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                                Button { model.selectedTool = nil } label: {
-                                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
-                                        .frame(width: 16, height: 16).contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("取消 \(tool.title)")
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(height: 28)
-                            .chatGlassChip(isSelected: true)
-                        }
-                        // 附件照 ChatGPT：圖片是方形縮圖、檔案是檔案卡（使用者 09-25「#121 實際應該像 #122」）。
-                        ForEach(model.attachments) { file in
-                            ChatGPTAttachmentTile(file: file) { model.removeAttachment(file.id) }
-                        }
-                    }
+                    // 附件照 ChatGPT：圖片是方形縮圖、檔案是檔案卡（使用者 09-25「#121 實際應該像 #122」）。
+                    ChatGPTComposerChips(tool: model.selectedTool, files: files, metrics: .space,
+                                         removeTool: { model.selectedTool = nil }, removeFile: { model.removeAttachment($0) })
                     .padding(.top, 8)
                     .padding(.trailing, 8)
                 }
-                .frame(height: attachmentRowHeight)
+                .frame(height: ChatGPTComposerChips.rowHeight(files: files, metrics: .space))
             }
             HStack(alignment: .bottom, spacing: 8) {
-                // 跟網頁版的「＋」一樣：加入檔案，或選一個 ChatGPT 工具（生圖、搜尋…）。
-                // 照網頁版分層（09-24 對照網頁）：加入檔案；有名次的前 4 個工具（生圖、網路搜尋、深入研究、Sketch）；
-                // 最近用過的 App；其他收進「更多」。每項下面一行灰字說明，跟網頁版一樣。
-                Menu {
-                    Section {
-                        // 圖示＋標題＋說明（Label 的標題塞兩行只會顯示第一行，09-24 實機）。
-                        Button { model.pickFiles() } label: {
-                            Image(systemName: "paperclip")
-                            Text("加入照片和檔案")
-                            Text("從電腦上傳")
-                        }
-                    }
-                    if !model.plusTools.isEmpty || !model.plusApps.isEmpty {
-                        Section {
-                            ForEach(model.plusTools) { tool in toolButton(tool) }
-                            ForEach(model.plusApps) { tool in toolButton(tool) }
-                        }
-                    }
-                    if !model.moreTools.isEmpty {
-                        Menu("更多") { ForEach(model.moreTools) { tool in toolButton(tool) } }
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .foregroundStyle(.secondary)
-                .help("加入檔案或工具")
-                .accessibilityLabel("加入檔案或工具")
-                .accessibilityIdentifier("chatgpt.plus")
+                // 跟網頁版的「＋」一樣：加入檔案，或選一個 ChatGPT 工具（生圖、搜尋…）；分層照網頁版。W184 G3b：按了開 ChatGPT 原版那種
+                // 快捷小視窗（ChatGPTQuickMenu，畫在對話區那一層，見 plusCard），不是系統選單。
+                ChatGPTPlusButton(isOpen: plusOpen, metrics: .space)
 
                 // 提示字照 ChatGPT 繁中桌面版；貼上或拖進來的照片、檔案直接變附件（09-25「照片抓不進去」）。
                 ChatComposerTextView(
@@ -2786,86 +3608,44 @@ struct ChatGPTSpaceMainPane: View {
                     minimumHeight: TatwoChatTranscriptVisualMetrics.windowComposerTextMinimumHeight,
                     maximumHeight: TatwoChatTranscriptVisualMetrics.windowComposerTextMaximumHeight,
                     onSubmit: { model.send() }, onFocusChange: { composerFocused = $0 },
+                    // W184 G3b 第二輪：「/」清單開著時 ↑↓ 選、Enter 選定（組字中、有修飾鍵的方向鍵照常給輸入框）。
+                    onSuggestionKey: { handleSlashKey($0) },
                     onPasteImage: { model.attach(from: $0) },
                     accessibilityTextLabel: "ChatGPT 訊息",
-                    pointSize: 15,
+                    pointSize: ChatGPTComposerMetrics.space.inputText,   // 15（W184 G3b 追加：私訊框照這一個數字）
                     slashCommands: [],
-                    acceptsPhotoDrags: true)
+                    acceptsPhotoDrags: true,
+                    onTextView: { dictation.textView = $0 },
+                    suggestionKeysVerticalOnly: true)
                     .frame(height: composerHeight)
+                    .anchorPreference(key: ChatGPTPopoverAnchorKey.self, value: .bounds) { [.slash: $0] }
 
                 modelPicker
                     .frame(height: 32)
 
                 // 語音輸入：用 macOS 內建聽寫把字打進輸入框（跟網頁版的麥克風一樣是「說話變文字」）。
-                Button {
-                    composerFocused = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        NSApp.sendAction(Selector(("startDictation:")), to: nil, from: nil)
-                    }
-                } label: {
-                    Image(systemName: "mic")
-                        .font(.system(size: 13))
-                        .frame(width: 28, height: 28)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("語音輸入（macOS 聽寫）")
-                .accessibilityLabel("語音輸入")
+                ChatGPTDictationButton(metrics: .space, dictation: dictation)
 
-                if model.isSending {
-                    Button { model.stop() } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 11, weight: .bold))
-                            .frame(width: 28, height: 28).contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("停止")
-                    .accessibilityLabel("停止回答")
-                } else if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, model.attachments.isEmpty {
-                    // 跟網頁版一樣：還沒打字時，送出鍵的位置是語音模式（黑底圓鈕＋聲波）。
-                    Button { model.startVoice() } label: {
-                        Image(systemName: "waveform")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color(nsColor: .windowBackgroundColor))
-                            .frame(width: 30, height: 30)
-                            .background(Color.primary, in: Circle())
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(tap.connection != .ready)
-                    .help("語音模式")
-                    .accessibilityLabel("語音模式")
-                    .accessibilityIdentifier("chatgpt.voice.start")
-                } else {
-                    ChatGPTSendButton(enabled: model.canSend) { model.send() }
-                }
+                // 跟網頁版一樣：回答中是停止；還沒打字時送出鍵的位置是語音模式（黑底圓鈕＋聲波）；有字是送出。
+                // W184 G3：語音模式鈕看 TAP 的語音擁有者——私訊框的語音開著、或有回答在跑時不能按（Pod 只有一個麥克風）。
+                ChatGPTSendSlot(isSending: model.isSending,
+                                isEmpty: model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.attachments.isEmpty,
+                                canSend: model.canSend, voiceEnabled: tap.voiceStartBlocker == nil, metrics: .space,
+                                stop: { model.stop() }, startVoice: { model.startVoice() }, send: { model.send() })
             }
           }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .liquidGlassPanelSurface(cornerRadius: LiquidGlassTokens.radiusPrimary)
+            // W179 UI：只回報位置（不改畫面）——主視窗的停靠私訊框放在這個輸入框上方，不蓋送出鈕。
+            .globalDMComposerFrame(.chatgpt, active: !showsHeader)
             .frame(maxWidth: 760)
             Text("走你的 ChatGPT 訂閱（Chat），不耗 Codex 額度 · 記憶與自訂指令由 ChatGPT 帶過來")
                 .font(.system(size: 10.5)).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
-    }
-
-    private func toolButton(_ tool: TapTool) -> some View {
-        Button { model.choose(tool) } label: {
-            if tool.id == model.selectedTool?.id {
-                Label {
-                    Text(tool.title)
-                    if !tool.detail.isEmpty { Text(tool.detail) }
-                } icon: {
-                    Image(systemName: "checkmark")
-                }
-            } else {
-                Text(tool.title)
-                if !tool.detail.isEmpty { Text(tool.detail) }
-            }
-        }
+        .onDisappear { dictation.cancel() }   // W184 G3：輸入框不在了＝取消還沒開始的聽寫
     }
 
     private func modelButton(_ item: TapModel) -> some View {
@@ -2880,68 +3660,117 @@ struct ChatGPTSpaceMainPane: View {
         }
     }
 
-    /// 附件列的高度：有圖片＝縮圖高，只有檔案＝檔案卡高，只有工具小卡＝小卡高（上面多留 8pt 給右上角的 ×）。
-    private var attachmentRowHeight: CGFloat {
-        if model.attachments.contains(where: { $0.mime.lowercased().hasPrefix("image/") }) { return ChatGPTAttachmentTile.imageSize + 8 }
-        if !model.attachments.isEmpty { return ChatGPTAttachmentTile.fileHeight + 8 }
-        return 30 + 8
-    }
-
     /// 照 ChatGPT 網頁版輸入框裡的膠囊（09-25 從網頁 CSS 對過）：平常只有字——一般檔位灰字（High）、帶版本時
     /// 版本黑字＋檔位灰字（6 Pro，最高檔紫色）；滑過淡灰底；打開時灰底膠囊、字換成「思考強度」。面板見 ChatGPTEffortCard。
+    /// W184 G3：膠囊是共用元件（ChatGPTPickerCapsule；私訊框同一個）。
     private var modelPicker: some View {
         let label = model.pickerLabel
-        return Button { withAnimation(ChatGPTEffortCard.motion) { showsModelPopover.toggle() } } label: {
-            HStack(spacing: 0) {
-                if showsModelPopover {
-                    Text("思考強度").foregroundStyle(ChatGPTPalette.tertiary)
-                } else if let version = label.version {
-                    Text(version).foregroundStyle(ChatGPTPalette.primary)
-                    Text(" " + label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : ChatGPTPalette.tertiary)
-                } else {
-                    Text(label.level).foregroundStyle(label.isMax ? ChatGPTPalette.purple : ChatGPTPalette.tertiary)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(ChatGPTPalette.tertiary)
-                    .padding(.leading, 5)
-                    .accessibilityHidden(true)
-            }
-            .font(.system(size: 15))
-            .lineLimit(1)
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(showsModelPopover ? ChatGPTPalette.pressed : (pickerHover ? ChatGPTPalette.hover : Color.clear), in: Capsule())
-            .contentShape(Capsule())
+        return ChatGPTPickerCapsule(label: label, isOpen: showsModelPopover, metrics: .space) {
+            withAnimation(ChatGPTEffortCardMetrics.motion) { showsModelPopover.toggle() }
         }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .onHover { pickerHover = $0 }
-        .anchorPreference(key: ChatGPTPickerAnchorKey.self, value: .bounds) { $0 }
-        .help("思考強度與模型")
-        .accessibilityLabel("思考強度：\(label.version.map { $0 + " " } ?? "")\(label.level)")
-        .accessibilityIdentifier("chatgpt.modelPicker")
     }
 
     /// 面板浮在膠囊正上方、置中對齊（網頁：寬 260，對齊膠囊中心，離膠囊 6pt）；點面板外面或按 Esc 就關。
+    /// W184 G3：浮起來的那一層是共用元件（ChatGPTFloatingCardLayer；私訊框同一個）。
     @ViewBuilder
     private func effortCard(_ anchor: Anchor<CGRect>?) -> some View {
-        GeometryReader { proxy in
-            if showsModelPopover, model.page == nil, let anchor {
-                let rect = proxy[anchor]
-                let width = ChatGPTEffortCard.width
-                ZStack(alignment: .topLeading) {
-                    Color.black.opacity(0.001)
-                        .contentShape(Rectangle())
-                        .onTapGesture { withAnimation(ChatGPTEffortCard.motion) { showsModelPopover = false } }
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        ChatGPTEffortCard(model: model) { withAnimation(ChatGPTEffortCard.motion) { showsModelPopover = false } }
-                    }
-                    .frame(width: width, height: max(0, rect.minY - 6))
-                    .offset(x: min(max(8, rect.midX - width / 2), max(8, proxy.size.width - width - 8)))
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .bottom)))
+        ChatGPTFloatingCardLayer(anchor: anchor, isOpen: showsModelPopover && model.page == nil, width: ChatGPTEffortCardMetrics.width,
+                                 dismiss: { withAnimation(ChatGPTEffortCardMetrics.motion) { showsModelPopover = false } }) {
+            ChatGPTEffortCard(model: model) { withAnimation(ChatGPTEffortCardMetrics.motion) { showsModelPopover = false } }
+        }
+    }
+
+    /// W184 G3b：「＋」的快捷小視窗（ChatGPT 原版那種）：跟 ＋ 左邊對齊、浮在它上面；點外面或 Esc 就關。
+    private var plusOpen: Binding<Bool> {
+        Binding(get: { showsPlusMenu }, set: { open in
+            showsPlusMenu = open
+            if !open { plusShowingMore = false }
+        })
+    }
+
+    @ViewBuilder
+    private func plusCard(_ anchor: Anchor<CGRect>?) -> some View {
+        ChatGPTFloatingCardLayer(anchor: anchor, isOpen: showsPlusMenu && model.page == nil, width: ChatGPTQuickMenu.width, leading: true,
+                                 dismiss: { plusOpen.wrappedValue = false }) {
+            ChatGPTQuickMenu(sections: ChatGPTQuickMenu.plusSections(
+                                tools: model.tools, recentApps: UserDefaults.standard.stringArray(forKey: ChatGPTSpaceModel.recentAppsKey) ?? [],
+                                selectedToolID: model.selectedTool?.id,
+                                thinking: model.thinkingEffortID == nil ? nil : model.thinkingHard, showingPlugins: plusShowingMore,
+                                tatwo: HandsConnectEntry.shared.menuRow),   // W183 R11：外掛程式那一頁最上面「連線」
+                             metrics: .space, identifier: "chatgpt.plus.menu") { id in pickPlus(id) }
+        }
+    }
+
+    private func pickPlus(_ id: String) {
+        switch id {
+        case "plugins": plusShowingMore = true
+        case "back": plusShowingMore = false
+        case HandsConnectEntry.menuRowID:   // W183 R11：外掛程式那一頁的「連線」（跟對話上方那一顆同一個動作）
+            plusOpen.wrappedValue = false
+            HandsConnectEntry.shared.tap()
+        case "thinking": model.toggleThinkingHard()
+        case "photos":
+            plusOpen.wrappedValue = false
+            model.pickPhotos()
+        case "files":
+            plusOpen.wrappedValue = false
+            model.pickFiles()
+        default:
+            guard id.hasPrefix("tool:"), let tool = model.tools.first(where: { "tool:" + $0.id == id }) else { return }
+            plusOpen.wrappedValue = false
+            model.choose(tool)
+        }
+    }
+
+    /// Esc：思考強度面板與「＋」小卡都收（W184 G3b：＋ 小卡也收）。W184 G3b 第二輪：「/」清單開著＝只收清單（草稿留著）。
+    private func closePopovers() {
+        if slashOpen {
+            slashDismissed = model.draft
+            return
+        }
+        withAnimation(ChatGPTEffortCardMetrics.motion) { showsModelPopover = false }
+        plusOpen.wrappedValue = false
+    }
+
+    // MARK: W184 G3b 第二輪：「/」指令（私訊框同一份規則 ChatGPTSlash、同一個清單元件 ChatGPTQuickMenu、同一份資料 model.tools）
+
+    private var slashQuery: String? { model.page == nil ? ChatGPTSlash.query(model.draft, dismissed: slashDismissed) : nil }
+    private var slashMatches: [TapTool] { slashQuery.map { ChatGPTQuickMenu.slashTools(model.tools, query: $0) } ?? [] }
+    private var slashOpen: Bool { ChatGPTSlash.isOpen(query: slashQuery, catalog: model.tools, matches: slashMatches) }
+    private var slashHighlight: Int {
+        let count = slashMatches.count
+        return count == 0 ? 0 : min(max(slashIndex, 0), count - 1)
+    }
+
+    /// 輸入框交來的鍵（只有沒修飾鍵的 ↑↓ 與 Enter）：清單開著時 ↑↓ 選、Enter 選定；第一列再往上、沒開著就不吃。
+    private func handleSlashKey(_ key: ChatComposerSuggestionKey) -> Bool {
+        let tools = slashMatches
+        guard slashQuery != nil else { return false }
+        // 清單只有一行說明（ChatGPT 的清單還沒讀到過）：Enter 不把「/…」當訊息送出。
+        if tools.isEmpty { return key == .commit && slashOpen }
+        guard let index = ChatGPTSlash.moved(key, index: slashHighlight, count: tools.count) else { return false }
+        if key == .commit { chooseSlash(tools[index]) } else { slashIndex = index }
+        return true
+    }
+
+    /// 選定＝那個工具變成輸入框裡的小卡（同 ＋ 選的），草稿裡的「/…」拿掉。
+    private func chooseSlash(_ tool: TapTool) {
+        model.choose(tool)
+        model.draft = ""
+        slashIndex = 0
+        slashDismissed = nil
+    }
+
+    /// 「/」清單：跟輸入框左邊對齊、浮在它上面；點外面＝收（跟 Esc 一樣，草稿留著）。
+    @ViewBuilder
+    private func slashCard(_ anchor: Anchor<CGRect>?) -> some View {
+        let tools = slashMatches
+        ChatGPTFloatingCardLayer(anchor: anchor, isOpen: slashOpen, width: ChatGPTQuickMenu.width, leading: true,
+                                 dismiss: { slashDismissed = model.draft }) {
+            ChatGPTQuickMenu(sections: ChatGPTSlash.sections(tools, catalogEmpty: model.tools.isEmpty, selectedID: model.selectedTool?.id),
+                             highlighted: tools.indices.contains(slashHighlight) ? "tool:" + tools[slashHighlight].id : nil,
+                             metrics: .space, identifier: "chatgpt.slash") { id in
+                if let picked = tools.first(where: { "tool:" + $0.id == id }) { chooseSlash(picked) }
             }
         }
     }
@@ -2952,7 +3781,7 @@ struct ChatGPTSpaceMainPane: View {
             escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 // 只攔主視窗、上面沒有表單或存檔視窗時的 Esc（審查 #14）。
                 guard event.keyCode == 53, let window = event.window, window.isMainWindow, window.attachedSheet == nil else { return event }
-                withAnimation(ChatGPTEffortCard.motion) { showsModelPopover = false }
+                closePopovers()
                 return nil
             }
         } else if !open, let monitor = escapeMonitor {
@@ -2971,6 +3800,7 @@ struct ChatGPTPickerAnchorKey: PreferenceKey {
 /// 把 Pod 的瀏覽器放進 SwiftUI；離開畫面時交回前一個畫面或停泊視窗（網頁不關、登入不掉）。
 struct TapPodHostView: NSViewRepresentable {
     let pod: TapWebPod
+    var presentsPage = true
 
     final class Coordinator {
         let pod: TapWebPod
@@ -2982,7 +3812,7 @@ struct TapPodHostView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         view.setAccessibilityElement(false)
-        pod.claim(view)
+        pod.claim(view, presentsPage: presentsPage)
         return view
     }
 
@@ -2990,5 +3820,119 @@ struct TapPodHostView: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
         coordinator.pod.release(nsView)
+    }
+}
+
+// MARK: - W180 A4：私訊框的 ChatGPT 模型選單資料
+
+/// ChatGPT 的模型清單與伺服器記的預設（「上次使用」）。私訊框拿同一份清單做自己的選單；ChatGPT Space 的選擇不帶過去。
+/// W184 G3：也帶「＋」的工具與 App（私訊框的「＋」照 ChatGPT Space 的分層；選哪個只在私訊框）。
+struct ChatGPTModelCatalog: Equatable {
+    var models: [TapModel] = []
+    var defaultModelID: String? = nil
+    var defaultEffortID: String? = nil
+    var tools: [TapTool] = []
+}
+
+extension ChatGPTSpaceModel {
+    /// 只讀：模型清單＋ChatGPT 的預設＋工具（Space 自己選的模型、強度、工具不在裡面）。
+    var modelCatalog: ChatGPTModelCatalog {
+        ChatGPTModelCatalog(models: models, defaultModelID: defaultModelID, defaultEffortID: defaultEffortID, tools: tools)
+    }
+
+    /// 清單載入或換了就送一次（私訊框的膠囊與「＋」跟著重畫）。
+    var modelCatalogPublisher: AnyPublisher<ChatGPTModelCatalog, Never> {
+        Publishers.CombineLatest4($models, $defaultModelID, $defaultEffortID, $tools)
+            .map { ChatGPTModelCatalog(models: $0, defaultModelID: $1, defaultEffortID: $2, tools: $3) }
+            .removeDuplicates()
+            .eraseToAnyPublisher()
+    }
+}
+
+/// 私訊框對 ChatGPT 選的模型／思考強度；都是 nil＝照 ChatGPT 的預設。只放記憶體。
+struct ChatGPTModelChoice: Equatable, Sendable {
+    var modelID: String? = nil
+    var effortID: String? = nil
+
+    var isDefault: Bool { modelID == nil && effortID == nil }
+}
+
+/// 私訊框的 ChatGPT 模型選單（純計算）：規則同 ChatGPT Space 的輸入框選單——選的模型還在清單裡才算數，
+/// 沒選就用 ChatGPT 伺服器記的「上次使用」；版本（version:）不是模型代號，送出時只帶檔位。
+enum ChatGPTModelMenu {
+    struct Item: Equatable {
+        let title: String
+        let choice: ChatGPTModelChoice
+        let isSelected: Bool
+    }
+
+    struct Section: Equatable {
+        let title: String
+        let items: [Item]
+    }
+
+    static func effectiveModel(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> TapModel? {
+        func find(_ id: String?) -> TapModel? { id.flatMap { id in catalog.models.first { $0.id == id } } }
+        return find(choice.modelID) ?? find(catalog.defaultModelID) ?? catalog.models.first
+    }
+
+    static func effectiveEffort(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> TapEffort? {
+        guard let efforts = effectiveModel(catalog, choice)?.efforts, !efforts.isEmpty else { return nil }
+        if let id = choice.effortID, let effort = efforts.first(where: { $0.id == id }) { return effort }
+        if let id = catalog.defaultEffortID, let effort = efforts.first(where: { $0.id == id }) { return effort }
+        return nil
+    }
+
+    /// 送出時帶的模型與檔位：模型只在自己選過、而且不是版本時帶；檔位照目前會用的那一檔（跟 ChatGPT Space 一樣不讓網頁自己挑）。
+    /// 清單還沒載入時都不帶（照網頁自己的）。
+    static func sendArguments(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> (model: String?, effort: String?) {
+        guard !catalog.models.isEmpty else { return (nil, nil) }
+        let model = choice.modelID.flatMap { id in
+            catalog.models.contains { $0.id == id } && !id.hasPrefix("version:") ? id : nil
+        }
+        return (model, effectiveEffort(catalog, choice)?.id)
+    }
+
+    /// chip 上的字：有檔位顯示檔位（帶版本的前面加版本），沒有就模型名；清單還沒載入是「預設」。
+    static func chipTitle(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> String {
+        if let effort = effectiveEffort(catalog, choice) {
+            let level = ChatGPTLabels.effort(effort.level.isEmpty ? effort.title : effort.level)
+            return effort.showsVersion && !effort.version.isEmpty ? "\(effort.version) \(level)" : level
+        }
+        return effectiveModel(catalog, choice).map { $0.id.hasPrefix("version:") ? ChatGPTLabels.version($0.title) : $0.title }
+            ?? "預設"
+    }
+
+    /// 選單：目前模型的思考強度、版本、其他模型；選過東西才有「回到 ChatGPT 的預設」（放在最後一段）。
+    static func sections(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> [Section] {
+        let model = effectiveModel(catalog, choice)
+        let effort = effectiveEffort(catalog, choice)
+        var result: [Section] = []
+        if let model, !model.efforts.isEmpty {
+            result.append(Section(title: "思考強度", items: model.efforts.map { item in
+                let level = ChatGPTLabels.effort(item.level.isEmpty ? item.title : item.level)
+                let title = item.showsVersion && !item.version.isEmpty ? "\(item.version) \(level)" : level
+                return Item(title: title, choice: ChatGPTModelChoice(modelID: choice.modelID, effortID: item.id),
+                            isSelected: item.id == effort?.id)
+            }))
+        }
+        let versions = catalog.models.filter { $0.id.hasPrefix("version:") }
+        if !versions.isEmpty {
+            result.append(Section(title: "版本", items: versions.map {
+                Item(title: ChatGPTLabels.version($0.title), choice: ChatGPTModelChoice(modelID: $0.id),
+                     isSelected: $0.id == model?.id)
+            }))
+        }
+        let others = catalog.models.filter { !$0.id.hasPrefix("version:") }
+        if !others.isEmpty {
+            result.append(Section(title: "其他模型", items: others.map {
+                Item(title: $0.title, choice: ChatGPTModelChoice(modelID: $0.id), isSelected: $0.id == model?.id)
+            }))
+        }
+        if !choice.isDefault {
+            result.append(Section(title: "", items: [Item(title: "回到 ChatGPT 的預設", choice: ChatGPTModelChoice(),
+                                                         isSelected: false)]))
+        }
+        return result
     }
 }

@@ -3,7 +3,9 @@
 set -euo pipefail
 
 NODE_VERSION="24.20.0"
-CODEX_VERSION="0.153.2"
+CODEX_VERSION="0.160.0"
+# Verified from the official @openai/codex@0.160.0-darwin-arm64 tarball (registry integrity checked).
+CODEX_SHA256="112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b"
 GITHUB_MCP_VERSION="1.1.2"
 CACHE_ROOT="${TATWO2_ENGINE_CACHE:-$HOME/Library/Application Support/tatwo2/engine-cache}"
 
@@ -59,6 +61,8 @@ if [[ -z "$CODEX_NATIVE" ]]; then
   echo "找不到 @openai/codex 的 aarch64-apple-darwin 原生二進位" >&2
   exit 1
 fi
+actual="$(shasum -a 256 "$CODEX_NATIVE" | awk '{ print $1 }')"
+[[ "$actual" == "$CODEX_SHA256" ]] || { echo "Codex 原生執行檔雜湊不符" >&2; exit 1; }
 # codex 0.153 的工具要靠同目錄的 codex-code-mode-host、codex-path/rg、codex-resources/zsh；整個 vendor 目錄搬進來，
 # runtime/bin/codex 做成薄包裝指過去（只複製 codex 本體會讓所有工具呼叫失敗：「找不到 codex-code-mode-host」，2026-09-05 GPT-6 首測抓到）
 CODEX_VENDOR_SRC="$(dirname "$(dirname "$CODEX_NATIVE")")"
@@ -107,8 +111,7 @@ else
 fi
 
 CLAUDE_SIDECAR="$RESOURCES/claude-sidecar"
-if [[ -f "$CLAUDE_SIDECAR/package-lock.json" \
-      && ! -d "$CLAUDE_SIDECAR/node_modules/@anthropic-ai/claude-agent-sdk" ]]; then
+if [[ -f "$CLAUDE_SIDECAR/package-lock.json" ]]; then
   (cd "$CLAUDE_SIDECAR" && npm ci --omit=dev --no-audit --no-fund)
 fi
 CLAUDE_NATIVE="$(find "$CLAUDE_SIDECAR/node_modules" \

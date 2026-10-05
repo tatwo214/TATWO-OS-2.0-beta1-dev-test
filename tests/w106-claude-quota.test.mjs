@@ -92,6 +92,7 @@ test('W106 憑證挑選：過期的那份不可以蓋過還能用的那份', {
   const binary = path.join(dir, 'checks');
   fs.writeFileSync(main, `import Foundation
 import Security
+enum ClaudeSidecar { enum Kind: String { case claude, codex, grok } }
 
 @main
 struct Checks {
@@ -188,7 +189,7 @@ struct Checks {
 }
 `);
   const compile = spawnSync('swiftc', ['-parse-as-library', '-swift-version', '5', '-num-threads', '2',
-    path.join(root, storeSource), path.join(root, pathsSource), path.join(root, isolationSource),
+    path.join(root, storeSource), path.join(root, pathsSource), path.join(root, facade + 'EngineRuntimeSelection.swift'), path.join(root, isolationSource),
     main, '-o', binary], { cwd: root, encoding: 'utf8', timeout: 180000 });
   assert.equal(compile.status, 0, `${compile.error ?? ''}\n${compile.stdout}\n${compile.stderr}`);
   const probe = spawnSync(binary, [dir], { cwd: root, encoding: 'utf8', timeout: 60000 });

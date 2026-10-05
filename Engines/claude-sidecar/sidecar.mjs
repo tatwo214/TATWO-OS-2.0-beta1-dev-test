@@ -2,6 +2,7 @@
 // stdin 每行一個 JSON 指令，stdout 每行一個 JSON 事件。SDK 訊息原樣轉發（ev:"sdk"），不重造。
 //   in : {op:"send", text, uuid?} | {op:"permission", id, allow, message?} | {op:"interrupt"} | {op:"model", model} | {op:"close"}
 //   out: {ev:"sdk", msg} | {ev:"permission_request", id, tool, input, title?, description?} | {ev:"error", message} | {ev:"closed"}
+import { claudeModels } from '../model-capabilities.mjs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import readline from 'node:readline';
 import fs from 'node:fs';
@@ -10,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
 const flag = (name, dflt) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : dflt; };
+const catalogOnly = argv.includes('--catalog-only');
 const cwd = flag('--cwd', process.cwd());
 const resume = flag('--resume', undefined);
 const model = flag('--model', undefined);
@@ -47,7 +49,7 @@ if (!validPermissionModes.has(permissionMode)) {
   emit({ ev: 'error', message: `unknown permission mode ${permissionMode}` });
   process.exit(1);
 }
-const readOnly = permissionMode === 'readOnly';
+const readOnly = permissionMode === 'readOnly' || catalogOnly;
 const readOnlyTools = ['Read', 'Grep', 'Glob'];
 
 const inbox = [];
@@ -76,7 +78,10 @@ const canUseTool = readOnly ? async (tool, input) => (
 const q = query({
   prompt: prompts(),
   options: {
+    ...(process.env.TATWO2_CLAUDE_BIN ? { pathToClaudeCodeExecutable: process.env.TATWO2_CLAUDE_BIN } : {}),
     cwd, resume, model, permissionMode: readOnly ? 'dontAsk' : permissionMode,
+    // Match the native dispatch maximum plus socket grace; never expire at 2m.
+    env: { ...process.env, MCP_TOOL_TIMEOUT: '1830000', CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '1830000' },
     includePartialMessages: true,
     settingSources: readOnly ? [] : ['user', 'project'],
     canUseTool,
@@ -109,6 +114,13 @@ rl.on('line', async (line) => {
   try {
     switch (cmd.op) {
       case 'send': {
+        if (cmd.effort !== undefined || cmd.serviceTier !== undefined) {
+          if (typeof q.applyFlagSettings !== 'function') throw new Error('SDK does not support native effort/speed controls');
+          await q.applyFlagSettings({
+            ...(cmd.effort !== undefined ? {effortLevel: cmd.effort} : {}),
+            ...(cmd.serviceTier !== undefined ? {fastMode: cmd.serviceTier === 'priority'} : {}),
+          });
+        }
         const atts = Array.isArray(cmd.attachments) ? cmd.attachments : [];
         if (atts.length === 0) {
           push({ type: 'user', message: { role: 'user', content: cmd.text }, parent_tool_use_id: null, uuid: cmd.uuid });
@@ -153,6 +165,14 @@ rl.on('line', async (line) => {
 rl.on('close', () => { closed = true; push(null); });
 
 (async () => {
+  if (typeof q.supportedModels === 'function') {
+    try {
+      const models = claudeModels(await q.supportedModels());
+      emit({ev:'sdk',msg:{type:'system',subtype:'model_catalog',engine:'claude',
+        identity:process.env.TATWO2_ENGINE_IDENTITY ?? 'unknown',source:'Agent SDK 0.3.280 supportedModels()', models}});
+    } catch (error) { emit({ev:'stderr',line:`SDK 模型查詢失敗，使用標示的備援：${String(error?.message || error)}`}); }
+  } else { emit({ev:'stderr',line:'SDK 0.3.280 supportedModels() 不可用，使用標示版本的備援表。'}); }
+  if (catalogOnly) { closed = true; push(null); q.close(); rl.close(); emit({ev:'closed'}); process.exit(0); }
   for await (const msg of q) emit({ ev: 'sdk', msg });
   emit({ ev: 'closed' });
   process.exit(0);

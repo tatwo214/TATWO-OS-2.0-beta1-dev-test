@@ -240,6 +240,7 @@ let package = Package(
             resources: [
                 .process("Resources/ProviderIcons"),
                 .copy("Resources/os-upstream.md"),
+                .copy("Resources/tatwo-assistant.md"),
                 .copy("Resources/os.md"),
                 .copy("Resources/tatwo2-git-credential"),
                 // W96：技能隨 App 出貨。正本是 repo 的 skills/tatwo-ultrawork/，
@@ -270,6 +271,7 @@ let package = Package(
             resources: [
                 .process("Resources/ProviderIcons"),
                 .copy("Resources/BrowserBlocklists"),
+                .copy("../../../../App/Sources/Tatwo2/Resources/tatwo-assistant.md"),
                 .copy("../../Resources/os-architecture-standard.md"),
                 .copy("../../Resources/tab-design-philosophy.md"),
                 .copy("../../../../scripts/tatwo-direct-gateway-chat.mjs"),

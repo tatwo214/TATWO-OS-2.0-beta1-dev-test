@@ -15,6 +15,7 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
     guard kind != "pr", kind != "feedback", kind != "distill", state == .confirmed, executionTurnID == nil else { return false }
     let command = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     return command.hasPrefix("開始") || command == "start" || command == "go"
+        || command.split(whereSeparator: \.isWhitespace).first == "/plg"
   }
 
   public struct Section: Codable, Sendable, Equatable {
@@ -153,6 +154,16 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
   // Distillation preserves the human's bytes instead of round-tripping Markdown.
   var distillText: String?
   var distillSubmission: DistillSubmission?
+  /// W180 E4：/蒸餾 要整理成哪一種；nil（W81 舊畫布）視為技能。
+  var distillOutput: DistillOutputKind?
+  /// W180 E4：同一條再 /蒸餾 時，上一張畫布還能還原（或還沒確認）的寫入留在這裡，還原鈕不會跟著舊畫布消失。
+  var distillEarlier: [DistillSubmission]?
+  var prModeExited: Bool?
+  var isPRModeActive: Bool {
+    kind == "pr" && prModeExited != true && state != .ready
+      && prReview?.submittedURL == nil && prContinuationThreadID == nil
+      && prMessage != Self.prMovedMessage
+  }
   var prReview: PRPlanReview?
   var prMessage: String?
   var prImplementationInterrupted: Bool?
@@ -225,6 +236,10 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
     self.kind = try container.decodeIfPresent(String.self, forKey: .kind)
     self.distillText = try container.decodeIfPresent(String.self, forKey: .distillText)
     self.distillSubmission = try container.decodeIfPresent(DistillSubmission.self, forKey: .distillSubmission)
+    // 不認得的類型（較新版本寫的）當成沒選，整份畫布照樣讀得回來。
+    self.distillOutput = (try? container.decodeIfPresent(DistillOutputKind.self, forKey: .distillOutput)) ?? nil
+    self.distillEarlier = try container.decodeIfPresent([DistillSubmission].self, forKey: .distillEarlier)
+    self.prModeExited = try container.decodeIfPresent(Bool.self, forKey: .prModeExited)
     self.prReview = try container.decodeIfPresent(PRPlanReview.self, forKey: .prReview)
     self.prMessage = try container.decodeIfPresent(String.self, forKey: .prMessage)
     self.prImplementationInterrupted = try container.decodeIfPresent(Bool.self, forKey: .prImplementationInterrupted)
@@ -234,7 +249,12 @@ public struct TatwoPlanArtifactV1: Codable, Sendable, Equatable {
   /// Recovery never starts a turn or submits; the next action belongs to the user.
   @discardableResult
   mutating func recoverInterruptedPR(hasActiveTurn: Bool) -> Bool {
-    guard kind == "pr", state == .confirmed, !hasActiveTurn,
+    guard kind == "pr", !hasActiveTurn else { return false }
+    if state == .ready, prReview?.attempted == true, prReview?.submittedURL == nil, prMessage == "送出中…" {
+        prMessage = "結果未確認；請到 GitHub 查，本機分支也需確認。未自動重送。"
+        return true
+    }
+    guard state == .confirmed,
           prContinuationThreadID == nil,
           // Older saved plans only have the transfer message, not a destination ID.
           prMessage != Self.prMovedMessage else { return false }

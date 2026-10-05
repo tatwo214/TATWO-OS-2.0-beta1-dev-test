@@ -50,9 +50,9 @@ extension PluginsSource {
         let computer: PluginLivenessResult
         if let runtime {
             if !runtime.computerEnabled { computer = .init(state: .disabled, probedAt: now) }
-            else if !runtime.accessibility { computer = .init(state: .unreachable, detail: "需要輔助使用權限", probedAt: now) }
+            else if !runtime.accessibility { computer = .init(state: .unreachable, detail: "需要裝置控制和資料取用（舊稱輔助使用）權限", probedAt: now) }
             else if !runtime.screenRecording { computer = .init(state: .unreachable, detail: "需要螢幕錄製權限", probedAt: now) }
-            else { computer = .init(state: .ready, detail: "輔助使用與螢幕錄製已授權", probedAt: now) }
+            else { computer = .init(state: .ready, detail: "裝置控制和資料取用（舊稱輔助使用）與螢幕錄製已授權", probedAt: now) }
         } else { computer = .init(state: .unknown) }
         let web = PluginLivenessResult(state: (runtime?.webToolCount ?? 0) > 0 ? .ready : .unknown,
             detail: (runtime?.webToolCount ?? 0) > 0 ? "分頁已登記工具" : "目前沒有網頁登記工具", probedAt: now)

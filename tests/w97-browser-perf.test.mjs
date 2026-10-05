@@ -82,6 +82,15 @@ test('W97 (d) our --disable-features entries are unchanged; CEF\'s own protectio
   assert.ok(bridge.indexOf('kDeniedHostSwitches) {') < bridge.indexOf('const std::string disabled_features ='));
 });
 
+test('W179 the on-device model manager uses Chromium\'s override delegate so its free-space check cannot spin', () => {
+  // CEF 154 ManifestAssetManager re-polled free disk space in a tight loop on the UI thread (MacBook, 120% CPU).
+  // The override delegate reports a fixed free space and never downloads on-device models.
+  const append = 'command_line->AppendSwitchWithValue("optimization-guide-manifest-override", "/dev/null");';
+  assert.equal(bridge.split(append).length - 1, 1);
+  assert.ok(bridge.indexOf('kDeniedHostSwitches) {') < bridge.indexOf(append), 'appended after untrusted switches are removed');
+  assert.match(bridge, /event=optimization_guide_manifest_override value=\/dev\/null/);
+});
+
 test('W97 diagnostics reports the tree state and the reason it was decided', () => {
   const state = section(diagnostics, 'enum BrowserAccessibilityTreeState {', '\n}\n',
     'diagnostics state');

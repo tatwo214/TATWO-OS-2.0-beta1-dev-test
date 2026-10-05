@@ -321,6 +321,14 @@ struct DevicePressureMetricChip: View {
 // MARK: - W77 consistency table (read-only)
 
 struct DeviceConsistencyPanel: View {
+    static func dispatchMessage(_ receipt: DeviceDispatch.Receipt?) -> String? {
+        guard let reason = receipt?.detail else { return nil }
+        switch reason {
+        case "authority_unknown", "device_identity_invalidIdentity": return "這台還沒記下主設備，入口文件不會同步；請在私訊框請 TATWO 助理處理。"
+        case "paired_ssh_key_missing", "paired_ssh_signing_unavailable": return "這台沒有連回主設備的金鑰，入口文件不會同步；請在私訊框請 TATWO 助理處理配對。"
+        default: return "入口文件尚未同步；請在私訊框請 TATWO 助理處理。"
+        }
+    }
     @StateObject private var model = DeviceConsistencyModel()
     @State private var diff: DeviceConsistencyDiffSheet?
     @State private var endpointDevices: [DeviceRecord] = []
@@ -359,8 +367,7 @@ struct DeviceConsistencyPanel: View {
                 }
                 ForEach(dispatchReceipts.keys.sorted(), id: \.self) { id in
                     if let receipt = dispatchReceipts[id] {
-                        Text("\(id.prefix(8)) · \(receipt.phase == "timeout" ? "逾時" : receipt.phase) · 讀回 \(receipt.hashes.count) 檔"
-                             + (receipt.detail.map { " · \($0)" } ?? ""))
+                        Text(Self.dispatchMessage(receipt) ?? "\(id.prefix(8)) · \(receipt.phase == "timeout" ? "逾時" : receipt.phase) · 讀回 \(receipt.hashes.count) 檔")
                             .font(.caption).foregroundStyle(receipt.phase == "converged" ? Color.green : Color.orange)
                             .textSelection(.enabled)
                     }
@@ -471,6 +478,9 @@ struct DeviceConsistencyPanel: View {
                                 }
                                 if !cell.detail.isEmpty {
                                     Text(cell.detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if row.local && column.0 == .constitution, let message = Self.dispatchMessage(dispatchReceipts[local?.identity.value?.primaryDeviceID ?? "local"]) {
+                                    Text(message).font(.caption).foregroundStyle(.orange)
                                 }
                                 Text(cell.acquiredAt, style: .time).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                                 if column.0 == .constitution || column.0 == .rules {

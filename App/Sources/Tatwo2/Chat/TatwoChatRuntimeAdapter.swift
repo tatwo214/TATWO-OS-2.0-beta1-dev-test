@@ -7,6 +7,7 @@ public enum TatwoChatRuntimeAdapter: String, CaseIterable, Identifiable, Codable
   case unavailable
   case nativeAgent = "tatwo-native-agent"
   case codexExec = "codex-exec"
+  case chatgptTap = "chatgpt-tap"
   case claudeCLI = "claude-cli-native"
   case grokCLI = "grok-cli-native"
   case minimaxDirect = "minimax-direct"

@@ -10,7 +10,7 @@ const catalog = read('App/Sources/Tatwo2/Chat/TatwoChatRouteProfile.swift');
 test('W175 picker lists only current models', () => {
   const block = catalog.slice(catalog.indexOf('public static let defaults'), catalog.indexOf('private static func normalizedLookupKey'));
   const ids = [...block.matchAll(/\n      id: "([^"]+)",/g)].map((m) => m[1]);
-  assert.deepEqual(ids, ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', 'grok-build', 'fable5.1', 'sonnet5', 'opus5.5', 'codex-auto-review']);
+  assert.deepEqual(ids, ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'grok-build', 'fable5.1', 'sonnet5', 'opus5.5', 'codex-auto-review']);
   assert.match(block, /displayName: "Grok 4\.7",[\s\S]{0,200}modelArgument: "grok-4\.7"/);
   assert.match(block, /id: "opus5\.5",[\s\S]{0,300}modelArgument: "claude-opus-5-5"/);
   for (const retired of ['"gpt-5.5"', '"gpt-5.4"', '"claude-fable-5"', '"haiku-4-5"', '"minimax-m3"', '"grok-4.6"', 'modelArgument: "opus"']) {
@@ -36,5 +36,5 @@ test('W175 built-in Claude engine can reach Opus 5.5; roles follow constitution 
   const os = read('App/Sources/Tatwo2/Resources/os.md');
   assert.match(os, /\| 細修 \| Opus 5\.5 \|/);
   assert.match(os, /\| 機械工 \| Grok 4\.7 \|/);
-  assert.match(read('App/Sources/Tatwo2/Facade/ChatPageModel.swift'), /@Published var selectedModel = "gpt-6-astra"/);
+  assert.match(read('App/Sources/Tatwo2/Facade/ChatPageModel.swift'), /@Published var selectedModel = "gpt-6.1-sol"/);
 });

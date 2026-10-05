@@ -2,11 +2,17 @@ import SwiftUI
 
 /// Uses the same visual controls as Chat, with domain-local fixture actions only.
 /// Menus demonstrate choices; they do not grant permission or configure an engine.
+/// W184 H4：模型（含推理強度、速度）與協作收進一顆「模式選擇」chip（同 Coder 輸入框）；
+/// 規則照舊（TatwoComposerMode.spaceSetup）：預覽只改畫面上的選擇；正式搭建時協作不能選、推理強度與速度不列，選了 Bot 模型沿用 Bot。
+/// W184 H4b：模式卡的開關（modeOpen）從這裡往上傳給輸入框那張玻璃卡（SpaceSetupPreviewView 的 composer）：卡掛在整個輸入框上方 8、
+/// 右緣對齊，不再掛在工具列上（那樣卡的下緣在工具列上方，會蓋住打字區）；工具列只管那顆 chip。
 struct SpaceSetupComposerToolbar: View {
     @ObservedObject var domain: SpaceSetupPreviewState.Domain
     let compact: Bool
+    @Binding var modeOpen: Bool
 
     var body: some View {
+        let mode = TatwoComposerMode.spaceSetup(domain: domain)
         ChatComposerToolbarRow(compact: compact) {
             Menu {
                 Button("貼上剪貼簿圖片", systemImage: "doc.on.clipboard") { previewOnly("貼上圖片") }
@@ -53,83 +59,16 @@ struct SpaceSetupComposerToolbar: View {
             .disabled(domain.isProduction && !domain.chosenBotID.isEmpty)
 
             Spacer(minLength: compact ? 8 : 14)
-            HStack(spacing: compact ? 5 : 6) {
-                modelMenu.disabled(domain.isProduction && !domain.chosenBotID.isEmpty)
-                Menu {
-                    ForEach(ChatCollaborationLevel.allCases) { level in
-                        Button {
-                            domain.composerCollaboration = level
-                        } label: {
-                            Label(level.title, systemImage: domain.composerCollaboration == level
-                                  ? "checkmark.circle.fill" : "circle")
-                        }
-                    }
-                    Divider()
-                    Text("UI 預覽，不啟動協作任務")
-                } label: {
-                    ChatComposerCollaborationLabel(
-                        compact: compact, active: domain.composerCollaboration != .off,
-                        level: domain.composerCollaboration.title, selected: false)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .disabled(domain.isProduction)
+            // W184 H4：原本的模型選單（推理強度、速度在子選單）＋協作選單 → 一顆「模式選擇」（開關是上一層的 modeOpen）。
+            ChatComposerModeChip(segments: mode.segments, selected: modeOpen, help: mode.help) {
+                withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) { modeOpen.toggle() }
             }
-            .frame(width: ChatComposerModelLabel.width(compact: true)
-                   + ChatComposerCollaborationLabel.width(compact: compact)
-                   + (compact ? 5 : 6), height: 24, alignment: .trailing)
+            .layoutPriority(1)
 
             ChatComposerSendButton(enabled: domain.canPreview) { domain.previewResult() }
                 .accessibilityLabel(domain.isProduction ? "送出搭建需求" : "預覽搭建後動線，不送出訊息")
                 .help(domain.isProduction ? "送出至此 Space 的搭建對話" : "預覽搭建後動線，不會真正送出")
         }
-    }
-
-    private var modelMenu: some View {
-        Menu {
-            ForEach(ChatRouteChoice.all) { route in
-                Button {
-                    domain.selectComposerRoute(route.id)
-                } label: {
-                    Label(route.title, systemImage: domain.composerRoute.id == route.id
-                          ? "checkmark.circle.fill" : "circle")
-                }
-            }
-            if !domain.isProduction && domain.composerRoute.supportsNativeReasoningControl {
-                Divider()
-                Menu("推理強度") {
-                    ForEach(domain.composerRoute.allowedEfforts) { effort in
-                        Button(effort.displayName) { domain.composerEffort = effort }
-                    }
-                }
-            }
-            if !domain.isProduction && domain.composerRoute.supportsNativeSpeedControl {
-                Divider()
-                Menu("速度") {
-                    ForEach(domain.composerRoute.allowedSpeedTiers) { speed in
-                        Button(speed.displayName) { domain.composerSpeed = speed }
-                    }
-                }
-            }
-            if !domain.isProduction {
-                Divider()
-                Text("UI 預覽，不連接模型或變更 Bot")
-            }
-        } label: {
-            ChatComposerModelLabel(
-                title: domain.isProduction && !domain.chosenBotID.isEmpty ? "Bot 設定"
-                    : domain.composerRoute.title.replacingOccurrences(of: "GPT-", with: ""),
-                suffix: domain.isProduction ? nil : domain.composerRoute.supportsNativeSpeedControl
-                    ? domain.composerSpeed?.compactDisplayName
-                    : (domain.composerRoute.supportsNativeReasoningControl
-                       ? domain.composerEffort.compactDisplayName : nil),
-                compact: true, selected: false)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .controlSize(.small)
     }
 
     private var permissionSymbol: String {

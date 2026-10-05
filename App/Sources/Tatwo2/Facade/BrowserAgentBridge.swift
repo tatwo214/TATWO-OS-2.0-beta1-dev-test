@@ -1344,7 +1344,8 @@ final class BrowserAgentBridge: @unchecked Sendable {
                 guard let container = candidate as? TatwoCEFContainerView,
                       container.mountIdentity?.profile.dataStoreIdentifier == profileID,
                       let browser = container.browserView, !browser.isHiddenOrHasHiddenAncestor,
-                      browser.window != nil else { return nil }
+                      browser.window != nil,
+                      !TatwoCEFTabHostView.lentBrowsers.contains(browser) else { return nil }   // W184 E：借到倒放框的頁面不算
                 return browser
             }
         }

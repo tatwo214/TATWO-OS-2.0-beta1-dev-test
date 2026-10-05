@@ -21,6 +21,8 @@ final class ChatPageModel: ObservableObject {
     private var fixtureExtraMessages: [ChatMessage] = []
     private let runtimeEnvironment: [String: String]
     private let engineLogin: EngineLogin
+    private var engineLoginCheckedAt: [ClaudeSidecar.Kind: Date] = [:]
+    private var engineLoginRefreshInFlight = false
     private let deviceRegistry: DeviceRegistry
     private let devicePairingHost: DevicePairingHost
     private let githubAccountsStore: GitHubAccountsStore
@@ -28,6 +30,844 @@ final class ChatPageModel: ObservableObject {
     let isLive: Bool
     private(set) var live: (any LiveEngineAPI)?
     private var localLive: ChatLiveEngine?
+    /// W179 F：接在主設備時這次在選單選的模型（只在記憶體；下一句帶過去，主設備收到後記在那條）。
+    private(set) var assistantPrimaryModelChoice: String?
+    /// W179 F：身分檔讀一次就記著（nil＝還沒讀）；配對清單變動時重讀。
+    private var resolvedAssistantPrimaryID: String??
+    private var assistantPrimaryID: String? {
+        if let resolvedAssistantPrimaryID { return resolvedAssistantPrimaryID }
+        let id = AssistantPrimaryResolver.primaryDeviceID(environment: runtimeEnvironment)
+        resolvedAssistantPrimaryID = .some(id)
+        return id
+    }
+    /// W179 F：送到主設備、還在等主設備回覆收到的討論串（這段時間不再送、草稿留著）。
+    @Published private(set) var primaryDeliveries: Set<UUID> = []
+    /// W179 F：接主設備時的一行提示（送到主設備沒成功、主設備連線的提示）；threadID nil＝不分哪條。
+    @Published private var primaryHint: AssistantPrimaryHint?
+    /// W179 F：這次 App 開著以來，第一次連主設備已經有結果（連上或連不上）的設備 id；之後的重試不算「連線中」。
+    private var assistantPrimarySettledIDs: Set<String> = []
+    #if DEBUG
+    /// 自測用：假的主設備（不連 SSH）；engine 回 nil＝現在連不上，connecting 回 true＝正在連。
+    var assistantPrimaryTestDouble: (device: AssistantPrimaryDevice, engine: () -> (any AssistantRemoteEngine)?,
+                                     connecting: () -> Bool)?
+    /// W180 自測用：其他配對設備的假遠端（不連 SSH），規則同上。
+    var dmRemoteDeviceTestDoubles: [(device: AssistantPrimaryDevice, engine: () -> (any AssistantRemoteEngine)?,
+                                     connecting: () -> Bool)] = []
+    /// W180 自測用：私訊框對本機助理／本機 session 送出時，在選引擎與登入檢查之前換成記錄替身（不啟動引擎、不燒額度）；
+    /// 驗附件路徑真的交到送出這一步。回傳是否收下。
+    var dmLocalSendTestDouble: ((_ threadID: UUID, _ text: String, _ attachments: [String]) -> Bool)?
+    /// W184 H4 修正（審查 #10）：自測當作這幾家已登入，好讓 Coder 的 send() 與私訊框的 sendFromDM 真的走到引擎——引擎程式由自測換成
+    /// 只記下收到什麼的替身腳本（sidecarPath 覆寫），不啟動真的引擎、不燒額度；抓「實際送出的參數」用。
+    var assistantEngineSendTestDouble: ((String, String) -> Bool)?
+    var catalogRefreshTestDouble: (() -> Void)?
+    var loginRefreshTestDouble: (() -> [EngineLoginStatus])?
+    private(set) var loginRefreshStartsForSelfTest = 0
+    private(set) var catalogRefreshStartsForSelfTest = 0
+    var engineLoginTestDouble: Set<ClaudeSidecar.Kind>?
+    var chatGPTTapConnectionTestDouble: (() -> TapConnection)?
+    var chatGPTTapWakeTestDouble: (() -> Void)?
+    private(set) var sendLoginChecks: [ClaudeSidecar.Kind] = []
+    func sendLoginStatusForSelfTest(_ kind: ClaudeSidecar.Kind) -> EngineLoginStatus { sendLoginStatus(kind) }
+    func completeEngineLoginForSelfTest(_ status: EngineLoginStatus) { completeEngineLogin(status) }
+    func seedSendLoginStatusForSelfTest(_ status: EngineLoginStatus, checkedAt: Date) {
+        replaceEngineLoginStatus(status)
+        engineLoginCheckedAt[status.kind] = checkedAt
+    }
+    #endif
+    /// Coder 送出與私訊框送出的登入檢查（W184 H4 修正：自測替身在這裡接上，其他照舊）。
+    private func sendLoginStatus(_ kind: ClaudeSidecar.Kind) -> EngineLoginStatus {
+        #if DEBUG
+        sendLoginChecks.append(kind)
+        if engineLoginTestDouble?.contains(kind) == true {
+            return EngineLoginStatus(kind: kind, isLoggedIn: true, account: nil, detail: "self-test double")
+        }
+        #endif
+        if let checked = engineLoginCheckedAt[kind], Date().timeIntervalSince(checked) >= 0,
+           Date().timeIntervalSince(checked) < 60, let cached = engineLogins.first(where: { $0.kind == kind }) {
+            return cached
+        }
+        refreshEngineLogins()
+        if let checked = engineLoginCheckedAt[kind], Date().timeIntervalSince(checked) >= 0,
+           Date().timeIntervalSince(checked) < 60, let cached = engineLogins.first(where: { $0.kind == kind }) {
+            return cached
+        }
+        // Unknown or expired login must not block the send: the check runs in the background, so refusing here
+        // bounced the first message after a minute idle. The engine's own rejection settles delivery, restores the
+        // draft and now carries the 登入 exit (EngineFailurePresentation).
+        return EngineLoginStatus(kind: kind, isLoggedIn: true, account: nil, detail: "登入狀態待引擎確認")
+    }
+    /// W180 D2：私訊框看過的別台 session 在哪一台（只在記憶體）；那台連不上時說明與保留對象用。
+    private var dmKnownDeviceIDs: [UUID: String] = [:]
+    /// W180 A4：私訊框對別台上的對話這次在選單選的模型（只在記憶體；下一句帶過去，那台收到後記在那條）。
+    private(set) var dmRemoteModelChoices: [UUID: String] = [:]
+    // Shared identity for TATWO Space and the later DM surface; never a selection.
+    var assistantThreadID: UUID? { localLive?.doc.assistantThreadID }
+    /// W180 D3：助理頁現在顯示的那串訊息屬於哪條（本機那條，或接主設備時主設備那條）。
+    var assistantTranscriptThreadID: UUID? {
+        switch assistantPlacement {
+        case .primary(_, let id, _): return id
+        case .unreachable: return nil
+        case .local: return assistantThreadID
+        }
+    }
+    @Published var assistantPrompt = ""
+    var assistantMessages: [ChatMessage] {
+        switch assistantPlacement {
+        case .primary(let remote, let id, _): return Self.primaryTranscript(remote, id)
+        case .unreachable: return []
+        case .local: return localLive?.transcript(for: assistantThreadID) ?? []
+        }
+    }
+    /// 主設備那條的逐字稿還在第一次拉（手上什麼都沒有）：畫面顯示「連線中…」，不顯示空白的歡迎畫面。
+    var assistantTranscriptLoading: Bool {
+        guard case .primary(let remote, let id, _) = assistantPlacement else { return false }
+        return remote.isTranscriptLoading(id) && Self.primaryTranscript(remote, id).isEmpty
+    }
+    /// 送到主設備那句還在等主設備回覆收到。
+    var assistantIsDelivering: Bool {
+        if case .primary(_, let id, _) = assistantPlacement { return primaryDeliveries.contains(id) || assistantOfflineHolding }   // W182 R5
+        return false
+    }
+    var assistantIsRunning: Bool {
+        switch assistantPlacement {
+        case .primary(let remote, let id, _): return remote.isRunning(id)
+        case .unreachable: return false
+        case .local: return localLive?.isRunning(assistantThreadID) ?? false
+        }
+    }
+    /// W179 F：接到主設備時＝這次在選單選的 → 那條記住的；本機＝跳過被停用引擎挑出來的
+    /// （三家都停用時退回原本的選擇，送出由引擎擋下並說明，主設備與單機行為不變）。
+    var assistantRouteChoice: ChatRouteChoice {
+        if case .primary(let remote, let id, let device) = assistantPlacement,
+           let route = (assistantPrimaryModelChoice ?? remote.threadRecord(id)?.requestedModel ?? remote.threadRecord(id)?.model).map({ ChatRouteChoice.resolve($0, deviceID: device.id) }) {
+            return route
+        }
+        if let route = assistantLocalRoute { return route }
+        let stored = localLive?.threadRecord(assistantThreadID)?.requestedModel
+        return ChatRouteChoice.resolve(stored ?? UltraworkRoleConfigurationStore().load().primaryModelID)
+    }
+
+    func setAssistantModel(_ modelID: String) {
+        let route = ChatRouteChoice.resolve(modelID)
+        if case .primary(let remote, let id, _) = assistantPlacement {
+            // 主設備那條：下一句把這個模型帶過去，主設備收到後記在那條；不套本機的停用判斷。
+            guard !remote.isRunning(id), AssistantModelRouting.engineKind(for: route) != nil else { return }
+            assistantPrimaryModelChoice = route.id
+            recordAssistantModelSelection(threadID: id)
+            objectWillChange.send()
+            return
+        }
+        guard let id = assistantThreadID, let engine = localLive, !engine.isRunning(id),
+              let kind = AssistantModelRouting.engineKind(for: route), !isEngineDisabled(kind) else { return }
+        engine.setModelPreferences(threadID: id, model: route.id,
+            effort: reasoningAfterModelSwitch(route, stored: engine.threadRecord(id)?.requestedEffort),
+            speedTier: (route.defaultSpeedTier ?? .fast).rawValue)
+        recordAssistantModelSelection(threadID: id)
+        objectWillChange.send()
+    }
+
+    /// Explicit target, local engine, and thread-owned preferences: no Coder/remote selection is read or changed.
+    /// W179 F：回 true＝送出了（本機）或正送往主設備；`onDelivered` 在真的送到時跑一次（本機馬上跑，主設備等它回覆收到），
+    /// 呼叫端在那時才清草稿。
+    /// W180 D2：attachments＝本機檔案路徑（私訊框的附件）；只有本機那條收得下，接在主設備時不送（「＋」已停用並說明）。
+    @discardableResult
+    func sendToAssistant(text: String, attachments: [String] = [],
+                         onDelivered: @escaping @MainActor () -> Void = {},
+                         onUndelivered: @escaping @MainActor (String) -> Void = { _ in }) -> Bool {
+        guard Self.dmCoderOnlyCommand(in: text) == nil else { return false }
+        if !attachments.isEmpty, !assistantAcceptsAttachments { return false }
+        // W179 F：副設備連得到主設備就交給主設備那條；接不到（連線中、連不上且本機全停用）時不送（畫面有一行說明、草稿留著）。
+        switch assistantPlacement {
+        case .primary(let remote, let primaryThreadID, let device):
+            if assistantOfflineMergeOutstanding(device) {   // W182 R5：剛才離線那段先補回主設備那條，補完再送這句（時序才對）
+                return assistantOfflineDeliverAfterMerge(device) { [weak self] in
+                    _ = self?.sendToAssistant(text: text, attachments: attachments, onDelivered: onDelivered)
+                }
+            }
+            return sendToPrimaryAssistant(remote, threadID: primaryThreadID, device: device, text: text,
+                                          onDelivered: onDelivered)
+        case .unreachable:
+            return false
+        case .local:
+            let offlineTurn = assistantOfflineBeginTurn()   // W182 R5：主設備離線時在這台接著聊（這段第一句帶前情）
+            let accepted = sendToLocalAssistant(text: text, attachments: attachments, onUndelivered: onUndelivered)
+            assistantOfflineEndTurn(offlineTurn, accepted: accepted)   // W182 R5
+            if accepted { onDelivered() }
+            return accepted
+        }
+    }
+
+    /// 本機那條助理：這台自己挑模型（跳過這台停用的引擎）、登入檢查、人設。主設備收到副設備交來的一句也走這裡。
+    private func sendToLocalAssistant(text: String, attachments: [String] = [],
+                                      onUndelivered: @escaping @MainActor (String) -> Void = { _ in }) -> Bool {
+        guard let id = assistantThreadID, let engine = localLive, !engine.store.isReadOnly,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty,
+              !engine.isRunning(id) else { return false }
+        #if DEBUG
+        if let dmLocalSendTestDouble { return dmLocalSendTestDouble(id, text, attachments) }
+        #endif
+        let route = assistantRouteChoice
+        let kind: ClaudeSidecar.Kind
+        switch route.brandGroup {
+        case .anthropic: kind = .claude
+        case .openAI: kind = .codex
+        case .xAI: kind = .grok
+        default:
+            engine.appendSystemMessage(threadID: id, text: "這個模型還沒有接上引擎，請選其他模型。", status: "error|引擎")
+            return false
+        }
+        let status = sendLoginStatus(kind)
+        guard status.isLoggedIn else {
+            engine.appendSystemMessage(threadID: id,
+                text: "這句沒有送出：\(engineLoginDisplayName(kind)) 還沒登入，到設定 › 登入。",
+                status: "error|登入")
+            objectWillChange.send()
+            return false
+        }
+        #if DEBUG
+        if let assistantEngineSendTestDouble { return assistantEngineSendTestDouble(text, route.id) }
+        #endif
+        let modelArgument: String?
+        switch kind {
+        case .claude: modelArgument = route.modelArgument
+        case .codex: modelArgument = route.modelArgument ?? route.canonicalModelSlug
+        case .grok: modelArgument = route.modelArgument
+        }
+        engine.autoApprove = permissionPreset == .approveForMe
+        engine.userPermissionPreset = permissionPreset
+        let record = engine.threadRecord(id)
+        // W184 H4 修正第三輪：私訊框按下就清草稿（照舊）；引擎後來說沒送到／不確定，交回呼叫端照同一套放回（onUndelivered）。
+        let accepted = engine.send(threadID: id, text: text, model: modelArgument, engine: kind, systemPrompt: nil,
+            attachments: attachments,
+            reasoningEffort: kind == .codex ? record?.requestedEffort ?? route.defaultEffort.codexRawValue : nil,
+            serviceTier: kind == .codex
+                ? (record?.requestedSpeedTier.flatMap(TatwoModelSpeedTier.init(rawValue:))
+                    ?? route.defaultSpeedTier)?.appServerValue : nil,
+            ultrawork: nil) { outcome in
+                if let message = Self.undeliveredMessage(outcome) { onUndelivered(message) }
+            }
+        objectWillChange.send()
+        return accepted
+    }
+
+    /// W184 H4 修正第三輪：沒送到／不確定時說的那一句（Coder 抽屜、私訊框提示同一套字）；送到了＝nil。
+    static func undeliveredMessage(_ outcome: LiveSendDelivery) -> String? {
+        switch outcome {
+        case .delivered: return nil
+        case .notDelivered(let reason): return "這句沒送到：\(reason)；草稿留在輸入框，可以再送一次"
+        case .unknown(let reason): return "不確定這句有沒有送到（\(reason)）；草稿留著，先看對話再決定要不要重送"
+        }
+    }
+
+    func sendAssistantDraft() {
+        let text = assistantPrompt
+        // 送到了才清；送到主設備的要等它回覆收到，這段時間草稿被改過就不動。
+        sendToAssistant(text: text) { [weak self] in
+            if self?.assistantPrompt == text { self?.assistantPrompt = "" }
+        }
+    }
+
+    func stopAssistant() {
+        switch assistantPlacement {
+        case .primary(let remote, let id, _):
+            remote.stop(threadID: id)
+        case .unreachable:
+            return
+        case .local:
+            guard let id = assistantThreadID else { return }
+            localLive?.stop(threadID: id)
+        }
+        objectWillChange.send()
+    }
+
+    // MARK: - W179 F 助理住在主設備
+
+    /// 這台是副設備、主設備在配對清單裡時的主設備；主設備、單機或沒配對過是 nil（行為不變）。
+    var assistantPrimaryDevice: AssistantPrimaryDevice? {
+        #if DEBUG
+        if let assistantPrimaryTestDouble { return assistantPrimaryTestDouble.device }
+        #endif
+        guard isLive, let primaryID = assistantPrimaryID,
+              let record = AssistantPrimaryResolver.device(primaryID: primaryID, in: remoteSessions.map(\.device))
+        else { return nil }
+        return AssistantPrimaryDevice(id: record.id, displayName: record.name)
+    }
+
+    /// 主設備現在連得到時的遠端引擎（跟 Coder 看遠端設備用的是同一條連線）；連不上是 nil。
+    private var assistantPrimaryEngine: (any AssistantRemoteEngine)? {
+        #if DEBUG
+        if let assistantPrimaryTestDouble { return assistantPrimaryTestDouble.engine() }
+        #endif
+        guard let device = assistantPrimaryDevice else { return nil }
+        return remoteSessions.first { $0.device.id == device.id }?.engine
+    }
+
+    /// 正在連主設備：App 開著以來第一次連還沒結果；本機也全停用時，之後每次重試也算（說明寫「正在連」比「連不上」準）。
+    /// 已經連上（有遠端引擎）就不是。
+    private var assistantPrimaryConnecting: Bool {
+        #if DEBUG
+        if let assistantPrimaryTestDouble { return assistantPrimaryTestDouble.connecting() }
+        #endif
+        guard let device = assistantPrimaryDevice,
+              let session = remoteSessions.first(where: { $0.device.id == device.id }),
+              session.engine == nil, session.state == .connecting else { return false }
+        return !assistantPrimarySettledIDs.contains(device.id) || !assistantLocalFallbackAllowed   // W181 R3
+    }
+
+    /// 副設備這一刻接不到主設備那條助理的原因；接得到（或不是副設備）是 nil。
+    private var assistantPrimaryGap: AssistantPrimaryGap? {
+        guard assistantPrimaryDevice != nil else { return nil }
+        if let remote = assistantPrimaryEngine { return remote.doc.assistantThreadID == nil ? .noAssistant : nil }
+        return assistantPrimaryConnecting ? .connecting : .offline
+    }
+
+    /// 這一刻助理接在哪：主設備那條、本機那條，或接不到（連線中；或連不上而本機也全停用）。
+    var assistantPlacement: AssistantPlacement {
+        guard let device = assistantPrimaryDevice else { return .local }
+        // 先前退回本機時送的那輪還在跑：跑完才切，停止鈕才不會不見。
+        if localLive?.isRunning(assistantThreadID) == true { return .local }
+        if let remote = assistantPrimaryEngine, let id = remote.doc.assistantThreadID {
+            return .primary(engine: remote, threadID: id, device: device)
+        }
+        let gap = assistantPrimaryGap ?? .offline
+        // 正在連線不退回本機那條（連上後同一段對話才不會分成兩條）。
+        if gap == .connecting { return .unreachable(device, gap) }
+        return assistantLocalFallbackAllowed ? .local : .unreachable(device, gap)   // W181 R3
+    }
+
+    /// W181（使用者 09-27：「這台為何不跑模型 這樣我mini關掉或當機怎麼辦」＋裁決「只是不想被 API 按量扣錢」）：
+    /// 副設備的助理平常住主設備（W179 F 不變）；主設備連不上時，這台只要有送得出去的模型（訂閱登入）就退回本機接著回。
+    private var assistantLocalFallbackAllowed: Bool {
+        AssistantModelRouting.pick(stored: localLive?.threadRecord(assistantThreadID)?.requestedModel,
+                                   lead: UltraworkRoleConfigurationStore().load().primaryModelID,
+                                   coder: selectedModel, isDisabled: { self.isEngineDisabled($0) }) != nil
+    }
+
+    /// 本機跑助理時挑的路由（跳過被停用的引擎）；三家都停用是 nil。
+    private var assistantLocalRoute: ChatRouteChoice? {
+        AssistantModelRouting.pick(stored: localLive?.threadRecord(assistantThreadID)?.requestedModel,
+                                   lead: UltraworkRoleConfigurationStore().load().primaryModelID,
+                                   coder: selectedModel, isDisabled: { self.isEngineDisabled($0) })
+    }
+
+    var assistantCanSend: Bool {
+        switch assistantPlacement {
+        case .primary(_, let id, _): return !primaryDeliveries.contains(id) && !assistantOfflineHolding   // W182 R5
+        case .unreachable: return false
+        case .local: return assistantThreadID != nil && localConversationReadOnlyNotice == nil
+        }
+    }
+
+    /// W201：助理真的不能送出時，在輸入框位置說明；本機能接著聊與自動重連不報備。
+    var assistantPlacementNote: String? {
+        switch assistantPlacement {
+        case .unreachable(let device, let gap): return AssistantPlacement.unreachableNote(device, gap)
+        case .local:
+            if let notice = localConversationReadOnlyNotice { return notice }
+            // W201：本機能接著聊時不報備設備狀態；送不到的錯誤仍走原本的 hint。
+            return nil
+        case .primary: return assistantPrimaryHint == nil ? assistantOfflineLine : nil
+        }
+    }
+
+    /// 接著主設備時送出失敗的提示；草稿留著，不與補回失敗重複顯示。
+    var assistantPrimaryHint: String? {
+        guard case .primary(_, let id, _) = assistantPlacement else { return nil }
+        return primaryHintText(for: id)
+    }
+
+    /// 助理正接在主設備那條時，主設備的名字（畫面標「在主設備上」用）。
+    var assistantPrimaryName: String? {
+        if case .primary(_, _, let device) = assistantPlacement { return device.displayName }
+        return nil
+    }
+
+    /// 玻璃 chip 上的模型名；接在主設備、那條又沒記過模型時交給主設備決定。
+    var assistantModelChipTitle: String {
+        if case .primary(let remote, let id, _) = assistantPlacement, assistantPrimaryModelChoice == nil,
+           AssistantModelRouting.storedRoute(remote.threadRecord(id)) == nil {
+            return "主設備預設"
+        }
+        return AssistantModelRouting.chipName(assistantRouteChoice)
+    }
+
+    /// 助理的模型選單：本機跑時被停用的引擎標「已停用」不能選；接在主設備時交給主設備判斷。
+    var assistantModelOptions: [AssistantModelOption] {
+        let placement = assistantPlacement
+        let selectedID: String?
+        if case .primary(let remote, let id, _) = placement {
+            selectedID = assistantPrimaryModelChoice ?? AssistantModelRouting.storedRoute(remote.threadRecord(id))?.id
+        } else {
+            selectedID = assistantRouteChoice.id
+        }
+        let checksLocal = !placement.isPrimary
+        let deviceID: String
+        if case .primary(_, _, let device) = placement { deviceID = device.id } else { deviceID = "local" }
+        return AssistantModelRouting.options(selectedID: selectedID, deviceID: deviceID,
+                                             isDisabled: { checksLocal && self.isEngineDisabled($0) }).map { option in
+            guard checksLocal, let kind = AssistantModelRouting.engineKind(for: option.route),
+                  !self.engineLogins.contains(where: { $0.kind == kind && $0.isLoggedIn }) else { return option }
+            return AssistantModelOption(route: option.route, title: option.title + " · 未登入",
+                                        isDisabled: option.isDisabled, isSelected: option.isSelected)
+        }
+    }
+
+    /// 副設備把這句交給主設備那條助理討論串（跟 Coder 看遠端設備時一樣走遠端引擎）；人設由主設備帶。
+    /// 只有這次在選單明確選的模型才帶（連同引擎與路由 id）；沒選就都不帶，主設備照自己的助理規則挑
+    /// （那條存的 → 主導 → Coder → 第一個沒停用的，跳過主設備停用的引擎）。不套本機停用判斷，Coder 的選取不讀不寫。
+    private func sendToPrimaryAssistant(_ remote: any AssistantRemoteEngine, threadID: UUID,
+                                        device: AssistantPrimaryDevice, text: String,
+                                        onDelivered: @escaping @MainActor () -> Void) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !remote.isRunning(threadID),
+              !primaryDeliveries.contains(threadID) else { return false }
+        let choice = assistantPrimaryModelChoice.map(ChatRouteChoice.resolve)
+        let turn = AssistantModelRouting.primaryTurn(choice: choice)
+        deliverToPrimary(remote, device: device, threadID: threadID, text: text, model: turn.model, engine: turn.kind,
+                         assistantRoute: choice?.id, onDelivered: onDelivered)
+        return true
+    }
+
+    /// 送到主設備：等主設備回覆收到才算送到（`onDelivered`，呼叫端這時才清草稿）；這段時間那條標成送出中、不再送。
+    /// 沒送到就不清草稿，在助理／私訊框顯示一行白話說明。
+    /// W180 D2：onPrimary＝false 時是其他配對設備（私訊框的 session），說明裡不稱「主設備」。
+    private func deliverToPrimary(_ remote: any AssistantRemoteEngine, device: AssistantPrimaryDevice, threadID: UUID,
+                                  text: String, model: String?, engine: ClaudeSidecar.Kind?, assistantRoute: String?,
+                                  onPrimary: Bool = true, onDelivered: @escaping @MainActor () -> Void) {
+        primaryDeliveries.insert(threadID)
+        if primaryHint?.threadID == nil || primaryHint?.threadID == threadID { primaryHint = nil }
+        remote.deliver(threadID: threadID, text: text, model: model, engine: engine, assistantRoute: assistantRoute) {
+            [weak self] result in
+            guard let self else { return }
+            self.primaryDeliveries.remove(threadID)
+            switch result {
+            case .success:
+                onDelivered()
+            case .failure(let error):
+                let note = AssistantPlacement.deliveryFailureNote(error, device: device)
+                self.showPrimaryHint(onPrimary ? note : note.replacingOccurrences(of: "主設備「", with: "「"),
+                                     threadID: threadID)
+            }
+        }
+    }
+
+    /// 接主設備時的提示：送出失敗的留到下一次送出；連線類（不分哪條）的 12 秒後自己收掉。
+    private func showPrimaryHint(_ text: String, threadID: UUID?) {
+        let hint = AssistantPrimaryHint(threadID: threadID, text: text)
+        primaryHint = hint
+        guard threadID == nil else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            if self?.primaryHint == hint { self?.primaryHint = nil }
+        }
+    }
+
+    private func primaryHintText(for threadID: UUID) -> String? {
+        guard let hint = primaryHint, hint.threadID == nil || hint.threadID == threadID else { return nil }
+        return hint.text
+    }
+
+    /// 主設備那條的逐字稿：遠端快取換版後還在重拉時，先用文件快照裡帶的訊息（get_document 本來就帶），不閃回空白。
+    static func primaryTranscript(_ remote: any AssistantRemoteEngine, _ threadID: UUID) -> [ChatMessage] {
+        let cached = remote.transcript(for: threadID)
+        if !cached.isEmpty { return cached }
+        return remote.threadRecord(threadID)?.messages.map(\.chatMessage) ?? []
+    }
+
+    /// W179 F（主設備這一側）：副設備把一句交給這台的助理那條（OS bridge 的 send_message）。照這台自己的助理規則送：
+    /// 模型依序＝那條存的 → 主導 → Coder → 第一個沒停用的（跳過這台停用的引擎），登入檢查、人設都一樣。
+    /// routeID＝副設備在選單明確選的路由（記在那條，之後照它；這台停用了那家就拒收）。回 nil＝送出了；否則是原因代碼。
+    func receiveAssistantTurnFromSecondary(threadID: UUID, text: String, routeID: String?) -> String? {
+        guard let id = assistantThreadID, id == threadID, let engine = localLive else { return "assistant_unavailable" }
+        guard !engine.isRunning(id) else { return "assistant_busy" }
+        if let routeID {
+            // 遠端帶來的 id 不認得就拒收（resolve 會把未知 id 變成「Unavailable」路由，不能當成可用）。
+            guard let route = ChatRouteChoice.resolveOrNil(routeID),
+                  let kind = AssistantModelRouting.engineKind(for: route) else { return "assistant_model_unknown" }
+            guard !isEngineDisabled(kind) else { return "assistant_engine_disabled" }
+            engine.setModelPreferences(threadID: id, model: route.id,
+                effort: reasoningAfterModelSwitch(route, stored: engine.threadRecord(id)?.requestedEffort),
+                speedTier: (route.defaultSpeedTier ?? .fast).rawValue)
+        }
+        guard assistantLocalRoute != nil else { return "assistant_engines_disabled" }
+        return sendToLocalAssistant(text: text) ? nil : "assistant_not_sent"
+    }
+
+    /// W179 私訊框的 Coder 對話清單：本機、未封存、不是助理、不是派到遠端設備的房間；W180 D2：子討論串也列（掛在父 session 下面）。
+    /// W179 F／W180 D2：也列每一台連得到的配對設備上的討論串（標設備名，主設備在前）。依最後活動排序（新的在前）；
+    /// 同名的補時間（整份清單先分辨再截最近幾條，最近清單和框頂標題才一致）。
+    func dmSessionCandidates(limit: Int? = nil) -> [GlobalDMSessionCandidate] {
+        guard let doc = localLive?.doc else { return [] }
+        let local = Self.dmCandidates(in: doc, deviceName: nil)
+        var seen = Set(local.map(\.id))
+        var remote: [GlobalDMSessionCandidate] = []
+        for device in dmRemoteDevices {
+            guard let engine = device.engine else { continue }
+            for row in Self.dmCandidates(in: engine.doc, deviceName: device.device.displayName) where !seen.contains(row.id) {
+                seen.insert(row.id)
+                remote.append(row)
+                dmKnownDeviceIDs[row.id] = device.device.id
+            }
+        }
+        // W182 R4：連不上的那台照樣列出最後同步到的 session（灰、只能看；選到時可以「在這台接著聊」）。
+        for session in remoteSessions where session.engine == nil {
+            guard let doc = session.offlineMirror.snapshot?.document else { continue }
+            for var row in Self.dmCandidates(in: doc, deviceName: session.device.name) where !seen.contains(row.id) {
+                row.isOffline = true
+                seen.insert(row.id)
+                remote.append(row)
+                dmKnownDeviceIDs[row.id] = session.device.id
+            }
+        }
+        let rows = (local + remote).sorted {
+            $0.activity == $1.activity ? $0.id.uuidString < $1.id.uuidString : $0.activity > $1.activity
+        }
+        let named = GlobalDMSessionCandidate.disambiguated(rows, now: Date())
+        return limit.map { Array(named.prefix($0)) } ?? named
+    }
+
+    /// 一份文件裡能私訊的 session：未封存、不是助理、不是派到遠端設備的房間；「專案 › 標題」。
+    /// W180 D2：子討論串也列（一路往上的父 session 都要列得出來），帶父 session 的 id 與標題，清單裡掛在它下面。
+    private static func dmCandidates(in doc: LiveDocumentRecord, deviceName: String?) -> [GlobalDMSessionCandidate] {
+        let names = Dictionary(doc.projects.map { ($0.id, $0.id == doc.generalProjectID ? "聊天" : $0.name) },
+                               uniquingKeysWith: { first, _ in first })
+        let threads = Dictionary(doc.threads.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func listed(_ thread: LiveThreadRecord, depth: Int) -> Bool {
+            guard !thread.isArchived, thread.deviceID == nil, let projectID = thread.projectID,
+                  projectID != doc.assistantProjectID, names[projectID] != nil else { return false }
+            guard let parentID = thread.parentThreadID else { return true }
+            guard depth < 4, let parent = threads[parentID] else { return false }
+            return listed(parent, depth: depth + 1)
+        }
+        return doc.threads.compactMap { thread -> GlobalDMSessionCandidate? in
+            guard listed(thread, depth: 0), let projectID = thread.projectID,
+                  let projectName = names[projectID] else { return nil }
+            return GlobalDMSessionCandidate(id: thread.id, projectName: projectName, title: thread.title,
+                                            activity: thread.updatedAt, deviceName: deviceName,
+                                            parentID: thread.parentThreadID,
+                                            parentTitle: thread.parentThreadID.flatMap { threads[$0]?.title })
+        }
+    }
+
+    /// W180 D2：私訊框看得到的配對設備：主設備在最前面，其他照配對清單。連得到的帶遠端引擎（跟 Coder 看遠端設備用的是
+    /// 同一條連線，不另外連）；連不上或還在連的只有名字與狀態。主設備、單機沒配對過就是空的。
+    var dmRemoteDevices: [GlobalDMRemoteDevice] {
+        var result: [GlobalDMRemoteDevice] = []
+        if let primary = assistantPrimaryDevice {
+            result.append(GlobalDMRemoteDevice(device: primary, engine: assistantPrimaryEngine,
+                                               connecting: assistantPrimaryConnecting, isPrimary: true))
+        }
+        var listed = Set(result.map(\.device.id))
+        #if DEBUG
+        for double in dmRemoteDeviceTestDoubles where !listed.contains(double.device.id) {
+            listed.insert(double.device.id)
+            result.append(GlobalDMRemoteDevice(device: double.device, engine: double.engine(),
+                                               connecting: double.connecting(), isPrimary: false))
+        }
+        #endif
+        guard isLive else { return result }
+        for session in remoteSessions where !listed.contains(session.device.id) {
+            listed.insert(session.device.id)
+            let engine: (any AssistantRemoteEngine)? = session.engine
+            result.append(GlobalDMRemoteDevice(
+                device: AssistantPrimaryDevice(id: session.device.id, displayName: session.device.name),
+                engine: engine, connecting: engine == nil && session.state == .connecting, isPrimary: false))
+        }
+        return result
+    }
+
+    /// W180 D2：這條對話在哪一台連得到的配對設備上（本機的回 nil）。
+    func dmRemote(for threadID: UUID) -> GlobalDMRemoteDevice? {
+        guard localLive?.threadRecord(threadID) == nil else { return nil }
+        return dmRemoteDevices.first { $0.engine?.threadRecord(threadID) != nil }
+    }
+
+    /// W201：清單不報備所有設備的離線／重連；選到需要那台的對話時才在輸入位置說明。
+
+    /// W179 私訊框：Coder 輸入框自己處理的斜線指令（計畫、目標、PR、討論串、issue、回報、蒸餾）。
+    /// 私訊框不做這些，送出前擋下，不把指令原文當一般訊息送給引擎；回傳指令名給提示用。
+    static func dmCoderOnlyCommand(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.split(maxSplits: 1, whereSeparator: \.isWhitespace).first.map(String.init) else { return nil }
+        return ["/plan", "/goal", "/pr", "/討論串", "/顯示討論串", "/issue", "/feedback", "/蒸餾"].contains(first) ? first : nil
+    }
+
+    #if DEBUG
+    /// 自測用：模擬某條討論串的 PR 作業（commit／push／開 PR）正在進行。
+    func dmSelfTestSetPendingPR(_ threadID: UUID, _ pending: Bool) {
+        if pending { _ = pendingPR.begin(threadID) } else { pendingPR.finish(threadID) }
+    }
+    #endif
+
+    /// W179 私訊框對某條本機 session 發話：等於在那條的輸入框打字，但主畫面不跳走。
+    /// 明確的對象、本機引擎、那條自己記住的模型／思考強度／速度；Coder 的選取與輸入框草稿一律不讀不寫。
+    /// W179 F：`onDelivered` 在真的送到時跑一次（本機馬上跑；別台上的等它回覆收到），呼叫端那時才清草稿。
+    /// W180 D2：子討論串也能送；attachments＝本機檔案路徑，只有本機的收得下（別台的「＋」已停用並說明）。
+    @discardableResult
+    func sendFromDM(threadID: UUID, text: String, attachments: [String] = [],
+                    onDelivered: @escaping @MainActor () -> Void = {},
+                    onUndelivered: @escaping @MainActor (String) -> Void = { _ in }) -> Bool {
+        if threadID == assistantThreadID {
+            return sendToAssistant(text: text, attachments: attachments, onDelivered: onDelivered, onUndelivered: onUndelivered)
+        }
+        // W179 F／W180 D2：不是本機的、是別台（主設備或其他配對設備）上的對話：走那台的遠端引擎（一樣不改 Coder 的選取）。
+        if localLive?.threadRecord(threadID) == nil, let remote = dmRemote(for: threadID), let engine = remote.engine {
+            guard attachments.isEmpty else { return false }
+            return sendFromDMToRemote(engine, device: remote, threadID: threadID, text: text, onDelivered: onDelivered)
+        }
+        guard isLive, let engine = localLive, let record = engine.threadRecord(threadID),
+              !record.isArchived, record.deviceID == nil,
+              !engine.doc.isAssistantThread(threadID),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty,
+              Self.dmCoderOnlyCommand(in: text) == nil,
+              !engine.isRunning(threadID) else { return false }
+        // 跟 Coder 輸入框一樣：這條的 PR 作業（checkout、快照、commit／push／開 PR）還在跑就不開新回合，
+        // 免得改動混進 PR 或讓 PR 那邊的送出被拒。
+        guard !pendingPR.contains(threadID) else {
+            engine.appendSystemMessage(threadID: threadID, text: "PR 作業處理中，請等目前工作結束。", status: "info|PR")
+            objectWillChange.send()
+            return false
+        }
+        #if DEBUG
+        if let dmLocalSendTestDouble {
+            let accepted = dmLocalSendTestDouble(threadID, text, attachments)
+            if accepted { onDelivered() }
+            return accepted
+        }
+        #endif
+        let preferences = ChatModelPreferences.selection(record)
+        let route = preferences.route
+        let kind: ClaudeSidecar.Kind
+        switch route.brandGroup {
+        case .anthropic: kind = .claude
+        case .openAI: kind = .codex
+        case .xAI: kind = .grok
+        default:
+            engine.appendSystemMessage(threadID: threadID, text: "這個模型還沒有接上引擎，請選其他模型。", status: "error|引擎")
+            objectWillChange.send()
+            return false
+        }
+        let status = sendLoginStatus(kind)
+        guard status.isLoggedIn else {
+            engine.appendSystemMessage(threadID: threadID,
+                text: "這句沒有送出：\(engineLoginDisplayName(kind)) 還沒登入，到設定 › 登入。",
+                status: "error|登入")
+            objectWillChange.send()
+            return false
+        }
+        let modelArgument: String?
+        switch kind {
+        case .claude: modelArgument = route.modelArgument
+        case .codex: modelArgument = route.modelArgument ?? route.canonicalModelSlug
+        case .grok: modelArgument = route.modelArgument
+        }
+        engine.autoApprove = permissionPreset == .approveForMe
+        engine.userPermissionPreset = permissionPreset
+        // W184 H4 修正（審查 #3）：帶的是這一條（threadID）自己的 ultrawork，不是主視窗 Coder 開著那條的（不同條互不影響）。
+        // W184 H4 修正第三輪：私訊框按下就清草稿（照舊，onDelivered）；引擎後來說沒送到／不確定（重開、接回原本的對話失敗）就交回
+        // 呼叫端照同一套放回（onUndelivered：輸入框空著就放回，已經打了新的一句就提示＋放回輸入框）。不自動重送。
+        let accepted = engine.send(threadID: threadID, text: text, model: modelArgument, engine: kind,
+            systemPrompt: nil, attachments: attachments,
+            reasoningEffort: kind == .codex ? preferences.effort : nil,
+            serviceTier: kind == .codex
+                ? preferences.speed.appServerValue : nil,
+            ultrawork: ultraworkSettings(for: threadID)) { [weak self] outcome in
+                if let message = Self.undeliveredMessage(outcome) { onUndelivered(message) }
+                self?.objectWillChange.send()
+            }
+        // W163：跟 Coder 輸入框一樣，「記住…」同時變成一條記憶提案（核准才寫進 user.md）；只在真的送出時提，重送不重複。
+        if accepted, let remembered = UserMemoryText.rememberRequest(in: text) {
+            let source = "私訊 \(threadID.uuidString.prefix(8))"
+            Task.detached { _ = try? UserMemoryStore.shared.propose(text: remembered, source: source) }
+        }
+        if accepted {
+            onDelivered()
+        }
+        objectWillChange.send()
+        return accepted
+    }
+    /// Global bridge reads stay local even when Coder is displaying a remote engine.
+    var localLiveForBridge: ChatLiveEngine? { localLive }
+
+    /// W179 F／W180 D2：私訊框對別台（主設備或其他配對設備）上某條 session 發話：明確的對象、那台的遠端引擎
+    /// （跟 Coder 看遠端設備時的送出一樣），模型＝這次在私訊框選的 → 那條記住的（連同引擎），其餘交給那台；
+    /// 等那台回覆收到才算送到。Coder 的選取、遠端選取與輸入框草稿一律不讀不寫；不套本機的停用判斷。
+    private func sendFromDMToRemote(_ remote: any AssistantRemoteEngine, device: GlobalDMRemoteDevice, threadID: UUID,
+                                    text: String, onDelivered: @escaping @MainActor () -> Void) -> Bool {
+        guard let record = remote.threadRecord(threadID),
+              !record.isArchived, record.deviceID == nil,
+              !remote.doc.isAssistantThread(threadID),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              Self.dmCoderOnlyCommand(in: text) == nil,
+              !remote.isRunning(threadID), !primaryDeliveries.contains(threadID) else { return false }
+        let choice = ChatModelPreferences.selection(record, overrideRouteID: dmRemoteModelChoices[threadID], deviceID: device.device.id).route
+        let turn = AssistantModelRouting.primaryTurn(choice: choice)
+        deliverToPrimary(remote, device: device.device, threadID: threadID, text: text, model: turn.model, engine: turn.kind,
+                         assistantRoute: nil, onPrimary: device.isPrimary) {
+            if let remembered = UserMemoryText.rememberRequest(in: text) {
+                let source = "私訊 \(threadID.uuidString.prefix(8))"
+                Task.detached { _ = try? UserMemoryStore.shared.propose(text: remembered, source: source) }
+            }
+            onDelivered()
+        }
+        return true
+    }
+
+    /// 私訊框讀某條 session：本機的讀本機，別台上的讀那台（背景拉、畫面只讀快取；換版重拉時先用文件快照）。
+    func dmTranscript(for threadID: UUID) -> [ChatMessage] {
+        if let local = localLive, local.threadRecord(threadID) != nil { return local.transcript(for: threadID) }
+        return dmRemote(for: threadID)?.engine.map { Self.primaryTranscript($0, threadID) }
+            ?? dmOfflineSession(threadID)?.offlineMirror.transcript(for: threadID) ?? []   // W182 R4：那台離線時讀離線副本
+    }
+
+    /// 私訊框：別台上那條的逐字稿還在第一次拉。
+    func dmSessionLoading(_ threadID: UUID) -> Bool {
+        guard let remote = dmRemote(for: threadID)?.engine else {
+            return dmOfflineSession(threadID)?.offlineMirror.isLoading(threadID) ?? false   // W182 R4
+        }
+        return remote.isTranscriptLoading(threadID) && Self.primaryTranscript(remote, threadID).isEmpty
+    }
+
+    /// 私訊框的對象不在本機、也不在任何連得到的設備上，而那台（或某台配對設備）連不上、還在連：可能在那台上，先別換掉。
+    func dmSessionAwaitingRemote(_ threadID: UUID) -> Bool {
+        guard localLive?.threadRecord(threadID) == nil, dmRemote(for: threadID) == nil else { return false }
+        return dmAwaitedDevice(threadID) != nil
+    }
+
+    /// 那條可能在哪一台：最後一次看到它的那台（現在連不上）；沒看過就主設備（連不上時）或第一台連不上的。
+    private func dmAwaitedDevice(_ threadID: UUID) -> GlobalDMRemoteDevice? {
+        let offline = dmRemoteDevices.filter { $0.engine == nil }
+        if let known = dmKnownDeviceIDs[threadID] { return offline.first { $0.device.id == known } }
+        return offline.first { $0.isPrimary } ?? offline.first
+    }
+
+    /// W180 修正：私訊框的對象可能在的那台（現在連不上）的名字；圖示列補上那一顆時標設備用。
+    func dmSessionAwaitedDeviceName(_ threadID: UUID) -> String? {
+        guard dmSessionAwaitingRemote(threadID) else { return nil }
+        return dmAwaitedDevice(threadID)?.device.displayName
+    }
+
+    /// 私訊框對別台上某條 session 的一行說明：那台連線中／連不上（送出鈕關掉、草稿留著）。
+    func dmSessionNote(_ threadID: UUID) -> String? {
+        guard dmSessionAwaitingRemote(threadID), let device = dmAwaitedDevice(threadID) else { return nil }
+        if dmOfflineSession(threadID) != nil { return RemoteOfflineContinue.dmNote(place: device.place) }   // W182 R4
+        return "這條對話在\(device.place)上，現在不能送出；草稿留著。"
+    }
+
+    /// 私訊框對別台上某條 session 送出沒成功的提示；主設備連線的提示只給主設備上的。
+    func dmSessionHint(_ threadID: UUID) -> String? {
+        guard let remote = dmRemote(for: threadID), let hint = primaryHint,
+              hint.threadID == threadID || (hint.threadID == nil && remote.isPrimary) else { return nil }
+        return hint.text
+    }
+
+    /// 私訊框這條現在能不能送：別台上的要連得到、上一句也送到了。
+    func dmSessionCanSend(_ threadID: UUID) -> Bool {
+        !dmSessionAwaitingRemote(threadID) && !primaryDeliveries.contains(threadID)
+    }
+
+    func dmSessionIsRunning(_ threadID: UUID) -> Bool {
+        if let local = localLive, local.threadRecord(threadID) != nil { return local.isRunning(threadID) }
+        return dmRemote(for: threadID)?.engine?.isRunning(threadID) ?? false
+    }
+
+    func stopDMSession(_ threadID: UUID) {
+        if let local = localLive, local.threadRecord(threadID) != nil {
+            local.stop(threadID: threadID)
+        } else {
+            dmRemote(for: threadID)?.engine?.stop(threadID: threadID)
+        }
+        objectWillChange.send()
+    }
+
+    // MARK: - W180 A4 私訊框的模型 chip（只改那個對象，不動 Coder 輸入框）
+
+    /// 本機那條會用的路由：那條記住的；沒記過跟著主導（同 sendFromDM）。
+    private static func dmLocalRoute(_ record: LiveThreadRecord) -> ChatRouteChoice {
+        ChatModelPreferences.selection(record).route
+    }
+
+    /// chip 上的模型名：本機＝那條的；別台上的＝這次在私訊框選的 → 那條記住的 → 交給那台。
+    func dmSessionModelChipTitle(_ threadID: UUID) -> String {
+        if let record = localLive?.threadRecord(threadID) {
+            return AssistantModelRouting.chipName(Self.dmLocalRoute(record))
+        }
+        guard let remote = dmRemote(for: threadID) else { return "模型" }
+        if let choice = dmRemoteModelChoices[threadID] { return AssistantModelRouting.chipName(ChatRouteChoice.resolve(choice, deviceID: remote.device.id)) }
+        if remote.engine?.threadRecord(threadID) != nil {
+            let stored = ChatModelPreferences.selection(remote.engine?.threadRecord(threadID), deviceID: remote.device.id).route
+            return AssistantModelRouting.chipName(stored)
+        }
+        // chip 只放得下短字；「在哪一台、照什麼」寫在選單第一行。
+        return remote.isPrimary ? "主設備預設" : "預設"
+    }
+
+    /// 選單列：本機的被停用的引擎標「已停用」不能選；別台上的交給那台判斷（不套本機停用）。
+    func dmSessionModelOptions(_ threadID: UUID) -> [AssistantModelOption] {
+        if let record = localLive?.threadRecord(threadID) {
+            return AssistantModelRouting.options(selectedID: Self.dmLocalRoute(record).id,
+                                                 isDisabled: { self.isEngineDisabled($0) })
+        }
+        let remote = dmRemote(for: threadID)
+        let deviceID = remote?.device.id ?? "local"
+        let selected = ChatModelPreferences.selection(remote?.engine?.threadRecord(threadID), overrideRouteID: dmRemoteModelChoices[threadID], deviceID: deviceID).route.id
+        return AssistantModelRouting.options(selectedID: selected, deviceID: deviceID, isDisabled: { _ in false })
+    }
+
+    /// 選單第一行（不能點）：別台上的對話說明在哪一台跑；本機的沒有。
+    func dmSessionModelHeadline(_ threadID: UUID) -> String? {
+        guard let remote = dmRemote(for: threadID) else { return nil }
+        return "在\(remote.place)上跑；沒選就照那條記住的"
+    }
+
+    /// 選模型只改這一條：本機的寫進那條的偏好（同 Coder 的 setModelPreferences）；別台上的記在記憶體，下一句帶過去。
+    /// 回覆中不換；本機停用的引擎不能選。
+    /// W180 修正：那條正好是 Coder 開著的那條時，Coder 的模型 chip 跟著重讀那條的偏好（模型是那條自己的屬性），
+    /// 否則 Coder 下一次送出或改思考強度會用舊模型蓋回去；Coder 的選取、草稿與其他 session 照舊不動。
+    func setDMSessionModel(_ threadID: UUID, modelID: String) {
+        let route = ChatRouteChoice.resolve(modelID, deviceID: localLive?.threadRecord(threadID) != nil ? "local" : dmRemote(for: threadID)?.device.id ?? "local")
+        guard let kind = AssistantModelRouting.engineKind(for: route) else { return }
+        if let engine = localLive, let record = engine.threadRecord(threadID) {
+            guard !engine.isRunning(threadID), !isEngineDisabled(kind),
+                  record.requestedModel != route.id else { return }
+            engine.setModelPreferences(threadID: threadID, model: route.id,
+                effort: reasoningAfterModelSwitch(route, stored: record.requestedEffort),
+                speedTier: (route.defaultSpeedTier ?? .fast).rawValue)
+            if selectedRemote == nil, selectedThreadID == threadID { restoreModelPreferences() }
+            objectWillChange.send()
+            return
+        }
+        guard let remote = dmRemote(for: threadID)?.engine, !remote.isRunning(threadID) else { return }
+        dmRemoteModelChoices[threadID] = route.id
+        objectWillChange.send()
+    }
+
+    /// W180 修正：私訊框現在能不能換這條的模型：本機的可以；別台上的要那台連得到（連不上時 chip 停用、說明原因）。
+    func dmSessionModelSelectable(_ threadID: UUID) -> Bool {
+        localLive?.threadRecord(threadID) != nil || dmRemote(for: threadID) != nil
+    }
+
+    // MARK: - W180 D2 私訊框的附件
+
+    /// 助理收得下附件：本機那條才行（接在主設備、或接不到時不行）。
+    var assistantAcceptsAttachments: Bool {
+        if case .local = assistantPlacement { return assistantThreadID != nil }
+        return false
+    }
+
+    /// 這條對話不能帶附件的原因（nil＝可以）：本機的可以；別台上的遠端送不了檔案。
+    func dmSessionAttachmentNote(_ threadID: UUID) -> String? {
+        if localLive?.threadRecord(threadID) != nil { return nil }
+        if let remote = dmRemote(for: threadID) {
+            return remote.isPrimary ? "主設備上的對話暫不支援附件" : "\(remote.place)上的對話暫不支援附件"
+        }
+        return "這條對話不在這台上，暫不支援附件"
+    }
+
+    /// 貼上的圖片存成本機附件（跟 Coder 輸入框貼圖同一個地方）；ChatGPT 的附件不經這裡（只放記憶體）。
+    func dmSaveAttachment(data: Data, suggestedName: String) -> URL? {
+        guard isLive, let localLive else { return nil }
+        return try? localLive.savePastedAttachment(data: data, suggestedName: suggestedName)
+    }
     /// True while any local chat thread is running (used by the window-close confirmation gate).
     var hasRunningWork: Bool { localLive?.hasRunningWork ?? false }
     private var pendingPR = PullRequestService.PendingPR()
@@ -65,6 +905,25 @@ final class ChatPageModel: ObservableObject {
     @Published var cliHistoryPresented = false
     var cliPendingCloseIDs: [UUID] = []
     private var composerRevision: UInt64 = 0
+    /// W184 H4 修正第二輪（審查 #1、#7）：每條 Coder 送出去、還沒確認收到的那一句（見 finishCoderDelivery）。
+    @Published private(set) var coderDeliveries: [UUID: CoderDelivery] = [:]
+    /// W184 H4 修正第三輪：沒送到、還沒放回的那一句（見 putBackUndelivered）。
+    private var coderDeliverySnapshots: [UUID: CoderDelivery] = [:]
+    @Published private var coderUndeliveredByContext: [CoderDraftIdentity: CoderUndelivered] = [:]
+    private var currentCoderDraftIdentity: CoderDraftIdentity? {
+        guard let id = selectedRemote?.threadID ?? selectedThreadID else { return nil }
+        return CoderDraftIdentity(deviceID: selectedRemote?.deviceID, threadID: id)
+    }
+    private(set) var coderUndelivered: CoderUndelivered? {
+        get { currentCoderDraftIdentity.flatMap { coderUndeliveredByContext[$0] } }
+        set {
+            if let newValue {
+                coderUndeliveredByContext[CoderDraftIdentity(deviceID: newValue.deviceID, threadID: newValue.threadID)] = newValue
+            } else if let key = currentCoderDraftIdentity {
+                coderUndeliveredByContext[key] = nil
+            }
+        }
+    }
     @Published var prompt = "" {
         didSet {
             // 打字後建議清單會變，三個 picker 的高亮都歸零，避免指到錯的項目。1.0 :1519
@@ -100,6 +959,7 @@ final class ChatPageModel: ObservableObject {
     @Published var document = TatwoNativeChatStoreDocument()
     @Published var selectedThreadID: UUID? {
         didSet {
+            OSPresence.shared.select(selectedThreadID, engine: activeConversationEngine)
             if selectedThreadID != oldValue {
                 // 同切換模式：全權下操作 TATWO OS 自己時，點別條討論串也是被操作的動作之一，不因此收回授權。
                 if !(permissionPreset == .fullAccess && ComputerUseController.shared.isOperatingSelf(owner: oldValue)) {
@@ -141,8 +1001,10 @@ final class ChatPageModel: ObservableObject {
     @Published private(set) var requestedBrowserAgentURL: String?
     private var pendingBrowserAgentNavigation: BrowserAgentNavigation?
     private(set) var browserTabRegistry: BrowserTabRegistry = BrowserTabRegistry()
-    private var browserRegistryObservation: AnyCancellable?
+    private var apiKeyPolicyObservation: AnyCancellable?   // W181 R3
     @Published var activePlanArtifact: TatwoPlanArtifactV1?
+    @Published private var localCanvasArchives: [CanvasArchiveOption] = []
+    var distillState = DistillModelState()   // W180 E4：/蒸餾 遠端畫布的小狀態（ChatPageModel+Distill.swift）
     @Published var planInspectorRequest: UUID?
     /// 2026-09-11 使用者回饋：提醒遺留太久 → 顯示 4–10 秒（依字數）後自動收掉；換成新提醒就重新計時。
     @Published var composerHint: String? { didSet { scheduleComposerHintExpiry() } }
@@ -168,10 +1030,19 @@ final class ChatPageModel: ObservableObject {
             UserDefaults.standard.set(permissionPreset.rawValue, forKey: "tatwo2.permissionPreset")
             live?.autoApprove = permissionPreset == .approveForMe
             localLive?.userPermissionPreset = permissionPreset
+            // W184 CU 第二輪（GPT-6 審查 #2）：從「全權」降下來＝當場撤銷 Computer Use（自我目標只有全權才准），
+            // 不等下一次工具呼叫；排進去還沒跑的自我動作一併作廢。
+            ComputerUseController.shared.permissionPresetChanged(from: oldValue, to: permissionPreset)
         }
     }
     @Published var selectedSpeedTier: TatwoModelSpeedTier = .fast { didSet { persistModelPreferences() } }
-    @Published var selectedEffort: TatwoCodexReasoningEffort = .high { didSet { persistModelPreferences() } }
+    @Published var selectedTapEffortID: String? { didSet { persistModelPreferences() } }
+    @Published var selectedEffort: TatwoCodexReasoningEffort = .high {
+        didSet {
+            if !restoringModelPreferences { normalizeExtendedReasoningEffort() }
+            persistModelPreferences()
+        }
+    }
     @Published var pendingArchiveIssuePrompt: (title: String, count: Int)?
     @Published var coldStartHydrationFailureMessage: String?
     @Published var allIssueListEntries: [TatwoIssueListEntryV1] = []
@@ -202,9 +1073,23 @@ final class ChatPageModel: ObservableObject {
     @Published private var gitHubRepoCheckMessages: [UUID: String] = [:]
     @Published var lastClaudeRouteReceiptStatus = ""
     @Published var lastCommand = "尚未執行"
-    @Published var pendingModelID: String?
+    private lazy var pendingModelSelections = PendingModelSelections(root:
+        localLive?.store.url.deletingLastPathComponent() ?? ChatLiveStore().url.deletingLastPathComponent())
+    var modelSelectionDeviceID: String { selectedRemote?.deviceID ?? "local" }
+    var pendingModelID: String? {
+        let entry = pendingModelSelections.entry(deviceID: modelSelectionDeviceID, threadID: selectedThreadID)
+        return entry?.pending == true ? entry?.routeID : nil
+    }
     @Published var selectedDiscussionID: UUID?
-    @Published var selectedModel = "gpt-6-astra" { didSet { persistModelPreferences() } }
+    @Published var selectedModel = "gpt-6.1-sol" {
+        didSet {
+            if !restoringModelPreferences, selectedModel != oldValue, routeChoice.runtimeAdapter == .chatgptTap {
+                selectedTapEffortID = routeChoice.tapModel.flatMap(ChatGPTTapModelCatalog.defaultEffort)
+            }
+            if !restoringModelPreferences { normalizeExtendedReasoningEffort() }
+            persistModelPreferences()
+        }
+    }
     private var restoringModelPreferences = false
     @Published var codexMirrorStatus: TatwoCodexAppStateBridge.MirrorStatus = .notEnabled
     @Published var devices: [DeviceRecord] = []
@@ -291,8 +1176,11 @@ final class ChatPageModel: ObservableObject {
     @Published var expandedDispatchReports: Set<UUID> = ChatPageModel.isDispatchExportScene
         ? [UUID(uuidString: "00000000-0000-0000-0000-00000000B303")!] : []
     /// 主導／副審的模型 id；由膠囊面板的角色選單寫入，送出時併進上游宣告給引擎看。
+    /// W184 H4 修正（審查 #3、#5）：這幾個（連同 collaborationLevel）＝Coder 開著的那條記住的 ultrawork（每條自己存；
+    /// TatwoComposerModeUltrawork.swift）；換 thread 時照那條讀回來。副手整份（副審＝第一個，後面是 sub）。
     @Published var ultraworkPrimaryModelID: String?
     @Published var ultraworkSecondaryModelID: String?
+    @Published var ultraworkAuxiliaryModelIDs: [String] = []
     var isCLIRuntimeEnabled: Bool {
         (isLive && SpaceWorkspaceController.shared.allows(.cli)) || Self.exportChatScene == "cli-多session"
     }
@@ -324,17 +1212,82 @@ final class ChatPageModel: ObservableObject {
     var composerFooterState: ChatComposerFooterState { .neutral }
     // 2026-09-04：改回 1.0 的算出來的屬性（原本是 stored，只在 init 賦值一次，
     // 導致切模型永遠停在 gpt-5.5）。來源：ChatPageModel+StateAndSelection.swift:391
-    var routeChoice: ChatRouteChoice { ChatRouteChoice.resolve(selectedModel) }
+    var routeChoice: ChatRouteChoice { ChatRouteChoice.resolve(selectedModel, deviceID: modelSelectionDeviceID) }
+    var chatGPTTapConnection: TapConnection {
+        #if DEBUG
+        if let chatGPTTapConnectionTestDouble { return chatGPTTapConnectionTestDouble() }
+        #endif
+        return ChatGPTTap.shared.connection
+    }
+    var chatGPTTapUnavailableReason: String? {
+        if selectedRemote != nil { return "ChatGPT 只支援本機 Coder；請切回本機討論串" }
+        return ChatGPTTapModelCatalog.unavailabilityReason(connection: chatGPTTapConnection)
+    }
+    func tapModelUnavailableReason(_ choice: ChatRouteChoice) -> String? {
+        guard choice.runtimeAdapter == .chatgptTap else { return nil }
+        return chatGPTTapUnavailableReason
+            ?? ChatGPTTapModelCatalog.unavailabilityReason(connection: chatGPTTapConnection, routeID: choice.id)
+    }
+    func tapModelSelectionUnavailableReason(_ choice: ChatRouteChoice) -> String? {
+        guard choice.runtimeAdapter == .chatgptTap else { return nil }
+        // 選模型只改偏好：休眠或正在喚醒都選得上（模式卡先喚醒、下一輪才套用，那時已是 starting）；送出仍等就緒。
+        if selectedRemote == nil, chatGPTTapConnection == .sleeping || chatGPTTapConnection == .starting { return nil }
+        return tapModelUnavailableReason(choice)
+    }
+    /// 選到休眠中的 ChatGPT 模型就喚醒；目錄還沒有這個模型時先提示、不切換。回傳 false＝這次不切換。
+    func prepareTapSelection(_ choice: ChatRouteChoice) -> Bool {
+        guard choice.runtimeAdapter == .chatgptTap, chatGPTTapConnection == .sleeping else { return true }
+        wakeChatGPTForModelSelection()
+        if ChatGPTTapModelCatalog.modelID(choice.id) == "unavailable" {
+            flashComposerHint("ChatGPT 正在啟動；就緒後請選擇模型")
+            return false
+        }
+        return true
+    }
+    private func wakeChatGPTForModelSelection() {
+        #if DEBUG
+        if let chatGPTTapWakeTestDouble { chatGPTTapWakeTestDouble(); return }
+        #endif
+        ChatGPTTap.shared.start()
+    }
+    func openChatGPTForModelSelection() {
+        mode = .chatgpt
+        NotificationCenter.default.post(name: .tatwoOpenWorkOSWindow, object: TatwoPage.chat.rawValue)
+        NSApp.activate(ignoringOtherApps: true)
+        ChatGPTTap.shared.start()
+    }
+    private func tapSendUnavailableReason(_ choice: ChatRouteChoice) -> String? {
+        if choice.runtimeAdapter == .chatgptTap, selectedRemote == nil,
+           chatGPTTapConnection == .sleeping || chatGPTTapConnection == .starting,
+           choice.id != ChatGPTTapModelCatalog.routeID("unavailable") { return nil }
+        // 舊目錄仍有已選模型時，允許 runner 在送出前刷新一次；離線與登入狀態照舊拒絕。
+        if selectedRemote == nil, chatGPTTapConnection == .ready, !ChatGPTTapModelCatalog.isFresh,
+           ChatGPTTapModelCatalog.snapshot.contains(where: { ChatGPTTapModelCatalog.routeID($0.id) == choice.id }) {
+            return nil
+        }
+        return tapModelUnavailableReason(choice)
+    }
+    func refreshChatGPTTapModels() { ChatGPTTapModelObservation.current?.refreshIfNeeded() }
+    var tapEffortIDForSend: String? {
+        routeChoice.tapEfforts.first { $0.id == selectedTapEffortID }?.id
+            ?? routeChoice.tapModel.flatMap(ChatGPTTapModelCatalog.defaultEffort)
+    }
+    func selectTapEffort(_ id: String) {
+        guard routeChoice.tapEfforts.contains(where: { $0.id == id }) else { return }
+        selectedTapEffortID = id
+    }
     var pendingRouteChoice: ChatRouteChoice? { pendingModelID.map(ChatRouteChoice.resolve) }
     var modelPickerRouteLabel: String {
-        guard let pendingRouteChoice, pendingRouteChoice.id != routeChoice.id else { return routeChoice.title }
-        return "\(routeChoice.title) · 下一輪 \(pendingRouteChoice.title)"
+        guard let pendingRouteChoice, pendingRouteChoice.id != routeChoice.id else { return routeChoice.commandLabel }
+        return "\(routeChoice.commandLabel) · 下一輪 \(pendingRouteChoice.commandLabel)"
     }
     var activeSubagentRows: [ThreadSubagentPresentationRow] { [] }
     var visibleIssueListEntries: [TatwoIssueListEntryV1] { issueListEntries.filter { $0.status != .archived } }
     var filteredProjects: [TatwoNativeChatProject] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let projects = document.projects.filter { $0.id != document.generalProjectID }
+        let projects = document.projects.filter {
+            $0.id != document.generalProjectID && $0.id != document.assistantProjectID
+        }
         guard !query.isEmpty else { return projects }
         return projects.compactMap { project in
             var result = project
@@ -370,12 +1323,12 @@ final class ChatPageModel: ObservableObject {
     /// `/` 指令清單。語意由 OS 上游宣告（docs/os-upstream.md）告訴各家引擎，
     /// /issue 與 /討論串由本機處理；其餘語意交原生引擎。
     static let slashCommandItems: [SlashCommandItem] = [
-        SlashCommandItem(id: "/pr", cmd: "/pr", title: "/pr — 提交程式碼",
-            subtitle: "先討論計畫，確認實作後再送 PR", icon: "arrow.triangle.branch"),
+        SlashCommandItem(id: "/pr", cmd: "/pr", title: "/pr — 貢獻到 TATWO OS 公開倉",
+            subtitle: "僅在 TATWO OS 公開倉或其 fork 使用；其他專案請用原生 Git 工具", icon: "arrow.triangle.branch"),
         SlashCommandItem(id: "/feedback", cmd: "/feedback", title: "/feedback — 回報問題",
             subtitle: "檢查原文並確認後，提交至 \(FeedbackSettings.feedbackRepository)", icon: "bubble.left.and.exclamationmark.bubble.right"),
-        SlashCommandItem(id: "/plg", cmd: "/plg", title: "/plg — 開工：討論好就派工",
-            subtitle: "先講清楚要做什麼，確認後由主導開房間派 sub", icon: "point.3.filled.connected.trianglepath.dotted"),
+        SlashCommandItem(id: "/plg", cmd: "/plg", title: "/plg — 依已確認的計畫開工",
+            subtitle: "先確認計畫；主導能做的直接做，需要協作時再派房間", icon: "point.3.filled.connected.trianglepath.dotted"),
         SlashCommandItem(id: "/plan", cmd: "/plan", title: "/plan — 只討論不動手",
             subtitle: "純規劃釐清；沒有你的「開始」就不改任何檔", icon: "list.bullet.rectangle"),
         SlashCommandItem(id: "/goal", cmd: "/goal", title: "/goal — 開一張目標卡",
@@ -386,21 +1339,37 @@ final class ChatPageModel: ObservableObject {
             subtitle: "主題保留為草稿，送出後才開始工作", icon: "bubble.left.and.bubble.right"),
         SlashCommandItem(id: "/顯示討論串", cmd: "/顯示討論串", title: "/顯示討論串 — 叫回討論串列",
             subtitle: "顯示目前對話的討論串，不啟動或中斷工作", icon: "chevron.up"),
-        SlashCommandItem(id: "/蒸餾", cmd: "/蒸餾", title: "/蒸餾 — 整理草稿，確認後選去處",
-            subtitle: "可編輯草稿；選 GBrain／skillet，按送出才寫入", icon: "drop.triangle"),
+        // W180 E4：/蒸餾＝session 做完整理成技能或其他可重用的東西（不是寫死進 GBrain）。
+        SlashCommandItem(id: "/蒸餾", cmd: "/蒸餾", title: "/蒸餾 — 把這條對話整理成技能",
+            subtitle: "預設寫成技能；也可選清單、SOP、GBrain，確認才寫入", icon: "drop.triangle"),
     ]
 
     var matchingSlashCommands: [SlashCommandItem] {
         guard mode == .chat else { return [] }
         let ids = Set(ChatComposerSlashCatalog.matches(prompt: prompt).map(\.command))
-        return Self.slashCommandItems.filter { ids.contains($0.cmd) }
+        return Self.slashCommandItems.filter { ids.contains($0.cmd) }.map { item in
+            guard routeChoice.runtimeAdapter == .chatgptTap, CanvasCommandPolicy.commands.contains(item.cmd) else { return item }
+            return SlashCommandItem(id: item.id, cmd: item.cmd, title: item.title,
+                subtitle: CanvasCommandPolicy.tapUnsupported, icon: item.icon)
+        }
+    }
+    var chatGPTStartupNotice: String? {
+        guard isRunning, routeChoice.runtimeAdapter == .chatgptTap, chatGPTTapConnection == .starting else { return nil }
+        return "ChatGPT 啟動中，這句已排隊"
     }
     var sendAvailabilityDiagnostic: String {
+        if let chatGPTStartupNotice { return chatGPTStartupNotice }
+        if routeChoice.runtimeAdapter == .chatgptTap, CanvasCommandPolicy.command(in: prompt) != nil { return CanvasCommandPolicy.tapUnsupported }
+        if isSelectedHandsThread { return "ChatGPT build 的紀錄：只由 ChatGPT 操作" }   // W183 R1
         if isLocalPRCommand { return "檢查改動並開啟 PR 草稿" }
         if isLocalFeedbackCommand { return "開啟回報草稿，不中斷目前工作" }
         if isLocalIssueCommand { return "記錄問題，不中斷目前工作" }
         if isLocalDiscussionCommand { return "開啟討論串，不啟動模型" }
         if isShowDiscussionTrayCommand { return "顯示討論串，不中斷目前工作" }
+        if let reason = tapSendUnavailableReason(routeChoice) { return reason }
+        if routeChoice.runtimeAdapter == .chatgptTap, !ChatGPTTapModelCatalog.isFresh {
+            return "送出時會重新整理 ChatGPT 模型目錄"
+        }
         if canSteerCurrentTurn { return "插話到目前工作" }
         return canSend ? "可送出" : (isRunning ? "工作執行中" : "請輸入內容")
     }
@@ -421,7 +1390,7 @@ final class ChatPageModel: ObservableObject {
     }
     var pinnedThreadRefs: [ChatSidebarThreadRef] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return document.projects.flatMap { project in
+        return document.projects.filter { $0.id != document.assistantProjectID }.flatMap { project in
             project.threads.filter {
                 $0.isPinned && (query.isEmpty
                     || project.name.localizedCaseInsensitiveContains(query)
@@ -471,7 +1440,9 @@ final class ChatPageModel: ObservableObject {
     var effectivePermissionMappingSummary: String { permissionPreset.mappingSummary }
     var sidebarStandaloneThreads: [TatwoNativeChatThread] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let threads = document.projects.first { $0.id == document.generalProjectID }?.threads ?? []
+        let threads = document.projects.first {
+            $0.id == document.generalProjectID && $0.id != document.assistantProjectID
+        }?.threads ?? []
         return threads.filter {
             !$0.isPinned && (query.isEmpty
                 || $0.title.localizedCaseInsensitiveContains(query)
@@ -534,10 +1505,18 @@ final class ChatPageModel: ObservableObject {
     var isLocalNativeGoalCommand: Bool {
         routeChoice.brandGroup == .openAI && prompt.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == "/goal"
     }
+    var localConversationReadOnlyNotice: String? {
+        localLive?.store.isReadOnly == true ? "唯讀中，不能送出；請先確認儲存空間與檔案權限，再重新開啟 App。" : nil
+    }
+
     var canSend: Bool {
+        if selectedRemote == nil && localConversationReadOnlyNotice != nil { return false }
+        if isSelectedHandsThread { return false }   // W183 R1：ChatGPT 手腳的紀錄與施工房輸入框鎖住
         let hasContent = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !droppedPaths.isEmpty
+        if routeChoice.runtimeAdapter == .chatgptTap, CanvasCommandPolicy.command(in: prompt) != nil { return hasContent }
         if isLocalPRCommand || isLocalFeedbackCommand || isLocalIssueCommand || isLocalDiscussionCommand || isShowDiscussionTrayCommand { return hasContent }
         if prompt.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == "/goal", !isLocalNativeGoalCommand { return hasContent }
+        if tapSendUnavailableReason(routeChoice) != nil { return false }
         return hasContent && !nativeGoalControlPending &&
             (!isRunning || isLocalNativeGoalCommand || canSteerCurrentTurn)
     }
@@ -552,12 +1531,20 @@ final class ChatPageModel: ObservableObject {
         case .unavailable: "Codex 鏡射不可用"
         }
     }
+    var isActivePlanExecutionRunning: Bool {
+        guard let plan = activePlanArtifact else { return false }
+        return localLive?.isExecutingPlan(plan) == true
+    }
     var isActivePlanTurnWriting: Bool { isPlanModeEnabled && isRunning }
-    var isPlanModeEnabled: Bool { activePlanArtifact?.state == .discussing }
+    var isPlanModeEnabled: Bool {
+        guard let plan = activePlanArtifact, plan.state == .discussing else { return false }
+        if plan.kind == "distill" { return plan.distillSubmission == nil }
+        return plan.kind != "pr" || plan.isPRModeActive
+    }
     var isSelectedThreadStandalone: Bool { selectedThreadProject == nil && selectedThread != nil }
     /// composer 尾端 `@` token 的搜尋字（nil＝沒有 @ token）。1.0 :358
     var issueAtMentionQuery: String? {
-        guard let token = prompt.split(whereSeparator: { $0 == " " || $0 == "\n" }).last.map(String.init),
+        guard let token = prompt.split(whereSeparator: { $0.isWhitespace }).last.map(String.init),
               token.hasPrefix("@") else { return nil }
         return String(token.dropFirst()).lowercased()
     }
@@ -567,6 +1554,9 @@ final class ChatPageModel: ObservableObject {
         return remoteSessions.first { $0.device.id == deviceID }?.device
     }
     var remoteModeLabel: String? { remoteMode.map { "遠端：\($0.name)" } }
+    func deviceConnectionProblem(_ id: String) -> String? {
+        remoteSessions.first { $0.device.id.lowercased() == id.lowercased() }?.connectionProblem
+    }
     var selectedProjectName: String { selectedThreadProject?.name ?? "無專案" }
     var selectedThreadPluginEntries: [PluginRegistryEntry] {
         guard isLive else { return [] }
@@ -575,13 +1565,65 @@ final class ChatPageModel: ObservableObject {
     var shouldOfferCodexMirrorOptIn: Bool { false }
     var shouldShowActiveGoalInlineCard: Bool { isLive && nativeGoalSnapshot != nil }
     var transcriptMessages: [ChatMessage] {
-        isLive ? (activeConversationEngine?.transcript(for: selectedThreadID) ?? []) : fixture.messages + fixtureExtraMessages
+        // W182 R4：選著的遠端串那台連不上時，讀這台存的離線副本（唯讀）。
+        isLive ? (activeConversationEngine?.transcript(for: selectedThreadID) ?? remoteOfflineTranscript) : fixture.messages + fixtureExtraMessages
+    }
+
+    /// Resolve the selected transcript once; remote turns never read the local engine's state.
+    var chatGPTTurnState: ChatGPTCoderTurnState? {
+        let messages = transcriptMessages
+        guard let reply = messages.last(where: { $0.role == .assistant }),
+              reply.runtimeAdapterID == TatwoChatRuntimeAdapter.chatgptTap.rawValue else { return nil }
+        let state = selectedRemote == nil ? selectedThreadID.flatMap { localLive?.tapTurn[$0] } : nil
+        var result = state ?? ChatGPTCoderTurnState()
+        if !isRunning || !reply.text.isEmpty { result.thinking = nil }
+        else if result.thinking == nil, reply.status == "writing|ChatGPT 思考中" {
+            result.thinking = ChatGPTThinking(started: reply.createdAt)
+        }
+        if result.failure == nil {
+            let draft = messages.last { $0.role == .user && $0.turnID == reply.turnID }?.text ?? ""
+            result.failure = ChatGPTTurnFailure.restored(status: reply.status, draft: draft)
+        }
+        if result.thoughtSeconds == nil, let status = reply.status, status.hasPrefix("done|已思考 "), status.hasSuffix(" 秒") {
+            result.thoughtSeconds = Int(status.dropFirst("done|已思考 ".count).dropLast(" 秒".count))
+        }
+        return result
+    }
+
+    func restoreChatGPTInput(_ failure: ChatGPTTurnFailure, in threadID: UUID) {
+        guard selectedThreadID == threadID, !isRunning else { return }
+        if let remote = selectedRemote {
+            guard let engine = activeConversationEngine as? RemoteLiveEngine else { return }
+            if failure.isTooLong, let original = engine.threadRecord(threadID) {
+                engine.newThread(in: original.projectID, title: "新聊天") { [weak self] newID in
+                    guard let self, let newID, selectedThreadID == threadID,
+                          selectedRemote?.deviceID == remote.deviceID else { return }
+                    let recovered = ChatGPTDraftRecovery.merge(current: prompt, returning: failure.draft)
+                    selectedRemote = (remote.deviceID, newID)
+                    selectedThreadID = newID
+                    if let route = original.requestedModel { selectedModel = route }
+                    prompt = recovered
+                }
+            } else { prompt = ChatGPTDraftRecovery.merge(current: prompt, returning: failure.draft) }
+        } else {
+            guard let engine = localLive else { return }
+            let recovered = ChatGPTDraftRecovery.merge(current: prompt, returning: failure.draft)
+            if failure.isTooLong, let original = engine.threadRecord(threadID) {
+                let newID = engine.newThread(in: original.projectID)
+                engine.setRequestedModel(original.requestedModel, threadID: newID)
+                selectLocalThread(newID)
+            }
+            prompt = recovered
+            droppedPaths = failure.paths.filter { !droppedPaths.contains($0) } + droppedPaths
+            for (path, name) in failure.names where droppedPathDisplayNames[path] == nil { droppedPathDisplayNames[path] = name }
+        }
     }
 
     /// W100：遠端逐字稿還在背景拉（或這台還沒連上）時，對話區顯示「連線中…」而不是空白。
     var isRemoteTranscriptLoading: Bool {
         guard isLive, selectedRemote != nil, let session = activeRemoteSession else { return false }
-        guard let remote = session.engine else { return true }
+        // W182 R4：連不上但快照裡有這條：只有從磁碟讀內容那一下算載入中（沒存內容的另外寫一行說明）。
+        guard let remote = session.engine else { return Self.remoteOfflineLoading(session, selectedThreadID) }
         return remote.isTranscriptLoading(selectedThreadID)
             && remote.transcript(for: selectedThreadID).isEmpty
     }
@@ -592,8 +1634,15 @@ final class ChatPageModel: ObservableObject {
     }
 
     private var activeConversationEngine: (any LiveEngineAPI)? {
-        selectedRemote == nil ? localLive : activeRemoteSession?.engine
+        #if DEBUG
+        if let double = coderRemoteEngineTestDouble, selectedRemote?.deviceID == double.deviceID { return double.engine }
+        #endif
+        return selectedRemote == nil ? localLive : activeRemoteSession?.engine
     }
+    #if DEBUG
+    /// W184 H4 修正第二輪（審查 #7、#10）：自測讓 Coder 看別台時用這個遠端引擎（真的 RemoteLiveEngine，送出交給主設備的 bridge；不開 SSH）。
+    var coderRemoteEngineTestDouble: (deviceID: String, engine: RemoteLiveEngine)?
+    #endif
 
     func receiveLocalBackgroundCompletion(_ job: BackgroundJobManager.Record) {
         localLive?.appendBackgroundCompletion(job)
@@ -605,6 +1654,8 @@ final class ChatPageModel: ObservableObject {
 
     private func configureRemoteSessions() {
         for session in remoteSessions { session.shutdown() }
+        resolvedAssistantPrimaryID = nil   // W179 F：配對清單變了，主設備是誰重讀一次
+        assistantPrimarySettledIDs = []
         guard isLive else {
             remoteSessions = []
             remoteSidebarSections = []
@@ -616,16 +1667,28 @@ final class ChatPageModel: ObservableObject {
                 link: RemoteHostLink(environment: runtimeEnvironment),
                 environment: runtimeEnvironment)
             session.onHint = { [weak self] message in
-                guard let self, self.selectedRemote?.deviceID == device.id else { return }
+                guard let self else { return }
+                // W179 F：主設備那條連線的提示也給助理與私訊框（連不上時畫面已有一行說明，這則只在接著主設備時顯示）。
+                if device.id == self.assistantPrimaryDevice?.id { self.showPrimaryHint(message, threadID: nil) }
+                guard self.selectedRemote?.deviceID == device.id else { return }
                 self.composerHint = message
             }
             session.onUpdate = { [weak self, weak session] in
                 guard let self, let session else { return }
+                // W179 F：第一次連主設備有結果了（連上或連不上），之後的重試不再當「正在連」。
+                if session.state != .connecting { self.assistantPrimarySettledIDs.insert(session.device.id) }
+                if session.device.id == self.assistantPrimaryDevice?.id { self.primaryOfflineTick() }   // W182 R5：記前情；連回就補回、送出排隊的
+                self.applyPendingModelSelectionIfPossible()
                 self.scheduleRemoteSidebarProjection()
                 self.completePendingRemoteEntry(session)
-                guard self.selectedRemote?.deviceID == session.device.id else { return }
+                guard self.selectedRemote?.deviceID == session.device.id else {
+                    // W179 F：助理與私訊框接在主設備時，主設備那邊一有更新（連上、斷線、新訊息）就重畫。
+                    if session.device.id == self.assistantPrimaryDevice?.id { self.objectWillChange.send() }
+                    return
+                }
                 self.isRunning = session.engine?.isRunning(self.selectedThreadID) ?? false
                 self.refreshIssueLists()
+                self.distillRemoteSessionUpdated(deviceID: session.device.id)   // W180 E4：AI 回覆後 /蒸餾 畫布跟上
                 self.objectWillChange.send()
             }
             return session
@@ -660,7 +1723,7 @@ final class ChatPageModel: ObservableObject {
         }
     }
 
-    private func rebuildRemoteSidebarSections() {
+    func rebuildRemoteSidebarSections() {   // W182 R4：不再 private（自測裝假遠端設備後直接重算）
         remoteProjectionTask?.cancel()
         remoteProjectionTask = nil
         lastRemoteProjectionAt = Date()
@@ -671,7 +1734,9 @@ final class ChatPageModel: ObservableObject {
             } else {
                 isOnline = false
             }
-            let projects = session.document.projects.map { project in
+            // W182 R4：離線時照樣列出最後同步的專案與串；每條的狀態行改寫最後活動（快照裡的「執行中」已經不準）。
+            let offlineLines: [UUID: String] = isOnline ? [:] : session.offlineMirror.activityLines()
+            let projects = session.document.coderProjects.map { project in
                 RemoteProjectRow(
                     id: project.id,
                     name: project.name,
@@ -685,7 +1750,7 @@ final class ChatPageModel: ObservableObject {
                         return RemoteThreadRow(
                             id: thread.id,
                             title: thread.title,
-                            statusLine: statusLine,
+                            statusLine: offlineLines[thread.id] ?? statusLine,
                             isRunning: session.engine?.isRunning(thread.id) ?? false)
                     })
             }
@@ -694,7 +1759,8 @@ final class ChatPageModel: ObservableObject {
                 deviceName: session.device.name,
                 isOnline: isOnline,
                 lastSeenAt: session.lastSeenAt,
-                projects: projects)
+                projects: projects,
+                offlineSyncedAt: isOnline || session.offlineMirror.snapshot == nil ? nil : session.offlineMirror.syncedAt)   // W182 R4
         }
     }
 
@@ -714,7 +1780,6 @@ final class ChatPageModel: ObservableObject {
         if environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil {
             self.prompt = environment["TATWO_ULTRAWORK_EXPORT_CHAT_PROMPT"] ?? ""
         }
-        self.engineLogins = engineLogin.statuses()
         let liveMode = environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] == nil
             && environment["TATWO_ULTRAWORK_EXPORT_CHAT_SCENE"] == nil
             && environment["TATWO_ULTRAWORK_CHAT_FIXTURE"] == nil
@@ -769,11 +1834,14 @@ final class ChatPageModel: ObservableObject {
             }
             return ("（已不存在的討論串）", "")
         }
-        browserRegistryObservation = browserTabRegistry.changes.sink { [weak self] in self?.objectWillChange.send() }
+        // W181 R3：Claude 的登入方式在背景查到（或變了）就重畫；App 一開先在背景查好（勾了 Claude 才查），畫面和送出都不等。
+        apiKeyPolicyObservation = EngineAPIKeyPolicy.shared.changes.sink { [weak self] in self?.objectWillChange.send() }
+        if liveMode { EngineAPIKeyPolicy.shared.refreshInBackground(optedOut: disabledEngines) }
         if let (engine, store) = botCoreFixture {
             self.live = engine
             self.localLive = engine
             connectPlanCanvas(to: engine)
+            connectArchiveSelection(to: engine)
             self.botStore = store
             self.document = engine.document
             self.selectedThreadID = engine.doc.selectedThreadID
@@ -783,8 +1851,8 @@ final class ChatPageModel: ObservableObject {
             return
         }
         if liveMode {
-            // 使用者 2026-09-07：OS 初始預設 GPT-6／中思考／Fast；不遷移既有討論串或更動金樣。
-            selectedModel = "gpt-6-astra"
+            // 使用者 2026-10-03：Coder 初始預設 GPT-6.1 Sol／中思考／Fast；不遷移既有討論串或更動金樣。
+            selectedModel = "gpt-6.1-sol"
             selectedEffort = .medium
             selectedSpeedTier = .fast
         }
@@ -800,7 +1868,7 @@ final class ChatPageModel: ObservableObject {
             ]
         }
         if !liveMode, Self.exportChatScene == "chat-typing" {
-            fixtureExtraMessages = [ChatMessage(role: .user, text: "幫我看一下模型登入頁的額度條為什麼沒對齊", turnID: "fixture-typing")]
+            fixtureExtraMessages = [ChatMessage(role: .user, text: "幫我看一下登入頁的額度條為什麼沒對齊", turnID: "fixture-typing")]
             self.isRunning = true
         }
         if !liveMode, Self.exportChatScene == "chat-artifacts" {
@@ -864,6 +1932,7 @@ final class ChatPageModel: ObservableObject {
             self.cliStore = store
             self.localLive = engine
             connectPlanCanvas(to: engine)
+            connectArchiveSelection(to: engine)
             self.live = engine
             engine.autoApprove = permissionPreset == .approveForMe
             engine.userPermissionPreset = permissionPreset
@@ -935,6 +2004,10 @@ final class ChatPageModel: ObservableObject {
             }
             BreachDetector.shared.start()
             OSAgentBridge.shared.start(model: self)
+            Task { @MainActor [weak self] in
+                self?.refreshEngineModelCatalogOnce()
+                self?.refreshEngineLogins()
+            }
             configureRemoteSessions()
             return
         }
@@ -1049,7 +2122,6 @@ final class ChatPageModel: ObservableObject {
     func retryColdStartHydration() {}
     func reloadIssueList() {
         refreshIssueLists()
-        refreshEngineLogins()
     }
     @Published var osDocumentSaveStatus: [String: String] = [:]
     @Published var osDocumentReadErrors: [String: String] = [:]
@@ -1103,7 +2175,7 @@ final class ChatPageModel: ObservableObject {
         switch routeChoice.brandGroup {
         case .anthropic:
             engine = .claude
-            modelArgument = routeChoice.modelArgument.flatMap { $0.hasPrefix("claude") ? $0 : nil }
+            modelArgument = routeChoice.modelArgument
         case .openAI:
             engine = .codex
             modelArgument = routeChoice.modelArgument ?? routeChoice.canonicalModelSlug
@@ -1118,7 +2190,7 @@ final class ChatPageModel: ObservableObject {
         let loginStatus = engineLogins.first(where: { $0.kind == engine })
             ?? EngineLoginStatus(kind: engine, isLoggedIn: true, account: nil, detail: "尚未檢查")
         guard loginStatus.isLoggedIn else {
-            flashComposerHint("\(engineLoginDisplayName(engine)) 還沒登入，到設定 › 模型存取登入")
+            flashComposerHint("\(engineLoginDisplayName(engine)) 還沒登入，到設定 › 登入")
             return
         }
 
@@ -1212,6 +2284,7 @@ final class ChatPageModel: ObservableObject {
             return nil
         }
         let cwd = workdir ?? selectedThreadProject?.workdir ?? NSHomeDirectory()
+        if engine != .generic, let problem = ExternalWorkspacePolicy.engineProblem(cwd: cwd) { flashComposerHint(problem); return nil }   // W183 R6c 審查
         let number = (cliSessionsByThread[ownerID]?.count ?? 0) + 1
         let title = "\(cliEngineTitle(engine)) \(number)"
         let tab = TatwoNativeCLISessionBook.Session(
@@ -1399,33 +2472,71 @@ final class ChatPageModel: ObservableObject {
         let status = engineLogin.status(for: .codex)
         replaceEngineLoginStatus(status)
         guard status.isLoggedIn else {
-            flashComposerHint("Codex 還沒登入，到設定 › 模型存取登入")
+            flashComposerHint("Codex 還沒登入，到設定 › 登入")
             return false
         }
         return true
     }
-    func allowMCPTool(named tool: String) {
+    /// W180 D3：放行寫進「那則訊息所屬的討論串」（threadID 由畫訊息的那串逐字稿帶來），
+    /// 不是 Coder 目前選中的那條；引擎也看那一條。遠端或不認得的討論串不放行，也不改寫到別條。
+    func allowMCPTool(named tool: String, threadID: UUID?) {
         guard tool.hasPrefix("mcp__") else { return }
         let rest = tool.dropFirst(5)
         guard let separator = rest.range(of: "__") else { return }
         let server = String(rest[..<separator.lowerBound])
-        guard let entry = availableThreadPluginEntries.first(where: {
-            $0.kind == .mcp && PluginsSource.mcpName(from: $0.id) == server
+        // 不是這台能寫的那條（主設備那條、正在看的遠端那條、找不到）：放行鈕本來就不畫，這裡只擋畫完才變的那一下。
+        guard let threadID, canAllowMCP(threadID: threadID), let localLive else {
+            flashComposerHint("這則訊息的對話不在這台，沒有放行")
+            return
+        }
+        let engine = mcpEngine(for: threadID)
+        guard let entry = pluginEntries.first(where: {
+            $0.kind == .mcp && PluginsSource.mcpEngine(from: $0.id) == engine
+                && PluginsSource.mcpName(from: $0.id) == server
         }) else { return }
-        setThreadPlugin(entry.id, enabled: true)
+        localLive.setEnabledMCP(entry.id, enabled: true, engine: engine, threadID: threadID)
+        objectWillChange.send()
+    }
+    /// W180 D3：這條討論串的權限能不能在這台放行——要是本機文件裡的那條；
+    /// 主設備那條（助理接在主設備時）、Coder 正在看的遠端那條，就算本機剛好留著同 id 的一份也不行。
+    func canAllowMCP(threadID: UUID?) -> Bool {
+        guard isLive, let threadID, selectedRemote?.threadID != threadID,
+              assistantPrimaryEngine?.doc.assistantThreadID != threadID,
+              let localLive else { return false }
+        return localLive.threadRecord(threadID) != nil
+    }
+    /// W180 D3：放行鈕的位置要換成的一行白話（nil＝這台能放行，照常畫鈕）。
+    func mcpAllowBlockedNote(threadID: UUID?) -> String? {
+        if canAllowMCP(threadID: threadID) { return nil }
+        if let threadID, assistantPrimaryEngine?.doc.assistantThreadID == threadID {
+            return "這條對話在主設備上，要到主設備放行"
+        }
+        if let threadID, selectedRemote?.threadID == threadID { return "這條對話在遠端設備上，要到那台放行" }
+        return "找不到這則訊息所屬的對話，這裡沒辦法放行"
+    }
+    private func connectArchiveSelection(to engine: ChatLiveEngine) {
+        engine.onThreadArchived = { [weak self] archived, next in
+            guard let self, self.selectedRemote == nil, self.selectedThreadID == archived else { return }
+            self.selectLocalThread(next)
+        }
     }
     private func connectPlanCanvas(to engine: ChatLiveEngine) {
         engine.onPlanChange = { [weak self] plan in
             guard let self, self.selectedRemote == nil, self.selectedThreadID == plan.threadID else { return }
             self.activePlanArtifact = plan
+            self.refreshArchivedCanvasList()
         }
         loadActivePlanCanvas()
     }
     private func loadActivePlanCanvas() {
         activePlanArtifact = nil
+        localCanvasArchives = []
+        distillState.archivedCanvases = []
+        if selectedRemote != nil { refreshRemoteDistillCanvas(); return }   // W180 E4：遠端只讀 /蒸餾 畫布
         guard selectedRemote == nil, let id = selectedThreadID, let engine = localLive else { return }
         do { activePlanArtifact = try engine.loadPlanArtifact(id, recoverInterrupted: !preparingPR && !pendingPR.contains(id)) }
         catch { flashComposerHint("計畫讀取失敗；原檔保留，請先修復資料") }
+        refreshArchivedCanvasList()
     }
     @discardableResult
     private func persistPlanCanvas(_ plan: TatwoPlanArtifactV1) -> Bool {
@@ -1439,7 +2550,69 @@ final class ChatPageModel: ObservableObject {
             return false
         }
     }
+    func exitActiveCanvasMode() {
+        if selectedRemote != nil { exitRemoteDistillMode(); return }
+        guard var plan = activePlanArtifact, let engine = localLive,
+              !preparingPR, !pendingPR.contains(plan.threadID), !DistillHost.inFlight.contains(plan.planID) else {
+            flashComposerHint("請等畫布作業完成再離開"); return
+        }
+        do {
+            if plan.kind == "pr" {
+                plan.prModeExited = true
+                try engine.savePlanArtifact(plan)
+            } else {
+                try engine.archivePlanArtifact(plan)
+                activePlanArtifact = nil
+                refreshArchivedCanvasList()
+            }
+            flashComposerHint(plan.kind == "pr" ? "已離開 PR 模式；畫布已保留" : "已離開模式；畫布已保留，可從封存畫布還原")
+        } catch { flashComposerHint("離開模式失敗；原畫布保留：\(error.localizedDescription)") }
+    }
+
+    var archivedPlanCanvases: [CanvasArchiveOption] {
+        selectedRemote == nil ? localCanvasArchives : distillState.archivedCanvases.map(CanvasArchiveOption.init)
+    }
+
+    func refreshArchivedCanvasList() {
+        guard selectedRemote == nil, let id = selectedThreadID, let engine = localLive else { return }
+        do { localCanvasArchives = try engine.archivedPlanArtifacts(id).map(CanvasArchiveOption.init) }
+        catch {
+            localCanvasArchives = []
+            flashComposerHint("封存畫布讀取失敗；原檔保留")
+        }
+    }
+
+    func restoreArchivedCanvas(_ planID: UUID) {
+        if selectedRemote != nil { restoreRemoteDistillCanvas(planID); return }
+        guard let id = selectedThreadID, let engine = localLive,
+              !preparingPR, !pendingPR.contains(id), !DistillHost.inFlight.contains(activePlanArtifact?.planID ?? UUID()) else { return }
+        do {
+            activePlanArtifact = try engine.restorePlanArtifact(id, planID: planID)
+            refreshArchivedCanvasList()
+            planInspectorRequest = UUID()
+        } catch { flashComposerHint("還原畫布失敗；封存保留：\(error.localizedDescription)") }
+    }
+
+    var canvasModeLabel: String? {
+        guard let plan = activePlanArtifact else { return nil }
+        if plan.kind == "pr" { return plan.isPRModeActive ? "PR · 討論中" : nil }
+        if plan.kind == "feedback" { return plan.state == .discussing ? "回報 · 整理中" : nil }
+        if plan.kind == "distill" { return plan.distillSubmission == nil ? "蒸餾 · 草稿" : nil }
+        return plan.executionTurnID == nil ? (plan.state == .discussing ? "計畫 · 討論中" : "計畫 · 等待開始") : nil
+    }
+
+    private func handleCanvasExitCommand() -> Bool {
+        let tokens = prompt.trimmingCharacters(in: .whitespacesAndNewlines).split(whereSeparator: \.isWhitespace)
+        guard tokens.count == 2, ["/plan", "/pr", "/feedback", "/蒸餾"].contains(String(tokens[0])),
+              ["off", "exit", "stop", "關閉", "結束"].contains(tokens[1].lowercased()) else { return false }
+        if activePlanArtifact != nil { exitActiveCanvasMode() }
+        else { flashComposerHint("目前沒有畫布模式") }
+        if activePlanArtifact == nil || activePlanArtifact?.prModeExited == true { prompt = "" }
+        return true
+    }
+
     func confirmActivePlan() {
+        guard routeChoice.runtimeAdapter != .chatgptTap else { flashComposerHint(CanvasCommandPolicy.tapUnsupported); return }
         guard selectedRemote == nil, var plan = activePlanArtifact, plan.kind != "feedback", plan.kind != "distill", plan.state == .discussing,
               localLive?.isRunning(plan.threadID) == false, !preparingPR, !pendingPR.contains(plan.threadID) else { return }
         if plan.kind == "pr" {
@@ -1465,6 +2638,7 @@ final class ChatPageModel: ObservableObject {
         }
     }
     func startActivePlan() {
+        guard routeChoice.runtimeAdapter != .chatgptTap else { flashComposerHint(CanvasCommandPolicy.tapUnsupported); return }
         guard selectedRemote == nil, let plan = activePlanArtifact, plan.acceptsStart("開始"),
               selectedThreadID == plan.threadID, localLive?.isRunning(plan.threadID) == false,
               !preparingPR, !pendingPR.contains(plan.threadID) else { return }
@@ -1510,6 +2684,7 @@ final class ChatPageModel: ObservableObject {
     func handlePlanQuestionAnswerNotification(_ notification: Notification) {}
     @discardableResult
     func saveEditedPlanCanvasText(_ text: String) -> Bool {
+        if selectedRemote != nil { return saveRemoteDistillText(text) }   // W180 E4：遠端只改得到 /蒸餾 畫布
         guard selectedRemote == nil, var plan = activePlanArtifact, !pendingPR.contains(plan.threadID),
               plan.kind != "distill" || plan.distillSubmission == nil,
               plan.kind != "pr" || plan.state == .discussing else { return false }
@@ -1635,7 +2810,10 @@ final class ChatPageModel: ObservableObject {
         switch method {
         case "computer_start": allowed = ["callerThreadID", "bundleIdentifier"]
         case "computer_stop", "computer_list_apps": allowed = ["callerThreadID"]
-        case "computer_observe": allowed = ["callerThreadID", "sessionID"]
+        case "computer_observe":
+            // W184 CU：選填 windowID（computer_window_not_uniquely_identified 附的候選清單裡的視窗編號）。
+            _ = try ComputerUseNative.windowIDParameter(params["windowID"])
+            allowed = ["callerThreadID", "sessionID", "windowID"]
         case "computer_action" where params["steps"] != nil:
             guard let observation = params["observationID"] as? String, UUID(uuidString: observation) != nil else {
                 throw ComputerUseFailure("computer_invalid_batch")
@@ -1676,6 +2854,7 @@ final class ChatPageModel: ObservableObject {
         return try await ComputerUseController.shared.perform(method, params: params, caller: caller, scope: scope,
                                                               workspace: URL(fileURLWithPath: workdir, isDirectory: true),
                                                               allowSelfTarget: permissionPreset == .fullAccess,
+                                                              selfTargetPermitted: { [weak self] in self?.permissionPreset == .fullAccess },
                                                               requestIsConnected: requestIsConnected) { [weak self] in
             self?.computerUseScope(caller) == scope && requestIsConnected()
         }
@@ -1927,6 +3106,7 @@ final class ChatPageModel: ObservableObject {
             try deviceRegistry.remove(id: id)
             devices = deviceRegistry.list()
             if selectedRemote?.deviceID == id { exitRemoteMode() }
+            retireRemoteOfflineCache(deviceID: id, environment: runtimeEnvironment)   // W182 R4：那台的離線副本一起移到垃圾桶
             configureRemoteSessions()
             flashComposerHint("已移除設備。")
         } catch {
@@ -1955,18 +3135,17 @@ final class ChatPageModel: ObservableObject {
             configureRemoteSessions()
         }
         guard let session = remoteSessions.first(where: { $0.device.id == device.id }) else {
-            flashComposerHint("遠端設備 \(device.name) 尚未連上")
+            flashComposerHint("「\(device.name)」現在連不上，這個工作暫時不能開始。")
             return false
         }
         if session.engine != nil,
-           let threadID = session.engine?.doc.selectedThreadID
-            ?? session.document.projects.lazy.flatMap(\.threads).first?.id {
+           let threadID = session.document.coderThreadID(preferred: session.engine?.doc.selectedThreadID) {
             pendingRemoteEntryDeviceID = nil
             return selectRemote(deviceID: device.id, threadID: threadID)
         }
         pendingRemoteEntryDeviceID = device.id
         session.start()
-        flashComposerHint("正在連線 \(device.name)…")
+        flashComposerHint("這個工作要在「\(device.name)」上做，現在還不能開始。")
         return false
     }
 
@@ -1974,8 +3153,7 @@ final class ChatPageModel: ObservableObject {
     private func completePendingRemoteEntry(_ session: RemoteDeviceSession) {
         guard pendingRemoteEntryDeviceID == session.device.id,
               let engine = session.engine,
-              let threadID = engine.doc.selectedThreadID
-                ?? session.document.projects.lazy.flatMap(\.threads).first?.id
+              let threadID = session.document.coderThreadID(preferred: engine.doc.selectedThreadID)
         else { return }
         pendingRemoteEntryDeviceID = nil
         _ = selectRemote(deviceID: session.device.id, threadID: threadID)
@@ -2000,8 +3178,17 @@ final class ChatPageModel: ObservableObject {
             let remote = session.engine,
             remote.threadRecord(threadID) != nil
         else {
-            flashComposerHint("遠端設備尚未連上，或找不到這條討論串")
+            // W182 R4：那台連不上，但離線副本裡有這條：照樣打開（唯讀，輸入框換成「在這台接著聊」）。
+            if let session = remoteSessions.first(where: { $0.device.id == deviceID }), session.engine == nil,
+               session.offlineMirror.hasThread(threadID) {
+                return selectOfflineRemote(deviceID: deviceID, threadID: threadID)
+            }
+            flashComposerHint("那台現在連不上，或這條對話已不在了；暫時不能打開。")
             return false
+        }
+        if remote.doc.isAssistantThread(threadID) {
+            mode = .tatwo
+            return true
         }
         if selectedRemote == nil { localSelectedThreadID = selectedThreadID }
         selectedRemote = (deviceID, threadID)
@@ -2016,11 +3203,14 @@ final class ChatPageModel: ObservableObject {
     }
 
     func selectLocalThread(_ threadID: UUID?) {
+        if let threadID, localLive?.doc.isAssistantThread(threadID) == true {
+            mode = .tatwo
+            return
+        }
         selectedRemote = nil
         selectedDiscussionID = nil
         let target = threadID
-            ?? localLive?.doc.selectedThreadID
-            ?? document.projects.lazy.flatMap(\.threads).first?.id
+            ?? document.coderThreadID(preferred: localLive?.doc.selectedThreadID)
         selectedThreadID = target
         if let target { localLive?.select(target) }
         localSelectedThreadID = target
@@ -2028,6 +3218,18 @@ final class ChatPageModel: ObservableObject {
         refreshIssueLists()
         refreshGitStatus()
         objectWillChange.send()
+    }
+
+    /// W182 R4：打開連不上那台的一條（離線副本裡的，唯讀）；連回來時同一個選取自動變成可以送出。
+    private func selectOfflineRemote(deviceID: String, threadID: UUID) -> Bool {
+        if selectedRemote == nil { localSelectedThreadID = selectedThreadID }
+        selectedRemote = (deviceID, threadID)
+        selectedDiscussionID = nil
+        selectedThreadID = threadID
+        isRunning = false
+        refreshIssueLists()
+        objectWillChange.send()
+        return true
     }
 
     @discardableResult
@@ -2223,22 +3425,31 @@ final class ChatPageModel: ObservableObject {
     }
 
     func send() {
+        if selectedRemote == nil && localConversationReadOnlyNotice != nil { return }
+        if handleCanvasExitCommand() { return }
+        if routeChoice.runtimeAdapter == .chatgptTap, CanvasCommandPolicy.command(in: prompt) != nil {
+            flashComposerHint(CanvasCommandPolicy.tapUnsupported); return
+        }
         if handleFeedbackCommand() { return }
+        let eventSource = OSEventSources.begin(origin: "composer", actor: "你", surface: "coder"); defer { OSEventSources.send = eventSource }
         // W163：「記住…」同時變成一條使用者記憶提案（核准才寫進 user.md）；這句話照樣送給 AI。
         if let remembered = UserMemoryText.rememberRequest(in: prompt) {
             let thread = selectedThreadID?.uuidString.prefix(8) ?? "聊天"
             Task.detached { _ = try? UserMemoryStore.shared.propose(text: remembered, source: "聊天 \(thread)") }
             flashComposerHint("已記成提案；到 設定 › OS › 文件 › 記憶提案 核准")
         }
-        if DistillCanvas.argument(in: prompt) != nil {
+        if DistillCanvas.argument(in: prompt) != nil, selectedRemote != nil {
+            // W180 E4：遠端（主設備上的）session 也能 /蒸餾：畫布開在那台，開好才照一般路徑送出這句。
+            if !continueRemoteDistillSend() { return }
+        } else if DistillCanvas.argument(in: prompt) != nil {
             guard !rejectRemoteWrite("/蒸餾"), let id = selectedThreadID, let engine = localLive else {
                 flashComposerHint("請先開啟本機討論串"); return
             }
             guard !engine.isRunning(id), !pendingPR.contains(id) else {
                 flashComposerHint("請等目前回合結束再蒸餾"); return
             }
-            let plan = DistillCanvas.newPlan(threadID: id, argument: DistillCanvas.argument(in: prompt) ?? "")
-            guard persistPlanCanvas(plan) else { return }
+            // W180 E4：上一份還在寫入就不開；已寫入、還能還原的留在新畫布的「之前的寫入」。
+            guard openLocalDistillCanvas(id, argument: DistillCanvas.argument(in: prompt) ?? "") else { return }
             planInspectorRequest = UUID()
             // Both bare and parameterized commands go to the current lead engine.
         }
@@ -2260,10 +3471,15 @@ final class ChatPageModel: ObservableObject {
             guard persistPlanCanvas(plan) else { return }
             planInspectorRequest = UUID()
         }
-        if isPlanModeEnabled && isLocalNativeGoalCommand {
-            flashComposerHint("計畫討論中；確認計畫並說「開始」後再執行"); return
+        if planCommand.split(whereSeparator: \.isWhitespace).first == "/plg",
+           let plan = activePlanArtifact, plan.state == .discussing,
+           plan.kind == nil || plan.kind == "plan" {
+            flashComposerHint("請先確認計畫，或離開模式後再 /plg"); return
         }
-        if activePlanArtifact != nil, let id = selectedThreadID, localLive?.isRunning(id) == true {
+        if isPlanModeEnabled && isLocalNativeGoalCommand {
+            flashComposerHint(activePlanArtifact?.kind == "pr" ? "PR 討論中；請按畫布「確認計畫」或「離開模式」" : "計畫討論中；確認計畫並說「開始」或離開模式後再執行"); return
+        }
+        if isActivePlanTurnWriting {
             flashComposerHint("請等計畫回覆完成再送出"); return
         }
         if isLocalPRCommand {
@@ -2281,7 +3497,8 @@ final class ChatPageModel: ObservableObject {
                 return
             }
             if !title.isEmpty {
-                let plan = TatwoPlanArtifactV1(threadID: id, objective: title, kind: "pr")
+                var plan = TatwoPlanArtifactV1(threadID: id, objective: title, kind: "pr")
+                plan.prMessage = "/pr 用來貢獻到 TATWO OS 公開倉 \(PullRequestService.repository)。確認時會檢查目前專案；其他專案請使用原生 Git 工具，這裡不會切換或 clone 另一個專案。"
                 guard persistPlanCanvas(plan) else { return }
                 planInspectorRequest = UUID()
             } else {
@@ -2332,7 +3549,12 @@ final class ChatPageModel: ObservableObject {
             if rejectRemoteWrite("issue") { return }
             // 1.0 語意：/issue 是「快速記到右側資訊卡的 issue 清單」，不是叫模型改檔
             let rest = String(trimmedPrompt.dropFirst("/issue".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !rest.isEmpty else { flashComposerHint("/issue 後面接你要記的問題，例如：/issue 初始安裝的資料夾架構要重想"); return }
+            guard !rest.isEmpty else {
+                refreshIssueLists()
+                requestOpenInfoCard = true
+                prompt = ""
+                return
+            }
             if addIssueFromText(rest, attachments: droppedPaths) {
                 prompt = ""
                 droppedPaths = []
@@ -2342,6 +3564,7 @@ final class ChatPageModel: ObservableObject {
         }
         // W170：/goal 在每一家引擎都是「加一條到這串的目標清單」，只加不蓋；選 OpenAI 時照舊再交給 Codex 原生 goal。
         if prompt.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == "/goal" {
+            let shouldStartNativeGoal = isLocalNativeGoalCommand
             if rejectRemoteWrite("目標") { return }
             let text = String(trimmedPrompt.dropFirst("/goal".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -2363,7 +3586,7 @@ final class ChatPageModel: ObservableObject {
                 // 目標已經記在清單裡：輸入框一律清空，不留草稿（留著再按一次會多加一條）。
                 prompt = ""
                 // 選 OpenAI 時順便交給 Codex 原生 goal；那邊沒接上不影響清單，只補一句說明。
-                if isLocalNativeGoalCommand, engineLogin.status(for: .codex).isLoggedIn {
+                if shouldStartNativeGoal, engineLogin.status(for: .codex).isLoggedIn {
                     let accepted = localLive?.setNativeGoal(threadID: id, status: "active", objective: text,
                         model: routeChoice.modelArgument) { [weak self] accepted, _ in
                             guard let self, !accepted, self.selectedThreadID == id else { return }
@@ -2394,7 +3617,15 @@ final class ChatPageModel: ObservableObject {
             return
         }
         let engine: ClaudeSidecar.Kind
+        let isTap = routeChoice.runtimeAdapter == .chatgptTap
         switch routeChoice.brandGroup {
+        case .chatgptTap:
+            if let reason = tapSendUnavailableReason(routeChoice) {
+                flashComposerHint(reason)
+                return
+            }
+            // Kind 是共用 send API 的相容參數；routeID 明確指定 chatgptTap，絕不走 CLI。
+            engine = .codex
         case .anthropic: engine = .claude
         case .openAI: engine = .codex
         case .xAI: engine = .grok
@@ -2402,43 +3633,145 @@ final class ChatPageModel: ObservableObject {
             engine = .claude
             flashComposerHint("\(routeChoice.title) 還沒有水電，先用 Claude 回覆")
         }
-        if selectedRemote == nil {
-            let loginStatus = engineLogin.status(for: engine)
-            replaceEngineLoginStatus(loginStatus)
+        if selectedRemote == nil && !isTap {
+            let loginStatus = sendLoginStatus(engine)
             guard loginStatus.isLoggedIn else {
-                let hint = "\(engineLoginDisplayName(engine)) 還沒登入，到設定 › 模型存取登入"
+                let hint = "\(engineLoginDisplayName(engine)) 還沒登入，到設定 › 登入"
                 flashComposerHint(hint)
                 // 觀測缺口（2026-09-06 review）：只閃提示的話對話裡什麼都沒有，人和測試都看不出這句為什麼沒送。進一列錯誤卡。
                 if let threadID = selectedThreadID { localLive?.appendSystemMessage(threadID: threadID, text: "這句沒有送出：\(hint)。", status: "error|登入") }
                 return
             }
-        } else if !droppedPaths.isEmpty {
+        } else if selectedRemote != nil && !droppedPaths.isEmpty {
             _ = rejectRemoteWrite("附件")
             return
         }
         let text = prompt
         let modelArg: String?
-        switch engine {
-        case .claude: modelArg = routeChoice.modelArgument.flatMap { $0.hasPrefix("claude") ? $0 : nil }
-        case .codex: modelArg = routeChoice.modelArgument ?? routeChoice.canonicalModelSlug
-        case .grok: modelArg = routeChoice.modelArgument   // 真模型 id（grok-4.7）；CLI 會拒絕未知 id，所以成功即 attestation
+        if isTap {
+            modelArg = routeChoice.id
+        } else {
+            switch engine {
+            case .claude: modelArg = routeChoice.modelArgument
+            case .codex: modelArg = routeChoice.modelArgument ?? routeChoice.canonicalModelSlug
+            case .grok: modelArg = routeChoice.modelArgument   // 真模型 id（grok-4.7）；CLI 會拒絕未知 id，所以成功即 attestation
+            }
         }
         let atts = droppedPaths
+        // W184 H4 修正第三輪（主導：「按了送出、字還在框裡，看起來就是壞了」）：跟一般聊天 App 一樣，按下送出輸入框立刻清空
+        // （字與附件），那一句馬上出現在對話裡；送出前記下這一份（字、附件、附件名）。引擎（本機：這一輪的第一個原生事件；遠端：
+        // 那台回覆收下）確認收到＝什麼都不用做；沒送到或不確定＝放回來（輸入框還空著）或提示＋「放回輸入框」（已經打了新的一句，
+        // 不蓋掉）。不自動重送。
+        let token = UUID()
+        coderDeliveries[id] = CoderDelivery(token: token, text: text, attachments: atts, names: droppedPathDisplayNames)
+        coderDeliveries[id]?.deviceID = selectedRemote?.deviceID
+        coderDeliverySnapshots[token] = coderDeliveries[id]
+        // W184 H4 修正（審查 #2）：ultrawork 是這條（id）這一輪明確帶的資料（本機接在那一句後面；遠端序列化給那台），不再當 systemPrompt。
         let accepted = activeLive.send(
             threadID: id,
             text: text,
             model: modelArg,
             engine: engine,
-            systemPrompt: ultraworkTurnBriefing,
+            systemPrompt: nil,
             attachments: atts,
-            reasoningEffort: engine == .codex ? selectedEffort.codexRawValue : nil,
-            serviceTier: engine == .codex ? selectedSpeedTier.appServerValue : nil)
+            reasoningEffort: isTap ? tapEffortIDForSend : ((engine == .codex || engine == .claude) ? selectedEffort.codexRawValue : nil),
+            serviceTier: !isTap && (engine == .codex || engine == .claude) ? selectedSpeedTier.appServerValue : nil,
+            ultrawork: isTap ? nil : ultraworkSettings(for: id)) { [weak self] outcome in
+                self?.finishCoderDelivery(id, token: token, outcome)
+            }
         if accepted {
             prompt = ""
             droppedPaths = []
             droppedPathDisplayNames = [:]
+        } else if coderDeliveries[id]?.token == token {
+            coderDeliveries[id] = nil   // 當場沒收（例：同一條上一句還在路上）：草稿本來就還在輸入框
+            coderDeliverySnapshots[token] = nil
         }
         isRunning = activeLive.isRunning(id)
+    }
+
+    /// W184 H4 修正第二輪（審查 #1、#7）／第三輪：Coder 送出去、還沒確認收到的那一句的快照（每條一句）；沒送到時照它放回。
+    struct CoderDelivery: Equatable {
+        let token: UUID
+        let text: String
+        let attachments: [String]
+        let names: [String: String]
+        var deviceID: String? = nil
+    }
+
+    #if DEBUG
+    func beginCoderDeliveryForSelfTest(_ id: UUID, text: String, attachments: [String], deviceID: String?) -> UUID {
+        let token = UUID()
+        var sent = CoderDelivery(token: token, text: text, attachments: attachments,
+                                 names: Dictionary(uniqueKeysWithValues: attachments.map { ($0, ($0 as NSString).lastPathComponent) }))
+        sent.deviceID = deviceID
+        coderDeliveries[id] = sent
+        coderDeliverySnapshots[token] = sent
+        return token
+    }
+    func finishCoderDeliveryForSelfTest(_ id: UUID, token: UUID) {
+        finishCoderDelivery(id, token: token, .unknown("fixture delivery unknown"))
+    }
+    #endif
+
+    /// W184 H4 修正第三輪：沒送到、但輸入框那時已經有新的字（不蓋掉）的那一句：抽屜顯示「上一句沒送到：…」＋「放回輸入框」。
+    struct CoderUndelivered: Equatable {
+        let threadID: UUID
+        let text: String
+        let attachments: [String]
+        let names: [String: String]
+        var deviceID: String? = nil
+    }
+
+    /// 確認收到：什麼都不用做（按下送出時已經清了）。沒送到／不確定：不自動重送——輸入框還空著（而且還是那一條）就放回來、
+    /// 說一聲；已經打了新的一句（或換到別條）就不蓋掉，改成抽屜裡一行提示＋「放回輸入框」（restoreUndeliveredDraft）。
+    private func finishCoderDelivery(_ id: UUID, token: UUID, _ outcome: LiveSendDelivery) {
+        guard let sent = coderDeliverySnapshots.removeValue(forKey: token) ?? coderDeliveries[id], sent.token == token else { return }
+        if coderDeliveries[id]?.token == token { coderDeliveries[id] = nil }
+        switch outcome {
+        case .delivered:
+            localLive?.rememberTapFailureNames(id, draft: sent.text, names: sent.names)
+        case .notDelivered, .unknown:
+            putBackUndelivered(id, sent, message: Self.undeliveredMessage(outcome) ?? "這句沒送到")
+        }
+        if currentCoderDraftIdentity == CoderDraftIdentity(deviceID: sent.deviceID, threadID: id),
+           let live = activeConversationEngine { isRunning = live.isRunning(id) }
+    }
+
+    private func putBackUndelivered(_ id: UUID, _ sent: CoderDelivery, message: String) {
+        let sentContext = CoderDraftIdentity(deviceID: sent.deviceID, threadID: id)
+        let composerEmpty = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && droppedPaths.isEmpty
+        if currentCoderDraftIdentity == sentContext, composerEmpty {
+            prompt = sent.text
+            droppedPaths = sent.attachments
+            droppedPathDisplayNames = sent.names
+            if coderUndelivered?.threadID == id { coderUndelivered = nil }
+            flashComposerHint(message)
+        } else {
+            coderUndelivered = CoderUndelivered(threadID: id, text: sent.text, attachments: sent.attachments, names: sent.names, deviceID: sent.deviceID)
+        }
+    }
+
+    /// 抽屜裡那一行（只在那一條開著時）：「上一句沒送到：前 20 個字…」。
+    var coderUndeliveredNotice: String? {
+        guard let undelivered = coderUndelivered else { return nil }
+        return "上一句沒送到：" + Self.undeliveredPreview(undelivered.text)
+    }
+
+    /// 前 20 個字（換行換成空白；超過才加「…」）。
+    static func undeliveredPreview(_ text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        return flat.count > 20 ? String(flat.prefix(20)) + "…" : flat
+    }
+
+    /// 「放回輸入框」：把沒送到的那一句接在現在的草稿前面（附件也放回來，排在前面）；不送出。
+    func restoreUndeliveredDraft() {
+        guard let undelivered = coderUndelivered else { return }
+        let current = prompt
+        prompt = current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? undelivered.text : undelivered.text + "\n" + current
+        droppedPaths = undelivered.attachments.filter { !droppedPaths.contains($0) } + droppedPaths
+        for (path, name) in undelivered.names where droppedPathDisplayNames[path] == nil { droppedPathDisplayNames[path] = name }
+        coderUndelivered = nil
     }
     func appendDroppedPath(_ path: String) {
         if rejectRemoteWrite("附件") { return }
@@ -2561,13 +3894,41 @@ final class ChatPageModel: ObservableObject {
         }
     }
     func flashComposerHint(_ message: String) { composerHint = message }
+    private static var engineModelCatalogStarted = false
+    func refreshEngineModelCatalogOnce() {
+        guard isLive, !Self.engineModelCatalogStarted else { return }
+        Self.engineModelCatalogStarted = true
+        refreshEngineModelCatalog()
+    }
+    func refreshEngineModelCatalog(force: Bool = false) {
+        guard isLive else { return }
+        #if DEBUG
+        catalogRefreshStartsForSelfTest += 1
+        if let catalogRefreshTestDouble { catalogRefreshTestDouble(); return }
+        #endif
+        EngineModelCatalogProbe.shared.refresh(force: force) { [weak self] in self?.objectWillChange.send() }
+    }
+
     func refreshEngineLogins() {
-        guard isLive else { return }   // 匯出（金樣）模式用固定假狀態
-        // 狀態檢查會起子程序（claude auth status 最多 8 秒），一定要離開主執行緒——03:41／03:52 兩次「當機」就是這裡卡住主執行緒
+        guard isLive, !engineLoginRefreshInFlight else { return }   // 匯出（金樣）模式用固定假狀態
+        engineLoginRefreshInFlight = true
+        #if DEBUG
+        loginRefreshStartsForSelfTest += 1
+        if let loginRefreshTestDouble {
+            for status in loginRefreshTestDouble() { replaceEngineLoginStatus(status) }
+            engineLoginRefreshInFlight = false
+            return
+        }
+        #endif
         let login = engineLogin
         Task.detached { [weak self] in
+            EngineAPIKeyPolicy.shared.refresh(optedOut: EngineDisableStore.disabled())   // W181 R3：勾了才重查登入方式
             let list = login.statuses()
-            await MainActor.run { self?.engineLogins = list }
+            await MainActor.run {
+                guard let self else { return }
+                self.engineLoginRefreshInFlight = false
+                for status in list { self.replaceEngineLoginStatus(status) }
+            }
         }
     }
     func loginEngine(_ kind: ClaudeSidecar.Kind) {
@@ -2580,11 +3941,16 @@ final class ChatPageModel: ObservableObject {
                     self?.engineLoginLog.append(line)
                 }
             }
+            EngineAPIKeyPolicy.shared.refresh(optedOut: EngineDisableStore.disabled())   // W181 R3
             await MainActor.run {
-                self?.replaceEngineLoginStatus(status)
-                self?.engineLoginInProgress = nil
+                self?.completeEngineLogin(status)
             }
         }
+    }
+    private func completeEngineLogin(_ status: EngineLoginStatus) {
+        replaceEngineLoginStatus(status)
+        engineLoginInProgress = nil
+        if status.isLoggedIn { refreshEngineModelCatalog(force: true) }
     }
     /// 快速記一個問題到右側清單（/issue 與資訊卡的快速欄共用）。第一行是標題，其餘是內文。
     @discardableResult
@@ -2621,12 +3987,27 @@ final class ChatPageModel: ObservableObject {
         let now = !EngineDisableStore.isDisabled(kind)
         EngineDisableStore.set(kind, disabled: now)
         disabledEngines = EngineDisableStore.disabled()
-        flashComposerHint(now ? "\(EngineDisableStore.displayName(kind)) 的 API 已禁用，任何對話都不會送給它" : "\(EngineDisableStore.displayName(kind)) 已解除禁用")
+        // W181 R3：勾了只是不用 API 金鑰（按量計費），訂閱登入照常能跑。
+        if kind != .grok { GBrainService.shared.applyAPIKeyPreference() }   // GBrain 的金鑰照新設定帶或不帶
+        guard now else {
+            flashComposerHint("\(EngineDisableStore.displayName(kind)) 可以用 API 金鑰了（用 API 金鑰會按量計費）"); return
+        }
+        // 登入方式在背景查（Claude 要起 `claude auth status`，不能卡主執行緒），查到才說對的話。
+        let policy = EngineAPIKeyPolicy.shared
+        Task.detached { [weak self] in
+            let method = policy.method(kind)
+            await MainActor.run { self?.flashComposerHint(EngineAPIKeyPolicy.optOutHint(kind, method)) }
+        }
     }
-    func isEngineDisabled(_ kind: ClaudeSidecar.Kind) -> Bool { disabledEngines.contains(kind.rawValue) }
+    /// W181 R3：這台送不出這家（勾了不用 API 金鑰、而且這家在這台只有 API 金鑰或判斷不出來）。助理、私訊框、選單都看這個。
+    func isEngineDisabled(_ kind: ClaudeSidecar.Kind) -> Bool {
+        EngineDisableStore.blocksSend(kind, optedOut: disabledEngines, allowStale: true)
+    }
+    /// W181 R3：設定上勾了「不用 API 金鑰」（按鈕與狀態字用；不等於送不出）。
+    func isAPIKeyOptedOut(_ kind: ClaudeSidecar.Kind) -> Bool { disabledEngines.contains(kind.rawValue) }
 
-    /// 模型登入頁的額度條：跟首頁額度卡同一個來源（Claude／OpenAI 走訂閱 API，Grok 只有 App 自己的記錄）。
-    /// 模型登入頁「允許讀取額度…」：只有這裡會讓 macOS 跳鑰匙圈授權視窗（W106）。
+    /// 登入頁的額度條：跟首頁額度卡同一個來源（Claude／OpenAI 走訂閱 API，Grok 只有 App 自己的記錄）。
+    /// 登入頁「允許讀取額度…」：只有這裡會讓 macOS 跳鑰匙圈授權視窗（W106）。
     func authorizeClaudeQuotaRead() {
         let paths = engineLogin.paths
         Task { [weak self] in
@@ -2656,7 +4037,7 @@ final class ChatPageModel: ObservableObject {
         }
     }
 
-    /// 使用者在模型登入頁按了「使用重置券」並二次確認後才會走到這裡。
+    /// 使用者在登入頁按了「使用重置券」並二次確認後才會走到這裡。
     func consumeOpenAIResetCredit() {
         let paths = engineLogin.paths
         Task.detached { [weak self] in
@@ -2697,12 +4078,14 @@ final class ChatPageModel: ObservableObject {
                     self?.engineLoginLog.append(line)
                 }
             }
+            EngineAPIKeyPolicy.shared.refresh(optedOut: EngineDisableStore.disabled())   // W181 R3
             await MainActor.run {
                 self?.replaceEngineLoginStatus(status)
             }
         }
     }
     private func replaceEngineLoginStatus(_ status: EngineLoginStatus) {
+        engineLoginCheckedAt[status.kind] = Date()
         if let index = engineLogins.firstIndex(where: { $0.kind == status.kind }) {
             engineLogins[index] = status
         } else {
@@ -2721,15 +4104,28 @@ final class ChatPageModel: ObservableObject {
         }
     }
     func setSingleModel(_ routeID: String, syncCollaborationLead: Bool = false) {
-        let choice = ChatRouteChoice.resolve(routeID)
+        let choice = ChatRouteChoice.resolve(routeID, deviceID: modelSelectionDeviceID)
+        if let reason = tapModelSelectionUnavailableReason(choice) {
+            flashComposerHint(reason)
+            return
+        }
+        guard prepareTapSelection(choice) else { return }
         if isRunning {
-            pendingModelID = choice.id == selectedModel ? nil : choice.id
+            guard let threadID = selectedThreadID else { return }
+            do {
+                try pendingModelSelections.set(deviceID: modelSelectionDeviceID, threadID: threadID,
+                    routeID: choice.id == selectedModel ? nil : choice.id, pending: true)
+            } catch { flashComposerHint("下一輪模型未能儲存；請稍後再選。" ); return }
+            objectWillChange.send()
             flashComposerHint(pendingModelID == nil
                 ? "已取消下一輪模型切換；目前回覆仍由 \(routeChoice.title) 執行。"
                 : "目前回覆仍由 \(routeChoice.title) 執行；\(choice.title) 會從下一輪開始。")
             return
         }
-        pendingModelID = nil
+        if let threadID = selectedThreadID {
+            do { try pendingModelSelections.set(deviceID: modelSelectionDeviceID, threadID: threadID, routeID: nil, pending: false) }
+            catch { flashComposerHint("模型選擇未能儲存；請稍後再選。"); return }
+        }
         selectedModel = choice.id
         // 模型選單只管這條討論串的路由；主導／副審身份走 ultrawork 膠囊，不在這裡連動。
         _ = syncCollaborationLead
@@ -2738,30 +4134,79 @@ final class ChatPageModel: ObservableObject {
     /// Preferences belong to the existing thread document, not another global
     /// settings store. Hydration must not write defaults over explicit choices.
     func restoreModelPreferences() {
+        restoreUltraworkPreferences()   // W184 H4 修正（審查 #3）：ultrawork 也照這條記住的讀回來
         guard isLive, let engine = activeConversationEngine else { return }
         restoringModelPreferences = true
         defer { restoringModelPreferences = false }
         let thread = engine.threadRecord(selectedThreadID)
-        let choice = ChatRouteChoice.resolve(thread?.requestedModel ?? thread?.model ?? "gpt-6-astra")
+        let remoteSelection = selectedRemote.flatMap { pendingModelSelections.entry(deviceID: $0.deviceID, threadID: $0.threadID) }
+        let preferences = ChatModelPreferences.selection(thread,
+            overrideRouteID: remoteSelection?.pending == false ? remoteSelection?.routeID : nil, deviceID: modelSelectionDeviceID)
+        let choice = preferences.route
         selectedModel = choice.id
-        selectedEffort = thread?.requestedEffort.flatMap(TatwoCodexReasoningEffort.init(rawValue:)) ?? choice.defaultEffort
-        selectedSpeedTier = thread?.requestedSpeedTier.flatMap(TatwoModelSpeedTier.init(rawValue:))
-            ?? choice.defaultSpeedTier ?? .fast
+        // 冷啟動時目錄可能還沒回來；先保留這條的原生 ID，送出前再按當時的目錄驗證。
+        selectedTapEffortID = choice.runtimeAdapter == .chatgptTap
+            ? (preferences.effort.isEmpty ? nil : preferences.effort) : nil
+        selectedEffort = TatwoCodexReasoningEffort(rawValue: preferences.effort) ?? choice.defaultEffort
+        selectedSpeedTier = preferences.speed
+        normalizeExtendedReasoningEffort()
+    }
+
+    private func normalizeExtendedReasoningEffort() {
+        guard routeChoice.runtimeAdapter != .chatgptTap else { return }
+        let profile = routeChoice.profile
+        guard let notice = profile.reasoningDowngradeNotice(for: selectedEffort.rawValue) else { return }
+        selectedEffort = profile.nativeReasoningEffort(for: selectedEffort) ?? profile.defaultEffort
+        flashComposerHint(notice)
+    }
+
+    private func reasoningAfterModelSwitch(_ route: ChatRouteChoice, stored: String?) -> String {
+        guard let stored, let requested = TatwoCodexReasoningEffort(rawValue: stored),
+              requested == .max || requested == .ultra else { return route.defaultEffort.codexRawValue }
+        if let notice = route.profile.reasoningDowngradeNotice(for: stored) { flashComposerHint(notice) }
+        return route.profile.compatibleReasoningValue(stored) ?? route.defaultEffort.codexRawValue
     }
 
     private func persistModelPreferences() {
-        guard isLive, !restoringModelPreferences, selectedRemote == nil,
-              let threadID = selectedThreadID, let live = localLive as? ChatLiveEngine else { return }
+        guard isLive, !restoringModelPreferences, let threadID = selectedThreadID else { return }
+        if let selectedRemote {
+            do { try pendingModelSelections.set(deviceID: selectedRemote.deviceID, threadID: threadID, routeID: selectedModel, pending: false) }
+            catch { flashComposerHint("這台設備的模型選擇未能儲存。") }
+            return
+        }
+        guard let live = localLive else { return }
+        // TAP 保存原生 effort ID；不經 Codex 正規化，也不帶 Codex 速度。
         live.setModelPreferences(threadID: threadID, model: selectedModel,
-                                 effort: selectedEffort.rawValue, speedTier: selectedSpeedTier.rawValue)
+                                 effort: routeChoice.runtimeAdapter == .chatgptTap ? selectedTapEffortID ?? "" : selectedEffort.rawValue,
+                                 speedTier: routeChoice.runtimeAdapter == .chatgptTap ? "" : selectedSpeedTier.rawValue)
     }
 
     /// 回合結束時把「下一輪再換」落地（1.0 ChatPageModel+StateAndSelection.swift:513）。
     func applyPendingModelSelectionIfPossible() {
-        guard !isRunning, let pendingModelID else { return }
-        self.pendingModelID = nil
-        selectedModel = ChatRouteChoice.resolve(pendingModelID).id
+        for entry in pendingModelSelections.queued {
+            let engine: (any LiveEngineAPI)?
+            if entry.deviceID == "local" { engine = localLive }
+            else if let session = remoteSessions.first(where: { $0.device.id == entry.deviceID }),
+                    case .online = session.state { engine = session.engine }
+            else { continue }
+            guard let engine, let record = engine.threadRecord(entry.threadID), !record.isArchived,
+                  !engine.isRunning(entry.threadID) else { continue }
+            do {
+                // Remove from the pending phase before persist invokes onChange again.
+                try pendingModelSelections.set(deviceID: entry.deviceID, threadID: entry.threadID, routeID: entry.routeID, pending: false)
+                if entry.deviceID == "local", let live = localLive {
+                    let route = ChatRouteChoice.resolve(entry.routeID)
+                    live.setModelPreferences(threadID: entry.threadID, model: route.id,
+                        effort: reasoningAfterModelSwitch(route, stored: record.requestedEffort),
+                        speedTier: (route.defaultSpeedTier ?? .fast).rawValue)
+                    try pendingModelSelections.set(deviceID: entry.deviceID, threadID: entry.threadID, routeID: nil, pending: false)
+                }
+                if entry.deviceID == modelSelectionDeviceID, entry.threadID == selectedThreadID { restoreModelPreferences() }
+                objectWillChange.send()
+            } catch { flashComposerHint("下一輪模型未能儲存；原選擇仍保留。") }
+        }
     }
+
     func restoreMostRecentArchivedThread() {
         if rejectRemoteWrite("還原封存討論串") { return }
         guard isLive, let restored = live?.restoreMostRecentArchivedThread() else { return }
@@ -2878,6 +4323,7 @@ final class ChatPageModel: ObservableObject {
     }
     /// Captures route and thread before asynchronous checkout; never sends to a newly selected room.
     private func startPRContribution(description: String, threadID: UUID) {
+        guard routeChoice.runtimeAdapter != .chatgptTap else { flashComposerHint(CanvasCommandPolicy.tapUnsupported); return }
         guard let engine = localLive, !engine.isRunning(threadID),
               let sourcePlan = try? engine.loadPlanArtifact(threadID), sourcePlan.kind == "pr", sourcePlan.state == .confirmed,
               pendingPR.begin(threadID) else { return }
@@ -2888,8 +4334,7 @@ final class ChatPageModel: ObservableObject {
         case .xAI: kind = .grok
         default: kind = .claude
         }
-        let login = engineLogin.status(for: kind)
-        replaceEngineLoginStatus(login)
+        let login = sendLoginStatus(kind)
         guard login.isLoggedIn else {
             pendingPR.finish(threadID)
             resetPRPlan(threadID, planID: sourcePlan.planID, message: "這句沒有送出：請先登入目前引擎。")
@@ -2897,13 +4342,13 @@ final class ChatPageModel: ObservableObject {
         }
         let model: String?
         switch kind {
-        case .claude: model = routeChoice.modelArgument.flatMap { $0.hasPrefix("claude") ? $0 : nil }
+        case .claude: model = routeChoice.modelArgument
         case .codex: model = routeChoice.modelArgument ?? routeChoice.canonicalModelSlug
         case .grok: model = routeChoice.modelArgument
         }
-        let effort = kind == .codex ? selectedEffort.codexRawValue : nil
-        let tier = kind == .codex ? selectedSpeedTier.appServerValue : nil
-        let briefing = ultraworkTurnBriefing
+        let effort = kind == .codex || kind == .claude ? selectedEffort.codexRawValue : nil
+        let tier = kind == .codex || kind == .claude ? selectedSpeedTier.appServerValue : nil
+        let ultrawork = ultraworkSettings(for: threadID)   // W184 H4 修正（審查 #2）：這條的 ultrawork，這一輪明確帶著
         let cwd = engine.threadRecord(threadID)?.cwdOverride ?? selectedThreadProject?.workdir
         let repository = PullRequestService.repository
         preparingPR = true
@@ -2912,8 +4357,12 @@ final class ChatPageModel: ObservableObject {
             defer { preparingPR = false }
             do {
                 let identity = try PullRequestCoordinator.shared.identity()
+                guard let cwd, try await PullRequestService().isContributionCheckout(
+                    URL(fileURLWithPath: cwd, isDirectory: true), repository: repository, identity: identity) else {
+                    throw PullRequestFailure(message: "/pr 只用來貢獻到 TATWO OS 公開倉 \(repository)。目前專案不是該倉或其 fork；請使用原生 Git 工具提交目前專案。")
+                }
                 let checkout = try await PullRequestService().contributionCheckout(
-                    current: cwd.map { URL(fileURLWithPath: $0, isDirectory: true) },
+                    current: URL(fileURLWithPath: cwd, isDirectory: true),
                     repository: repository, identity: identity)
                 if !checkout.useCurrent {
                     let pid = engine.doc.projects.first { $0.workdir == checkout.directory.path }?.id
@@ -2966,8 +4415,8 @@ final class ChatPageModel: ObservableObject {
                     }
                 }
                 guard engine.send(threadID: id, text: description + "\n\n" + PullRequestService.contributionInstruction,
-                    model: model, engine: kind, systemPrompt: briefing,
-                    reasoningEffort: effort, serviceTier: tier) else {
+                    model: model, engine: kind, systemPrompt: nil, attachments: [],
+                    reasoningEffort: effort, serviceTier: tier, ultrawork: ultrawork) else {
                     engine.onTurnComplete[id] = nil
                     throw PullRequestFailure(message: "引擎未接受這次工作，未開 PR。")
                 }
@@ -2983,6 +4432,32 @@ final class ChatPageModel: ObservableObject {
         plan.state = .discussing; plan.executionTurnID = nil; plan.prMessage = message
         _ = persistPlanCanvas(plan)
         engine.appendSystemMessage(threadID: id, text: message, status: "error|PR")
+    }
+
+    /// A human has checked the uncertain result; refresh the review without submitting.
+    func retryActivePRSubmission() {
+        guard selectedRemote == nil, let plan = activePlanArtifact, plan.kind == "pr", plan.state == .ready,
+              let review = plan.prReview, review.attempted, review.submittedURL == nil,
+              let engine = localLive, !engine.isRunning(plan.threadID), pendingPR.begin(plan.threadID) else { return }
+        Task {
+            defer { pendingPR.finish(plan.threadID) }
+            do {
+                let identity = try PullRequestCoordinator.shared.identity()
+                guard identity.username == review.account, PullRequestService.repository == review.repository else {
+                    throw PullRequestFailure(message: "帳號或倉庫設定已變更；未解除結果未確認狀態。")
+                }
+                let snapshot = try await PullRequestService().preflight(directory: review.directory, repository: review.repository, identity: identity)
+                guard var current = try engine.loadPlanArtifact(plan.threadID), current.planID == plan.planID,
+                      current.prReview == review else { return }
+                current.prReview = PRPlanReview(directory: review.directory, repository: review.repository, account: review.account, snapshot: snapshot)
+                current.prMessage = "已重新檢查目前改動；請審查檔案清單後按「送 PR」。"
+                _ = persistPlanCanvas(current)
+            } catch {
+                guard var current = try? engine.loadPlanArtifact(plan.threadID), current.planID == plan.planID else { return }
+                current.prMessage = error.localizedDescription
+                _ = persistPlanCanvas(current)
+            }
+        }
     }
 
     func submitActivePRPlan() {
@@ -3004,7 +4479,12 @@ final class ChatPageModel: ObservableObject {
                     let url = try await PullRequestCoordinator.shared.submitPlan(directory: review.directory, repository: review.repository,
                         identity: identity, snapshot: review.snapshot, title: title, description: description)
                     plan.prReview?.submittedURL = url; plan.prMessage = nil
-                } catch { plan.prMessage = error.localizedDescription + "\n未自動重送；請先確認本機分支與 GitHub 結果。" }
+                } catch {
+                    let retryable = plan.prReview?.recordSubmissionFailure(error) == true
+                    plan.prMessage = error.localizedDescription + (retryable
+                        ? "\n尚未提交程式碼，可按「送 PR」重試。"
+                        : "\n未自動重送；請先確認本機分支與 GitHub 結果。")
+                }
                 _ = persistPlanCanvas(plan)
             }
         } catch {
@@ -3018,6 +4498,7 @@ final class ChatPageModel: ObservableObject {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
         panel.prompt = "選這個資料夾當專案"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        if ExternalWorkspacePolicy.contains(url.path) { flashComposerHint(ExternalWorkspacePolicy.projectRefusal); return nil }   // W183 R6c 審查
         let pid = live.newProject(name: url.lastPathComponent, workdir: url.path)
         selectedThreadID = live.newThread(in: pid)
         return pid
@@ -3059,6 +4540,10 @@ final class ChatPageModel: ObservableObject {
             discussion.parentThreadID == threadID,
             !discussion.isArchived
         else { return }
+        if activeLive.doc.isAssistantThread(discussionID) {
+            mode = .tatwo
+            return
+        }
         selectedDiscussionID = discussionID
         if let deviceID = selectedRemote?.deviceID {
             selectedRemote = (deviceID, discussionID)
@@ -3124,35 +4609,37 @@ final class ChatPageModel: ObservableObject {
             prompt = String(prefix) + token + " "
         }
     }
+    /// W184 H4 修正（審查 #3）：檔位記在 Coder 開著的那一條（每條自己存、重開 App 還在；私訊框開同一條才一起變）；開、關不換這條的模型。
     func setCollaborationLevel(_ level: ChatCollaborationLevel) {
-        collaborationLevel = level
+        setUltraworkLevel(level, for: selectedThreadID)
         flashComposerHint(level == .off
             ? "ultrawork 關閉；這條討論串只有你和主導。"
             : "ultrawork \(level.title)：主導可以用 dispatch_rooms 開房間派工。")
     }
-    func setPrimaryModel(_ modelID: String) { ultraworkPrimaryModelID = modelID }
-    func setSecondaryModel(_ modelID: String) { ultraworkSecondaryModelID = modelID }
+    func setPrimaryModel(_ modelID: String) { setUltraworkRole(modelID, slot: .primary, for: selectedThreadID) }
+    func setSecondaryModel(_ modelID: String) { setUltraworkRole(modelID, slot: .auxiliary(0), for: selectedThreadID) }
+    /// app-wide 的角色只是「這條還沒記過角色」時的預設；記過的（每條自己的）不蓋（W184 H4 修正：審查 #3）。
     func applyStoredUltraworkRoleDefaults(primaryModelID: String, secondaryModelID: String?) {
-        ultraworkPrimaryModelID = primaryModelID
-        ultraworkSecondaryModelID = secondaryModelID
+        var settings = ultraworkSettings(for: selectedThreadID)
+        guard settings.primaryModelID == nil else { return }
+        settings.primaryModelID = primaryModelID
+        if settings.auxiliaryModelIDs.isEmpty, let secondaryModelID { settings.auxiliaryModelIDs = [secondaryModelID] }
+        setUltraworkSettings(settings, for: selectedThreadID)
     }
 
-    /// 開了 ultrawork 時，把「檔位＋誰主導＋誰當 sub」附在這一輪的上游宣告後面，
-    /// 讓引擎自己知道可以派工（2.0 的作法：不在 App 寫流程，靠上游宣告讓各家有共識）。
-    var ultraworkTurnBriefing: String? {
-        guard collaborationLevel != .off else { return nil }
-        var lines = ["## 這一輪的 ultrawork 設定",
-                     "檔位：\(collaborationLevel.title)（\(collaborationLevel.subtitle)）"]
-        if let p = ultraworkPrimaryModelID { lines.append("主導：\(p)") }
-        if let sec = ultraworkSecondaryModelID { lines.append("sub／副審：\(sec)") }
-        lines.append("可用 tatwo2_os 的 dispatch_rooms 建子討論串；施工才建工作樹。純副審明確指定 readOnly:true，目前支援本機 claude 引擎，只提供 Read/Grep/Glob；其他路徑不會偷偷改成可寫入模式。主導仍負責修正，不需要協作時直接完成工作。")
-        return lines.joined(separator: "\n")
-    }
-    func pasteClipboardImage() -> Bool { pasteClipboardImage(from: .general) }
+    /// 開了 ultrawork 時，「檔位＋誰主導＋每一個副手」＝Coder 開著的那條這一輪接在那一句後面的那一段（UltraworkTurnSettings.briefing；
+    /// 2.0 的作法：不在 App 寫流程，靠宣告讓各家有共識）。W184 H4 修正（審查 #2）：不再當 sidecar 啟動時的 systemPrompt——每一輪由
+    /// ChatLiveEngine.send 的 ultrawork 帶（send()、sendFromDM、PR 那一輪都是）。
+    var ultraworkTurnBriefing: String? { ultraworkSettings(for: selectedThreadID).briefing }
+    func pasteClipboardImage() -> Bool { pasteClipboardImage(from: .general, preferText: false) }
     func pasteClipboardImage(from pasteboard: NSPasteboard) -> Bool {
+        pasteClipboardImage(from: pasteboard, preferText: true)
+    }
+    func pasteClipboardImage(from pasteboard: NSPasteboard, preferText: Bool) -> Bool {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if ComposerPastePolicy.prefersText(from: pasteboard, fileURLs: urls, preferText: preferText) { return false }
         if rejectRemoteWrite("附件") { return false }
-        if isLive, let urls = pasteboard.readObjects(forClasses: [NSURL.self],
-                options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+        if isLive, !urls.isEmpty {
             for url in urls { appendDroppedPath(url.path) }
             return true
         }
@@ -3234,10 +4721,15 @@ final class ChatPageModel: ObservableObject {
         live?.setEnabledMCP(pluginID, enabled: enabled, engine: selectedMCPEngine)
         objectWillChange.send()
     }
-    private var selectedMCPEngine: PluginsSource.MCPEngine {
-        if let raw = live?.threadRecord(selectedThreadID)?.engine,
+    private var selectedMCPEngine: PluginsSource.MCPEngine { mcpEngine(for: selectedThreadID) }
+    /// 那條討論串最近用的引擎；還沒跑過就看它選的模型（選中那條看目前的模型選擇）。
+    private func mcpEngine(for threadID: UUID?) -> PluginsSource.MCPEngine {
+        let record = live?.threadRecord(threadID)
+        if let raw = record?.engine,
            let engine = PluginsSource.MCPEngine(rawValue: raw) { return engine }
-        switch routeChoice.brandGroup {
+        let route = threadID == selectedThreadID ? routeChoice
+            : record?.requestedModel.map(ChatRouteChoice.resolve) ?? routeChoice
+        switch route.brandGroup {
         case .openAI: return .codex
         case .anthropic: return .claude
         default: return .grok
@@ -3402,7 +4894,7 @@ final class ChatPageModel: ObservableObject {
                 current: slashCommandSelectedIndex, count: suggestions.count)
             return true
         case .commit:
-            guard let cur = slashCommandSelectedIndex, cur < suggestions.count else { return false }
+            guard let cur = slashCommandSelectedIndex ?? (suggestions.count == 1 ? 0 : nil), cur < suggestions.count else { return false }
             applySlashCommandSuggestion(suggestions[cur])
             return true
         }
@@ -3421,8 +4913,7 @@ final class ChatPageModel: ObservableObject {
                 current: issueMentionSelectedIndex, count: matches.count)
             return true
         case .commit:
-            let index = issueMentionSelectedIndex ?? 0
-            guard index < matches.count else { return false }
+            guard let index = issueMentionSelectedIndex, index >= 0, index < matches.count else { return false }
             issueMentionSelectedIndex = nil
             pickIssueMention(matches[index])
             return true
@@ -3451,9 +4942,9 @@ final class ChatPageModel: ObservableObject {
     }
     /// 點選 @ 結果：清掉 @token、把該筆釘進右側資訊卡。1.0 :379
     func pickIssueMention(_ entry: TatwoIssueListEntryV1) {
-        var parts = prompt.split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
-        if let last = parts.last, last.hasPrefix("@") { parts.removeLast() }
-        prompt = parts.joined(separator: " ")
+        if let token = prompt.split(whereSeparator: { $0.isWhitespace }).last, token.hasPrefix("@") {
+            prompt.removeSubrange(token.startIndex..<token.endIndex)
+        }
         focusedIssueEntryID = entry.id
         requestOpenInfoCard = true
     }
@@ -3567,6 +5058,10 @@ final class ChatPageModel: ObservableObject {
         case .generic:
             executable = "/bin/zsh"
             arguments = ["-l", "-i"]
+        }
+        // W181 R3：勾了「不用 API 金鑰」的那家，CLI 分頁也拿掉它的 API 金鑰變數（跟 sidecar 一樣）；沒勾不動。
+        if let kind = ClaudeSidecar.Kind(rawValue: engine.rawValue) {
+            EngineAPIKeyPolicy.removeAPIKeys(from: &environment, for: kind, optedOut: disabledEngines)
         }
         return TatwoNativeTerminalLaunch(executable: executable, arguments: arguments + (engine == .generic ? [] : extraArguments),
             workingDirectory: URL(fileURLWithPath: workdir, isDirectory: true), environment: environment)

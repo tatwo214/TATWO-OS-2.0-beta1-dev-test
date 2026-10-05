@@ -46,21 +46,13 @@ enum ComputerUseBackgroundEvents {
         lastPointBox.withLock { $0 = CGPoint(x: globalTopLeft.x, y: height - globalTopLeft.y) }
     }
 
-    /// The target App's front-most window (any layer: menus and popovers too) under a global top-left point.
-    static func target(pid: pid_t, at point: CGPoint) throws -> Target {
+    /// W184 CU 第二輪：已經確定的視窗（編號＋視窗伺服器的位置大小）——事件直接送它，不用座標猜。
+    /// 第三輪（GPT-6 複核 #4）：用點在視窗清單裡找視窗的舊做法（target(pid:at:)）拿掉了：確認不了視窗＝拒絕。
+    static func target(pid: pid_t, windowID: CGWindowID, bounds: CGRect) throws -> Target {
         guard let symbols else { throw ComputerUseFailure("computer_input_unavailable") }
         var psn = ProcessSerialNumber()
         guard symbols.psn(pid, &psn) == 0 else { throw ComputerUseFailure("computer_target_closed") }
-        for option in [CGWindowListOption.optionOnScreenOnly, .optionAll] {
-            let list = CGWindowListCopyWindowInfo([option], kCGNullWindowID) as? [[String: Any]] ?? []
-            for info in list where (info[kCGWindowOwnerPID as String] as? Int32) == pid {
-                guard let dict = info[kCGWindowBounds as String] as? NSDictionary,
-                      let bounds = CGRect(dictionaryRepresentation: dict), bounds.contains(point),
-                      let number = info[kCGWindowNumber as String] as? Int else { continue }
-                return Target(psn: psn, windowID: UInt32(number), windowBounds: bounds)
-            }
-        }
-        throw ComputerUseFailure("computer_pointer_outside_observation")
+        return Target(psn: psn, windowID: UInt32(windowID), windowBounds: bounds)
     }
 
     static func activate(_ target: Target) { send(target, 0x0d, subtype: 1) }
@@ -139,6 +131,10 @@ enum ComputerUseBackgroundEvents {
             record[0x90] = (type == 1 || type == 3 || type == 6) ? 255 : 0
             record[0x91] = button
         }
+        #if DEBUG
+        ComputerUseSelfTestHooks.record(.init(windowID: target.windowID, type: type,
+                                              local: point.map { CGPoint(x: $0.x - target.windowBounds.minX, y: $0.y - target.windowBounds.minY) }))
+        #endif
         var psn = target.psn
         _ = record.withUnsafeBufferPointer { symbols.post(&psn, $0.baseAddress!) }
     }

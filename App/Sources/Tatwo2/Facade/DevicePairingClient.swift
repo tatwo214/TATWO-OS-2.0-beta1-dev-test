@@ -65,15 +65,15 @@ final class DevicePairingClient: @unchecked Sendable {
 
         var errorDescription: String? {
             switch self {
-            case .invalidHost: "invalid_host"
-            case .invalidPort: "invalid_port"
-            case let .keyGenerationFailed(reason): "ssh_keygen_failed:\(reason)"
-            case .publicKeyUnreadable: "ssh_public_key_unreadable"
-            case .connectionTimedOut: "pairing_connection_timed_out"
-            case .responseInvalid: "pairing_response_invalid"
+            case .invalidHost: "invalid_host：請填那台畫面上的位址，或貼上它的全部配對資訊"
+            case .invalidPort: "invalid_port：配對埠要填那台畫面上冒號後面的數字"
+            case let .keyGenerationFailed(reason): "ssh_keygen_failed:\(reason)：這台無法建立配對用的金鑰，請檢查 SSH 設定"
+            case .publicKeyUnreadable: "ssh_public_key_unreadable：讀不到這台用來配對的公鑰，請檢查 SSH 設定"
+            case .connectionTimedOut: "pairing_connection_timed_out：連不到那台，請確認兩台在同一個網路、那台開著配對"
+            case .responseInvalid: "pairing_response_invalid：那台的配對回覆無法辨識，請確認兩台版本一致後重新配對"
             case let .pairingRejected(reason): Self.rejectionText(reason)
-            case .sshVerificationFailed: "ssh_batch_mode_verification_failed"
-            case .hostFingerprintUnavailable: "ssh_host_fingerprint_unavailable"
+            case .sshVerificationFailed: "ssh_batch_mode_verification_failed：配對碼已確認，但 SSH 登入沒有成功，請確認那台已開啟「遠端登入」"
+            case .hostFingerprintUnavailable: "ssh_host_fingerprint_unavailable：無法確認那台的主機金鑰，請確認那台已開啟「遠端登入」"
             case .responseUnauthenticated:
                 "pairing_response_unauthenticated：對方的回覆沒有通過配對碼驗證，可能有人在中間攔截，已停止配對"
             case .hostKeyMismatch:
@@ -89,10 +89,16 @@ final class DevicePairingClient: @unchecked Sendable {
                 "pairing_rejected:pairing_protocol_outdated：另一台的 TATWO OS 版本不同，兩台都更新到最新版後重開配對窗"
             case "pairing_code_mismatch":
                 "pairing_rejected:pairing_code_mismatch：配對碼不對"
+            case "pairing code expired", "pairing_code_expired":
+                "pairing_rejected:\(reason)：配對碼已過期，請在那台重新產生配對碼"
+            case "pairing code already consumed (replay rejected)", "pairing_code_already_consumed":
+                "pairing_rejected:\(reason)：這組配對碼已用過，請在那台重新產生配對碼"
+            case "pairing_window_closed":
+                "pairing_rejected:pairing_window_closed：那台沒有開著配對，請在那台按「產生配對碼」"
             case "bad_request":
                 "pairing_rejected:bad_request：另一台可能還是舊版 TATWO OS，兩台都更新到最新版後重開配對窗"
             default:
-                "pairing_rejected:\(reason)"
+                "pairing_rejected:\(reason)：那台沒有完成配對，請重新產生配對碼後再試一次"
             }
         }
     }

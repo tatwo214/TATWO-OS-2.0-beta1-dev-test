@@ -14,13 +14,27 @@ struct MatrixChip: View {
             .font(.caption2.weight(.black))
             .padding(.horizontal, 8)
             .frame(height: 22)
-            .foregroundStyle(isSelected ? LiquidGlassTokens.brandAccent : .secondary)
             .chatGlassChip(isSelected: isSelected)
     }
 }
 
 struct FeatureMappingPill: View {
     let mapping: TatwoNativeCLIFeatureMapping
+
+    private var featureTitle: String {
+        switch mapping.feature {
+        case .resumeSession: "續接對話"
+        default: mapping.feature.rawValue
+        }
+    }
+
+    private var featureNote: String {
+        switch mapping.feature {
+        case .resumeSession: "續接既有對話"
+        case .taskSidebar: "顯示對話資訊"
+        default: mapping.note
+        }
+    }
 
     private var tint: Color {
         switch mapping.status {
@@ -34,12 +48,12 @@ struct FeatureMappingPill: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Circle().fill(tint).frame(width: 6, height: 6)
-                Text(mapping.feature.rawValue)
+                Text(featureTitle)
                     .font(.caption2.weight(.black))
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
-            Text(mapping.flag ?? "灰態：\(mapping.note)")
+            Text(mapping.flag ?? "灰態：\(featureNote)")
                 .font(.caption2.monospaced())
                 .foregroundStyle(mapping.status == .unmapped ? .tertiary : .secondary)
                 .lineLimit(1)
@@ -49,7 +63,7 @@ struct FeatureMappingPill: View {
         .background(tint.opacity(mapping.status == .unmapped ? 0.06 : 0.11), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(mapping.status == .unmapped ? 0.16 : 0.28), lineWidth: 1))
         .opacity(mapping.status == .unmapped ? 0.62 : 1)
-        .help(mapping.note)
+        .help(featureNote)
     }
 }
 

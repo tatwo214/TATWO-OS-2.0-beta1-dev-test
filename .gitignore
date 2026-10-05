@@ -35,6 +35,8 @@ xcuserdata/
 .codex/
 .gitnexus/
 .tatwo-ultrawork/
+# ChatGPT dispatch replies are private room data, including in nested worktrees.
+chatgpt-dispatch/
 .sandbox-remote-loops-r2/
 output/
 .env

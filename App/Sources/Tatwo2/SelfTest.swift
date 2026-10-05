@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import AppKit
 import CryptoKit
 import SwiftUI
@@ -71,8 +72,8 @@ enum SelfTest {
                   "source hash includes UTF8 BOM")
         try write(constitution, "os.md")
         let defaults = UltraworkRoleConfiguration.constitutionSection4
-        try check(defaults.lead == "fable-5.1" && defaults.loops == "gpt-6-astra" &&
-                  defaults.refinement == "opus-5.5" && defaults.mechanic == "grok-build", "W76 section4 defaults")
+        try check(defaults.lead == "fable-5.1" && defaults.loops == "gpt-6.1-sol" &&
+                  defaults.refinement == "opus-5.5" && defaults.mechanic == "grok-build" && defaults.reviewer == "gpt-6.1-sol", "W76 section4 defaults")
         try secondary.encoded().write(to: identityURL)
         let b = try RuleGenerator.generate(environment: environment, runtimePath: runtime, now: date)
         try check(a != b && b.contains("來源憲法 sha256=" + constitutionHash) &&
@@ -162,7 +163,414 @@ enum SelfTest {
         } else { throw OSUpstreamBinding.failure("incomplete constitution accepted") }
     }
 
+    #if DEBUG
+    @MainActor private static func checkedSuite(prefix: String, run: ((Bool, String) -> Void) async throws -> Void) async throws -> Bool {
+        var failures = 0, passed = 0
+        try await run { value, label in
+            if value { passed += 1 } else { failures += 1 }
+            print("\(prefix) \(value ? "PASS" : "FAIL") \(label)")
+        }
+        print("\(prefix) SUMMARY failures=\(failures) passed=\(passed)")
+        return failures == 0
+    }
+    @MainActor private static func runAsyncSuite(prefix: String, run: @escaping @MainActor () async throws -> Bool) {
+        setvbuf(stdout, nil, _IOLBF, 0)
+        Task { @MainActor in
+            do { exit(try await run() ? 0 : 1) }
+            catch { print("\(prefix) FAIL \(error)"); print("\(prefix) SUMMARY failures=1"); exit(1) }
+        }
+        NSApplication.shared.run()
+    }
+    #endif
+
     @MainActor static func runIfRequested() {
+        #if DEBUG
+        if !["w206closeall", "w202perf", "w209spotify"].contains(ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] ?? ""), TatwoThemeSelfTestScope.forceDark {
+            // 先建好 NSApp：同步跑完就 exit 的自測（w191ui）不跑 run loop，NSApp 還沒建時主題的外觀會延到下一輪才套，
+            // 第一個檢查前 App 就必須已經是 darkAqua。
+            _ = NSApplication.shared
+            TatwoThemeSelfTestScope().use(.aurora)
+        }
+        let asyncSuites: [String: (prefix: String, run: @MainActor () async throws -> Bool)] = [
+            "w225mcp": ("W225MCP", { try await W225MCPAcceptance.run() }),
+            "w225read": ("W225MCP", { try await W225MCPAcceptance.run() }),
+            "w226": ("W226", { try await W226Acceptance.run() }),
+            "w226a": ("W226a", { try await W226aAcceptance.run() }),
+            "w224f": ("W224", { try await W224Acceptance.run() }),
+            "w215": ("W215", { try await CoderTurnAcceptance.run() }),
+            "w216": ("W216", { try await W216Acceptance.run() }),
+            "w214": ("W214", { try await W214Acceptance.run() }),
+            "w217voice": ("W217VOICE", { try await W217VoiceAcceptance.run() }),
+            "w213scroll": ("W213SCROLL", { try await CoderScrollAcceptance.run() }),
+            "w206closeall": ("W206CLOSEALL", { try await BrowserCloseAllAcceptance.run() }),
+            "w202perf": ("W202PERF", { try await W202PerformanceAcceptance.run() }),
+            "w198dispatch": ("W198", { try await W198DispatchAcceptance.run() }),
+            "w185tap": ("W185TAP", { try await ChatGPTTapAcceptance.run() }),
+            "w208tap": ("W208", { try await W208TapAcceptance.run() }),
+            "w209spotify": ("W209SPOTIFY", { try SpotifyConnectAcceptance.run() }),
+            "w197dots": ("W197DOTS", { try await checkedSuite(prefix: "W197DOTS", run: W197DotsAcceptance.run) }),
+            "w199quiet": ("W199QUIET", { try await checkedSuite(prefix: "W199QUIET", run: W199QuietAcceptance.run) })
+        ]
+        if let name = ProcessInfo.processInfo.environment["TATWO2_SELFTEST"], let suite = asyncSuites[name] {
+            runAsyncSuite(prefix: suite.prefix, run: suite.run)
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w189models" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            exit(W189ModelAcceptance.run() ? 0 : 1)
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w189docsafety" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            exit(ChatLiveStore.selfTestUnreadablePreserved() ? 0 : 1)
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w189send" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await SendFlowAcceptance.run() ? 0 : 1) }
+                catch { print("W189SEND FAIL \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w191ui" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            do { exit(try AcceptanceUIFixes.run() ? 0 : 1) }
+            catch { print("W191UI FAIL \(error)"); print("W191UI SUMMARY failures=1"); exit(1) }
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w211" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in exit(await W211Acceptance.run() ? 0 : 1) }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w188ui" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in exit(await DisplayUIAcceptance.run() ? 0 : 1) }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w188display" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in exit(await DisplayAcceptance.run() ? 0 : 1) }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w188ddcprobe" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in await DisplayAcceptance.probe(); exit(0) }
+            NSApplication.shared.run()
+            return
+        }
+        // W184 H4 修正第四輪：量像素的自測先把畫面定在門檻對應的 fable5——不再吃共用存檔裡剛好是什麼（別的房間的自測可能正切到一半）；
+        // 只換這個程序畫的樣子，共用的存檔不動（TatwoThemeSelfTestScope）。
+        if let name = ProcessInfo.processInfo.environment["TATWO2_SELFTEST"], TatwoThemeSelfTestScope.pixelSelfTests.contains(name) {
+            TatwoThemeSelfTestScope().use(.fable5)
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w192ux" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await W192UXAcceptance.run() ? 0 : 1) }
+                catch { print("W192UX FAIL \(error)"); print("W192UX SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w190setup" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await W190SetupAcceptance.run() ? 0 : 1) }
+                catch { print("W190SETUP FAIL \(error)"); print("W190SETUP SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179space" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await AssistantSpaceAcceptance.run() ? 0 : 1) }
+                catch { print("W179SPACE FAIL \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179dm" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await GlobalDMAcceptance.run() ? 0 : 1) }
+                catch { print("W179DM FAIL \(error)"); print("W179DM SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180：私訊框對象圖示列、模型 chip、附件、子討論串與所有配對設備、Island 定位（無頭、完整隔離）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180dm" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await GlobalDMW180Acceptance.run() ? 0 : 1) }
+                catch { print("W180DM FAIL \(error)"); print("W180DM SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w189commands" {
+            do { exit(try CommandModeAcceptance.run() ? 0 : 1) }
+            catch { print("W189COMMANDS FAIL \(error)"); print("W189COMMANDS SUMMARY failures=1"); exit(1) }
+        }
+        // W184 C：私訊框的訊息列、提示列、輸入列照手機 App（規則＋真的畫出來量位置、核對識別碼、畫面證據 PNG；隔離 staging）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184chat" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await GlobalDMChatAcceptance.run() ? 0 : 1) }
+                catch { print("W184CHAT FAIL \(error)"); print("W184CHAT SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179remote" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await AssistantRemoteAcceptance.run() ? 0 : 1) }
+                catch { print("W179REMOTE FAIL \(error)"); print("W179REMOTE SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179hotkey" {
+            do { try w179HotkeyChecks(); print("W179HOTKEY SUMMARY failures=0"); exit(0) }
+            catch { print("W179HOTKEY FAIL \(error)"); exit(1) }
+        }
+        // W179 M：Claude、Codex 共用 TATWO 記憶（接上／還原），在假 HOME 裡跑。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179memlinks" {
+            exit(EngineMemoryLinksAcceptance.run())
+        }
+        // W180 E1b：入口 memory/ 主副自動同步（兩個暫存 git 倉＋注入傳輸，在假 HOME 裡跑）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180memsync" {
+            exit(TatwoMemorySyncAcceptance.run())
+        }
+        // W183 R2：ChatGPT 手腳對外關口（staging 不啟動、IP 清單、Seatbelt 實跑、整組啟停；無頭、完整隔離）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183gateway" {
+            exit(HandsGatewayAcceptance.run())
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179tap" {
+            Task { @MainActor in
+                do { try await w179TapChecks(); print("W179TAP SUMMARY failures=0"); exit(0) }
+                catch { print("W179TAP FAIL \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179desk" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            exit(GlobalDMDeskAcceptance.run() ? 0 : 1)
+        }
+        // W179 UI：私訊框圖層與版面規則、TATWO 輸入框狀態抽屜（純邏輯、不建視窗）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w179ui" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            exit(GlobalDMUIAcceptance.run() ? 0 : 1)
+        }
+        // W184 AB：私訊框 iPhone Duo 的四種形態、⌘⌥Tab、轉換動畫對照表、頂列與頁面圓鈕右鍵選單（W184 F）、內橫兩欄（隔離 staging；畫面證據 PNG）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184forms" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await GlobalDMFormsAcceptance.run() ? 0 : 1) }
+                catch { print("W184FORMS FAIL \(error)"); print("W184FORMS SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W184 CU：Computer Use 以 TATWO 自己為目標——AX 打開選單不再卡住主佇列（觀察、點項目、Esc 照常；舊做法當反例）、
+        // 同位置的自家視窗挑得出來（判斷不了才錯誤、附候選清單、windowID 指定）。不碰資料、不送引擎；要權限的段落沒權限＝SKIP 寫原因。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184cu" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in exit(await ComputerUseSelfTargetAcceptance.run() ? 0 : 1) }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184button" { GlobalDMButtonMorphAcceptance.launch(); return }   // W184 F45：換形態鍵自訂、圓鈕長成框
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184mode" { TatwoComposerModeAcceptance.launch(); return }   // W184 H4：輸入框「模式選擇」chip＋模式卡
+        // W184 E：倒放＝Browser 影片子畫面（候選篩選、挑選順序、每一種還回時機、借出不被睡、⌘ 鍵、三種卡；假的影片來源；畫面證據 PNG）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184tent" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DMTentAcceptance.run() ? 0 : 1) }
+                catch { print("W184TENT FAIL \(error)"); print("W184TENT SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 R2：清舊簽章副本的挑選（假資料夾）、Coder 權限鈕寫進訊息所屬的討論串。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180leftovers" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await W180LeftoversAcceptance.run() ? 0 : 1) }
+                catch { print("W180LEFTOVERS FAIL \(error)"); print("W180LEFTOVERS SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W182 R4：主設備離線時 Coder 照樣列出最後同步的專案與對話、唯讀、「在這台接著聊」（假遠端設備、隔離 staging、不開 SSH）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w182offline" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await RemoteOfflineAcceptance.run() ? 0 : 1) }
+                catch { print("W182OFFLINE FAIL \(error)"); print("W182OFFLINE SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 E2：TATWO Space 分頁、全域狀態、專案地圖、overview_snapshot（隔離 staging，不開 SSH）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180overview" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await AssistantOverviewAcceptance.run() ? 0 : 1) }
+                catch { print("W180OVERVIEW FAIL \(error)"); print("W180OVERVIEW SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 E3：Coder 匯入（w180import）與專案空間（w180spaces），完整 staging 隔離、合成的對話檔。
+        if let name = ProcessInfo.processInfo.environment["TATWO2_SELFTEST"], name == "w180import" || name == "w180spaces" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await CoderImportAcceptance.run(name) ? 0 : 1) }
+                catch { print("\(name.uppercased()) FAIL \(error)"); print("\(name.uppercased()) SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W181 R1：匯入改照 Codex／Claude Code 左邊欄的專案挑（w181import），匯入視窗 ✕／完成／Esc／⌘W 只關 sheet。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w181import" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await CoderImportBrowserAcceptance.run() ? 0 : 1) }
+                catch { print("W181IMPORT FAIL \(error)"); print("W181IMPORT SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 E4：/蒸餾 重設計（整理成技能或其他可重用的東西、預覽後寫入、封存可還原、副設備交主設備、遠端畫布）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180distill" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DistillAcceptance.run() ? 0 : 1) }
+                catch { print("W180DISTILL FAIL \(error)"); print("W180DISTILL SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 E3b：助理提議專案分類（提案佇列、核准搬移、復原、副設備只用 id 決定；隔離 staging，不開 SSH、不送引擎）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180classify" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await ProjectClassificationAcceptance.run() ? 0 : 1) }
+                catch { print("W180CLASSIFY FAIL \(error)"); print("W180CLASSIFY SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W181 R3：「不用 API 金鑰」只擋 API 金鑰、訂閱照用（假引擎根目錄與登入檔、假 claude、假引擎程式；隔離 staging）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w181apikey" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await EngineAPIKeyAcceptance.run() ? 0 : 1) }
+                catch { print("W181APIKEY FAIL \(error)"); print("W181APIKEY SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W180 E1：通用記憶（記憶強度、每輪帶入、「用了 N 條記憶」、記憶 chip、記憶頁、記憶工具；隔離 staging、假引擎程式）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180memory" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await TatwoMemoryAcceptance.run() ? 0 : 1) }
+                catch { print("W180MEMORY FAIL \(error)"); print("W180MEMORY SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W183 R3：ChatGPT 手腳的畫面與標準設定流程（假 cloudflared、假鑰匙圈、不碰網路與真憑證；OS 工具與副設備 RPC 的界線）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183ui" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await HandsUIAcceptance.run() ? 0 : 1) }
+                catch { print("W183UI FAIL \(error)"); print("W183UI SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w185tools" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await HandsW185Acceptance.run() ? 0 : 1) }
+                catch { print("W185TOOLS FAIL \(error)"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W183 R1：ChatGPT 手腳的 App 核心（外部 AI 身分、配對與 token、工具、Seatbelt 沙盒、施工房；隔離 staging，不開通道、不啟動關口）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183hands" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await HandsAcceptance.run() ? 0 : 1) }
+                catch { print("W183HANDS FAIL \(error)"); print("W183HANDS SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W183 R6b：一個開關的連線意圖、Pod 自動建連接器、配對頁在私訊框（真的配對與 grant、假 Pod／私訊框、真的設備簽章；隔離 staging）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183connect" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await HandsConnectAcceptance.run() ? 0 : 1) }
+                catch { print("W183CONNECT FAIL \(error)"); print("W183CONNECT SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W183 R8c：ChatGPT build 多設備後端（設定正本、簽章信封、每台許可、信箱、背景同步、登入與套用分開；隔離 staging、測試金鑰、假 cloudflared）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183build" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await HandsBuildAcceptance.run() ? 0 : 1) }
+                catch { print("W183BUILD FAIL \(error)"); print("W183BUILD SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W183 R8b：私訊框的 Browser（第三顆圓鈕、手機式瀏覽器、授權頁都開在這裡的分頁；假頁面、假 Pod；隔離 staging）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183browser" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DMBrowserAcceptance.run() ? 0 : 1) }
+                catch { print("W183BROWSER FAIL \(error)"); print("W183BROWSER SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W184 D：私訊框 Browser 與［連線］照手機 App（操作列平常藏、分頁卡片格、浮動配對卡、底部 sheet、截圖只擋授權頁與配對碼；
+        // 規則＋真的畫出來量位置、點擊讓位、識別碼、畫面證據 PNG；假頁面、隔離 staging）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w184browser" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DMBrowserPhoneAcceptance.run() ? 0 : 1) }
+                catch { print("W184BROWSER FAIL \(error)"); print("W184BROWSER SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        // W182 R5：主設備斷線時助理在這台接著聊、連回補回同一條；要主設備才能做的事先排隊；頂端一行離線狀態
+        //（兩個 live root＋假遠端，已配對設備呼叫直接交給主設備的 bridge；隔離 staging、不送引擎）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w182assistoffline" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await PrimaryOfflineAcceptance.run() ? 0 : 1) }
+                catch { print("W182ASSISTOFFLINE FAIL \(error)"); print("W182ASSISTOFFLINE SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
+        #endif
+        OSToolsAcceptance.runIfRequested()
         #if DEBUG  // primaryTransferChecks／deviceDispatchChecks 只在 DEBUG 編譯（見 extension 內 #if DEBUG）
         if let root = ProcessInfo.processInfo.environment["TATWO2_W83_TEST_ROOT"] {
             do {
@@ -430,7 +838,12 @@ enum SelfTest {
         }
         check("missing root starts empty", !FileManager.default.fileExists(atPath: skills.path)
               && model.availableThreadPluginEntries.isEmpty)
-        await model.reloadPluginRegistry(now: Date().addingTimeInterval(-61))?.value
+        await model.reloadPluginRegistry()?.value
+        check("completed scan starts fresh cooldown", model.pluginRefreshTask == nil
+              && model.reloadPluginRegistry(ifOlderThan: 60) == nil)
+        // Cooldown starts at completion, not at reload's supplied entry clock.
+        // Wait for the real TTL; the next scan must originate from the dollar hook.
+        try await Task.sleep(for: .seconds(61))
         try FileManager.default.createDirectory(at: manifest.deletingLastPathComponent(), withIntermediateDirectories: true)
         try "---\nname: w15e-refresh\ndescription: isolated refresh check\n---\n".write(to: manifest, atomically: true, encoding: .utf8)
         check("source scan alone leaves model stale", PluginsSource.scanNow(environment: env).contains { $0.id == "w15e-refresh" }
@@ -440,7 +853,7 @@ enum SelfTest {
         let observer = model.objectWillChange.sink { notifications += 1 }
         let pending = model.pluginRefreshTask
         check("dollar schedules stale scan", pending != nil)
-        check("in-flight scans coalesce", model.reloadPluginRegistry() != nil)
+        check("in-flight scans coalesce", pending != nil && model.reloadPluginRegistry() == pending)
         await pending?.value
         check("rescan publishes without another keystroke", model.prompt == "$"
               && model.skillSuggestions.contains { $0.id == "w15e-refresh" } && notifications > 0)
@@ -448,7 +861,7 @@ enum SelfTest {
         check("fresh dollar does not rescan", model.pluginRefreshTask == nil
               && model.reloadPluginRegistry(ifOlderThan: 60) == nil)
         try "---\nname: w15e-updated\n---\n".write(to: manifest, atomically: true, encoding: .utf8)
-        await model.reloadPluginRegistry(now: Date().addingTimeInterval(61))?.value
+        await model.reloadPluginRegistry()?.value
         check("changed manifest refreshes", model.skillSuggestions.contains { $0.id == "w15e-updated" }
               && !model.skillSuggestions.contains { $0.id == "w15e-refresh" })
         observer.cancel()
@@ -456,6 +869,7 @@ enum SelfTest {
         return failures == 0
     }
 
+    /// W81 畫布基本界線（W180 E4 起：新畫布收 ```tatwo-distill；skillet 不再是去處）。完整的寫入、封存、遠端驗收在 w180distill。
     @MainActor private static func distillCanvasChecks() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["TATWO2_W81_TEST_ROOT"], let tmp = environment["TMPDIR"] else {
@@ -477,12 +891,64 @@ enum SelfTest {
         }
         let body = DistillCanvas.headings.map { "## \($0)\n合成草稿，保留　空白與 emoji 🧪。" }.joined(separator: "\n\n")
         if let rawDefinition = environment["TATWO2_W81_GBRAIN_DEFINITION"] {
-            let definition = try JSONSerialization.jsonObject(with: Data(rawDefinition.utf8)) as! [String: Any]
+            // W180 E4：真 GBrain 走正式路徑——畫布 → 預覽 → DistillHost.begin(apply) → DistillWriter.perform → finish；
+            // 同 slug 的舊頁先整份封存（正文、標題、tags），還原前先比對現頁是這次寫的，再把舊頁（連標題）放回。
+            let raw = Data(rawDefinition.utf8)
+            let definition = try JSONSerialization.jsonObject(with: raw) as! [String: Any]
             let final = try String(contentsOf: root.appendingPathComponent("gbrain-draft.txt"), encoding: .utf8)
-            let snapshot = DistillSubmission(threadID: UUID(), content: final, title: "Synthetic distillation",
-                                            slug: "distill/w81-fixture", gbrain: true, skillet: false)
-            let slug = try DistillGBrainClient.write(snapshot, definition: definition)
-            try check("real-gbrain-roundtrip", slug == snapshot.slug)
+            let entry = TatwoEntry()
+            try FileManager.default.createDirectory(at: entry.root, withIntermediateDirectories: true)
+            let live = URL(fileURLWithPath: environment["TATWO2_LIVE_ROOT"]!)
+            let engine = ChatLiveEngine(store: ChatLiveStore(root: live), environment: environment)
+            defer { engine.shutdownAll() }
+            let id = engine.doc.selectedThreadID!
+            let context = DistillHostContext(roots: DistillWriterRoots(skills: root.appendingPathComponent("skills"), entry: entry.root),
+                                             device: "Fixture", gbrainDefinition: { raw })
+            var plan = DistillCanvas.newPlan(threadID: id, argument: "", output: .gbrain)
+            plan.applyEditedText(final)
+            try engine.savePlanArtifact(plan)
+            let preview = try DistillHost.preview(content: final, output: .gbrain, planID: plan.planID, context: context)
+            let slug = preview.name
+            let oldTitle = "Old synthetic title"
+            let oldBody = "# Old synthetic page\nold body line　保留 🧪"
+            try DistillGBrainClient.put(slug: slug, title: oldTitle, body: oldBody, definition: definition) { existing in
+                guard existing == nil else { throw DistillCanvas.Failure(reason: "fixture slug already exists") }
+            }
+            let apply = DistillRemoteRequest(method: "distill_write", threadID: id, planID: plan.planID, action: .apply,
+                                             content: final, submissionID: UUID(), expected: preview)
+            guard let job = try DistillHost.begin(apply, engine: engine, context: context).job else { throw DistillCanvas.Failure(reason: "no apply job") }
+            let written = try DistillHost.finish(job, DistillWriter.perform(job), engine: engine)
+            try check("real-gbrain-production-write", written.result?.status == "done" && written.canvas?.distillSubmission?.status == "done")
+            guard let archivePath = written.canvas?.distillSubmission?.archivePath,
+                  let manifest = DistillWriter.readManifest(URL(fileURLWithPath: archivePath)),
+                  let row = manifest.entries.first(where: { $0.path == "gbrain:" + slug }), let archived = row.archived,
+                  let page = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: archivePath)
+                      .appendingPathComponent(archived))) as? [String: Any] else {
+                throw DistillCanvas.Failure(reason: "real-gbrain-old-page-archived-whole")
+            }
+            try check("real-gbrain-old-page-archived-whole", row.existed && page["compiled_truth"] as? String == oldBody
+                      && page["title"] as? String == oldTitle && (page["tags"] as? [String])?.contains("device:fixture-device") == true
+                      && manifest.submissionID == job.submissionID && manifest.planID == plan.planID)
+            // 寫入之後有人改了那頁：還原不動它（畫布照樣是「已寫入」，還能再按）。
+            try DistillGBrainClient.put(slug: slug, title: "Someone else", body: "hand edited", definition: definition) { _ in }
+            let restore = DistillRemoteRequest(method: "distill_write", threadID: id, planID: plan.planID, action: .restore)
+            guard let refusedJob = try DistillHost.begin(restore, engine: engine, context: context).job else { throw DistillCanvas.Failure(reason: "no restore job") }
+            let refused = try DistillHost.finish(refusedJob, DistillWriter.perform(refusedJob), engine: engine)
+            try check("real-gbrain-restore-refuses-changed-page", refused.result?.status == "failed"
+                      && refused.canvas?.distillSubmission?.status == "done" && refused.canvas?.distillSubmission?.restoredAt == nil
+                      && DistillWriter.readManifest(URL(fileURLWithPath: archivePath))?.restoredAt == nil)
+            // 把這次寫的版本放回去，再還原：舊頁（正文、標題）放回，這次寫的那版整份留在封存 restored/。
+            try DistillGBrainClient.put(slug: slug, title: preview.title, body: final, definition: definition) { _ in }
+            guard let restoreJob = try DistillHost.begin(restore, engine: engine, context: context).job else { throw DistillCanvas.Failure(reason: "no restore job") }
+            let restored = try DistillHost.finish(restoreJob, DistillWriter.perform(restoreJob), engine: engine)
+            let after = DistillWriter.readManifest(URL(fileURLWithPath: archivePath))
+            let kept = after?.entries.first?.restoredAway.flatMap {
+                try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: archivePath).appendingPathComponent($0))) as? [String: Any]
+            }
+            try check("real-gbrain-restore-puts-old-page-back", restored.result?.status == "restored"
+                      && restored.canvas?.distillSubmission?.status == "restored" && after?.restoredAt != nil)
+            try check("real-gbrain-written-page-kept-in-archive", kept?["compiled_truth"] as? String == final)
+            print("W81TEST GBRAIN_SLUG \(slug)")
             return
         }
         let entry = TatwoEntry()
@@ -503,20 +969,25 @@ enum SelfTest {
         model.prompt = "/蒸餾"
         model.send()
         try check("bare-command-opens-canvas", model.activePlanArtifact?.kind == "distill"
-                  && model.planInspectorRequest != nil && model.activePlanArtifact?.state == .discussing)
+                  && model.planInspectorRequest != nil && model.activePlanArtifact?.state == .discussing
+                  && model.activePlanArtifact?.distillOutput == .skill)
         model.prompt = "/蒸餾 架構與經驗"
         model.send()
         try check("argument-command-opens-canvas", model.activePlanArtifact?.objective == "架構與經驗")
-        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-plan\n\(body)\n```"))
-        try check("ai-draft-exact", try engine.loadPlanArtifact(id)?.editableText() == body)
-        let revised = body.replacingOccurrences(of: "合成草稿", with: "第二次 AI 改寫")
-        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-plan\n\(revised)\n```"))
+        let draft = "# 架構筆記\n- [ ] 合成草稿，保留　空白與 emoji 🧪。  \n"
+        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-distill\n\(draft)\n```"))
+        try check("ai-draft-exact", try engine.loadPlanArtifact(id)?.editableText() == draft)
+        let revised = draft.replacingOccurrences(of: "合成草稿", with: "第二次 AI 改寫")
+        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-distill\n\(revised)\n```"))
         try check("ai-multiple-rewrites", try engine.loadPlanArtifact(id)?.editableText() == revised)
-        let nested = body + "\n\n```swift\nlet x = 1\n```"
-        try check("nested-fence-preserved", DistillCanvas.draft(from: "```tatwo-plan\n\(nested)\n```") == nested)
+        let nested = draft + "\n\n```swift\nlet x = 1\n```"
+        try check("nested-fence-preserved", DistillCanvas.draft(from: "```tatwo-distill\n\(nested)\n```") == nested)
         try check("example-and-incomplete-fence-ignored",
-                  DistillCanvas.draft(from: "````markdown\n```tatwo-plan\n\(body)\n```\n````") == nil
-                  && DistillCanvas.draft(from: "```tatwo-plan\n\(body)") == nil)
+                  DistillCanvas.draft(from: "````markdown\n```tatwo-distill\n\(draft)\n```\n````") == nil
+                  && DistillCanvas.draft(from: "```tatwo-distill\n\(draft)") == nil)
+        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-plan\n\(body)\n```"))
+        try check("legacy-fence-only-for-old-canvas", try engine.loadPlanArtifact(id)?.editableText() == revised
+                  && DistillCanvas.draft(from: "```tatwo-plan\n\(body)\n```", legacy: true) == body)
         let edited = "\n  " + revised + "  \r\n"
         try check("human-edit-byte-exact", model.saveEditedPlanCanvasText(edited)
                   && model.activePlanArtifact?.editableText() == edited && model.activePlanArtifact?.markdownExport() == edited)
@@ -531,36 +1002,39 @@ enum SelfTest {
         model.selectedThreadID = id
         try check("close-reopen-no-write", try String(contentsOf: entry.skillet, encoding: .utf8) == "original skillet\n"
                   && model.activePlanArtifact?.distillSubmission == nil)
-        let blank = DistillSubmission(threadID: id, content: body, title: "Fixture", slug: "distill/fixture",
-                                      gbrain: false, skillet: false)
-        try check("no-destination-rejected", rejects { try DistillCanvas.validate(blank, available: true) })
-        var gbrain = DistillSubmission(threadID: id, content: body, title: "Fixture", slug: "distill/fixture",
+        let gbrain = DistillSubmission(threadID: id, content: body, title: "Fixture", slug: "distill/fixture",
                                        gbrain: true, skillet: false)
-        try check("unavailable-gbrain-rejected", rejects { try DistillCanvas.validate(gbrain, available: false) })
+        let noGBrain = DistillHostContext(roots: DistillWriterRoots(skills: root.appendingPathComponent("skills"), entry: entry.root),
+                                          device: "Fixture", gbrainDefinition: { nil })
+        try check("unavailable-gbrain-rejected", rejects {
+            _ = try DistillHost.preview(content: body, output: .gbrain, planID: UUID(), context: noGBrain)
+        })
         try check("gbrain-normalization-rejected", DistillCanvas.gbrainBodyProblem(edited) != nil
                   && DistillCanvas.gbrainBodyProblem(body + "\n## Timeline\n2026") != nil
                   && DistillCanvas.gbrainBodyProblem(body) == nil)
         try check("unicode-byte-not-canonical-equality", !DistillCanvas.byteEqual("Cafe\u{301}", "Caf\u{e9}"))
-        gbrain = DistillSubmission(threadID: id, content: edited, title: "Fixture", slug: "distill/fixture",
-                                   gbrain: false, skillet: true)
-        try DistillCanvas.validate(gbrain, available: false)
-        try check("stale-snapshot-rejected", !model.saveDistillSubmission(editedPlan.planID, blank))
-        try check("human-submit-boundary", model.saveDistillSubmission(editedPlan.planID, gbrain))
-        let dispatch = DeviceDispatch(entry: entry, registry: DeviceRegistry(root: root.appendingPathComponent("devices"),
-                                      authorizedKeysURL: root.appendingPathComponent("authorized")),
-                                      rpc: { _, _, _ in throw DistillCanvas.Failure(reason: "unexpected_network") })
-        _ = try DistillCanvas.writeSkillet(gbrain.content, base: "original skillet\n", dispatch: dispatch)
-        try check("primary-write-byte-exact", try Data(contentsOf: entry.skillet) == Data(edited.utf8))
-        try check("stale-preview-no-overwrite", rejects {
-            _ = try DistillCanvas.writeSkillet("wrong", base: "original skillet\n", dispatch: dispatch)
-        })
+        let stale = DistillSubmission(threadID: id, content: body, title: "Fixture", slug: "distill/fixture",
+                                      gbrain: false, skillet: false)
+        var snapshot = DistillSubmission(threadID: id, content: edited, title: "Fixture", slug: "distill/fixture",
+                                         gbrain: false, skillet: false)
+        snapshot.output = .skill
+        snapshot.status = "writing"
+        try check("stale-snapshot-rejected", !model.saveDistillSubmission(editedPlan.planID, stale))
+        try check("human-submit-boundary", model.saveDistillSubmission(editedPlan.planID, snapshot))
         try check("submitted-edit-blocked", !model.saveEditedPlanCanvasText("unexpected edit"))
-        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-plan\n\(body)\n```"))
+        engine.updatePlanFromReply(id, reply: ChatMessage(role: .assistant, text: "```tatwo-distill\n\(draft)\n```"))
         let reopened = ChatLiveEngine(store: ChatLiveStore(root: live), environment: environment)
-        try check("submission-survives-reopen-no-rewrite", try reopened.loadPlanArtifact(id)?.distillSubmission == gbrain
+        try check("submission-survives-reopen-no-rewrite", try reopened.loadPlanArtifact(id)?.distillSubmission == snapshot
                   && reopened.loadPlanArtifact(id)?.editableText() == edited)
-        var duplicate = gbrain; duplicate.id = UUID()
+        var duplicate = snapshot; duplicate.id = UUID()
         try check("repeat-submission-rejected", !model.saveDistillSubmission(editedPlan.planID, duplicate))
+        var legacy = editedPlan
+        legacy.distillOutput = nil
+        legacy.distillSubmission = gbrain
+        let legacyRead = try JSONDecoder.tatwoPlanArtifact.decode(TatwoPlanArtifactV1.self, from: legacy.canonicalJSONData())
+        try check("legacy-canvas-still-reads", legacyRead.distillSubmission?.gbrain == true && legacyRead.distillSubmission?.status == nil
+                  && DistillCanvas.output(of: legacyRead) == .skill)
+        try check("skillet-untouched", try String(contentsOf: entry.skillet, encoding: .utf8) == "original skillet\n")
     }
 
     /// W89 從零：空 library 不是錯誤 → 建專案 → 建 bot → 建第一個領域 → domains==1、bot-spaces.json 一筆。
@@ -702,7 +1176,7 @@ enum SelfTest {
         model.send()
         check("empty command reopens canvas", model.planInspectorRequest != nil && model.prompt.isEmpty)
         model.confirmActivePlan()
-        check("confirm facade", !model.isPlanModeEnabled && engine.transcript(for: id).last?.text == "計畫已確認；說「開始」即執行")
+        check("confirm facade", !model.isPlanModeEnabled && engine.transcript(for: id).last?.text == "計畫已確認；按「開始實作」或說「開始」即執行")
         check("empty edit rejected", !model.saveEditedPlanCanvasText(" \n"))
         check("editor uses shared parser", model.saveEditedPlanCanvasText("新標題\n\n" + body) && model.activePlanArtifact?.sections == sections)
         model.selectedThreadID = nil
@@ -751,6 +1225,18 @@ enum SelfTest {
         check("pr start still discusses", engine.planContext(prPlan, userText: "開始")?.contains("文字「開始」不算確認") == true)
         prPlan.confirm()
         check("pr confirmed without callback never executes", engine.planContext(prPlan, userText: "開始")?.contains("不改檔") == true)
+        prPlan.prModeExited = true
+        prPlan.executionTurnID = "pr-dispatched-fixture"
+        try engine.savePlanArtifact(prPlan)
+        check("pr dispatched plan releases context", engine.planContext(prPlan, userText: "下一件事") == nil)
+        check("pr exit survives reload", try reopened.loadPlanArtifact(id)?.prModeExited == true)
+        check("pr reloaded exit releases context", reopened.planContext(try reopened.loadPlanArtifact(id), userText: "下一件事") == nil)
+        prPlan.recoverInterruptedPR(hasActiveTurn: false)
+        try engine.savePlanArtifact(prPlan)
+        check("pr interruption does not restore mode", !model.isPlanModeEnabled && engine.planContext(prPlan, userText: "下一件事") == nil)
+        var legacyReady = prPlan
+        legacyReady.prModeExited = nil; legacyReady.state = .ready
+        check("pr legacy ready releases context", engine.planContext(legacyReady, userText: "下一件事") == nil)
         try engine.savePlanArtifact(plan)
         if let snapshot = ProcessInfo.processInfo.environment["TATWO2_PLAN_SNAPSHOT"] {
             if environment["TATWO2_FEEDBACK_SNAPSHOT"] == "1" { try engine.savePlanArtifact(feedbackPlan) }
@@ -3662,19 +4148,7 @@ extension SelfTest {
         try check("primary-inbox-receipt", primary.inbox.branches().last?.commit == head
             && primary.inbox.branches().last?.sender == sID)
 
-        // W81 deliberately uses the review-only inbox, not document ACK mirroring.
-        let localSkillet = try text(sEntry.skillet), primarySkillet = try text(pEntry.skillet)
-        let distillText = " \n" + DistillCanvas.headings.map { "## \($0)\n合成蒸餾　內容  " }.joined(separator: "\n\n") + "\n"
-        _ = try DistillCanvas.writeSkillet(distillText, base: localSkillet, dispatch: secondary)
-        guard let receipt = primary.inbox.branches().last else { throw DeviceDispatch.Failure(reason: "w81_receipt_missing") }
-        let (distillCode, distillBytes) = try DeviceDispatch.run("/usr/bin/git",
-            ["show", "\(receipt.commit):skillet.md"], directory: pEntry.repoRoot)
-        try check("w81-proposal-in-primary-inbox", receipt.branch.contains("/distill/") && receipt.sender == sID)
-        try check("w81-proposal-byte-exact", distillCode == 0 && distillBytes == Data(distillText.utf8))
-        try check("w81-both-skillets-unchanged", text(sEntry.skillet) == localSkillet && text(pEntry.skillet) == primarySkillet)
-        try check("w81-source-worktree-unchanged", git(sEntry.repoRoot, ["rev-parse", "HEAD"]) == head
-            && Data(contentsOf: sEntry.repoRoot.appendingPathComponent(".git/index")) == index
-            && git(sEntry.repoRoot, ["diff", "--binary"]) == work)
+        // W180 E4：/蒸餾 不再是 skillet 的去處（W81 的 skillet 提案分支已拿掉），這裡不再驗 w81-proposal。
 
         // Use exactly the pull_thread production collector, then W72's atomic writer.
         let thread = UUID(), artifacts = root.appendingPathComponent("artifacts")
@@ -5958,3 +6432,593 @@ private extension Optional {
         return await transform(value)
     }
 }
+
+#if DEBUG
+extension SelfTest {
+    private static func w179Check(_ condition: @autoclosure () -> Bool, _ label: String, suite: String) throws {
+        guard condition() else { throw TapError.remote(label) }
+        print("\(suite) PASS \(label)")
+    }
+
+    static func w179HotkeyChecks() throws {
+        typealias F = ModifierChordDetector.Flags
+        func sequence(_ label: String, _ events: [(F?, Double)], expected: Int) throws {
+            var detector = ModifierChordDetector()
+            var count = 0
+            for (flags, time) in events {
+                if let flags {
+                    if detector.flagsChanged(flags, at: time) { count += 1 }
+                } else { detector.keyDown(at: time) }
+            }
+            try w179Check(count == expected, label, suite: "W179HOTKEY")
+        }
+        try sequence("option-command release reverse", [(.option, 0), (.chord, 0.1), (.option, 0.2), ([], 0.3)], expected: 1)
+        try sequence("command-option release reverse", [(.command, 0), (.chord, 0.1), (.command, 0.2), ([], 0.3)], expected: 1)
+        try sequence("release option first", [(.option, 0), (.chord, 0.1), (.command, 0.2), ([], 0.3)], expected: 1)
+        for key in ["D", "Esc", "Space", "repeat"] {
+            try sequence("reject chord plus \(key)", [(.option, 0), (.chord, 0.1), (nil, 0.15), (.option, 0.2), ([], 0.3)], expected: 0)
+        }
+        for extra: F in [.shift, .control, .capsLock, .function, .other] {
+            try sequence("reject extra modifier \(extra.rawValue)",
+                         [(.option, 0), (.chord, 0.1), (.chord.union(extra), 0.15), (.chord, 0.2), ([], 0.3)], expected: 0)
+        }
+        try sequence("reject shift before chord", [(.shift, 0), (.chord, 0.1), ([], 0.2)], expected: 0)
+        try sequence("reject key before second modifier", [(.option, 0), (nil, 0.1), (.chord, 0.2), ([], 0.3)], expected: 0)
+        try sequence("reject 1.2 second hold", [(.option, 0), (.chord, 0.1), ([], 1.2)], expected: 0)
+        try sequence("duration includes first modifier", [(.option, 0), (.chord, 1.1), ([], 1.2)], expected: 0)
+        try sequence("one second boundary", [(.option, 0), (.chord, 0.1), ([], 1)], expected: 1)
+        try sequence("command only", [(.command, 0), ([], 0.2)], expected: 0)
+        try sequence("two gestures exactly twice",
+                     [(.option, 0), (.chord, 0.1), (.option, 0.2), ([], 0.3), ([], 0.4),
+                      (.command, 1), (.chord, 1.1), (.command, 1.2), ([], 1.3)], expected: 2)
+        try sequence("ordinary typing does not poison next chord",
+                     [(nil, 0), (.option, 0.1), (.chord, 0.2), ([], 0.3)], expected: 1)
+        try sequence("no trigger before full release", [(.chord, 0), (.option, 0.1)], expected: 0)
+        try sequence("reject nonmonotonic timestamp", [(.chord, 1), ([], 0.5)], expected: 0)
+    }
+
+    @MainActor static func w179TapChecks() async throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["TATWO2_LIVE_ROOT"] != nil, NativeStagingIsolation.isEnabled(env),
+              NativeStagingIsolation.validationError(env) == nil else {
+            throw TapError.remote("isolated TATWO2_LIVE_ROOT required")
+        }
+        func check(_ condition: @autoclosure () -> Bool, _ label: String) throws {
+            try w179Check(condition(), label, suite: "W179TAP")
+        }
+        func settle() async { for _ in 0..<12 { await Task.yield() } }
+        // W185：真正 Swift TAP mapping → session/Store/Space；沒有 CEF、網路、shared Pod 或實際送出。
+        let bytes = Data([0, 1, 127, 255])
+        let file = GlobalDMAttachment(name: "fixture", mime: "application/octet-stream", fileURL: nil, data: bytes)
+        let tool = TapTool(id: "fixture-tool", title: "Fixture tool", detail: "retain the whole tool", isApp: true)
+        // 沿用非 live 的隔離 model；不為 fake Pod 放寬正式的附件入口。
+        var fixtureEnvironment = env
+        fixtureEnvironment["TATWO_ULTRAWORK_CHAT_FIXTURE"] = "1"
+        let dmModel = ChatPageModel(environment: fixtureEnvironment)
+        func dm(_ tap: ChatGPTTap) throws -> (GlobalDMStore, ChatGPTConversationSession) {
+            guard let defaults = UserDefaults(suiteName: "ai.tatwo.selftest.w179.return.\(UUID().uuidString)") else {
+                throw TapError.remote("isolated defaults unavailable")
+            }
+            let session = ChatGPTConversationSession(tap: tap)
+            let store = GlobalDMStore(defaults: defaults, chatGPT: { session }, chatGPTAllowed: { true },
+                chatGPTCatalog: { Just(ChatGPTModelCatalog()).eraseToAnyPublisher() }, directKeys: false, recentApps: defaults)
+            store.attach(dmModel)
+            store.select(.chatGPT)
+            return (store, session)
+        }
+        func prepare(_ store: GlobalDMStore, text: String = "  fixture\n") {
+            store.setDraft(text, for: .chatGPT)
+            store.replaceChatGPTAttachments([file])
+            store.chatGPTTool = tool
+        }
+        func clear(_ store: GlobalDMStore) {
+            store.setDraft("", for: .chatGPT)
+            store.replaceChatGPTAttachments([])
+            store.chatGPTTool = nil
+        }
+        func sendID(_ pod: W179FakeChatGPTPod) throws -> String {
+            guard let id = pod.sends.last?["id"] as? String else { throw TapError.remote("fake Pod did not receive send") }
+            return id
+        }
+
+        // 明確 false 才映射 notSubmitted；本機合成的 accepted 不代表網站已送。
+        let mappingPod = W179FakeChatGPTPod()
+        mappingPod.acceptsSends = false
+        let mappingTap = ChatGPTTap(transport: mappingPod)
+        let mappingStream = mappingTap.send(requestID: "mapping-false", text: "fixture", conversationID: nil)
+        let mappingTask = Task { @MainActor in
+            var events: [TapStreamEvent] = []
+            for await event in mappingStream { events.append(event) }
+            return events
+        }
+        mappingPod.event("mapping-false", "failed", ["message": "fixture before click", "submitted": false])
+        let mapped = await mappingTask.value
+        try check(mapped.contains(.notSubmitted("fixture before click")) && mappingTap.usageCount == 0,
+                  "submitted:false maps to notSubmitted and releases the request")
+        mappingTap.sleep()
+
+        let returnPod = W179FakeChatGPTPod()
+        returnPod.acceptsSends = false
+        let returnTap = ChatGPTTap(transport: returnPod)
+        let (returnStore, returnSession) = try dm(returnTap)
+        prepare(returnStore)
+        try check(returnStore.send(), "DM accepts fixture with full attachment and tool")
+        returnPod.event(try sendID(returnPod), "failed", ["message": "fixture before click", "submitted": false])
+        await settle()
+        try check(returnStore.draft(for: .chatGPT) == "  fixture\n" && returnStore.attachments(for: .chatGPT) == [file]
+                  && returnStore.chatGPTTool == tool && returnSession.messages.isEmpty
+                  && returnSession.returnedDrafts.isEmpty && returnStore.chatGPTReturnedDrafts.isEmpty
+                  && !returnSession.isSending && returnTap.usageCount == 0 && returnPod.sends.count == 1,
+                  "safe DM return preserves exact text, bytes, attachment identity and tool without phantom send or retry")
+        returnTap.sleep()
+
+        // 文字（包括空白）、工具、附件各自就算衝突；兩邊都保留，手動取回也不得覆蓋。
+        for conflict in ["text", "whitespace", "tool", "file"] {
+            let pod = W179FakeChatGPTPod()
+            pod.acceptsSends = false
+            let tap = ChatGPTTap(transport: pod)
+            let (store, session) = try dm(tap)
+            prepare(store)
+            try check(store.send(), "DM conflict fixture starts: \(conflict)")
+            switch conflict {
+            case "text": store.setDraft("new draft", for: .chatGPT)
+            case "whitespace": store.setDraft(" \n", for: .chatGPT)
+            case "tool": store.chatGPTTool = TapTool(id: "new-tool", title: "New tool", detail: "")
+            default: store.replaceChatGPTAttachments([GlobalDMAttachment(name: "sample", mime: file.mime, fileURL: nil, data: Data([42]))])
+            }
+            let newer = GlobalDMChatGPTDraft(text: store.draft(for: .chatGPT), files: store.attachments(for: .chatGPT), tool: store.chatGPTTool)
+            let id = try sendID(pod)
+            pod.event(id, "failed", ["message": "fixture before click", "submitted": false])
+            await settle()
+            try check(store.chatGPTReturnedDrafts.count == 1 && session.returnedDrafts.count == 1
+                      && store.chatGPTReturnedDrafts.first?.draft == GlobalDMChatGPTDraft(text: "  fixture\n", files: [file], tool: tool)
+                      && session.returnedDrafts.first?.attachments.first?.data == bytes
+                      && session.messages.contains { $0.id == "local-user-\(id)" }
+                      && store.notice?.contains("已放回") == false,
+                      "DM conflict keeps complete original and does not falsely claim restoration: \(conflict)")
+            try check(!store.restoreReturnedChatGPTDraft(id)
+                      && GlobalDMChatGPTDraft(text: store.draft(for: .chatGPT), files: store.attachments(for: .chatGPT), tool: store.chatGPTTool) == newer,
+                      "manual return cannot overwrite current text/files/tool: \(conflict)")
+            store.select(.assistant)
+            try check(!store.restoreReturnedChatGPTDraft(id), "manual return cannot target another DM recipient")
+            store.select(.chatGPT)
+            clear(store)
+            try check(store.restoreReturnedChatGPTDraft(id) && store.draft(for: .chatGPT) == "  fixture\n"
+                      && store.attachments(for: .chatGPT) == [file] && store.chatGPTTool == tool
+                      && store.chatGPTReturnedDrafts.isEmpty && session.returnedDrafts.isEmpty
+                      && session.messages.isEmpty && pod.sends.count == 1 && tap.usageCount == 0,
+                      "manual return recovers full payload exactly once and never sends: \(conflict)")
+            try check(!store.restoreReturnedChatGPTDraft(id), "duplicate recovery is a no-op")
+            tap.sleep()
+        }
+
+        // 沒有接收方時 session 自己留原文與附件；callback 回 false 不能丟掉唯一的原件。
+        let orphanPod = W179FakeChatGPTPod()
+        orphanPod.acceptsSends = false
+        let orphanTap = ChatGPTTap(transport: orphanPod)
+        let orphan = ChatGPTConversationSession(tap: orphanTap)
+        orphan.send("  orphan\n", attachments: [TapAttachment(name: file.name, mime: file.mime, data: bytes)], tool: tool.id)
+        orphanPod.event(try sendID(orphanPod), "failed", ["message": "fixture", "submitted": false])
+        await settle()
+        try check(orphan.returnedDrafts.first?.text == "  orphan\n" && orphan.returnedDrafts.first?.attachments.first?.data == bytes
+                  && orphan.returnedDrafts.first?.tool == tool.id && orphan.messages.count == 1 && orphanTap.usageCount == 0,
+                  "unacknowledged return retains complete session fallback")
+        orphanTap.sleep()
+
+        // 網站已有任何送出證據後，或結果未知，不能還稿（即使 failed 後來帶 false）。
+        for kind in ["accepted", "text", "conversation", "unknown", "true", "zero", "string"] {
+            let pod = W179FakeChatGPTPod()
+            pod.acceptsSends = false
+            let tap = ChatGPTTap(transport: pod)
+            let (store, session) = try dm(tap)
+            prepare(store)
+            try check(store.send(), "nonreturnable fixture starts: \(kind)")
+            let id = try sendID(pod)
+            var payload: [String: Any] = ["message": "fixture uncertain", "submitted": false]
+            switch kind {
+            case "accepted": pod.event(id, "accepted")
+            case "text": pod.event(id, "text", ["full": "fixture reply"])
+            case "conversation": pod.event(id, "conversation", ["conversationID": "fixture-known"])
+            case "unknown": payload.removeValue(forKey: "submitted")
+            case "true": payload["submitted"] = true
+            case "zero": payload["submitted"] = 0
+            default: payload["submitted"] = "false"
+            }
+            pod.event(id, "failed", payload)
+            await settle()
+            try check(store.draft(for: .chatGPT).isEmpty && store.attachments(for: .chatGPT).isEmpty
+                      && store.chatGPTTool == nil && store.chatGPTReturnedDrafts.isEmpty && session.returnedDrafts.isEmpty
+                      && session.messages.contains { $0.id == "local-user-\(id)" }
+                      && !session.isSending && tap.usageCount == 0 && pod.sends.count == 1,
+                      "no return after website evidence or unknown submission: \(kind)")
+            tap.sleep()
+        }
+
+        // 確定未送的失敗也要釋放 FIFO；visibility lease 仍由擁有者獨立歸還。
+        let fifoPod = W179FakeChatGPTPod()
+        fifoPod.acceptsSends = false
+        let fifoTap = ChatGPTTap(transport: fifoPod)
+        let (fifoStore, fifoSession) = try dm(fifoTap)
+        fifoSession.appear()
+        prepare(fifoStore)
+        try check(fifoStore.send(), "return FIFO fixture starts")
+        let next = ChatGPTConversationSession(tap: fifoTap)
+        next.send("fixture next")
+        fifoPod.event(try sendID(fifoPod), "failed", ["message": "fixture", "submitted": false])
+        await settle()
+        try check(fifoPod.sends.count == 2 && next.isSending && !fifoSession.isSending && fifoTap.usageCount == 2,
+                  "notSubmitted releases FIFO but preserves visibility and next request leases")
+        fifoPod.event(try sendID(fifoPod), "finished")
+        await settle()
+        fifoSession.disappear()
+        try check(fifoTap.usageCount == 0 && fifoPod.maximumConcurrentSends == 1, "return FIFO and visibility leases fully released")
+        fifoTap.sleep()
+
+        // queueTimeout 與 notSubmitted 共用 Bool 還稿；有新草稿時保留，可手動取回。
+        for conflict in [false, true] {
+            let pod = W179FakeChatGPTPod()
+            let tap = ChatGPTTap(transport: pod, voiceQueueLimit: .milliseconds(15))
+            guard let voice = tap.claimVoice(owner: UUID()) else { throw TapError.remote("fixture voice claim") }
+            let (store, session) = try dm(tap)
+            prepare(store)
+            try check(store.send(), "voice queue fixture starts")
+            if conflict { store.setDraft("new queue draft", for: .chatGPT) }
+            try await Task.sleep(for: .milliseconds(45))
+            await settle()
+            try check(!session.isSending && pod.sends.isEmpty && tap.usageCount == 0,
+                      "voice queue timeout releases request without reaching Pod")
+            if conflict {
+                guard let saved = store.chatGPTReturnedDraft else { throw TapError.remote("queue conflict lost draft") }
+                try check(store.draft(for: .chatGPT) == "new queue draft" && saved.draft.files == [file] && saved.draft.tool == tool,
+                          "queue timeout retains full conflict")
+                clear(store)
+                try check(store.restoreReturnedChatGPTDraft(saved.id) && pod.sends.isEmpty, "queue conflict manual recovery never sends")
+            } else {
+                try check(store.draft(for: .chatGPT) == "  fixture\n" && store.attachments(for: .chatGPT) == [file]
+                          && store.chatGPTTool == tool && session.messages.isEmpty
+                          && store.notice == "\(ChatGPTTap.queueTimeoutReason)；已放回輸入框", "queue timeout uses safe acknowledged restoration")
+            }
+            tap.releaseVoice(voice)
+            tap.sleep()
+        }
+
+        // 保留後換到另一則，不可透過舊按鈕把未送內容放進新對話。
+        let contextPod = W179FakeChatGPTPod()
+        contextPod.acceptsSends = false
+        let contextTap = ChatGPTTap(transport: contextPod)
+        let (contextStore, contextSession) = try dm(contextTap)
+        prepare(contextStore)
+        try check(contextStore.send(), "context fixture starts")
+        contextStore.setDraft("newer", for: .chatGPT)
+        let contextID = try sendID(contextPod)
+        contextPod.event(contextID, "failed", ["message": "fixture", "submitted": false])
+        await settle()
+        contextSession.open(conversationID: "other-conversation")
+        clear(contextStore)
+        try check(!contextStore.restoreReturnedChatGPTDraft(contextID) && contextStore.chatGPTReturnedDrafts.count == 1
+                  && contextStore.draft(for: .chatGPT).isEmpty && contextSession.conversationID == "other-conversation"
+                  && contextPod.sends.count == 1, "old recovery action cannot restore into or switch the wrong conversation")
+        await settle()
+        contextTap.sleep()
+
+        // Space 使用專用 DEBUG 注入，不碰 shared/defaults；safe/conflict/changed-view 三條。
+        for mode in ["safe", "conflict", "changed-view"] {
+            let pod = W179FakeChatGPTPod()
+            pod.acceptsSends = false
+            let tap = ChatGPTTap(transport: pod)
+            let space = ChatGPTSpaceModel(testTap: tap)
+            space.draft = "fixture"
+            space.addData(bytes, name: file.name, mime: file.mime)
+            space.selectedTool = tool
+            space.send()
+            let id = try sendID(pod)
+            if mode == "conflict" { space.draft = "new Space draft" }
+            if mode == "changed-view" { space.newChat() }
+            pod.event(id, "failed", ["message": "fixture before click", "submitted": false])
+            await settle()
+            try check(!space.isSending && tap.usageCount == 0 && pod.sends.count == 1 && space.messages.isEmpty,
+                      "Space notSubmitted finishes without phantom sent bubble or resend: \(mode)")
+            if mode == "safe" {
+                try check(space.draft == "fixture" && space.attachments.first?.data == bytes && space.selectedTool == tool
+                          && space.unsentDrafts.isEmpty, "Space safe return preserves text/files/tool")
+            } else {
+                try check(space.unsentDrafts.count == 1 && space.unsentDrafts.first?.text == "fixture"
+                          && space.unsentDrafts.first?.files.first?.data == bytes && space.unsentDrafts.first?.tool == tool
+                          && space.draft == (mode == "conflict" ? "new Space draft" : "") && space.attachments.isEmpty,
+                          "Space preserves full unsent payload without overwriting conflict or changed page: \(mode)")
+                if mode == "conflict" {
+                    try check(!space.canRestoreUnsentDraft, "Space manual restore is blocked by current draft")
+                    space.restoreUnsentDraft()
+                    try check(space.draft == "new Space draft" && space.unsentDrafts.count == 1, "Space blocked restore is non-destructive")
+                    space.draft = ""
+                    try check(space.canRestoreUnsentDraft, "Space clear composer enables manual restoration")
+                    space.restoreUnsentDraft()
+                    try check(space.draft == "fixture" && space.attachments.first?.data == bytes && space.selectedTool == tool
+                              && space.unsentDrafts.isEmpty && pod.sends.count == 1 && !space.isSending,
+                              "Space manual restore recovers full payload and never sends")
+                }
+            }
+            tap.sleep()
+        }
+        let pod = W179FakeChatGPTPod()
+        let tap = ChatGPTTap(transport: pod)
+        let a = ChatGPTConversationSession(tap: tap)
+        let b = ChatGPTConversationSession(tap: tap)
+        a.send("fixture A")
+        b.send("fixture B")
+        await settle()
+        try check(pod.sends.count == 1 && a.state == .answering && b.state == .queued, "two users serialize; queued is not failure")
+        try check(tap.usageCount == 2 && !tap.sleepIfIdle(), "queued and streaming users prevent sleep")
+        let first = pod.sends[0]["id"] as! String
+        pod.event(first, "conversation", ["conversationID": "conversation-A"])
+        pod.event(first, "text", ["full": "A"])
+        pod.event(first, "text", ["full": "A full"])
+        pod.event(first, "finished")
+        await settle()
+        try check(pod.sends.count == 2 && b.state == .answering, "next user starts after completion")
+        let second = pod.sends[1]["id"] as! String
+        pod.event(second, "conversation", ["conversationID": "conversation-B"])
+        pod.event(second, "text", ["full": "B full"])
+        pod.event(second, "finished")
+        await settle()
+        try check(a.messages.last?.text == "A full" && b.messages.last?.text == "B full", "full text replaces rather than appends; no cross-talk")
+        try check(a.conversationID == "conversation-A" && b.conversationID == "conversation-B", "independent conversation IDs")
+        a.send("fixture follow-up")
+        b.send("fixture cancelled")
+        await settle()
+        let third = pod.sends.last!["id"] as! String
+        try check(pod.sends.last!["conversationID"] as? String == "conversation-A", "follow-up targets only its own conversation")
+        b.stop()
+        await settle()
+        try check(pod.stops.isEmpty && tap.usageCount == 1 && a.isSending && !b.isSending, "stopping queued B never stops streaming A")
+        pod.event(third, "text", ["full": "A continues"])
+        pod.event(third, "finished")
+        await settle()
+        try check(a.messages.last?.text == "A continues" && pod.sends.count == 3, "cancelled queued request never reaches Pod")
+
+        pod.acknowledgesStops = false
+        a.send("fixture stop active")
+        b.send("fixture waits for stop")
+        await settle()
+        let stopped = pod.sends.last!["id"] as! String
+        let beforeStop = pod.sends.count
+        a.stop()
+        pod.event(stopped, "text", ["full": "ignored late text"])
+        pod.event(stopped, "finished")
+        await settle()
+        try check(pod.sends.count == beforeStop && b.state == .queued && !tap.sleepIfIdle(), "stop retains slot until Pod acknowledgement; late events ignored")
+        pod.acknowledgeStop()
+        await settle()
+        try check(pod.sends.count == beforeStop + 1 && b.state == .answering, "stop acknowledgement advances queue")
+        pod.event(pod.sends.last!["id"] as! String, "failed", ["message": "fixture failure"])
+        await settle()
+        try check(b.state == .failed("fixture failure"), "failure reason reaches only owning session")
+        pod.acknowledgesStops = true
+
+        a.send("fixture failed turn")
+        b.send("fixture after failure")
+        await settle()
+        let failing = pod.sends.last!["id"] as! String
+        let beforeFailure = pod.sends.count
+        pod.event(failing, "failed", ["message": "fixture"])
+        await settle()
+        try check(pod.sends.count == beforeFailure + 1, "failure advances FIFO")
+        pod.event(pod.sends.last!["id"] as! String, "finished")
+        await settle()
+        b.newConversation()
+        try check(b.messages.isEmpty && b.conversationID == nil, "new conversation clears only session memory")
+        a.newConversation()
+        a.send("fixture stale conversation")
+        let stale = pod.sends.last!["id"] as! String
+        a.newConversation()
+        pod.event(stale, "conversation", ["conversationID": "stale"])
+        pod.event(stale, "text", ["full": "stale"])
+        await settle()
+        try check(a.messages.isEmpty && a.conversationID == nil, "new conversation rejects old buffered events")
+        try check(pod.maximumConcurrentSends == 1, "fake Pod never has overlapping sends")
+
+        // 重新產生也必須通過同一個佇列；附件／模型等既有 payload 不改。
+        let apiPod = W179FakeChatGPTPod()
+        let apiTap = ChatGPTTap(transport: apiPod)
+        let fixtureFile = "fixture.txt"
+        let raw = apiTap.send(requestID: "raw", text: "fixture raw", conversationID: "existing",
+                              model: "fixture-model", effort: "fixture-effort",
+                              attachments: [TapAttachment(name: fixtureFile, mime: "text/plain", data: Data("fixture".utf8))],
+                              temporary: true, parentID: "fixture-parent")
+        let rawTask = Task { @MainActor in for await _ in raw {} }
+        let regeneration = apiTap.regenerate(conversationID: "regenerate-only", model: "fixture-model",
+                                            effort: "fixture-effort", temporary: true)
+        let regenerationTask = Task { @MainActor in
+            var events: [TapStreamEvent] = []
+            for await event in regeneration { events.append(event) }
+            return events
+        }
+        await settle()
+        try check(apiPod.sends.count == 1 && (apiPod.sends[0]["files"] as? [[String: String]])?.count == 1
+                  && apiPod.sends[0]["parentID"] as? String == "fixture-parent", "attachments and branch payload preserved")
+        rawTask.cancel()
+        await settle()
+        try check(apiPod.sends.count == 2 && apiPod.stops.count == 1, "consumer cancellation releases active slot through scoped stop")
+        try check(apiPod.sends.last!["cmd"] as? String == "regenerate"
+                  && apiPod.sends.last!["conversationID"] as? String == "regenerate-only"
+                  && apiPod.sends.last!["temporary"] as? Bool == true, "regenerate uses FIFO and preserves target and options")
+        apiPod.event(apiPod.sends.last!["id"] as! String, "finished")
+        let regenerationEvents = await regenerationTask.value
+        try check(regenerationEvents.contains(.queued) && regenerationEvents.contains(.finished), "regenerate reports queued then finished")
+        apiTap.sleep()
+
+        let timeoutPod = W179FakeChatGPTPod()
+        timeoutPod.acceptsSends = false
+        let timeoutTap = ChatGPTTap(transport: timeoutPod, silenceOverride: .milliseconds(25))
+        let slow = ChatGPTConversationSession(tap: timeoutTap)
+        let waiting = ChatGPTConversationSession(tap: timeoutTap)
+        slow.send("fixture silent")
+        timeoutPod.acceptsSends = true
+        waiting.send("fixture queued")
+        try await Task.sleep(for: .milliseconds(40))
+        await settle()
+        try check(timeoutPod.sends.count == 2 && timeoutPod.stops.count == 1, "silence timeout cancels old Pod job before advancing")
+        if case .failed = slow.state {} else { throw TapError.remote("silence timeout did not fail") }
+        timeoutPod.event(timeoutPod.sends.last!["id"] as! String, "finished")
+        await settle()
+        timeoutTap.sleep()
+
+        let longPod = W179FakeChatGPTPod()
+        let longTap = ChatGPTTap(transport: longPod, silenceOverride: .milliseconds(15), progressSilence: .milliseconds(100))
+        let longA = ChatGPTConversationSession(tap: longTap)
+        let longB = ChatGPTConversationSession(tap: longTap)
+        longA.send("fixture accepted")
+        longB.send("fixture queue exceeds silence")
+        try await Task.sleep(for: .milliseconds(50))
+        try check(longPod.sends.count == 1 && longB.state == .queued, "queue waiting does not consume silence deadline")
+        try await Task.sleep(for: .milliseconds(90))
+        await settle()
+        try check(longPod.sends.count == 2 && longPod.stops.count == 1, "accepted but stalled stream has a terminal deadline")
+        longTap.sleep()
+
+        let brokenPod = W179FakeChatGPTPod()
+        brokenPod.acknowledgesStops = false
+        let brokenTap = ChatGPTTap(transport: brokenPod, stopDeadline: .milliseconds(25))
+        let brokenA = ChatGPTConversationSession(tap: brokenTap)
+        let brokenB = ChatGPTConversationSession(tap: brokenTap)
+        brokenA.send("fixture broken stop")
+        brokenB.send("fixture held queue")
+        brokenA.stop()
+        try await Task.sleep(for: .milliseconds(45))
+        await settle()
+        try check(brokenPod.sleepCount == 1 && brokenPod.sends.count == 1 && !brokenB.isSending,
+                  "missing stop acknowledgement fails closed without starting overlapping send")
+        if case .failed = brokenB.state {} else { throw TapError.remote("missing stop acknowledgement did not fail queued user") }
+
+        let idlePod = W179FakeChatGPTPod()
+        let idleTap = ChatGPTTap(transport: idlePod)
+        idleTap.scheduleIdleSleep(after: .milliseconds(40))
+        let lease = idleTap.acquireLease()
+        try await Task.sleep(for: .milliseconds(70))
+        try check(idlePod.sleepCount == 0 && !idleTap.sleepIfIdle(), "visibility lease prevents idle sleep")
+        let idleSession = ChatGPTConversationSession(tap: idleTap)
+        idleSession.send("fixture busy")
+        idleTap.releaseLease(lease)
+        try await Task.sleep(for: .milliseconds(70))
+        try check(idlePod.sleepCount == 0, "active send prevents sleep after lease release")
+        idlePod.event(idlePod.sends[0]["id"] as! String, "finished")
+        try await Task.sleep(for: .milliseconds(15))
+        try check(idlePod.sleepCount == 0, "full idle interval restarts after last user finishes")
+        try await Task.sleep(for: .milliseconds(60))
+        try check(idlePod.sleepCount == 1 && idleTap.connection == .sleeping, "idle Pod eventually sleeps")
+
+        let hostedPod = W179FakeChatGPTPod()
+        hostedPod.isHosted = true
+        let hostedTap = ChatGPTTap(transport: hostedPod)
+        hostedTap.scheduleIdleSleep(after: .milliseconds(20))
+        try await Task.sleep(for: .milliseconds(45))
+        try check(hostedPod.sleepCount == 0, "hosted web view is not slept")
+        hostedPod.isHosted = false
+        try await Task.sleep(for: .milliseconds(40))
+        try check(hostedPod.sleepCount == 1, "unhosted idle web view is eventually slept")
+
+        let leasePod = W179FakeChatGPTPod()
+        let leaseTap = ChatGPTTap(transport: leasePod)
+        leaseTap.scheduleIdleSleep(after: .milliseconds(40))
+        let firstLease = leaseTap.acquireLease()
+        let secondLease = leaseTap.acquireLease()
+        leaseTap.releaseLease(firstLease)
+        leaseTap.releaseLease(firstLease)
+        try await Task.sleep(for: .milliseconds(65))
+        try check(leaseTap.usageCount == 1 && leasePod.sleepCount == 0, "multiple leases and duplicate release do not undercount")
+        leaseTap.releaseLease(secondLease)
+        try await Task.sleep(for: .milliseconds(15))
+        try check(leasePod.sleepCount == 0, "last lease release restarts full idle interval")
+        try await Task.sleep(for: .milliseconds(55))
+        try check(leasePod.sleepCount == 1, "last lease release eventually sleeps")
+
+        let disposalPod = W179FakeChatGPTPod()
+        let disposalTap = ChatGPTTap(transport: disposalPod)
+        var disposable: ChatGPTConversationSession? = ChatGPTConversationSession(tap: disposalTap)
+        weak var weakSession = disposable
+        disposable?.appear()
+        disposable?.send("fixture disposal")
+        await settle()
+        disposable = nil
+        await settle()
+        try check(weakSession == nil && disposalTap.usageCount == 0 && disposalPod.stops.count == 1,
+                  "session deinit cancels its stream and releases visibility lease")
+        disposalTap.sleep()
+
+        let loginPod = W179FakeChatGPTPod()
+        let loginTap = ChatGPTTap(transport: loginPod, connection: .needsLogin)
+        let login = ChatGPTConversationSession(tap: loginTap)
+        login.appear()
+        login.send("fixture login")
+        try check(login.state == .needsLogin && login.messages.isEmpty && loginPod.commands.isEmpty && loginPod.startCount == 0,
+                  "needsLogin reports state without opening login or sending")
+        login.disappear()
+        try check(loginTap.usageCount == 0, "session appearance lease is released")
+        loginPod.report(["type": "auth"])
+        try check(login.state == .idle, "login recovery updates session")
+        login.send("fixture auth lost")
+        loginPod.report(["type": "hello", "loggedIn": false])
+        await settle()
+        try check(login.state == .needsLogin && !login.isSending, "lost login drains pending stream with needsLogin state")
+        loginTap.sleep()
+
+        let forceLease = tap.acquireLease()
+        a.send("fixture force sleep")
+        b.send("fixture queued force sleep")
+        tap.sleep()
+        await settle()
+        try check(!a.isSending && !b.isSending && pod.sleepCount == 1, "explicit disable sleep still ends all users")
+        tap.releaseLease(forceLease)
+        try check(tap.usageCount == 0, "all request and lease counts return to zero")
+    }
+}
+
+/// 完全在記憶體裡的 Pod；接受真正 commandScript 的 JSON，不使用 CEF 或網路。
+@MainActor private final class W179FakeChatGPTPod: ChatGPTPodTransport {
+    var onEvent: ((String) -> Void)?
+    var isRunning = true
+    var isHosted = false
+    var acceptsSends = true
+    var acknowledgesStops = true
+    private(set) var commands: [[String: Any]] = []
+    private(set) var sleepCount = 0
+    private(set) var startCount = 0
+    private(set) var maximumConcurrentSends = 0
+    private var active: Set<String> = []
+    var sends: [[String: Any]] { commands.filter { ["send", "regenerate"].contains($0["cmd"] as? String ?? "") } }
+    var stops: [[String: Any]] { commands.filter { $0["cmd"] as? String == "stop" } }
+    func start() throws { isRunning = true; startCount += 1 }
+    func stop() { isRunning = false; sleepCount += 1; active.removeAll() }
+    func run(_ script: String) {
+        guard let range = script.range(of: ".command("),
+              let data = String(script[range.upperBound...].dropLast()).data(using: .utf8),
+              let command = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = command["id"] as? String else { preconditionFailure("invalid fake command") }
+        commands.append(command)
+        if ["send", "regenerate"].contains(command["cmd"] as? String ?? "") {
+            active.insert(id)
+            maximumConcurrentSends = max(maximumConcurrentSends, active.count)
+            if acceptsSends {
+                // W184 G3c（房 C，GPT-6 審查 #1）：臨時的送出，真的網頁艙在送出之前先確認實際送出的內容帶了不存紀錄旗標（temporary），才有 accepted。
+                if command["temporary"] as? Bool == true { event(id, "temporary") }
+                event(id, "accepted")
+            }
+        } else if command["cmd"] as? String == "stop", acknowledgesStops { acknowledgeStop() }
+    }
+    func acknowledgeStop() {
+        guard let stop = stops.last, let id = stop["id"] as? String else { return }
+        if let request = stop["requestID"] as? String { active.remove(request) }
+        report(["type": "result", "id": id, "ok": true, "data": ["stopped": true]])
+    }
+    func event(_ id: String, _ kind: String, _ payload: [String: Any] = [:]) {
+        if kind == "finished" || kind == "failed" { active.remove(id) }
+        var object = payload
+        object["type"] = "stream"; object["id"] = id; object["kind"] = kind
+        report(object)
+    }
+    func report(_ object: [String: Any]) {
+        let data = try! JSONSerialization.data(withJSONObject: object)
+        onEvent?(String(decoding: data, as: UTF8.self))
+    }
+}
+#endif

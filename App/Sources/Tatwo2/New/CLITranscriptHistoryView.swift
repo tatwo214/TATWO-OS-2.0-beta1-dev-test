@@ -80,7 +80,7 @@ struct CLITranscriptHistoryView: View {
                 }
                 Spacer(minLength: 4)
                 Toggle("含非互動", isOn: $showsBatch).toggleStyle(.checkbox).font(.system(size: 11))
-                    .help("施工房間、腳本，以及 OS 聊天在背後跑的 session 預設不列")
+                    .help("施工房間、腳本，以及 OS 聊天在背後跑的對話預設不列")
             }
             TextField("找標題或資料夾", text: $query).textFieldStyle(.roundedBorder).font(.system(size: 12))
                 .accessibilityLabel("篩選過去的對話")

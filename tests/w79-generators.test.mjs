@@ -60,18 +60,31 @@ interpose __attribute__((section("__DATA,__interpose"))) =
   const legacy = join(root, 'legacy.json');
   writeFileSync(legacy, JSON.stringify({ projects: [], threads: [] }));
   for (const flag of ['TATWO2_BINDTEST', 'TATWO2_OSUPSTREAMREFRESHTEST']) {
-    const output = execFileSync(process.env.TATWO2_TEST_BINARY, [], {
-      encoding: 'utf8', timeout: 90_000,
-      env: {
-        PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: home,
-        CFFIXED_USER_HOME: home, DYLD_INSERT_LIBRARIES: library,
-        TATWO2_LIVE_ROOT: join(root, 'live'), TATWO2_OS_ROOT: join(root, 'entry'),
-        TATWO2_ENGINES_ROOT: join(root, 'engines'), TATWO2_AUTHORIZED_KEYS: join(root, 'authorized_keys'),
-        TATWO2_OS_SOCKET: join(root, 'live', 'os.sock'),
-        TATWO2_OS_UPSTREAM_PATH: join(root, 'unused-runtime.md'),
-        TATWO2_BIND_LEGACY_DOCUMENT: legacy, [flag]: '1',
-      },
-    });
+    let output;
+    try {
+      output = execFileSync(process.env.TATWO2_TEST_BINARY, [], {
+        encoding: 'utf8', timeout: 90_000,
+        env: {
+          PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: home,
+          CFFIXED_USER_HOME: home, DYLD_INSERT_LIBRARIES: library,
+          TATWO2_LIVE_ROOT: join(root, 'live'), TATWO2_OS_ROOT: join(root, 'entry'),
+          TATWO2_ENGINES_ROOT: join(root, 'engines'), TATWO2_AUTHORIZED_KEYS: join(root, 'authorized_keys'),
+          TATWO2_OS_SOCKET: join(root, 'live', 'os.sock'),
+          TATWO2_OS_UPSTREAM_PATH: join(root, 'unused-runtime.md'),
+          TATWO2_BIND_LEGACY_DOCUMENT: legacy, [flag]: '1',
+        },
+      });
+    } catch (error) {
+      // These children only read the isolated synthetic fixture. Preserve their
+      // failure output before rethrowing; never retry or turn the failure green.
+      writeFileSync(join(root, flag + '.log'), error.stdout ?? '');
+      writeFileSync(join(root, flag + '.stderr.log'), error.stderr ?? '');
+      writeFileSync(join(root, flag + '.status.json'), JSON.stringify({
+        status: error.status ?? null, signal: error.signal ?? null, code: error.code ?? null,
+      }));
+      console.error(`${flag} failed; isolated evidence retained at ${root}`);
+      throw error;
+    }
     writeFileSync(join(root, flag + '.log'), output);
     assert.match(output, /ALL PASS/);
     assert.doesNotMatch(output, /(?:BINDTEST|OSUPSTREAMREFRESHTEST) FAIL|未跑/);

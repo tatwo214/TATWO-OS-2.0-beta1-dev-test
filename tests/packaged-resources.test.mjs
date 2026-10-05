@@ -22,6 +22,7 @@ function buildFixture() {
 <key>CFBundlePackageType</key><string>APPL</string></dict></plist>`);
   const source = fs.readFileSync(path.join(appSource, 'Shell/TatwoM3PrototypeViews.swift'), 'utf8');
   const loader = source.slice(source.indexOf('enum ProviderSVGIconLoader {'), source.indexOf('\nstruct QuotaProviderDetail:'));
+  assert.ok(loader.startsWith('enum ProviderSVGIconLoader {') && loader.trimEnd().endsWith('}'), 'production loader boundaries');
   // SwiftPM's generated accessor searches app root, then the original build
   // machine's absolute path. This path is deliberately absent, as on a tester's Mac.
   const legacy = `extension Bundle {
@@ -37,14 +38,17 @@ function buildFixture() {
   const main = path.join(root, 'main.swift');
   fs.writeFileSync(main, `import AppKit\n${legacy}\n${loader}
 let expected = CommandLine.arguments[1] == "present"
-for id in ["codex-gpt", "claude", "grok"] {
+for (id, initials) in [("codex-gpt", "CX"), ("claude", "CL"), ("grok", "GK")] {
   guard (ProviderSVGIconLoader.image(for: id) != nil) == expected else { exit(2) }
+  precondition(ProviderSVGIconLoader.fallbackInitials(for: id) == initials)
 }
+precondition(ProviderSVGIconLoader.image(for: "unknown-provider") == nil)
+precondition(ProviderSVGIconLoader.fallbackInitials(for: "unknown-provider") == "AI")
 print("RESOURCE PROBE PASS")
 `);
   const resolver = path.join(appSource, 'Facade/TatwoResources.swift');
   const binary = path.join(contents, 'MacOS/probe');
-  execFileSync('swiftc', ['-swift-version', '5', ...(fs.existsSync(resolver) ? [resolver] : []),
+  execFileSync('swiftc', ['-swift-version', '5', resolver, path.join(appSource, 'Shell/ProviderIconResources.swift'),
     main, '-o', binary], { timeout: 120_000, encoding: 'utf8' });
   fixture = { root, contents, binary };
   return fixture;

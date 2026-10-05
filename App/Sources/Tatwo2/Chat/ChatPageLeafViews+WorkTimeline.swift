@@ -362,6 +362,8 @@ enum ChatTranscriptDisplayBuilder {
     }
 
     static func build(_ messages: [ChatMessage]) -> [ChatTranscriptDisplayItem] {
+        // W201：只過濾 OS 自動同步的系統列；原始對話與同步紀錄完整保留。
+        let messages = messages.filter { !ChatSystemNotePresentation.isAutomaticDeviceStatus($0) }
         let localWorkMessages = messages.filter(isLocalInlineWorkMessage)
         let knownModelsByTurn = Dictionary(grouping: localWorkMessages) {
             $0.turnID ?? $0.id
@@ -450,7 +452,7 @@ enum ChatTranscriptDisplayBuilder {
 
 struct ChatInlineWorkTimelineSummary: Equatable {
     /// Accessibility identity of the capsule (stable across states).
-    static let containerLabel = "思考中"
+    static let containerLabel = "工作進度"
     /// Structural placeholders that carry no information for the reader.
     static let genericPresentationTexts: Set<String> = ["思考中", "已完成工作", "分析進度", "分析完成"]
 
@@ -466,7 +468,7 @@ struct ChatInlineWorkTimelineSummary: Equatable {
         case .completed: "已完成"
         case .failed: "發生錯誤"
         case .cancelled: "已取消"
-        case .queued, .running, .tool, .reconnecting: Self.containerLabel
+        case .queued, .running, .tool, .reconnecting: "思考中"
         }
     }
 
@@ -713,7 +715,7 @@ struct ChatInlineWorkTimelineView: View {
         }
         .frame(width: rowWidth, alignment: .leading)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(ChatInlineWorkTimelineSummary.containerLabel)
+        .accessibilityLabel(summary.label)
         .accessibilityValue(
             "\(summary.compactText) · \(isExpanded ? "已展開" : "已收合")")
         .accessibilityIdentifier("chat-inline-work-timeline")

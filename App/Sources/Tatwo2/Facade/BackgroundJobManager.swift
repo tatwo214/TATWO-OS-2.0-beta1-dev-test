@@ -127,6 +127,7 @@ final class BackgroundJobManager: @unchecked Sendable {
                     current.exitCode = finished.terminationStatus
                     current.terminationSignal = finished.terminationReason == .uncaughtSignal
                         ? finished.terminationStatus : nil
+                    eventsJob(current, root: self.root, ended: true)
                     self.records[id] = current
                     self.processes[id] = nil
                     self.persist()
@@ -148,6 +149,7 @@ final class BackgroundJobManager: @unchecked Sendable {
                                 logPath: logURL.path, threadID: threadID, startedAt: Date(), state: "running", exitCode: nil)
             record.requestKey = requestKey
             record.startTime = OSSocketCaller.processStartTime(process.processIdentifier)
+            eventsJob(record, root: root, ended: false)
             records[id] = record
             processes[id] = process
             persist()
@@ -287,6 +289,7 @@ final class BackgroundJobManager: @unchecked Sendable {
             // After relaunch there is no native wait status. Do not invent exit 0
             // or a cancellation result merely because a PID disappeared.
             record.state = "unknown"
+            eventsJob(record, root: root, ended: true)
             records[id] = record
             persist()
             updateTimer()

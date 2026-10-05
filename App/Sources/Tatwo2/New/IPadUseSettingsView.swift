@@ -27,27 +27,26 @@ struct IPadUseSettingsView: View {
                 if !controller.connected { setup.disabled(controller.stopUnconfirmed) }
                 else {
                     HStack {
-                        Button(controller.authorized ? "重新授權目前討論串" : "授權目前討論串（畫面＋觸控）") {
+                        OSChipButton(title: controller.authorized ? "重新授權目前討論串" : "授權目前討論串（畫面＋觸控）", isPrimary: true) {
                             consentThreadID = threadID
                             showAuthorization = true
                         }
-                        .buttonStyle(.borderedProminent)
                         .disabled(threadID == nil || controller.busy)
-                        Button("立即停止", role: .destructive) { controller.stop() }
+                        OSChipButton(title: "立即停止", role: .destructive) { controller.stop() }
                     }
                 }
                 if controller.busy {
                     HStack {
                         ProgressView().controlSize(.small)
                         Text("處理中…").font(.caption)
-                        Button("取消並停止") { controller.stop() }
+                        OSChipButton(title: "取消並停止") { controller.stop() }
                     }
                 }
                 if controller.stopUnconfirmed {
-                    Button("再次停止設備", role: .destructive) { controller.stop() }
+                    OSChipButton(title: "再次停止設備", role: .destructive) { controller.stop() }
                 }
                 if controller.authorized, let threadID {
-                    Button("擷取 iPad 畫面測試") {
+                    OSChipButton(title: "擷取 iPad 畫面測試") {
                         Task {
                             do {
                                 _ = try await controller.perform("ipad_screenshot", params: [:], caller: threadID)
@@ -113,7 +112,7 @@ struct IPadUseSettingsView: View {
             Text("連接 iPad").font(.subheadline.bold())
             Text("以 USB 連接、解鎖 iPad，親自確認信任並啟用開發者模式；Mac 需要完整 Xcode。")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("重新尋找 USB iPad") { Task { await controller.discover() } }
+            OSChipButton(title: "重新尋找 USB iPad") { Task { await controller.discover() } }
                 .disabled(controller.busy)
             Text("自動準備").font(.subheadline.bold())
             Text("確認後會自動準備元件、連線並檢查畫面；需要你操作時會顯示原因。")
@@ -122,7 +121,7 @@ struct IPadUseSettingsView: View {
                 HStack {
                     Label(device.name, systemImage: "ipad")
                     Spacer()
-                    Button("設定並開始使用") {
+                    OSChipButton(title: "設定並開始使用") {
                         quickDevice = device
                         consentThreadID = threadID
                         showQuickConsent = true
@@ -131,13 +130,13 @@ struct IPadUseSettingsView: View {
             }
             DisclosureGroup("進階：設備元件與診斷") {
                 ForEach(controller.devices) { device in
-                    Button("重新建立元件：\(device.name)") {
+                    OSChipButton(title: "重新建立元件：\(device.name)") {
                         deviceToBuild = device
                         showBuildConsent = true
                     }.disabled(controller.busy || controller.setupInProgress)
                 }
                 HStack {
-                    Button("選擇設備檔案") { controller.chooseTestBundle() }
+                    OSChipButton(title: "選擇設備檔案") { controller.chooseTestBundle() }
                         .disabled(controller.busy)
                     Text(controller.testBundle?.lastPathComponent ?? "尚未建立")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)

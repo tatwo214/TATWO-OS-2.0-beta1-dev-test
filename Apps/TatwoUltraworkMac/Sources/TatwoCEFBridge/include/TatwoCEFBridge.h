@@ -135,11 +135,28 @@ typedef void (^TatwoCEFFileDialogHandler)(NSInteger mode, NSString *title, NSStr
 @property(nonatomic, copy, nullable) void (^onPopupRequested)(NSString *url);
 /// A CEF-owned popup keeps its opener and request context; configure its own human UI callbacks.
 @property(nonatomic, copy, nullable) void (^onPopupCreated)(TatwoCEFBrowserView *popup);
+/// W183 R10 第四輪（GPT-6 發現 1）：這個 popup 是 opener 的主框架開的（OnBeforePopup 的 frame->IsMain()；子框架、iframe 開的＝NO）。
+/// 橋接層在叫 onPopupCreated／onContainedPopup 之前設好；App 用它判斷連線流程的「只准一條路」。沒有 Chromium 的建置一律 NO。
+@property(atomic) BOOL openedByMainFrame;
 /// W114：使用者直接點了會開新視窗的連結（target=_blank／不帶尺寸的 window.open）。要開成新分頁並切過去；
 /// ⌘點擊／中鍵走 onPopupRequested（背景分頁）。
 @property(nonatomic, copy, nullable) void (^onForegroundTabRequested)(NSString *url);
+/// W183 R5b 審查（GPT-6）：敏感頁（私訊框的 Cloudflare 授權頁；手機 App 的內嵌瀏覽器）。設了之後：
+/// - 頁內開的所有新視窗（帶尺寸、NEW_POPUP、about:blank、一般 target=_blank 都算）一律不開原生視窗，
+///   在 CEF 建立前交給 onContainedPopup 放進同一張頁面（保住 opener／postMessage）；沒有接的地方就擋掉。
+/// - 主框架與所有資源只准 https（拒絕 http 降級與其他協定）。
+/// popup 繼承這兩個設定。必須在第一次載入前設定。
+@property(atomic) BOOL sensitivePage;
+/// W183 R8b 審查（GPT-6）：只准 https（主框架、轉址、資源；不改 popup 的收法）。App 把一個常駐的頁面放進受保護的呈現時設
+/// （W183 R8 整合：橋接層不認得任何特定網站，字面上也不提），放掉就解除；sensitivePage 本來就只准 https，不用另外設。
+@property(atomic) BOOL httpsOnly;
+@property(nonatomic, copy, nullable) void (^onContainedPopup)(TatwoCEFBrowserView *popup);
+/// 不發起關閉；這個頁面真的關完（例如 popup 自己 window.close()）時呼叫一次。已經關完＝馬上呼叫。
+- (void)addCloseObserver:(TatwoCEFBrowserCloseHandler)observer;
 /// W112：這個分頁的影音是否真的在出聲（沒靜音、音量大於 0、正在播放）；只在變動時呼叫，主執行緒。
 @property(nonatomic, copy, nullable) void (^onAudibleChange)(BOOL audible);
+/// W184 E：這個分頁是否有 <video> 正在播（有畫面尺寸、有版面位置；靜音也算）；只在變動時呼叫，主執行緒，只給使用者本人的頁面。只過一個布林。
+@property(nonatomic, copy, nullable) void (^onVideoPlayingChange)(BOOL playing);
 /// W177 TAP（TATWO App Protocol）：把這個瀏覽器設成某個 Tap 的 Pod（跑外部 App 真用戶端的容器）。
 /// 必須在瀏覽器建立前（放進視窗前）呼叫；腳本是 `(function(report){…})`，只在這個瀏覽器的主框架主世界、
 /// 每份文件建立時執行，用 report(json 字串) 回報，App 從 onPodEvent 收到。一般分頁不受影響。

@@ -33,6 +33,10 @@ struct TapMessage: Identifiable, Equatable {
     let id: String
     let role: TapRole
     var text: String
+    /// 本機停止標記；只放記憶體，不混進回答文字。
+    var stopNotice: String? = nil
+    var turnFailure: ChatGPTTurnFailure? = nil
+    var thoughtSeconds: Int? = nil
     /// 給這則回答的模型（App 回報得出來才有）。
     var model: String? = nil
     /// 訊息裡的圖片（生圖結果、使用者附的圖）；要顯示時再用 imageData 取。
@@ -61,6 +65,16 @@ struct TapThread {
     let leaf: String?
     /// 是不是 App 目前那一支（不是的話，接著送出要指定接在 leaf 後面）。
     let isCurrent: Bool
+    /// W184 G3b 第二輪（審查 #8）：這則是 ChatGPT「Work」模式的對話（用 Work 專用模型；跟 Codex 共用額度）：這裡只做 Chat，不續聊。
+    var isWork = false
+    var projectID: String? = nil
+}
+
+/// W184 G3b 第二輪：某一則對話剛在 TAP 上送完一輪（誰送的看 requestID；serial 每次都不一樣，同一則連續兩次也會通知）。
+struct TapConversationUpdate: Equatable {
+    let conversationID: String
+    let requestID: String
+    let serial: Int
 }
 
 /// 回答引用的來源網頁。
@@ -176,10 +190,16 @@ struct TapFolder: Identifiable, Equatable, Hashable {
     let id: String
     let title: String
     let kind: Kind
+    /// 專案的識別說明（沒有回報時留空，不靠名稱猜對應）。
+    var description: String = ""
 }
 
 /// 送出一則訊息之後，Tap 依序回報的事件。
 enum TapStreamEvent: Equatable {
+    /// 本串流自己的代號；停止時只使用這個代號，不停止別人的送出。
+    case request(id: String)
+    /// 已收進 Tap 佇列，尚未佔用 Pod；不是失敗。
+    case queued
     /// App 收下了，開始等回答。
     case accepted
     /// 新對話建立時的代號。
@@ -188,7 +208,11 @@ enum TapStreamEvent: Equatable {
     case text(messageID: String, full: String)
     case title(conversationID: String, title: String)
     case finished
-    case failed(String)
+    /// Pod 明確證明尚未按送出；可交還草稿，但不得自行重送。
+    /// 一般網路失敗、逾時或已按送出的未知結果不得使用此事件。
+    case notSubmitted(String)
+    case failed(String, reason: String? = nil)
+    case progress(title: String, server: Bool)
 }
 
 enum TapError: LocalizedError, Equatable {
@@ -329,6 +353,8 @@ protocol ConversationTap: AnyObject {
     func models() async throws -> (items: [TapModel], defaultID: String?, currentEffortID: String?)
     func pinned() async throws -> [TapFolder]
     func projects() async throws -> [TapFolder]
+    func createProject(name: String, description: String) async throws -> TapFolder
+    func projectDetails(projectID: String) async throws -> TapFolder
     func conversations(inProject projectID: String) async throws -> [TapConversation]
     /// parentID＝接在哪個節點後面（切換過版本或編輯訊息時）；nil＝App 目前那一支。
     func send(text: String, conversationID: String?, model: String?, effort: String?, attachments: [TapAttachment],
@@ -351,4 +377,17 @@ protocol ConversationTap: AnyObject {
     /// 資料庫檔案的縮圖（full＝原檔）；只放記憶體。
     func libraryData(itemID: String, full: Bool) async throws -> Data
     func stop()
+    func stop(requestID: String)
+}
+
+extension ConversationTap {
+    func createProject(name: String, description: String) async throws -> TapFolder {
+        throw TapError.remote("這座 TAP 還不能建立專案")
+    }
+    func projectDetails(projectID: String) async throws -> TapFolder {
+        guard let project = try await projects().first(where: { $0.id == projectID && $0.kind == .project }) else {
+            throw TapError.remote("找不到 TAP 專案")
+        }
+        return project
+    }
 }

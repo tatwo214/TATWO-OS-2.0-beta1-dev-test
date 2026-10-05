@@ -15,7 +15,9 @@ test('點連結開的新分頁會切過去；⌘點擊才留在背景', () => {
   const surface = app('Browser/BrowserWorkSpaceCEFSurface.swift');
   assert.match(surface, /host\.onTabForegroundRequested = \{[\s\S]*?self\.registry\.openTab\(owner: source\.owner, url: url, folderID: source\.folderID\)[\s\S]*?self\.foregroundTabRequest = \(tab\.id,/);
   const design = app('Browser/BrowserWorkSpaceDesignView.swift');
-  assert.match(design, /\.onChange\(of: runtime\.foregroundTabRequest\.serial\) \{ _, _ in if let id = runtime\.foregroundTabRequest\.tabID \{ store\.select\(registryID: id\) \} \}/);
+  assert.match(design, /\.onChange\(of: runtime\.foregroundTabRequest\.serial\) \{ _, _ in if let id = runtime\.foregroundTabRequest\.tabID \{ selectForegroundTab\(id\) \} \}/);
+  const projection = app('Browser/BrowserSessionProjection.swift');
+  assert.match(projection, /func selectForegroundTab\(_ id: UUID\) \{\s*if let session \{ session\.selectForeground\(id\) \}\s*else \{ store\.select\(registryID: id\) \}/);
   assert.ok(design.split('\n').length <= 1300);
 });
 

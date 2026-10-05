@@ -1,3 +1,4 @@
+import { codexModels } from '../model-capabilities.mjs';
 import os from 'node:os';
 import fs from 'node:fs';
 // tatwo2 Codex sidecar：把 codex app-server JSON-RPC 翻成 Engines/PROTOCOL.md 的共用事件。
@@ -14,6 +15,7 @@ const flag = (name, fallback) => {
   return index >= 0 ? argv[index + 1] : fallback;
 };
 
+const catalogOnly = argv.includes('--catalog-only');
 const cwd = flag('--cwd', process.cwd());
 const resumeThreadID = flag('--resume', undefined);
 let selectedModel = flag('--model', undefined);
@@ -157,6 +159,7 @@ const upstreamArgs = systemPrompt ? ['-c', `developer_instructions=${JSON.string
 // 同一個家一次只讓一個 sidecar 起 app-server。拿不到協調權（活鎖逾時／鎖無 owner／發佈失敗／等待中被取消）＝fail-closed：
 // 發 error、退出，不盲目起第二個。等待期間就監聽 stdin EOF／訊號取消；等待結束後同樣訊號＝正常 close。
 function resolveCodexBinary() {
+  if (process.env.TATWO2_CODEX_BIN) return process.env.TATWO2_CODEX_BIN;
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
     const candidate = path.join(dir, 'codex');
     try { fs.accessSync(candidate, fs.constants.X_OK); return candidate; } catch {}
@@ -183,15 +186,15 @@ try {
 firstInitWaiting = false;
 // owner 的鎖只在 initialize 真成功、或自己的 child 已確認退出（exit）、或根本沒 child（ENOENT）時釋放；close() 不提前釋放。
 const releaseFirstInit = (why) => { if (firstInit.role === 'owner') { firstInit.release(); firstInit = { role: 'released', release: () => false, why }; } };
-const appServer = spawn('codex', [
+const appServer = spawn(resolveCodexBinary() ?? 'codex', [
   ...upstreamArgs,
   '-c', 'mcp_servers.tatwo2_browser.command="node"',
   '-c', `mcp_servers.tatwo2_browser.args=${JSON.stringify([browserMCPServer])}`,
   '-c', 'mcp_servers.tatwo2_os.command="node"',
   '-c', `mcp_servers.tatwo2_os.args=${JSON.stringify([osMCPServer])}`,
-  // Bound every OS/browser tool call: if the helper dies mid-call the turn must fail visibly, not hang
-  // (CU10 helper-disconnect). 120 s covers a 25 s consent sheet plus observe retries and one action.
-  '-c', 'mcp_servers.tatwo2_os.tool_timeout_sec=120',
+  // Browser calls get 120s for consent, observe retries and one action. OS calls get 1830s
+  // because native dispatch waits up to 1800s plus 15s socket grace; Codex config applies this per server.
+  '-c', 'mcp_servers.tatwo2_os.tool_timeout_sec=1830',
   '-c', 'mcp_servers.tatwo2_browser.tool_timeout_sec=120',
   // app-server 會濾掉子程序環境：兩個 built-in MCP 的橋位址要用 env 明確傳，才不會退回正式 App 的預設路徑（review 2026-09-06）
   ...(process.env.TATWO2_OS_SOCKET ? ['-c', `mcp_servers.tatwo2_os.env.TATWO2_OS_SOCKET=${JSON.stringify(process.env.TATWO2_OS_SOCKET)}`] : []),
@@ -522,7 +525,7 @@ function handleNotification(message) {
   }
   if (method === 'turn/completed') {
     const turn = params.turn ?? {};
-    const result = activeTurnAgentText || activeTurnText;
+    const result = turn.error?.message || activeTurnAgentText || activeTurnText || "";
     const cancelled = turn.status === 'interrupted' && !turn.error;
     const failed = !cancelled && (turn.status !== 'completed' || Boolean(turn.error));
     currentTurn.id = turn.id ?? currentTurn.id;
@@ -531,12 +534,14 @@ function handleNotification(message) {
       subtype: cancelled ? 'cancelled' : failed ? 'error' : 'success',
       is_error: failed,
       result,
+      ...(turn.error ? { error_details: JSON.stringify(turn.error) } : {}),
       session_id: threadID,
     });
     return;
   }
   if (method === 'error') {
-    emit({ ev: 'error', message: params.message ?? JSON.stringify(params) });
+    emit({ ev: 'error', message: params.error?.message ?? params.message ?? '引擎回報未知錯誤',
+      details: JSON.stringify(params), terminal: params.willRetry !== true, client_turn_id: currentTurn?.uuid });
   }
 }
 
@@ -715,6 +720,8 @@ function drainSendQueue() {
       const id = result?.turn?.id ?? turn.id;
       if (!id || (turn.id && turn.id !== id)) throw new Error('turn/start returned a missing or mismatched turn id');
       turn.id = id;
+      // W184 H4 修正第二輪：App 的這一輪（client_turn_id）引擎收下了——App 等這一聲（或第一個回覆）才算送到、才清草稿。
+      sdk({ type: 'system', subtype: 'turn_accepted', session_id: threadID, client_turn_id: turn.uuid });
       interruptTurn(turn);
       drainSteer(turn);
     })
@@ -768,6 +775,22 @@ function interruptTurn(turn, explicitRetry = false) {
   });
 }
 
+async function publishCatalog() {
+  const rows = [];
+  let cursor = null;
+  const seen = new Set();
+  do {
+    const page = await request('model/list', {limit:100, includeHidden:false, cursor});
+    rows.push(...(page?.data ?? []));
+    cursor = page?.nextCursor ?? null;
+    if (cursor && seen.has(cursor)) throw new Error('model/list repeated cursor');
+    if (cursor) seen.add(cursor);
+  } while (cursor && seen.size < 100);
+  if (cursor) throw new Error('model/list pagination limit');
+  emit({ev:'sdk', msg:{type:'system',subtype:'model_catalog',engine:'codex',
+    identity:process.env.TATWO2_ENGINE_IDENTITY ?? 'unknown', source:'app-server model/list', models:codexModels(rows)}});
+}
+
 async function boot() {
   await request('initialize', {
     clientInfo: {
@@ -792,6 +815,13 @@ async function boot() {
     releaseFirstInit('initialized');
   }
 
+  if (catalogOnly) {
+    await publishCatalog();
+    appServer.stdin.end();
+    appServer.kill('SIGTERM');
+    return;
+  }
+  void publishCatalog().catch(error => emit({ev:'stderr',line:`模型能力查詢失敗，使用標示的備援：${errorText(error)}`}));
   const params = {
     cwd,
     approvalPolicy,

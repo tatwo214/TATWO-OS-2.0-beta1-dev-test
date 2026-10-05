@@ -203,6 +203,10 @@ static NSString *const TatwoCEFErrorDomain = @"com.tatwo.ultrawork.cef";
         completion();
     }
 }
+// W183 R5b：沒有 Chromium＝沒有頁面，本來就是關的。
+- (void)addCloseObserver:(TatwoCEFBrowserCloseHandler)observer {
+    observer();
+}
 
 @end
 

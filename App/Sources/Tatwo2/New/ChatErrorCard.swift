@@ -6,6 +6,8 @@ struct ChatErrorCardPresentation: Equatable {
     let headline: String
     let detail: String
     let raw: String?
+    var isStopped = false
+    var needsModelLogin = false
 
     static func resolve(_ message: ChatMessage) -> ChatErrorCardPresentation? {
         guard message.role == .system,
@@ -13,6 +15,8 @@ struct ChatErrorCardPresentation: Equatable {
               status.lowercased().hasPrefix("error") else { return nil }
         let source = status.split(separator: "|").dropFirst().first.map(String.init) ?? ""
         let text = stripANSI(message.text).trimmingCharacters(in: .whitespacesAndNewlines)
+        let isStopped = text.contains("已停止") && source == "沒送到"
+        let needsModelLogin = source == "登入" || EngineFailurePresentation.make(text, details: message.engineErrorDetails, alternative: "其他模型").category == .login
         let headline: String
         switch source {
         case "sidecar": headline = text.contains("啟動") ? "引擎啟動失敗" : "引擎回報錯誤"
@@ -22,7 +26,8 @@ struct ChatErrorCardPresentation: Equatable {
         default: headline = text.hasPrefix("引擎在這一輪中途結束") ? "引擎中途結束" : "出了問題"
         }
         let (detail, raw) = summarize(text)
-        return ChatErrorCardPresentation(headline: headline, detail: detail, raw: raw)
+        return ChatErrorCardPresentation(headline: isStopped ? "已停止" : headline, detail: detail, raw: raw,
+                                         isStopped: isStopped, needsModelLogin: needsModelLogin)
     }
 
     /// 內文：JSON 就抓 message／error 欄位；純文字就取前幾句。原文超過內文才提供展開。
@@ -69,9 +74,9 @@ struct ChatErrorCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
+                Image(systemName: presentation.isStopped ? "stop.circle" : "exclamationmark.triangle.fill")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.orange.opacity(0.85))
+                    .foregroundStyle(presentation.isStopped ? Color.secondary : Color.orange.opacity(0.85))
                     .frame(width: 15, height: 17)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(presentation.headline)
@@ -84,11 +89,15 @@ struct ChatErrorCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
-                if canRetry {
+                if presentation.needsModelLogin {
+                    Button("登入") { EngineFailurePresentation.openModelLogin() }
+                        .buttonStyle(.plain).padding(.horizontal, 10).frame(height: 28).chatGlassChip()
+                        .accessibilityIdentifier("chat-error-model-login")
+                }
+                if canRetry && !presentation.isStopped {
                     Button(action: onRetry) {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
                             .frame(width: 24, height: 24)
                             .chatGlassChip()
                             .contentShape(Rectangle())

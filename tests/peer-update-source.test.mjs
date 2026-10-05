@@ -55,7 +55,11 @@ test('availability published by App launch; display only; installer and signatur
 
 test('production Swift: registry/available round-trip, LAN order, argv, capture-only, timeout and cancellation',
   { skip: process.platform !== 'darwin', timeout: 120_000 }, () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), 'w21-peer-')));
+    // Foundation's NSTemporaryDirectory ignores a custom Node TMPDIR on macOS.
+    // Use the OS-provided temp directory, not a new allowance in the validator.
+    const nativeTemp = spawnSync('/usr/bin/getconf', ['DARWIN_USER_TEMP_DIR'], { encoding: 'utf8' });
+    assert.equal(nativeTemp.status, 0, nativeTemp.stderr);
+    const root = realpathSync(mkdtempSync(join(nativeTemp.stdout.trim(), 'w21-peer-')));
     const token = randomUUID();
     writeFileSync(join(root, 'owner.json'), JSON.stringify({ token }));
     const fixtureTypes = sync.slice(sync.indexOf('enum RemoteEngineSyncError'), sync.indexOf('struct RemoteEngineSync {'));

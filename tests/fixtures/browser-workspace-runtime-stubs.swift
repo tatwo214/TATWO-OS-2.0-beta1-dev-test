@@ -16,7 +16,7 @@ enum Engine { case chromiumCEF }
     func recordAccessAndEnforce(profile: EmbeddedBrowserRuntimeProfile, engine: Engine) async -> Result<Void, Failure> { .success(()) }
 }
 struct EmbeddedBrowserCommand { let id = UUID() }
-struct EmbeddedBrowserNavigationState {
+struct EmbeddedBrowserNavigationState: Equatable {
     static let blank = Self()
     var isLoading = false
     var committedMainFrameURLString: String?
@@ -45,6 +45,7 @@ struct BrowserTab {
     static let shared = BrowserTabRegistry()
     let changes = PassthroughSubject<Void, Never>()
     var tabs: [BrowserTab] = []
+    var workSpaceTabUsage: (UUID) -> (agentControlled: Bool, isHuman: Bool, webMCPInUse: Bool) = { _ in (false, true, false) }
     var writes = 0
     var loadingTabIDs: Set<UUID> = []
     func setLoading(_ id: UUID, _ loading: Bool) {
@@ -62,6 +63,26 @@ struct BrowserTab {
     @discardableResult func openTab(owner: Owner, url: URL?, folderID: UUID? = nil) -> BrowserTab {
         let tab = BrowserTab(id: UUID(), owner: owner, url: url, folderID: folderID); tabs.append(tab); return tab
     }
+    var sensitiveIDs: Set<UUID> = []   // W184 E
+    func isSensitive(_ id: UUID) -> Bool { sensitiveIDs.contains(id) }
+}
+// W184 E：倒放借出的替身（runtime 的借出／還回接線；真的搬移、篩選在正式的主機與 BrowserTentPolicy，這裡不驗）。
+enum BrowserTabReturnReason: Equatable { case closing, command, takenBack, fullscreen(started: Bool) }
+struct BrowserLendableTab {
+    struct Native { var isOnScreen = false; var agentControlled = false; var isHuman = true }
+    let id: String
+    var isSensitive = false
+    var videoStartedAt: Date?
+    var isSelected = false
+    var native: Native?
+    init(tab: BrowserTab, isSensitive: Bool, videoStartedAt: Date?, isSelected: Bool, native: Native?) {
+        id = tab.id.uuidString; self.isSensitive = isSensitive; self.videoStartedAt = videoStartedAt
+        self.isSelected = isSelected; self.native = native
+    }
+}
+@MainActor final class BrowserVideoTabs {
+    static let shared = BrowserVideoTabs()
+    var startedAt: [String: Date] = [:]
 }
 // Engine double verifies production controller wiring, not actual CEF/network/visual behavior.
 @MainActor final class TatwoCEFTabHostView: NSView {
@@ -76,6 +97,19 @@ struct BrowserTab {
     var isIdle: Bool { nativeIDs.isEmpty }
     var protectedTabIDs: Set<String> = []
     func preventsAutomaticSleep(tabID: String) -> Bool { protectedTabIDs.contains(tabID) }
+    // W184 E：借給倒放（替身只記帳；真的主機只搬 NSView、借出中的分頁算進睡眠保護）。
+    var onLentReturned: ((String, BrowserTabReturnReason) -> Void)?
+    var lent: Set<String> = []
+    func lendingNative(tabID: String) -> BrowserLendableTab.Native? { nativeIDs[tabID] == nil ? nil : .init() }
+    func lend(tabID: String, into target: NSView) -> Bool {
+        guard nativeIDs[tabID] != nil else { return false }
+        lent.insert(tabID); return true
+    }
+    func giveBack(tabID: String, focus: Bool = false) { lent.remove(tabID) }
+    func takeBack(tabID: String) {
+        guard lent.remove(tabID) != nil else { return }
+        onLentReturned?(tabID, .takenBack)
+    }
     func close() { nativeIDs = [:]; onIdle?() }
     var state: (String, EmbeddedBrowserNavigationState) -> Void
     var pendingState: (String, EmbeddedBrowserNavigationState)?
@@ -101,4 +135,9 @@ struct BrowserTab {
     static let shared = IslandNotice()
     var messages: [String] = []
     func info(title: String, detail: String, duration: TimeInterval) { messages.append(title) }
+}
+
+@MainActor final class TatwoWebMCPRuntime {
+    static let shared = TatwoWebMCPRuntime()
+    var tabsInUse: Set<String> = []
 }

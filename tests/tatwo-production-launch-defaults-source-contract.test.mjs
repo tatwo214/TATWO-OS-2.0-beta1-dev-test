@@ -172,9 +172,11 @@ test("Chat uses the user home fallback until a configured or restored project wi
     chatPageModel,
     /if mode == \.chat, isSelectedThreadStandalone \{\s*if let configuredChatWorkdirOverride \{\s*let configured = URL\(fileURLWithPath: configuredChatWorkdirOverride\)\s*\.standardizedFileURL\s*if !Self\.isUnsafeChatWorkspaceRoot\(configured\) \{\s*return RuntimeWorkspaceResolution\(\s*url: configured,\s*skipGitRepoCheck: !Self\.looksLikeGitWorkTree\(configured\)\)\s*\}\s*\}/,
   );
+  assert.match(chatPageModel, /self\.chatCLIRuntimeRootURL = chatCLIRuntimeRootURL/);
+  assert.match(chatPageModel, /self\.runner = ChatCLIProcessRunner\([\s\S]*?runtimeRootURL: chatCLIRuntimeRootURL,/);
   assert.match(
     chatPageModel,
-    /runtimeRootURL:\s*injectedChatRuntimeRootURL\s*\?\?\s*injectedProcessStorageLayout\?\.chatRuntimeRootURL\s*\?\?\s*self\.store\.url\.deletingLastPathComponent\(\)\s*\.appendingPathComponent\(\s*"chat-cli-runtime-v1",\s*isDirectory: true\)/,
+    /let chatCLIRuntimeRootURL =\s*injectedChatRuntimeRootURL\s*\?\?\s*injectedProcessStorageLayout\?\.chatRuntimeRootURL\s*\?\?\s*self\.store\.url\.deletingLastPathComponent\(\)\s*\.appendingPathComponent\(\s*"chat-cli-runtime-v1",\s*isDirectory: true\)/,
   );
   assert.equal(
     (

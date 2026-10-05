@@ -17,7 +17,16 @@ function section(start, end) {
 // Ordinary-folder tests must be outside any enclosing repository; otherwise git
 // discovers the real checkout above the fixture and tests the wrong behavior.
 const cleanGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
-const scratch = fs.realpathSync(os.tmpdir());
+// Regression runners may set TMPDIR inside a checkout. Git walks ancestors;
+// use the system scratch only when the inherited scratch is inside a repository.
+const inheritedScratch = fs.realpathSync(os.tmpdir());
+const inheritedGit = spawnSync('/usr/bin/git', ['-C', inheritedScratch, 'rev-parse', '--git-dir'], {
+  encoding: 'utf8', timeout: 5000, env: { ...cleanGitEnvironment, LC_ALL: 'C' },
+});
+assert.ifError(inheritedGit.error);
+const scratch = process.env.TATWO_DISPATCH_TEST_SCRATCH_DIR
+  ? fs.realpathSync(process.env.TATWO_DISPATCH_TEST_SCRATCH_DIR)
+  : inheritedGit.status === 0 ? fs.realpathSync('/tmp') : inheritedScratch;
 const enclosing = spawnSync('/usr/bin/git', ['-C', scratch, 'rev-parse', '--git-dir'], {
   encoding: 'utf8', timeout: 5000, env: { ...cleanGitEnvironment, LC_ALL: 'C' },
 });
@@ -210,7 +219,7 @@ test('linked-worktree exclusion stays idempotent under inherited git overrides',
   assert.equal(git(path.join(worktree, '.tatwo2/wt', next), 'branch', '--show-current'), 'tatwo2-room-11234567');
 });
 
-test('fixture refuses a scratch root inside the production checkout before creating anything', () => {
+test('fixture refuses an explicitly pinned scratch root inside the production checkout before creating anything', () => {
   // Represent the enclosing production checkout with an owned repository.
   // No other test can add entries while this guard compares before/after.
   const unsafeCheckout = repository('unsafe-checkout');
@@ -219,7 +228,7 @@ test('fixture refuses a scratch root inside the production checkout before creat
   const before = fs.readdirSync(unsafeScratch).sort();
   const result = spawnSync(process.execPath, ['--test', path.join(repo, 'tests/dispatch-worktree-failures.test.mjs')], {
     cwd: repo, encoding: 'utf8', timeout: 10000,
-    env: { ...cleanGitEnvironment, NODE_TEST_CONTEXT: undefined, TMPDIR: unsafeScratch },
+    env: { ...cleanGitEnvironment, NODE_TEST_CONTEXT: undefined, TMPDIR: unsafeScratch, TATWO_DISPATCH_TEST_SCRATCH_DIR: unsafeScratch },
   });
   assert.ifError(result.error);
   assert.notEqual(result.status, 0, result.stdout + result.stderr);

@@ -212,7 +212,7 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
         case "roles":
             let defaults = UltraworkRoleConfiguration.defaultValue
             try check(defaults.primaryModelID == "fable-5.1", "constitution lead Fable 5.1")
-            try check(defaults.auxiliaryModelIDs == ["gpt-6-astra", "opus-5.5", "grok-build", "gpt-6-astra"],
+            try check(defaults.auxiliaryModelIDs == ["gpt-6.1-sol", "opus-5.5", "grok-build", "gpt-6.1-sol"],
                       "constitution loops/refinement/mechanic/other-family reviewer")
             var custom = defaults
             custom.setPrimary("custom")
@@ -220,6 +220,26 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
             try check(custom.auxiliaryModelID(at: 5) == "custom-worker", "explicit overrides retained")
             try check(try JSONDecoder().decode(UltraworkRoleConfiguration.self,
                       from: JSONEncoder().encode(custom)) == custom, "role configuration roundtrip")
+            let suiteName = "w185-role-store-" + UUID().uuidString
+            guard let isolated = UserDefaults(suiteName: suiteName) else {
+                throw NSError(domain: "fixture defaults unavailable", code: 1)
+            }
+            defer { isolated.removePersistentDomain(forName: suiteName) }
+            let roleStore = UltraworkRoleConfigurationStore(defaults: isolated)
+            try check(roleStore.load() == defaults, "fresh role store uses GPT-6.1 Sol defaults")
+            let legacyJSON = """
+            {"primaryModelID":"fable-5.1","auxiliaryModelIDs":["gpt-6-astra","opus-5.5","grok-build","gpt-5.6-terra"]}
+            """
+            let legacyBytes = Data(legacyJSON.utf8)
+            isolated.set(legacyBytes, forKey: UltraworkRoleConfigurationStore.appWideKey)
+            let legacy = roleStore.load()
+            try check(legacy.primaryModelID == "fable-5.1" &&
+                      legacy.auxiliaryModelIDs == ["gpt-6-astra", "opus-5.5", "grok-build", "gpt-5.6-terra"],
+                      "saved legacy roles are not replaced by new defaults")
+            try check(isolated.data(forKey: UltraworkRoleConfigurationStore.appWideKey) == legacyBytes,
+                      "loading legacy roles does not rewrite stored bytes")
+            roleStore.save(custom)
+            try check(roleStore.load() == custom, "custom role store survives save and reload")
         case "pairing":
             // W178：主機用配對碼證明自己的主機金鑰（合成公鑰），加入端掃到的必須是同一把。
             let hostKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx w76-host"
@@ -322,5 +342,5 @@ test('W76 wiring: production reader is fixture-free; pairing carries real IDs an
   assert.match(source('Facade/DevicePairingHost.swift'), /authorityEpoch: UInt64\(identity\.epoch \?\? 0\)/);
   assert.match(source('Facade/DevicePairingHost.swift'), /hostDeviceID: local\.deviceID/);
   assert.match(source('Facade/DevicePairingClient.swift'), /pairedDeviceID: deviceID/);
-  assert.match(source('Chat/UltraworkRoleConfiguration.swift'), /與憲法 §4 一致，改表先改憲法/);
+  assert.match(source('Chat/UltraworkRoleConfiguration.swift'), /沿用憲法 §4 分工；使用者 2026-10-03 指定 loops／審查換代為 GPT-6.1 Sol/);
 });

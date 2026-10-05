@@ -30,7 +30,8 @@ test('W40 session surface has folders, read-only lanes, hollow page dot and no c
   assert.match(content, /Text\(lane.title\)/);
   assert.match(content, /縮圖佔位/);
   assert.match(design, /if store.selectedSpace.isSessionSpace \{ sessionContent \}\s*else \{ browserContent \}/);
-  assert.match(design, /if store.selectedSpace.isSessionSpace \{\s*sessionSidebar\s*\} else \{/);
+  // W184 G2d：主視窗（沒有借用的那一邊）照舊；私訊框借用這一份時照一般空間的排法（它看不到也開不了聊天旁的分頁）。
+  assert.match(design, /if store.selectedSpace.isSessionSpace && guest == nil \{\s*sessionSidebar\s*\} else \{/);
   // W112：空間圓點搬到 BrowserSpaceMenu.swift（右鍵改名改色）；session 空間仍是空心圓、沒有選單。
   const dot = readFileSync(new URL('../App/Sources/Tatwo2/Browser/BrowserSpaceMenu.swift', import.meta.url), 'utf8');
   assert.match(dot, /if space.isSessionSpace \{\s*Circle\(\).strokeBorder\(fill, lineWidth: WorkspaceSpaceControlMetrics.ringStroke\)/);
@@ -40,7 +41,7 @@ test('W40 session surface has folders, read-only lanes, hollow page dot and no c
   assert.match(shell, /onDrop\(of: model.mode == .browser && browserWorkSpaceStore.selectedSpace.isSessionSpace\s*\? \[\] :/);
   assert.match(shell, /guard model.mode != .browser \|\| !browserWorkSpaceStore.selectedSpace.isSessionSpace else \{ return false \}/);
   assert.match(shell, /if dropIsTargeted && !\(model.mode == .browser && browserWorkSpaceStore.selectedSpace.isSessionSpace\)/);
-  assert.match(design, /spaces = spaces.filter\(\\.isSessionSpace\) \+ spaces.filter/);
+  assert.match(design, /let nextSpaces = projectedSpaces.filter\(\\.isSessionSpace\) \+ projectedSpaces.filter \{ !\$0.isSessionSpace \}/);
 });
 
 test('W40 in-memory production registry/projection: grouping, close, move, bookmark and guards', {
@@ -58,6 +59,13 @@ ${section('@MainActor', '// MARK: - End local fixture model')}
         })
         let store = BrowserWorkSpaceStore(registry: registry)
         let observer = BrowserWorkSpaceStore(registry: registry)
+        func checkSessionFirst() {
+            for projection in [store, observer] {
+                precondition(projection.spaces.first?.isSessionSpace == true)
+                precondition(projection.spaces.dropFirst().allSatisfy { !$0.isSessionSpace })
+            }
+        }
+        checkSessionFirst()
         let normal = registry.spaces.first { !$0.isSessionSpace }!
         let sessionSpace = store.spaces.first!
         precondition(sessionSpace.isSessionSpace && !store.selectedSpace.isSessionSpace)
@@ -78,7 +86,8 @@ ${section('@MainActor', '// MARK: - End local fixture model')}
         registry.removeSpace(BrowserTabRegistry.sessionSpaceID, closingTabs: true)
         registry.openTab(owner: .workSpace(spaceID: BrowserTabRegistry.sessionSpaceID), url: url)
         registry.move(general.id, to: .workSpace(spaceID: BrowserTabRegistry.sessionSpaceID))
-        precondition(registry.tabs.count == count && store.selectedSpace.name == "Session space")
+        precondition(registry.tabs.count == count && store.selectedSpace.name == "對話瀏覽器")
+        precondition(registry.spaces.first { $0.id == BrowserTabRegistry.sessionSpaceID }?.name == "Session space")
         precondition(registry.addFolder(spaceID: BrowserTabRegistry.sessionSpaceID) == nil)
         precondition(!store.saveDraggedTabs(["tatwo-browser-tab:0"], into: normal.folders[0].id))
         store.toggleSessionFolder("網站改版")
@@ -98,6 +107,7 @@ ${section('@MainActor', '// MARK: - End local fixture model')}
         precondition(registry.tabs(ownedBy: general.owner).isEmpty)
         precondition(store.sessionFolders.count == 1 && store.sessionFolders[0].tabs.isEmpty)
         store.addSpace()
+        checkSessionFirst()
         let destination = store.sessionDestination!
         let folder = registry.addFolder(spaceID: destination.id, name: "參考")!
         store.selectSpace(sessionSpace.id)

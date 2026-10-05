@@ -23,7 +23,9 @@ export function query({ prompt }) {
 }
 `);
   // Byte-for-byte production sidecar; only its SDK is an inert input recorder.
-  const sidecar = path.join(root, 'sidecar.mjs');
+  const sidecar = path.join(root, 'claude-sidecar/sidecar.mjs');
+  await fs.mkdir(path.dirname(sidecar));
+  await fs.copyFile(path.join(repo, 'Engines/model-capabilities.mjs'), path.join(root, 'model-capabilities.mjs'));
   await fs.copyFile(path.join(repo, 'Engines/claude-sidecar/sidecar.mjs'), sidecar);
   const image = path.join(root, '圖片.png');
   const bytes = Buffer.from('fixture image bytes');

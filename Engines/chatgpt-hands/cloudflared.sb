@@ -1,0 +1,72 @@
+;; W183 R2／R2b（T8、T10、T13、接口約定 v2 §1）：cloudflared 的 Seatbelt 規則。TATWO 自寫，不含第三方片段。
+;; cloudflared 是 App 直接開的兄弟行程（不是關口的子行程），不登記任何 os.sock 身分。
+;; cloudflared 要連 Cloudflare（對外網路），所以不能用關口的規則；這份只留它連 Cloudflare 用得到的東西，其餘拿掉：
+;; 家目錄（含 ~/.cloudflared、~/.ssh、鑰匙圈檔、入口、TATWO 資料）、外接卷、本機的 TCP 服務、其他 unix socket、
+;; 開其他程式、送 Apple Event、剪貼簿／畫面／TCC／LaunchServices 等系統服務。
+;; 它手上只有：自己的 HOME（<App Support>/TATWO OS Hands/cf-home）、App 產生的 cf.yml、cf-home 裡用完就刪的 0600 token 檔、關口的 socket。
+;; 用法（App 由 tunnel-guard.sh 包著）：/usr/bin/sandbox-exec -p <本檔全文> -D CF_BIN=… -D CF_HOME=… -D CF_CONFIG=…
+;;       -D GW_SOCKET=… -D USER_HOME=… -D HANDS_ROOT=… <CF_BIN> tunnel --no-autoupdate --config <CF_CONFIG> run --token-file <cf-home 裡的檔>
+;; 路徑都先 realpath(3)，用 -D 傳。後面的規則蓋過前面的。
+;; 仍是「預設允許＋針對性拒絕」（v3 V19：沒有真 token 無法驗 deny-default 下整條通道都通），但寫檔與網路改成「先全拒、只開必要的」
+;; （W183 R2b 審查）。實測（假 token，cloudflared 2026.3）：本規則下照樣查得到邊緣節點、以 QUIC 連上 7844、送出註冊，跟沒沙盒時一樣
+;; 被邊緣以憑證不對拒絕；沒有任何寫檔或 443 被擋的紀錄。
+(version 1)
+(allow default)
+
+;; 只准執行 cloudflared 本身；不准再開任何程式。
+(deny process-exec)
+(allow process-exec (literal (param "CF_BIN")))
+(deny process-fork)
+
+;; 寫檔：先全拒（W183 R2b 審查）。否則被打穿的 cloudflared 能改寫沙盒外、使用者自己擁有的執行檔（例如 Homebrew 的 bin、Cellar，
+;; 包括 cloudflared 自己），使用者或 App 之後在沙盒外執行就逃出隔離。工具鏈、/tmp、快取資料夾一律唯讀。
+(deny file-write*)
+;; 讀：家目錄、手腳資料夾（App 設定、OAuth 狀態、關口設定）、外接卷一律讀不到。
+(deny file-read* (subpath (param "USER_HOME")) (subpath (param "HANDS_ROOT")) (subpath "/Volumes"))
+(allow file-read-metadata (literal (param "USER_HOME")))
+;; 只開：cf-home（它的 HOME，放用完就刪的 token 檔）、cf.yml（唯讀）、關口的 socket、/dev/null 等裝置。
+(allow file-read* file-write* (subpath (param "CF_HOME")))
+(allow file-read* (literal (param "CF_CONFIG")))
+;; W183 R3：標準設定流程下載的 cloudflared 放在手腳資料夾的 bin/（上面整個手腳資料夾都讀不到）：只開它自己這一個執行檔（唯讀）。
+(allow file-read* (literal (param "CF_BIN")))
+(allow file-read* file-write* (literal (param "GW_SOCKET")))
+(allow file-write-data (literal "/dev/null") (literal "/dev/dtracehelper"))
+
+;; 對外連線：先全拒，再只開 Cloudflare 通道用得到的：邊緣節點 7844（QUIC／UDP 與 HTTP2／TCP）、DNS 53 與 DoT 853（找邊緣節點）。
+;; 不開 443（W183 R2b 審查）：Seatbelt 的網路規則只認得「任何位址」或 localhost，分不出公網與內網——開了 *:443，
+;; 被打穿的 cloudflared 或改得到有效 ingress 的人就能把流量送進內網 NAS、路由器管理頁或本機網卡 IP 的 HTTPS，繞過關口。
+;; 443 只給自動更新與 API（我們用 --no-autoupdate、token 模式不打 API）；通道本身與遠端設定都走 7844。
+;; 殘餘：內網主機的 7844／853／53 仍連得到（同樣分不出網段），寫進報告。
+;; unix socket 只准關口與系統 DNS；os.sock、browser.sock、tmux 等全擋。
+(deny network-outbound)
+(allow network-outbound
+  (remote unix-socket (path-literal (param "GW_SOCKET")))
+  (remote unix-socket (path-literal "/private/var/run/mDNSResponder"))
+  (remote tcp "*:7844") (remote udp "*:7844")
+  (remote tcp "*:853")
+  (remote udp "*:53") (remote tcp "*:53"))
+;; 本機（127.0.0.1、::1）一律不准連：n8n、Ollama、資料庫、除錯埠等本機服務不能經通道被公開（就算遠端設定改了 ingress）。
+;; 只留本機 DNS（有些網路設定把 DNS 指到本機）。
+(deny network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote udp "localhost:53") (remote tcp "localhost:53"))
+;; 不限 bind：QUIC 要綁本機的 UDP 埠（Seatbelt 的 localhost 過濾實測也擋不住 0.0.0.0）；metrics 由 cf.yml 固定在 127.0.0.1。
+
+;; 不准碰 App 的權限（T8）：Apple Event、剪貼簿、畫面、TCC、LaunchServices（開網址／開 App）、Dock、輔助使用。
+;; App 開它時也放棄「責任行程」（responsibility disclaim），TCC 不會把 TATWO 的權限算給它。
+(deny appleevent-send)
+(deny mach-lookup
+  (global-name-prefix "com.apple.pasteboard")
+  (global-name-prefix "com.apple.windowserver")
+  (global-name-prefix "com.apple.tccd")
+  (global-name "com.apple.coreservices.launchservicesd")
+  (global-name-prefix "com.apple.lsd")
+  (global-name "com.apple.dock.server")
+  (global-name-prefix "com.apple.accessibility")
+  (global-name "com.apple.hiservices-xpcservice")
+  (global-name-prefix "com.apple.screencapture")
+  (global-name "com.apple.replayd")
+  (global-name-prefix "com.apple.ScreenCaptureKit")
+  (global-name "com.apple.CoreServices.coreservicesd")
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name-prefix "com.apple.security.keychain"))

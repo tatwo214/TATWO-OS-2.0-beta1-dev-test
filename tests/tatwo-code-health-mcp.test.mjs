@@ -35,7 +35,22 @@ assert.equal(
   `git --version exited non-zero: ${gitCapabilityProbe.stderr || gitCapabilityProbe.stdout}`,
 );
 
-const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "tatwo-code-health-mcp-"));
+// These are deliberately non-git fixtures. A runner's checkout-local TMPDIR
+// must not let the review-stamp command bind them to the enclosing real repo.
+const cleanGitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+const inheritedScratch = await fs.realpath(os.tmpdir());
+const inheritedGit = spawnSync("git", ["-C", inheritedScratch, "rev-parse", "--git-dir"], {
+  encoding: "utf8", env: cleanGitEnvironment,
+});
+assert.ifError(inheritedGit.error);
+const scratch = inheritedGit.status === 0 ? await fs.realpath("/tmp") : inheritedScratch;
+const isolatedGit = spawnSync("git", ["-C", scratch, "rev-parse", "--git-dir"], {
+  encoding: "utf8", env: { ...cleanGitEnvironment, LC_ALL: "C" },
+});
+assert.ifError(isolatedGit.error);
+assert.equal(isolatedGit.status, 128, "code-health fixture scratch must be outside any enclosing repository");
+assert.match(isolatedGit.stderr, /fatal: not a git repository/);
+const tempRoot = await fs.mkdtemp(path.join(scratch, "tatwo-code-health-mcp-"));
 const fixtureRoot = path.join(tempRoot, "fixture");
 const cleanFixtureRoot = path.join(tempRoot, "clean-fixture");
 const stateDir = path.join(tempRoot, "state");

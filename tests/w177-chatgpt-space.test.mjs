@@ -1,3 +1,4 @@
+import { script } from './w185-pod-fixture.mjs';
 // W177 ChatGPT Space（TAP 第一座 Tap）。
 // 靜態：四層邊界、Space 分頁接線、設定 › Plugin 的 TAP 分頁、不寫記錄。
 // 動態：在 node:vm 裡跑真正的 Pod 腳本（ChatGPTTap.podScript），用假的 chatgpt.com 回應驗證
@@ -10,12 +11,12 @@ import vm from 'node:vm';
 const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const app = 'App/Sources/Tatwo2/';
 const tapSwift = read(app + 'TAP/ChatGPTTap.swift');
-const podScript = (() => {
-  const start = tapSwift.indexOf('static let podScript = #"""');
-  const end = tapSwift.indexOf('"""#', start);
-  assert.ok(start > 0 && end > start, 'podScript literal');
-  return tapSwift.slice(tapSwift.indexOf('\n', start) + 1, end);
-})();
+// W184 G3：ChatGPT 輸入框的元件抽成共用（ChatGPT Space 與私訊框的 ChatGPT 對象同一套）；搬到這個檔的部分在這裡守，守的東西不變。
+const kit = read(app + 'TAP/ChatGPTComposerKit.swift');
+const podScriptRaw = script;
+// W183 R9 審查（GPT-6 #3）：App 每次建立 Pod 換一把鑰匙（keyedPodScript 換掉佔位字），每個指令都帶它；測試用一把假的。
+const POD_KEY = '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+const podScript = podScriptRaw.replace('__TATWO_POD_KEY__', POD_KEY);
 
 test('four layers: OS core and browser core know nothing about ChatGPT', () => {
   const bridge = read('Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm');
@@ -41,7 +42,7 @@ test('four layers: OS core and browser core know nothing about ChatGPT', () => {
 test('Space gets a ChatGPT tab wired like Browser, with its own sidebar and no Coder composer', () => {
   const mode = read(app + 'Chat/ChatPageConstants.swift');
   assert.match(mode, /case chat, cli, bot, browser/);
-  assert.match(mode, /static let allCases: \[Self\] = \[\.chat, \.cli, \.bot, \.browser, \.chatgpt\]/);
+  assert.match(mode, /static let allCases: \[Self\] = \[\.tatwo, \.chat, \.cli, \.bot, \.browser, \.chatgpt\]/); // W179：TATWO 排第一
   assert.match(mode, /case \.chatgpt: "ChatGPT"/);
   assert.match(mode, /case "ChatGPT": self = \.chatgpt/);
   const doc = read(app + 'Space/SpaceWorkspaceDocument.swift');
@@ -58,7 +59,7 @@ test('Space gets a ChatGPT tab wired like Browser, with its own sidebar and no C
     assert.ok(own.includes(token), token);
   }
   // Coder 的資訊卡／瀏覽器／工具箱不掛在 ChatGPT Space。
-  assert.match(read(app + 'Chat/ChatPage.swift'), /if !isPanel && model\.mode != \.browser && model\.mode != \.chatgpt \{\s*rightPanelControlStrip/);
+  assert.match(read(app + 'Chat/ChatPage.swift'), /if !isPanel && model\.mode != \.tatwo && model\.mode != \.browser && model\.mode != \.chatgpt \{\s*rightPanelControlStrip/);
   // 分頁列一列五格放不下「ChatGPT」時換短名，不截字。
   const picker = read(app + 'Shell/WorkspaceSidebarModePicker.swift');
   assert.match(picker, /ViewThatFits\(in: \.horizontal\)/);
@@ -67,15 +68,17 @@ test('Space gets a ChatGPT tab wired like Browser, with its own sidebar and no C
   assert.match(read(app + 'Space/SpaceWorkspaceController.swift'), /if !spaces\.allows\(\.chatgpt\), ChatGPTTap\.shared\.pod\.isRunning \{\s*ChatGPTTap\.shared\.sleep\(\)/);
 });
 
-test('native screen reuses OS conversation components and never shows the ChatGPT web page inside the Space', () => {
+test('native conversation reuses OS components; only Dots presents its web page inside the Space', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   for (const token of ['ChatAssistantTranscriptBlockView(', 'TatwoAssistantTranscriptPresentation.document(markdown:',
-    'ChatComposerTextView(', 'ChatGPTSendButton(', 'liquidGlassPanelSurface', 'chatGlassChip()',
+    'ChatComposerTextView(', 'ChatGPTSendSlot(', 'liquidGlassPanelSurface', 'chatGlassChip()',
     '"新對話"', '"今天"', '"昨天"', '"前 7 天"', '"前 30 天"', '"更早"', '"釘選"', '"專案"', 'model.stop', '不耗 Codex 額度',
     'model.copy(', 'model.regenerate()', '"思考強度"', 'ChatGPTConversationRow', '"重新命名"', '"封存"', '"刪除"',
     'model.confirmDelete()', '無法復原']) {
     assert.ok(space.includes(token), token);
   }
+  // W184 G3：送出鈕在共用的送出鍵那一格（ChatGPTSendSlot）裡；守：Space 的送出照舊是 ChatGPT 的黑色圓鈕（ChatGPTSendButton）。
+  assert.match(kit, /case \.send:\s*ChatGPTSendButton\(enabled: canSend, metrics: metrics, identifier: identifiers\.send, action: send\)/);
   // 使用者 09-24：Space 裡不需要「打開網頁版」；09-25：「我沒有想要chatgpt space有任何chatgpt網頁版的窗口 我要就像os原生」
   // → 連登入也不在 Space 裡顯示網頁：原生卡片「前往登入」開到 設定 › Plugin › TAP。
   const pages = read(app + 'TAP/ChatGPTPages.swift');
@@ -83,9 +86,10 @@ test('native screen reuses OS conversation components and never shows the ChatGP
   assert.match(space, /private var needsLogin: Bool \{ tap\.connection == \.needsLogin \}/);
   assert.match(space, /Button \{ model\.openTapSettings\(login: true\) \}/);
   assert.match(space, /NotificationCenter\.default\.post\(name: \.tatwoOpenSettingsSection, object: TatwoSettingsPage\.Section\.plugin\.rawValue\)/);
-  // Pod 的網頁永遠在畫面外、點不到（TapPodHostView 在 Space 裡只出現這一次）。
+  // W197：原生對話的 Pod 仍在畫面外；Dots 獨立的視圖只使用同一個 Pod。
   assert.equal((space.match(/TapPodHostView\(pod:/g) || []).length, 1);
-  assert.match(space, /TapPodHostView\(pod: tap\.pod\)\s*\.frame\(width: 1100, height: 800\)\s*\.offset\(x: -20_000\)\s*\.allowsHitTesting\(false\)/);
+  assert.match(space, /TapPodHostView\(pod: tap\.pod, presentsPage: false\)\s*\.frame\(width: 1100, height: 800\)\s*\.offset\(x: -20_000\)\s*\.allowsHitTesting\(false\)\s*\.accessibilityHidden\(true\)/);
+  assert.match(space, /pod\.claim\(view, presentsPage: presentsPage\)/);
   assert.equal((pages.match(/TapPodHostView\(/g) || []).length, 0);
   // 模型選單在輸入框裡（composer 區塊內），不在標題列。
   const composer = space.slice(space.indexOf('private var composer: some View'), space.indexOf('private var modelPicker: some View'));
@@ -97,13 +101,30 @@ test('native screen reuses OS conversation components and never shows the ChatGP
   // 外層識別碼不能蓋掉子元件：先成為容器。
   assert.match(space, /\.accessibilityElement\(children: \.contain\)\s*\.accessibilityIdentifier\("chatgpt\.space"\)/);
   // Pod 放背景、平常在畫面外，不撐大版面；閒置 15 分鐘休眠。
-  assert.match(space, /\.background\(alignment: \.topLeading\) \{\s*TapPodHostView\(pod: tap\.pod\)/);
+  // W197＋W199（.056 合併）：Dots 開著時不掛背景 Pod；W199 的假 Pod（原生截圖）沒有 webPod，同樣不建立 CEF。
+  // 真 Pod 仍必須掛在背景、位移與互動／AX 隔離斷言照舊。
+  assert.match(space, /\.background\(alignment: \.topLeading\) \{\s*if !model\.dotsPresented, tap\.webPod != nil \{\s*TapPodHostView\(pod: tap\.pod, presentsPage: false\)/);
+  const dots = read(app + 'TAP/ChatGPTDots.swift');
+  assert.match(space, /if model\.dotsPresented \{\s*ChatGPTDotsPane\(model: model\)/);
+  assert.match(dots, /TapPodHostView\(pod: pod, presentsPage: true\)/);
+  assert.doesNotMatch(dots, /TapWebPod\(|ChatGPTWebSheet|webSheetPath/);
+  assert.match(tapSwift, /var webPod: TapWebPod\? \{ transport as\? TapWebPod \}/);
   assert.match(space, /\.offset\(x: -20_000\)/);
   assert.match(space, /idleSleepDelay: Duration = \.seconds\(15 \* 60\)/);
   // 模型選單照標籤原樣畫（borderlessButton 會把箭頭搬到前面、丟掉玻璃底）。
-  const picker = space.slice(space.indexOf('Menu {'), space.indexOf('accessibilityIdentifier("chatgpt.modelPicker")'));
+  // W184 G3：輸入框裡的選單（＋）與膠囊搬到共用元件；守：輸入框的選單照標籤原樣畫、標題列的 ⋯ 也是；膠囊的識別碼照舊。
+  const picker = space.slice(space.indexOf('Menu {'), space.indexOf('struct ChatGPTSpaceMainPane: View'));
   assert.match(picker, /\.menuStyle\(\.button\)\s*\.buttonStyle\(\.plain\)/);
-  assert.doesNotMatch(picker, /borderlessButton\)/);
+  // W184 G3 修正單：原本的範圍（第一個 Menu 到膠囊的識別碼）裡的膠囊搬到共用檔了；改成整個 Space 檔都不准有 borderlessButton（比原本範圍更大）。
+  assert.doesNotMatch(space, /borderlessButton\)/);
+  // W184 G3b（使用者 09-29：「＋號也跟chatgpt原版的快捷小視窗不一樣」）：＋ 不再是系統選單，是一顆按鈕＋自繪的 ＋ 小卡（ChatGPTQuickMenu）；
+  // 守的換成：＋ 是普通按鈕（照標籤原樣畫、沒有 Menu）、小卡不是系統選單；整個共用檔照舊不准 borderlessButton。
+  const plusButton = kit.slice(kit.indexOf('struct ChatGPTPlusButton'), kit.indexOf('struct ChatGPTToggleGlyph'));
+  assert.match(plusButton, /Button \{\s*if let blocked \{ explain\(blocked\) \} else \{ isOpen\.toggle\(\) \}\s*\} label: \{/);
+  assert.match(plusButton, /\.buttonStyle\(\.plain\)/);
+  assert.doesNotMatch(plusButton + read(app + 'TAP/ChatGPTQuickMenu.swift'), /(^|[^A-Za-z])Menu \{|\.menuStyle/);
+  assert.doesNotMatch(kit, /borderlessButton\)/);
+  assert.match(kit, /struct ChatGPTPickerCapsule: View \{[\s\S]*var identifier = "chatgpt\.modelPicker"/);
 });
 
 test('Settings › Plugin lists Skillet, MCP, TAP, Pocket in that order with glass chips only', () => {
@@ -119,13 +140,28 @@ test('Settings › Plugin lists Skillet, MCP, TAP, Pocket in that order with gla
   assert.ok(tints.length >= 1 && tints.every((x) => x === 'LiquidGlassTokens.brandAccent'), tints.join(','));   // 啟用、通知兩個開關都用品牌色
   // 為了登入打開的網頁版，登入完成就自動關掉（使用者 09-24）。
   assert.match(settings, /if showsWebPage, openedForLogin, connection == \.ready \{ showsWebPage = false \}/);
-  assert.match(settings, /chip\("登入"[^}]*openWebPage\(forLogin: true\)/);
-  assert.match(settings, /chip\("打開網頁版"[^}]*openWebPage\(forLogin: false\)/);
-  for (const token of ['已連上', '需要登入', '休眠中', '出錯', '記憶體', '打開網頁版', '登入', '啟用']) assert.ok(settings.includes(token), token);
+  assert.match(settings, /ChatGPTTapLoginButton\(tap: chatGPT\) \{ openWebPage\(forLogin: true\) \}/);
+  const login = read(app + 'New/EngineLoginCard.swift').split('struct ChatGPTTapLoginButton: View {')[1];
+  assert.ok(login, 'shared ChatGPT TAP login row');
+  assert.match(login, /OSChipButton\(title: tap\.isLoggedIn \? "登出" : "登入"\) \{\s*if tap\.isLoggedIn \{ tap\.logout\(\) \}\s*else \{ tap\.setEnabled\(true\); onLogin\(\) \}/);
+  assert.match(login, /\.accessibilityIdentifier\("login\.chatgpt\.action"\)/);
+  assert.doesNotMatch(login, /borderedProminent|\.bordered\b|Color\.blue/);
+  // W183 R5（使用者 09-28「打開網頁版用不到」）：TAP 只留登入；診斷預設收起（「一大堆文字」）。
+  assert.doesNotMatch(settings, /chip\("打開網頁版"/);
+  assert.match(settings, /@State private var showsDiagnostics = false/);
+  assert.match(settings, /if showsDiagnostics \{/);
+  for (const token of ['已登入', '未登入', '休眠中', '出錯', '記憶體', '登入', '啟用', '診斷']) assert.ok(settings.includes(token), token);
+  assert.match(settings, /case \.off: \(chatGPT\.isLoggedIn \? "已登入・停用" : "未登入・停用", \.secondary\)/);
+  assert.match(settings, /case \.starting: \("連線中", \.orange\)/);
+  assert.match(settings, /case \.needsLogin: \("未登入", \.orange\)/);
+  assert.match(settings, /case \.ready: \("已登入", \.green\)/);
+  assert.match(settings, /case \.sleeping: \(chatGPT\.isLoggedIn \? "已登入・休眠中" : "未登入・休眠中", \.secondary\)/);
+  assert.match(settings, /case \.failed\(let message\): \("出錯：\\\(message\)", \.red\)/);
 });
 
 test('TAP code never logs or writes conversation content or tokens', () => {
-  for (const file of ['TAP/TAP.swift', 'TAP/TapWebPod.swift', 'TAP/ChatGPTTap.swift', 'TAP/ChatGPTSpace.swift', 'TAP/ChatGPTPages.swift', 'TAP/TapSettingsView.swift']) {
+  for (const file of ['TAP/TAP.swift', 'TAP/TapWebPod.swift', 'TAP/ChatGPTTap.swift', 'TAP/ChatGPTSpace.swift', 'TAP/ChatGPTPages.swift', 'TAP/TapSettingsView.swift',
+    'TAP/ChatGPTComposerKit.swift', 'TAP/ChatGPTConversationSession.swift']) {   // W184 G3：共用元件與私訊框的對話也守
     let source = read(app + file);
     if (file === 'TAP/ChatGPTSpace.swift') {
       // 使用者 09-25「2全要」：圖庫要能下載。唯一的寫檔：存到使用者自己在存檔視窗選的位置。
@@ -154,7 +190,22 @@ const sseBody = (events) => new ReadableStream({
   },
 });
 
-function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/conversation' }) {
+// 一般聊天 DOM fixture：明確提供連接／layout／可編輯狀態，不讓 production 為舊 stub 放寬檢查。
+const chatNode = (extra = {}) => ({
+  isConnected: true, tagName: 'BUTTON', disabled: false, readOnly: false,
+  getClientRects: () => [{ width: 200, height: 40 }],
+  getAttribute: () => null, closest: () => null, matches: () => false,
+  contains: () => false, ...extra,
+});
+const chatBox = (sandbox, text = '') => chatNode({
+  tagName: 'DIV', isContentEditable: true, innerText: text,
+  focus() { sandbox.document.activeElement = this; },
+});
+
+// W200: request-option tests use completed replies. Bare [DONE] remains in the explicit empty/Pro tests.
+const completedSendSSE = ['data: ' + JSON.stringify({ message: { id: 'synthetic-completed-reply', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['合成完成回答'] }, status: 'finished_successfully', end_turn: true } }) + '\n\n', 'data: [DONE]\n\n'];
+
+function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/conversation', pageBody }) {
   const reports = [];
   const requests = [];
   const inserted = [];
@@ -163,30 +214,34 @@ function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/con
   const sandbox = {
     Headers, Request, Response, ReadableStream, TextEncoder, TextDecoder, Promise, JSON, Date, Object, Set, Error, String, Array, URL, URLSearchParams,
     setTimeout: (fn, ms) => { const t = setTimeout(fn, ms); if (ms >= 5000) t.unref(); return t; },
-    setInterval: (fn, ms) => { const t = setInterval(fn, ms); if (ms >= 1000) t.unref(); return t; }, clearInterval,
+    setInterval: (fn, ms) => { const t = setInterval(fn, ms); t.unref(); return t; }, clearInterval,
     location: { host: 'chatgpt.com', get pathname() { return state.pathname; } },
     history: { pushState(_s, _t, path) { state.pathname = path; } },
     PopStateEvent: class { constructor(type) { this.type = type; } },
     dispatchEvent: () => true,
+    getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }),
   };
-  const composer = { focus() {} };
-  const sendButton = {
+  const composer = chatBox(sandbox);
+  const sendButton = chatNode({
     disabled: false,
     click() {
       state.sendClicked += 1;
       // 網頁自己送出：跟 chatgpt.com 一樣走 window.fetch（此時已被 Pod 腳本包住）。
+      // W184 G3c：pageBody＝網頁自己送出時 body 的樣子（預設是 JSON 字串；自測換成位元組、壞掉的 JSON…）。
       sandbox.window.fetch('https://chatgpt.com' + sendPath, {
-        method: 'POST', headers: { authorization: 'Bearer SECRET-TOKEN' }, body: pageFetchBody,
-      }).then((response) => response.text());
+        method: 'POST', headers: { authorization: 'Bearer SECRET-TOKEN' }, body: pageBody ? pageBody(pageFetchBody) : pageFetchBody,
+      }).then((response) => response.text(), () => null);
       if (onSendClick) onSendClick(state);
     },
-  };
+  });
   sandbox.document = {
     readyState: 'complete',
     addEventListener() {},
+    createRange: () => ({ selectNodeContents() {} }),
     execCommand(command, _ui, value) {
       if (command !== 'insertText') return true;
       inserted.push(value);
+      if (sandbox.document.activeElement === composer) composer.innerText = value;
       // 跟真網頁一樣：打字時網頁先 POST f/conversation/prepare 拿 conduit token。
       sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation/prepare', {
         method: 'POST', headers: { authorization: 'Bearer SECRET-TOKEN' }, body: JSON.stringify({ model: 'auto', fork_from_shared_post: false }),
@@ -204,10 +259,15 @@ function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/con
       return null;
     },
     querySelectorAll(selector) {
+      if (selector === '#prompt-textarea' || selector === '[data-testid="send-button"]') {
+        const node = sandbox.document.querySelector(selector);
+        return node ? [node] : [];
+      }
       return selector === '[data-message-author-role="assistant"]' ? state.assistantNodes : [];
     },
   };
   sandbox.window = sandbox;
+  sandbox.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
   sandbox.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input.url;
     requests.push({ url, init });
@@ -224,7 +284,8 @@ function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/con
   const started = factory((json) => reports.push(JSON.parse(json)));
   const pod = {
     reports, requests, inserted, state, started, sandbox,
-    command: (payload) => sandbox.__tatwoPod.command(payload),
+    command: (payload) => sandbox.__tatwoPod.command({ ...payload, key: POD_KEY }),
+    rawCommand: (payload) => sandbox.__tatwoPod.command(payload),
     waitFor: async (predicate, ms = 3000) => {
       const end = Date.now() + ms;
       while (Date.now() < end) {
@@ -262,6 +323,12 @@ test('pod script: only on chatgpt.com, captures auth once, hello says logged in,
   // 頁面拿不到、也改不了 Pod 的入口。
   assert.throws(() => { 'use strict'; pod.sandbox.__tatwoPod = null; });
   assert.equal(typeof pod.sandbox.__tatwoPod.command, 'function');
+  // W183 R9 審查（GPT-6 #3）：網頁自己的程式叫 __tatwoPod.command（沒有 App 的鑰匙）＝安靜丟掉，連結果都不回。
+  pod.rawCommand({ cmd: 'list', id: 'from-the-page', offset: 0, limit: 5 });
+  pod.rawCommand({ cmd: 'list', id: 'wrong-key', offset: 0, limit: 5, key: POD_KEY.slice(1) + '0' });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(!pod.reports.some((r) => r.id === 'from-the-page' || r.id === 'wrong-key'));
+  assert.equal(pod.requests.filter((r) => /\/backend-api\/conversations/.test(r.url)).length, 0);
 });
 
 test('pod script: list, get and models go through the page\'s own headers and return only what the App needs', async () => {
@@ -402,7 +469,8 @@ test('pod script: when the stream cannot be parsed, the answer comes from the pa
   const sse = ['data: KLUv/QBYnQAA\n\n', 'data: KLUv/QBYnQBB\n\n', 'data: [DONE]\n\n'];
   const id = '0f8e7d6c-5b4a-4938-8271-605f4e3d2c1b';
   const pod = makePod({
-    responses: { '/backend-api/f/conversation': { sse } },
+    responses: { '/backend-api/f/conversation': { sse },
+      ['/backend-api/conversation/' + id]: { json: { current_node: 'a1', mapping: { a1: { message: { id: 'a1', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['台北是台灣的首都。'] }, status: 'finished_successfully', end_turn: true } } } } } },
     onSendClick(state) {
       state.stop = true;
       const node = { innerText: '' };
@@ -541,7 +609,7 @@ test('pod script: pins and projects come back as folders; project conversations 
 
 test('pod script: a new chat switches the page to Chat (not Work) and the chosen effort is applied', async () => {
   const clicks = [];
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   const chat = { textContent: 'Chat', attrs: { 'aria-selected': 'false' }, getAttribute(k) { return this.attrs[k] ?? null; },
     click() { clicks.push('Chat'); this.attrs['aria-selected'] = 'true'; work.attrs['aria-selected'] = 'false'; } };
   const work = { textContent: 'Work', attrs: { 'aria-selected': 'true' }, getAttribute(k) { return this.attrs[k] ?? null; }, click() { clicks.push('Work'); } };
@@ -576,7 +644,7 @@ test('pod script: model variants merge into one effort slider, Work-only models 
       { slug: 'plain', title: 'GPT-X Plain', description: 'p', configurable_thinking_effort: false,
         thinking_efforts: [{ thinking_effort: 'max', short_label: 'Max' }] },
     ] } },
-    '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] },
+    '/backend-api/f/conversation': { sse: completedSendSSE },
   } });
   // 網頁自己送出時帶的強度（使用者在網頁選過 Extra High）。
   pod.sandbox.document.querySelector = ((original) => (selector) => original(selector))(pod.sandbox.document.querySelector);
@@ -592,11 +660,12 @@ test('pod script: model variants merge into one effort slider, Work-only models 
   // 網頁自己選的是 Thinking 版＋Standard（實機：gpt-5-6-thinking＋max）。
   const pageBody = JSON.stringify({ action: 'next', model: 'nova-thinking', thinking_effort: 'standard', messages: [] });
   pod.sandbox.document.querySelector = ((original) => (selector) => {
-    if (selector === '[data-testid="send-button"]') return { disabled: false, click() {
-      pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation', { method: 'POST', body: pageBody }).then((r) => r.text());
-    } };
+    if (selector === '[data-testid="send-button"]') return pageSendButton;
     return original(selector);
   })(pod.sandbox.document.querySelector);
+  const pageSendButton = chatNode({ click() {
+      pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation', { method: 'POST', body: pageBody }).then((r) => r.text());
+    } });
   pod.command({ cmd: 'send', id: 'X', text: 'x', model: 'nova', effort: 'nova-thinking|max' });
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'X' && (r.kind === 'finished' || r.kind === 'failed'));
   const post = pod.requests.filter((r) => r.url.endsWith('/backend-api/f/conversation')).at(-1);
@@ -609,7 +678,7 @@ test('pod script: model variants merge into one effort slider, Work-only models 
 
 test('pod script: regenerate goes through "Switch model" and presses "Try again" in its menu', async () => {
   const pressed = [];
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   const mk = (label, testid, onPress) => ({ label, testid, getAttribute(k) { return k === 'aria-label' ? label : k === 'data-testid' ? testid : null; },
     textContent: '', dispatchEvent(e) { pressed.push(label + ':' + e.type); if (e.type === 'pointerdown' && onPress) onPress(); return true; }, click() { pressed.push(label + ':click'); } });
   let menuOpen = false;
@@ -676,7 +745,7 @@ test('pod script: rename, archive and delete PATCH the conversation; search uses
 });
 
 test('pod script: attachments are handed to the page\'s own file input before sending', async () => {
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   const events = [];
   const input = { files: null, multiple: true, getAttribute(k) { return k === 'accept' ? '' : null; },
     dispatchEvent(e) { events.push(e.type); return true; } };
@@ -715,7 +784,7 @@ test('pod script: tools, home suggestions and GPTs are read; a tool rides along 
       { gizmo: { gizmo: { id: 'g-abc', display: { name: '翻譯小幫手' } } } },
       { flair: { kind: 'x' }, resource: { gizmo: { id: 'g-def', display: { name: '食譜助理' } } } },
     ] } },
-    '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] },
+    '/backend-api/f/conversation': { sse: completedSendSSE },
   } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
@@ -775,7 +844,7 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
         { slug: 'mini', title: 'GPT-X Mini', reasoning_type: 'none' },
         { slug: 'wm', title: 'GPT-X Work', is_work_mode_model: true },
       ] } },
-    '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] },
+    '/backend-api/f/conversation': { sse: completedSendSSE },
   } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
@@ -796,12 +865,13 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
   assert.deepEqual(res.data.models.map((m) => m.title), ['GPT-X Mini']);
   // 網頁自己用 sol-t＋max → 回報成 Latest／Extra High。
   pod.sandbox.document.querySelector = ((original) => (selector) => {
-    if (selector === '[data-testid="send-button"]') return { disabled: false, click() {
-      pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation', { method: 'POST',
-        body: JSON.stringify({ model: 'sol-t', thinking_effort: 'max', messages: [] }) }).then((r) => r.text());
-    } };
+    if (selector === '[data-testid="send-button"]') return pageSendButton;
     return original(selector);
   })(pod.sandbox.document.querySelector);
+  const pageSendButton = chatNode({ click() {
+      pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation', { method: 'POST',
+        body: JSON.stringify({ model: 'sol-t', thinking_effort: 'max', messages: [] }) }).then((r) => r.text());
+    } });
   pod.command({ cmd: 'send', id: 'Q', text: 'x' });
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'Q' && (r.kind === 'finished' || r.kind === 'failed'));
   assert.deepEqual(pod.reports.find((r) => r.type === 'selection'),
@@ -810,7 +880,7 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
 
 // 09-24 v2.0.19.014 實機：暫時對話的第二則沒帶旗標 → HTTP 404；網頁版每一則都帶。
 test('pod script: every message of a temporary chat carries history_and_training_disabled; normal chats do not', async () => {
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'T1', text: 'x', temporary: true });
@@ -825,6 +895,75 @@ test('pod script: every message of a temporary chat carries history_and_training
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'T3' && (r.kind === 'finished' || r.kind === 'failed'));
   const third = pod.requests.filter((r) => r.url.endsWith('/backend-api/f/conversation')).at(-1);
   assert.equal(JSON.parse(third.init.body).history_and_training_disabled, undefined);
+});
+
+// W184 G3c（GPT-6 審查 #1）：臨時聊天送不出旗標時絕不放行——網頁的 body 不是字串時先讀成字串再加旗標；讀不到、不是 JSON 物件、
+// 改寫出錯（加不上旗標）＝擋下不送、回報失敗（反例：以前原樣照一般對話送出去）；網頁沒走會加旗標的送出路徑就在網頁上完成＝失敗、
+// 不回報對話代號（App 不會把它當成臨時聊天）。
+const TEMP_BLOCKED = '臨時聊天沒有送出：網頁的送出內容沒能確認帶上「不存紀錄」的旗標，已擋下（沒有送出）';
+const TEMP_UNCONFIRMED = '臨時聊天沒能確認帶上「不存紀錄」的旗標（網頁沒有走會加旗標的送出路徑），這一則可能存進了 ChatGPT 的紀錄';
+test('pod script W184 G3c: a temporary send with a non-string body is read as text, flagged, confirmed, and only then sent', async () => {
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } },
+    pageBody: (json) => new TextEncoder().encode(json) });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'send', id: 'TB', text: 'x', temporary: true });
+  await pod.waitFor((r) => r.type === 'stream' && r.id === 'TB' && (r.kind === 'finished' || r.kind === 'failed'));
+  const sent = pod.requests.filter((r) => r.url.endsWith('/backend-api/f/conversation'));
+  // 守：真的送出去的那一個（網頁用位元組送）是字串、帶了旗標；送之前先回報「確認了」，而且在「接受」之前。
+  assert.equal(sent.length, 1);
+  assert.equal(typeof sent[0].init.body, 'string');
+  assert.equal(JSON.parse(sent[0].init.body).history_and_training_disabled, true);
+  const kinds = pod.reports.filter((r) => r.type === 'stream' && r.id === 'TB').map((r) => r.kind);
+  assert.ok(kinds.includes('temporary') && kinds.indexOf('temporary') < kinds.indexOf('accepted'), kinds.join(','));
+  // 一般對話用位元組送：照舊不動（不讀、不擋）。
+  pod.command({ cmd: 'send', id: 'NB', text: 'y' });
+  await pod.waitFor((r) => r.type === 'stream' && r.id === 'NB' && (r.kind === 'finished' || r.kind === 'failed'));
+  const normal = pod.requests.filter((r) => r.url.endsWith('/backend-api/f/conversation')).at(-1);
+  assert.notEqual(typeof normal.init.body, 'string');
+  assert.ok(!pod.reports.some((r) => r.id === 'NB' && r.kind === 'temporary'));
+});
+
+for (const [name, pageBody] of [
+  ['a body it cannot read (a plain object)', () => ({ not: 'readable' })],
+  ['a body that is not JSON (the rewrite throws)', () => 'not json {'],
+  ['a JSON array (the flag cannot stick)', () => '[1,2,3]'],
+]) {
+  test(`pod script W184 G3c: a temporary send with ${name} is blocked — never sent, reported as a failure, no conversation`, async () => {
+    const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } }, pageBody });
+    await pod.signIn();
+    await pod.waitFor((r) => r.type === 'auth');
+    pod.command({ cmd: 'send', id: 'TX', text: 'x', temporary: true });
+    const failed = await pod.waitFor((r) => r.type === 'stream' && r.id === 'TX' && (r.kind === 'failed' || r.kind === 'finished'));
+    // 守：擋下＝送出端點一次都沒被叫到（反例：以前原樣送出、沒有旗標）；說的是「擋下、沒有送出」；沒有確認、沒有對話代號。
+    assert.equal(failed.kind, 'failed');
+    assert.equal(failed.message, TEMP_BLOCKED);
+    assert.equal(pod.requests.filter((r) => r.url.endsWith('/backend-api/f/conversation')).length, 0);
+    assert.ok(!pod.reports.some((r) => r.id === 'TX' && (r.kind === 'temporary' || r.kind === 'conversation' || r.kind === 'accepted')));
+  });
+}
+
+test('pod script W184 G3c: a temporary turn the page completes without our send path is a failure, never a conversation', async () => {
+  // 網頁走了別的路送出（沒經過會加旗標的送出請求），回答照樣出現在網頁上、網址換成 /c/<id>。
+  const id = '0f8e7d6c-5b4a-4938-8271-605f4e3d2c1b';
+  const pod = makePod({
+    responses: { ['/backend-api/conversation/' + id]: { json: { current_node: 'a1', mapping: { a1: { message: { id: 'a1', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['回答'] }, status: 'finished_successfully', end_turn: true } } } } } },
+    sendPath: '/backend-api/f/other-transport',
+    onSendClick(state) {
+      state.stop = true;
+      const node = { innerText: '' };
+      setTimeout(() => { state.assistantNodes = [node]; node.innerText = '回答'; state.pathname = '/c/' + id; }, 40);
+      setTimeout(() => { state.stop = false; }, 300);
+    },
+  });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'send', id: 'TU', text: 'x', temporary: true });
+  const done = await pod.waitFor((r) => r.type === 'stream' && r.id === 'TU' && (r.kind === 'failed' || r.kind === 'finished'), 6000);
+  // 守：沒確認帶了旗標就完成＝失敗（可能存進了紀錄），不回報對話代號（反例：以前照網址回報、App 當成臨時聊天）。
+  assert.equal(done.kind, 'failed');
+  assert.equal(done.message, TEMP_UNCONFIRMED);
+  assert.ok(!pod.reports.some((r) => r.id === 'TU' && (r.kind === 'conversation' || r.kind === 'temporary')));
 });
 
 test('pod script: probe never presses Pin/Delete; pin toggles press the page\'s own Pin/Unpin button', async () => {
@@ -886,6 +1025,51 @@ test('pod script: + menu ranks tools like the web and marks connected apps', asy
   pod.command({ cmd: 'diagnostics', id: 'D' });
   const diag = await pod.waitFor((r) => r.type === 'result' && r.id === 'D');
   assert.match(diag.data["工具分類"], /GitHub:connector:connector_gith:-:app:head:on/);
+});
+
+test('pod tools: a subsequent fetch sees newly connected apps without reloading the Pod', async () => {
+  let calls = 0;
+  const mini = { system_hint: 'connector:asdk_app_test_mini', name: 'Test mini', is_plugin: true, is_connected: true };
+  const pod = makePod({ responses: {
+    '/backend-api/system_hints': () => new Response(JSON.stringify({
+      system_hints: ++calls === 1 ? [{ system_hint: 'search', name: 'Search' }] : [mini],
+    }), { headers: { 'content-type': 'application/json' } }),
+  } });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'tools', id: 'before-connect' });
+  const before = await pod.waitFor((r) => r.type === 'result' && r.id === 'before-connect');
+  assert.deepEqual(before.data.items.map((t) => t.id), ['search']);
+  pod.command({ cmd: 'tools', id: 'after-connect' });
+  const after = await pod.waitFor((r) => r.type === 'result' && r.id === 'after-connect');
+  assert.equal(after.ok, true);
+  assert.deepEqual(after.data.items.map((t) => t.id), [mini.system_hint]);
+  assert.equal(after.data.items[0].app, true);
+  const requests = pod.requests.filter((r) => r.url.includes('/system_hints'));
+  assert.equal(requests.length, 2);
+  assert.ok(requests.every((r) => r.init.cache === 'no-store'));
+  noLeak(pod);
+});
+
+test('pod tools: malformed or unavailable catalogs fail instead of replacing the last list with empty', async () => {
+  const replies = [{}, { system_hints: null }, { system_hints: {} }, { system_hints: [] }];
+  let calls = 0;
+  const pod = makePod({ responses: {
+    '/backend-api/system_hints': () => new Response(JSON.stringify(replies[calls++]), {
+      headers: { 'content-type': 'application/json' },
+    }),
+  } });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  for (let i = 0; i < replies.length; i++) {
+    const id = `catalog-shape-${i}`;
+    pod.command({ cmd: 'tools', id });
+    const result = await pod.waitFor((r) => r.type === 'result' && r.id === id);
+    assert.equal(result.ok, i === 3, 'only an actual empty system_hints array is an empty catalog');
+    if (i === 3) assert.deepEqual(result.data.items, []);
+    else assert.equal(result.message, '讀不到 ChatGPT 的工具清單');
+  }
+  noLeak(pod);
 });
 
 test('pod script: images load by file id from any pointer form, with or without a conversation', async () => {
@@ -995,7 +1179,7 @@ test('pod script: new-chat headline comes from the page when ChatGPT has no gree
 });
 
 test('pod script: regenerating with another preset swaps the model on the page\'s own request', async () => {
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   let menuOpen = false;
   const mk = (label, onPress) => ({ getAttribute(k) { return k === 'aria-label' ? label : null; }, textContent: '',
     dispatchEvent(e) { if (e.type === 'pointerdown' && onPress) onPress(); return true; }, click() {} });
@@ -1027,11 +1211,37 @@ test('pod script: regenerating with another preset swaps the model on the page\'
 test('ChatGPT Space mirrors the web: layered + menu, Library, sources, switch-model retry, temporary chats stay out of the list', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   // 「＋」：加入檔案＋說明；有名次的前 4 個工具；最近用過的 App；其他收進「更多」。
-  const plus = space.slice(space.indexOf('照網頁版分層'), space.indexOf('accessibilityIdentifier("chatgpt.plus")'));
-  assert.match(plus, /Text\("加入照片和檔案"\)\s*Text\("從電腦上傳"\)/);
-  assert.match(plus, /ForEach\(model\.plusTools\)[\s\S]*ForEach\(model\.plusApps\)[\s\S]*Menu\("更多"\) \{ ForEach\(model\.moreTools\)/);
+  // W184 G3：選單抽成共用元件；W184 G3b（使用者 09-29：「＋號也跟chatgpt原版的快捷小視窗不一樣」＋ChatGPT iPhone App 截圖）：
+  // ＋ 換成 ChatGPT 原版那種 ＋ 小卡（ChatGPTQuickMenu，私訊框同一張）——照片、檔案、外掛程式 ›（換頁：工具照名次、App 最近用過的在前）、認真思考。
+  // 守的東西：加檔案的入口、工具與 App 的分層與一行說明、Space 接自己的清單、識別碼 chatgpt.plus。
+  const quick = read(app + 'TAP/ChatGPTQuickMenu.swift');
+  assert.match(quick, /ChatGPTQuickMenuRow\(id: "photos", symbol: "photo", title: "照片"\),\s*ChatGPTQuickMenuRow\(id: "files", symbol: "paperclip", title: "檔案"\)/);
+  assert.match(quick, /let ranked = visible\.filter \{ !\$0\.isApp && \$0\.rank != nil \}\.sorted \{ \(\$0\.rank \?\? 0\) < \(\$1\.rank \?\? 0\) \}/);
+  // W184 G3b 第二輪（使用者：「快捷指令直接參照chatgpt那邊有什麼」）：外掛程式那一頁照 ChatGPT 網頁「＋」的分層——跟 Space 原本的 ＋ 同一套規則
+  // （有名次的前 4 個工具、最近用過的 App、其他收進「更多」）；清單從沒讀到過＝一行說明，不自己編。
+  assert.match(quick, /\("tools", "工具", ChatGPTSpaceModel\.plusTools\(tools\)\),\s*\("apps", "App", ChatGPTSpaceModel\.plusApps\(tools, recent: recentApps\)\),\s*\("more", "更多", ChatGPTSpaceModel\.moreTools\(tools, recent: recentApps\)\)/);
+  assert.match(quick, /if sections\.count == 1 \{ sections\.append\(ChatGPTQuickMenuSection\(id: "none", rows: \[toolsNotice\]\)\) \}/);
+  // W184 G3b 第二輪：ChatGPT Space 的輸入框也有「/」（私訊框同一份規則 ChatGPTSlash、同一個清單元件、同一份資料 model.tools）；
+  // 只拿沒修飾鍵的 ↑↓ 與 Enter（組字中、←→、Shift 選取照常）；Esc 先收清單（草稿留著）。
+  assert.match(space, /onSuggestionKey: \{ handleSlashKey\(\$0\) \}/);
+  assert.match(space, /suggestionKeysVerticalOnly: true\)/);
+  assert.match(space, /\.anchorPreference\(key: ChatGPTPopoverAnchorKey\.self, value: \.bounds\) \{ \[\.slash: \$0\] \}/);
+  assert.match(space, /private var slashQuery: String\? \{ model\.page == nil \? ChatGPTSlash\.query\(model\.draft, dismissed: slashDismissed\) : nil \}/);
+  assert.match(space, /ChatGPTQuickMenu\(sections: ChatGPTSlash\.sections\(tools, catalogEmpty: model\.tools\.isEmpty, selectedID: model\.selectedTool\?\.id\),/);
+  assert.match(space, /metrics: \.space, identifier: "chatgpt\.slash"\)/);
+  assert.match(space, /private func closePopovers\(\) \{\s*if slashOpen \{\s*slashDismissed = model\.draft\s*return\s*\}/);
+  // 清單讀不到時用上次讀到的（快取只有代號、名稱、說明與分層旗標），這次讀到就換新的。
+  assert.match(space, /tools = Self\.cachedTools\(in: \.standard\)/);
+  // 不能把首次讀過鎖成永遠新鮮；新連接器、重開選單、Pod 換頁的動態生命週期另有 Swift 實碼測試。
+  assert.doesNotMatch(space, /\btoolsFresh\b/);
+  assert.match(space, /func refreshToolCatalog\(invalidate: Bool = false\)/);
+  assert.match(space, /self\.tools = loaded\s*Self\.cacheTools\(loaded, in: \.standard\)/);
+  assert.match(kit, /struct ChatGPTPlusButton: View \{[\s\S]*var identifier = "chatgpt\.plus"[\s\S]*\.accessibilityIdentifier\(identifier\)/);
+  assert.match(space, /ChatGPTPlusButton\(isOpen: plusOpen, metrics: \.space\)/);
+  assert.match(space, /ChatGPTQuickMenu\(sections: ChatGPTQuickMenu\.plusSections\(\s*tools: model\.tools, recentApps: UserDefaults\.standard\.stringArray\(forKey: ChatGPTSpaceModel\.recentAppsKey\) \?\? \[\],/);
+  assert.match(space, /case "files":\s*plusOpen\.wrappedValue = false\s*model\.pickFiles\(\)/);
   assert.match(space, /\.prefix\(4\)\)/);
-  assert.match(space, /if !tool\.detail\.isEmpty \{ Text\(tool\.detail\) \}/);
+  assert.match(quick, /if !row\.detail\.isEmpty \{\s*Text\(row\.detail\)[\s\S]{0,260}\.lineLimit\(1\)/);
   // 資料庫：側欄入口、分頁、只在記憶體預覽，不寫檔。
   assert.match(space, /Text\("圖庫"\)/);
   assert.match(read(app + 'TAP/ChatGPTPages.swift'), /accessibilityIdentifier\("chatgpt\.page\.\\\(page\.rawValue\)"\)/);
@@ -1084,13 +1294,14 @@ test('pod script: versions (‹ 1/2 ›) come with each turn; a branch shows tha
 
 test('pod script: sending after switching versions (or editing) continues from the chosen node', async () => {
   const cid = '0f8e7d6c-5b4a-4938-8271-605f4e3d2c1b';
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   const doc = pod.sandbox.document;
   const qs = doc.querySelector;
-  doc.querySelector = (sel) => (sel === '[data-testid="send-button"]' ? { disabled: false, click() {
+  const pageSendButton = chatNode({ click() {
     pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation', { method: 'POST',
       body: JSON.stringify({ action: 'next', parent_message_id: 'web-leaf', model: 'auto', messages: [] }) }).then((r) => r.text());
-  } } : qs(sel));
+  } });
+  doc.querySelector = (sel) => (sel === '[data-testid="send-button"]' ? pageSendButton : qs(sel));
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'S', text: '接著問', conversationID: cid, parentID: 'a1' });
@@ -1105,7 +1316,7 @@ test('pod script: sending after switching versions (or editing) continues from t
 });
 
 test('pod script: a new chat in a project is sent from the project page', async () => {
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'P', text: '專案裡的新問題', gizmoID: 'g-p-abc123' });
@@ -1119,7 +1330,7 @@ test('ChatGPT Space: edit/copy own messages, version switch, new chat inside a p
   assert.match(space, /iconButton\("doc\.on\.doc", help: "拷貝訊息"\)/);
   assert.match(space, /iconButton\("pencil", help: "編輯訊息"\)/);
   assert.match(space, /model\.edit\(message, to: draft\)/);
-  assert.match(space, /parentID: parent\)/);
+  assert.match(space, /parentID: parent,\s*temporaryPersonalized:/);
   assert.match(space, /ChatGPTVariantNav\(model: model, message: message, variant: variant\)/);
   assert.match(space, /model\.showVariant\(message, offset: -1\)/);
   // 看舊版本時不能重新產生（網頁重答的是最新那一支）。
@@ -1150,9 +1361,10 @@ test('pod script: + menu ranks Deep research third like the web and keeps OpenAI
 test('ChatGPT Space: temporary chats flag every message; library zoom starts from the thumbnail; markdown files render as markdown', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   assert.match(space, /let temporary = selectedID == nil \? temporaryChat : selectedID == temporaryConversationID/);
-  assert.match(space, /tap\.regenerate\(conversationID: conversationID, model: nil, effort: effort, temporary: temporary\)/);
+  assert.match(space, /tap\.regenerate\(conversationID: conversationID, model: nil, effort: effort, temporary: temporary,\s*temporaryPersonalized: temporary && temporaryPersonalized\)/);
   assert.match(space, /let apps = tools\.filter \{ \$0\.isApp && !\$0\.hidden && !\$0\.firstPartyApp \}/);
-  assert.match(space, /Image\(systemName: "paperclip"\)\s*Text\("加入照片和檔案"\)\s*Text\("從電腦上傳"\)/);
+  // W184 G3b：加檔案在 ＋ 小卡裡（共用元件；照片只列圖片、檔案不限）。
+  assert.match(read(app + 'TAP/ChatGPTQuickMenu.swift'), /ChatGPTQuickMenuRow\(id: "files", symbol: "paperclip", title: "檔案"\)/);
   assert.match(space, /let thumbnail = cachedImage\("library:\\\(item\.id\)"\)\s*zoomSource = \.library\(item\)\s*if let thumbnail \{ zoomedImage = thumbnail \}/);
   assert.match(space, /case \.markdown\(let text\):\s*ScrollView \{\s*ChatAssistantTranscriptBlockView\(/);
   assert.match(space, /\.accessibilityAction\(named: "拷貝訊息"\)/);
@@ -1186,7 +1398,7 @@ test('pod script: retrying with a model that has no reasoning effort drops the p
       { slug: 'sol-i', title: 'Sol Instant', reasoning_type: 'none' },
       { slug: 'sol-t', title: 'Sol', reasoning_type: 'reasoning' },
     ] } },
-    '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] },
+    '/backend-api/f/conversation': { sse: completedSendSSE },
   } });
   let menuOpen = false;
   const mk = (label, onPress) => ({ getAttribute(k) { return k === 'aria-label' ? label : null; }, textContent: '',
@@ -1388,13 +1600,19 @@ test('ChatGPT Space 09-25: no title top-left, Chinese composer, web-exact effort
   assert.match(space, /placeholder: "想問什麼都可以"/);
   assert.match(space, /onPasteImage: \{ model\.attach\(from: \$0\) \}/);
   assert.match(space, /\.onDrop\(of: \[UTType\.fileURL, UTType\.image\], isTargeted: \$dropTargeted\)/);
-  assert.match(space, /Button \{ model\.startVoice\(\) \} label: \{\s*Image\(systemName: "waveform"\)/);
+  // W184 G3：語音模式鈕是共用元件（送出鍵那一格空白時）；守：Space 照舊從這顆開始語音。
+  assert.match(kit, /struct ChatGPTVoiceModeButton: View \{[\s\S]*?Button\(action: action\) \{\s*Image\(systemName: "waveform"\)/);
+  assert.match(space, /startVoice: \{ model\.startVoice\(\) \}/);
   // 面板不是系統的 popover（有箭頭、灰底）：自己畫、浮在膠囊正上方；Esc 只關面板、不落到主視窗。
   assert.doesNotMatch(space, /\.popover\(isPresented: \$showsModelPopover/);
   assert.match(space, /\.overlayPreferenceValue\(ChatGPTPickerAnchorKey\.self\) \{ anchor in effortCard\(anchor\) \}/);
   assert.match(space, /ChatGPTEffortCard\(model: model\)/);
   assert.match(space, /guard event\.keyCode == 53, let window = event\.window, window\.isMainWindow, window\.attachedSheet == nil else \{ return event \}[\s\S]{0,120}return nil/);
-  assert.match(space, /Text\("思考強度"\)\.foregroundStyle\(ChatGPTPalette\.tertiary\)/);
+  // W184 G3：膠囊是共用元件（ChatGPTPickerCapsule）；守：打開時字換成「思考強度」、灰字（網頁那一套＝ChatGPTPalette.tertiary）。
+  assert.match(kit, /Text\("思考強度"\)\.foregroundStyle\(chrome\.secondaryText\)/);
+  // W184 G3b：多了私訊框的原版外觀（.phone，也用 ChatGPT 的字色）；ChatGPT Space（.web）照舊是網頁那一套灰字。
+  assert.match(kit, /var secondaryText: Color \{ self == \.glass \? Color\.secondary : ChatGPTPalette\.tertiary \}/);
+  assert.match(space, /ChatGPTPickerCapsule\(label: label, isOpen: showsModelPopover, metrics: \.space\)/);
   assert.match(space, /let label = model\.pickerLabel/);
   // 網頁自己的數值（Pod 快取裡的 CSS）：面板寬 260、圓角 24；滑桿軌道高 24、圓鈕 28、兩端內縮 13；
   // 主題藍 #3A83F7、紫 #8952EE、軌道 #F3F3F3；最高檔的紫色漸層 #250e7a → #c775e9 55% → #7849d1。
@@ -1605,8 +1823,19 @@ test('ChatGPT Space 09-25: clickable plugins, native detail page, zh-Hant via th
   assert.match(pages, /static let fileWidth: CGFloat = 240/);
   assert.match(pages, /\.opacity\(hovering \? 1 : 0\)/);
   assert.equal((pages.match(/\.accessibilityAction\(named: "移除", remove\)/g) || []).length, 2);   // × 隱藏時 VoiceOver／鍵盤也能移除
-  assert.match(space, /ChatGPTAttachmentTile\(file: file\) \{ model\.removeAttachment\(file\.id\) \}/);
-  assert.match(space, /ChatGPTSendButton\(enabled: model\.canSend\) \{ model\.send\(\) \}/);
+  // W184 G3：附件縮圖那一排、送出鍵那一格是共用元件；守：Space 的縮圖能拿掉、送出照舊是 canSend／send。
+  assert.match(kit, /ChatGPTAttachmentTile\(file: file, metrics: metrics\) \{ removeFile\(file\.id\) \}/);
+  assert.match(space, /removeFile: \{ model\.removeAttachment\(\$0\) \}/);
+  // W184 G3 修正單（語音只有一個擁有者）：聲波鈕原本「沒連上就關」；現在另一邊（私訊框）拿著語音、有回答在跑或排隊時也關——
+  // 條件收在 ChatGPTTap.voiceStartBlocker（第一條就是「沒連上」，原本的條件還在）。送出照舊是 canSend／send。
+  assert.match(space, /canSend: model\.canSend, voiceEnabled: tap\.voiceStartBlocker == nil, metrics: \.space,\s*stop: \{ model\.stop\(\) \}, startVoice: \{ model\.startVoice\(\) \}, send: \{ model\.send\(\) \}\)/);
+  assert.match(read(app + 'TAP/ChatGPTTap.swift'), /var voiceStartBlocker: String\? \{\s*if connection != \.ready \{ return "ChatGPT 還沒連上" \}/);
+  // Space 呼叫共用元件時傳的尺寸一律是 .space（樣子不變）：縮圖那一排與它的高度、麥克風、拖放提示；Space 檔裡沒有私訊框那一套。
+  assert.match(space, /ChatGPTComposerChips\(tool: model\.selectedTool, files: files, metrics: \.space,/);
+  assert.match(space, /\.frame\(height: ChatGPTComposerChips\.rowHeight\(files: files, metrics: \.space\)\)/);
+  assert.match(space, /ChatGPTDictationButton\(metrics: \.space, dictation: dictation\)/);
+  assert.match(space, /if dropTargeted, model\.page == nil \{ ChatGPTDropHighlight\(metrics: \.space\) \}/);
+  assert.doesNotMatch(space, /dmPhone/);
 });
 
 
@@ -1616,14 +1845,21 @@ test('ChatGPT Space 09-25 #125: top-right controls live in the traffic-light row
   const panels = read(app + 'Chat/ChatPage+Panels.swift');
   const page = read(app + 'Chat/ChatPage.swift');
   const space = read(app + 'TAP/ChatGPTSpace.swift');
-  assert.match(panels, /ChatGPTSpaceMainPane\(model: ChatGPTSpaceModel\.shared, showsHeader: surface != \.window\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
+  assert.match(panels, /ChatGPTSpaceMainPane\(model: ChatGPTSpaceModel\.shared, osModel: model, showsHeader: surface != \.window\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
   assert.doesNotMatch(panels, /ChatGPTSpaceMainPane\([^)]*\)\s*\.padding\(\.top, surface == \.window \? WindowChromeMetrics\.bandHeight/);
   assert.match(page, /else if !isPanel && model\.mode == \.chatgpt \{[\s\S]{0,400}ChatGPTTopBarControls\(model: ChatGPTSpaceModel\.shared\)\s*\.frame\(height: 26\)\s*\.padding\(\.trailing, 14\)\s*\.offset\(y: -WindowChromeMetrics\.chromeRowLift\)/);
   // 小面板沒有紅綠燈那一列才在對話上方放一列；視窗裡對話直接從那一列下面開始。
   assert.match(space, /if showsHeader \{ header \}/);
   assert.match(space, /\.padding\(\.top, showsHeader \? 8 : 16\)/);
   // 其他頁與需要登入時不顯示右上的鈕。
-  const controls = space.slice(space.indexOf('struct ChatGPTTopBarControls: View'), space.indexOf('struct ChatGPTSpaceMainPane: View'));
+  const controlsStart = space.indexOf('struct ChatGPTTopBarControls: View');
+  const creationStart = space.indexOf('struct ChatGPTProjectCreationView: View', controlsStart);
+  const paneStart = space.indexOf('struct ChatGPTSpaceMainPane: View', creationStart);
+  assert.ok(controlsStart >= 0 && creationStart > controlsStart && paneStart > creationStart);
+  const controls = space.slice(controlsStart, creationStart);
+  const creation = space.slice(creationStart, paneStart);
+  assert.match(creation, /Button \{ model\.showsProjectCreation = false \} label: \{\s*Image\(systemName: "xmark"\)\.frame\(width: 28, height: 28\)/);
+  assert.match(creation, /\.accessibilityLabel\("關閉"\)\.accessibilityIdentifier\("chatgpt\.project\.cancel"\)/);
   assert.match(controls, /if model\.page == nil, tap\.connection != \.needsLogin \{/);
   // 寬度放得進拖曳區讓出的頂右那塊（chatRightControlsReserve 130）：最多三顆 ≤ 36pt 的鈕。
   assert.equal((controls.match(/\.frame\(width: (28|36), height: (28|36)\)/g) || []).length, 3);
@@ -1734,8 +1970,14 @@ test('ChatGPT Space 09-25: faster loading — parallel refresh, in-memory conver
   const shell = read(app + 'Shell/AppShell.swift');
   const refresh = space.slice(space.indexOf('    func refresh() async {'), space.indexOf('    func prewarm() {'));
   // 清單以外的都用各自的 Task 同時要，不再 await 一個等一個。
-  for (const call of ['tap.pinned()', 'tap.projects()', 'tap.models()', 'tap.tools()', 'tap.gpts()', 'tap.home()'])
+  for (const call of ['tap.pinned()', 'tap.models()', 'tap.gpts()', 'tap.home()'])
     assert.match(refresh, new RegExp('Task \\{[^\\n]*' + call.replace(/[()\.]/g, (c) => '\\' + c) + '|Task \\{\\s*guard [^\\n]*' + call.replace(/[()\.]/g, (c) => '\\' + c)), call);
+  // 工具清單也不阻塞 refresh；它自己的 Task 協調去重與過期回應，不能回到同步逐一 await。
+  assert.match(refresh, /^\s*refreshToolCatalog\(\)/m);
+  assert.doesNotMatch(refresh, /await refreshToolCatalog/);
+  // W203: projects now retain their own loading/failure/retry task, still parallel.
+  assert.match(refresh, /^\s*retryProjects\(\)/m);
+  assert.match(read(app + 'TAP/ChatGPTToolCatalog.swift'), /Task \{[\s\S]*let value = try await load\(\)/);
   assert.doesNotMatch(refresh, /for id in expandedProjects \{ await loadProject\(id\) \}/);
   // 快取只在記憶體、有上限；開過的先顯示再拿最新的；預載中的就等它。
   assert.match(space, /private var messageCache: \[String: \[TapMessage\]\] = \[:\]/);
@@ -1779,7 +2021,13 @@ test('pod script: the old /backend-api/conversation send path is intercepted too
   pod.command({ cmd: 'diagnostics', id: 'D' });
   const diag = (await pod.waitFor((r) => r.type === 'result' && r.id === 'D')).data;
   assert.equal(diag['送出路徑'], '/conversation');
-  assert.match(diag['專案／GPT'], /已補上 conversation_mode/);
+  assert.match(diag['專案／GPT'], /^送出請求：已補上 conversation_mode/);
+  // W180 A2（09-27 實機）：準備請求不帶 conversation_mode（網頁自己的沒有；補上後網頁就不送出）；結果狀態碼記進診斷。
+  const prepared = pod.requests.find((r) => r.url.endsWith('/backend-api/f/conversation/prepare'));
+  assert.ok(prepared);
+  assert.equal('conversation_mode' in JSON.parse(prepared.init.body), false);
+  assert.equal(JSON.parse(prepared.init.body).model, 'gpt-x');
+  assert.match(diag['準備回應'], /^\d{3}$|^失敗$/);
   // 一般對話（沒有專案）不加 conversation_mode。
   pod.command({ cmd: 'send', id: 'Q', text: '一般', model: 'gpt-x' });
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'Q' && r.kind === 'finished');
@@ -1792,7 +2040,7 @@ test('pod script: the old /backend-api/conversation send path is intercepted too
 test('pod script: voice clears leftover text in the page composer before looking for the speech button', async () => {
   let started = false;
   const pod = makePod({ responses: {}, setup(sandbox) {
-    const box = { innerText: '上次沒送出的字', focus() {} };
+    const box = chatBox(sandbox, '上次沒送出的字');
     const speech = { getAttribute: (k) => (k === 'data-testid' ? 'composer-speech-button' : k === 'aria-label' ? '開始語音' : null), click() { started = true; } };
     const end = { getAttribute: (k) => (k === 'aria-label' ? 'End voice mode' : null), click() {} };
     const doc = sandbox.document;
@@ -1849,7 +2097,8 @@ test('pod privacy: backend-api reads are no-store, and the Pod HTTP cache is pur
   assert.ok(reads.length >= 2);
   assert.ok(reads.every((r) => r.init && r.init.cache === 'no-store'), 'every backend-api GET is no-store');
   const tapSource = read(app + 'TAP/ChatGPTTap.swift');
-  assert.match(tapSource, /TapPodStorage\.purgeHTTPCacheOnce\(profileID: Self\.profileID\)\s*do \{\s*try pod\.start\(\)/);
+  // W183 R9 審查（GPT-6 #3）：清快取之後才建 Pod（每次建立換一把鑰匙）。
+  assert.match(tapSource, /TapPodStorage\.purgeHTTPCacheOnce\(profileID: Self\.profileID\)\s*do \{[\s\S]{0,300}?try pod\.start\(script: Self\.keyedPodScript\(key\)\)/);
   const storage = read(app + 'Browser/TapPodStorage.swift');
   assert.match(storage, /guard purged\.insert\(profileID\)\.inserted else \{ return \}/);
   assert.match(storage, /profile\.lastPathComponent\.contains\(profileID\.uuidString\.lowercased\(\)\)/);
@@ -1890,10 +2139,10 @@ test('pod script: a handed-off answer is polled from the conversation until it f
 
 test('ChatGPT Space: you can browse other conversations while a long answer runs; an old send cannot pull the view back', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
-  assert.match(space, /func select\(_ id: String\) \{\s*guard id != selectedID \|\| page != nil else \{ return \}/);
+  assert.match(space, /func select\(_ id: String\) \{\s*closeDots\(\)\s*guard id != selectedID \|\| page != nil else \{ return \}/);
   assert.doesNotMatch(space.slice(space.indexOf('func newChat(with gpt'), space.indexOf('var canSend: Bool')), /guard !isSending/);
   assert.match(space, /if selectedID == nil, viewEpoch == epoch \{ selectedID = id \}/);
-  assert.match(space, /tap\.connection == \.ready && !isSending/);   // 送出中還是不能送第二則
+  assert.match(space, /\(tap\.connection == \.ready \|\| tap\.connection == \.sleeping \|\| tap\.connection == \.starting\) && !isSending/);   // 送出中還是不能送第二則
 });
 
 // 09-25 實機：送出的串流 0 個事件（回答走 pubsub）；知道對話編號就改讀對話等答案。
@@ -1946,7 +2195,8 @@ test('pod script: a placeholder on the page ("Pro thinking") does not end an emp
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'PT' && r.kind === 'finished', 15000);
   assert.ok(polls >= 2, 'waited for the server to finish the answer');
   const events = pod.reports.filter((r) => r.type === 'stream' && r.id === 'PT');
-  assert.ok(events.some((e) => e.kind === 'text' && e.full === 'Pro thinking'), 'the page placeholder still shows while waiting');
+  assert.ok(!events.some((e) => e.kind === 'text' && e.full === 'Pro thinking'), 'W200 placeholder is thinking evidence, never answer text');
+  assert.ok(events.some((e) => e.kind === 'progress' && e.server), 'server thinking is shown as progress');
   assert.equal(events.filter((e) => e.kind === 'text').at(-1).full, 'OK');
   assert.ok(!events.some((e) => e.kind === 'failed'));
   noLeak(pod);
@@ -1999,15 +2249,32 @@ test('pod script: the stop button vanishing while the send stream is still open 
 
 test('pod script: while the page already shows this turn\'s answer bubble, polling does not give up after two minutes', () => {
   const tap = read(app + 'TAP/ChatGPTTap.swift');
-  assert.match(tap, /const pageBubble = assistantNodes\(\)\.length > turn\.before;/);
-  assert.match(tap, /!convo\.async_status && !stopVisible\(\) && !pageBubble\s*&& Date\.now\(\) - turn\.started > 120000\) \{ finishTurn\(turn\); return; \}/);
+  // W200: three minutes without evidence is failure; a page bubble remains positive thinking evidence.
+  assert.match(tap, /const thinkingEvidence = \(turn\) => turn\.hasThinkingProgress \|\| turn\.asyncThinking\s*\|\| \(!personalizedReadBlocked\(turn\) && \(stopVisible\(\) \|\| assistantNodes\(\)\.length > turn\.before\)\)/);
+  assert.match(tap, /turn\.accepted && thinkingEvidence\(turn\)\) turn\.lastActivity = Date\.now\(\)/);
+  assert.match(tap, /Date\.now\(\) - turn\.lastActivity >= 180000 && !turn\.confirmingSilence\) confirmSilence\(turn\)/);
 });
 
 test('voice: stopping while connecting voids the late start and ends the page session; the Pod auto-ends voice that starts after a stop', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   const tap = read(app + 'TAP/ChatGPTTap.swift');
-  assert.match(space, /guard session == voiceSession, voiceActive else \{[\s\S]{0,80}if !voiceActive \{ try\? await tap\.voiceStop\(\) \}\s*return\s*\}/);
-  assert.match(space, /func stopVoice\(\) \{\s*guard voiceActive else \{ return \}\s*voiceSession \+= 1/);
+  // W184 G3：開始、看狀態、結束抽成共用的 ChatGPTVoiceMode（私訊框同一套）；守的東西不變（連線中就按結束＝晚回來的開始作廢、補送結束）。
+  // 修正單加嚴：晚回來的開始再「確認」結束一次（沒確認就關掉語音那一頁）；「開始」還沒回來之前語音一直算在這一邊（不放掉）。
+  const voiceMode = kit.slice(kit.indexOf('final class ChatGPTVoiceMode'), kit.indexOf('\n}\n', kit.indexOf('final class ChatGPTVoiceMode')));
+  assert.match(voiceMode, /guard session == voiceSession, voiceActive, !voiceStopping else \{\s*await lateStart\(claim\)\s*return\s*\}/);
+  assert.match(voiceMode, /private func lateStart\(_ claim: ChatGPTTap\.VoiceClaim\) async \{\s*if tap\.voiceClaim == claim \{\s*let result = await tap\.endVoice\(claim: claim,/);
+  assert.match(voiceMode, /func endVoice\(\) \{\s*guard voiceActive, !voiceStopping, let claim else \{ return \}\s*voiceStopping = true\s*voiceStatus = "正在結束語音…"\s*voiceSession \+= 1/);
+  assert.match(voiceMode, /if pendingStart == nil \|\| pendingStart != claim \{ release\(\) \}/);
+  // 按「結束語音」＝開始結束；結束中再按一次＝直接關掉語音那一頁。
+  assert.match(voiceMode, /func stopVoice\(\) \{\s*guard voiceActive, let claim else \{ return \}\s*if voiceStopping \{\s*forcedByUser = true\s*tap\.forceEndVoice\(claim\)\s*return\s*\}\s*endVoice\(\)/);
+  // W184 G3 第三輪：Space 拿著語音時私訊框看到「ChatGPT Space 的語音模式還開著」（守的仍是 Space 用共用的 ChatGPTVoiceMode）。
+  assert.match(space, /private init\(\) \{\s*tap = \.shared\s*voice = ChatGPTVoiceMode\(tap: tap, holderNotice: "ChatGPT Space 的語音模式還開著"\)/);
+  // Space 的語音接線（三條）：語音在正在看的那一則、結束後由 Space 讀回那一則、結束鈕＝共用的 stopVoice。
+  assert.match(space, /voice\.conversation = \{ \[weak self\] in self\?\.selectedID \}/);
+  assert.match(space, /voice\.finished = \{ \[weak self\] conversationID in self\?\.voiceFinished\(conversationID: conversationID\) \}/);
+  assert.match(space, /func stopVoice\(\) \{\s*voice\.stopVoice\(\)\s*\}/);
+  assert.match(space, /func startVoice\(\) \{\s*guard !voiceActive, !isSending, tap\.connection == \.ready else \{ return \}\s*voice\.startVoice\(\)/);
+  assert.match(space, /voiceForward = voice\.objectWillChange\.sink \{ \[weak self\] _ in self\?\.objectWillChange\.send\(\) \}/);
   assert.match(tap, /voiceStopAt = Date\.now\(\);\s*if \(!voiceGuard\) voiceGuard = setInterval/);
   assert.match(tap, /if \(voiceGuard\) \{ clearInterval\(voiceGuard\); voiceGuard = null; \}/);
 });
@@ -2036,7 +2303,7 @@ test('review fixes: Pod commands only run on chatgpt.com; same-origin downloads 
 test('review fixes: a send that stays in Work is not sent; a Request-object send is still rewritten', async () => {
   // #6：切不到 Chat（仍在 Work）就不送。
   const clicks = [];
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
   const mk = (label, selected) => ({ textContent: label, getAttribute: (k) => (k === 'aria-selected' ? String(selected()) : null), click() { clicks.push(label); } });
   const work = mk('Work', () => true);
   const chat = mk('Chat', () => false);
@@ -2049,12 +2316,13 @@ test('review fixes: a send that stays in Work is not sent; a Request-object send
   assert.match(failed.message, /Work/);
   assert.equal(pod.state.sendClicked, 0, 'did not press send while in Work');
   // #8：網頁用 Request 物件送出時照樣改寫。
-  const pod2 = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } } });
-  pod2.sandbox.document.querySelector = ((base) => (sel) => (sel === '[data-testid="send-button"]' ? { disabled: false, click() {
+  const pod2 = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } } });
+  const pageSendButton = chatNode({ click() {
     pod2.state.sendClicked += 1;
     pod2.sandbox.window.fetch(new Request('https://chatgpt.com/backend-api/f/conversation', { method: 'POST', headers: { authorization: 'Bearer SECRET-TOKEN' },
       body: JSON.stringify({ action: 'next', model: 'auto', messages: [] }) })).then((r) => r.text());
-  } } : base(sel)))(pod2.sandbox.document.querySelector.bind(pod2.sandbox.document));
+  } });
+  pod2.sandbox.document.querySelector = ((base) => (sel) => (sel === '[data-testid="send-button"]' ? pageSendButton : base(sel)))(pod2.sandbox.document.querySelector.bind(pod2.sandbox.document));
   await pod2.signIn();
   await pod2.waitFor((r) => r.type === 'auth');
   pod2.command({ cmd: 'send', id: 'R', text: 'x', model: 'gpt-x', temporary: true });
@@ -2100,7 +2368,9 @@ test('review fixes: turn results follow the turn, not the current view; photo pr
   const storage = read(app + 'Browser/TapPodStorage.swift');
   // #11
   assert.match(space, /@MainActor func viewingTurn\(\) -> Bool \{ conversationID != nil \? selectedID == conversationID : viewEpoch == epoch \}/);
-  assert.match(space, /turnFailure = "\\\(failurePrefix\)：\\\(message\)"\s*if viewingTurn\(\) \{ failure = turnFailure \}/);
+  // W203: failures belong to turnMessages even while another conversation is shown.
+  assert.match(space, /func presentFailure[\s\S]*turnMessages\[index\]\.turnFailure = issue[\s\S]*conversationFailures\[conversationID\] = row[\s\S]*if viewingTurn\(\) \{ messages = turnMessages/);
+  assert.match(space, /case \.failed\(let message, let reason\):[\s\S]*presentFailure\(ChatGPTTurnFailure\(message: message, reason: reason/);
   assert.match(space, /if selectedID == conversationID \{ messages = saved \}/);
   // #4
   assert.match(space, /completed \+= 1\s*if error == nil \{ received\.append\(url\) \}\s*let done = completed >= expected/);
@@ -2116,8 +2386,8 @@ test('review fixes: turn results follow the turn, not the current view; photo pr
 // 09-25 .033 實機：專案頁的輸入框留著上次的草稿，對整頁全選蓋不掉，新訊息沒打進去；送出流程出錯時什麼都沒回，App 一直「思考中」。
 test('send: replaces a restored draft inside the composer; fails loudly when it cannot type or has no composer', async () => {
   // 有舊草稿：只選輸入框內的字再打，送出的是新訊息。
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: ['data: [DONE]\n\n'] } }, setup(sandbox) {
-    const box = { innerText: '上次的草稿', focus() {} };
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } }, setup(sandbox) {
+    const box = chatBox(sandbox, '上次的草稿');
     let selectedInBox = false;
     sandbox.document.createRange = () => ({ selectNodeContents: (el) => { selectedInBox = el === box; } });
     sandbox.window.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
@@ -2133,7 +2403,7 @@ test('send: replaces a restored draft inside the composer; fails loudly when it 
   assert.equal(pod.state.sendClicked, 1);
   // 打不進字：回報失敗、不按送出。
   const stuck = makePod({ responses: {}, setup(sandbox) {
-    const box = { innerText: '上次的草稿', focus() {} };
+    const box = chatBox(sandbox, '上次的草稿');
     const baseQuery = sandbox.document.querySelector.bind(sandbox.document);
     sandbox.document.querySelector = (sel) => (sel === '#prompt-textarea' ? box : baseQuery(sel));
   } });
@@ -2148,7 +2418,7 @@ test('send: replaces a restored draft inside the composer; fails loudly when it 
     let calls = 0;
     const baseQuery = sandbox.document.querySelector.bind(sandbox.document);
     // openConversation 找得到輸入框，送出那一刻找不到（網頁剛好重畫）。
-    sandbox.document.querySelector = (sel) => (sel === '#prompt-textarea' ? ((calls += 1) <= 1 ? { focus() {} } : null) : baseQuery(sel));
+    sandbox.document.querySelector = (sel) => (sel === '#prompt-textarea' ? ((calls += 1) <= 1 ? chatBox(sandbox) : null) : baseQuery(sel));
   } });
   await none.signIn();
   await none.waitFor((r) => r.type === 'auth');

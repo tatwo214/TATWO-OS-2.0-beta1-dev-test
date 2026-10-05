@@ -30,10 +30,20 @@ final class ClaudeSidecar {
     let kind: Kind
     init(kind: Kind = .claude) { self.kind = kind }
 
+    private var startupTask: Task<Void, Never>?
+    private var startupID: UUID?
+    private var pendingWrites: [Data] = []
+    var onRuntimeSelection: (() -> Void)?
     private var child: SidecarGroupedProcess?
     private var buffer = Data()
     private(set) var isRunning = false
+    /// W181 R3：啟動時這家有沒有勾「不用 API 金鑰」（勾了才拿掉金鑰變數）；設定之後改了，ChatLiveEngine 會重開它。
+    private(set) var startedWithAPIKeyOptOut = false
+    private(set) var startedExecutableIdentity: String?
     var onEvent: ((Event) -> Void)?
+
+    var isStarting: Bool { startupTask != nil }
+    deinit { startupTask?.cancel() }
 
     var processIdentifier: Int32? { isRunning ? child?.pid : nil }
     var processStartTime: UInt64? { isRunning ? child?.startTime : nil }
@@ -69,9 +79,8 @@ final class ClaudeSidecar {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: home.path)
         }
         // 先記下使用者原本的 Codex 家（環境變數或 ~/.codex），獨立資料夾第一次用要從那裡搬 auth 與 MCP 定義
-        environment["TATWO2_CODEX_SOURCE_HOME"] = NativeStagingIsolation.isEnabled(environment)
-            ? homes[.codex]?.path
-            : environment["CODEX_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? (NSHomeDirectory() + "/.codex")
+        // Runtime selection never imports the user's CLI configuration.
+        environment["TATWO2_CODEX_SOURCE_HOME"] = homes[.codex]?.path
         environment["CODEX_HOME"] = homes[.codex]?.path
         environment["CLAUDE_CONFIG_DIR"] = homes[.claude]?.path
         // 正式 App 維持原 namespace；staging 不得借用正式 Claude 登入。
@@ -100,13 +109,14 @@ final class ClaudeSidecar {
     /// remote 非 nil 時，同一套 stdin/stdout 協議改經 ssh 在另一台跑（R3）；MCP 這輪遠端不帶。
     /// sidecar 讀完就從自己的環境刪掉，不往下傳給子程序。
     static let mcpConfigEnvironmentKey = "TATWO2_MCP_CONFIG"
-    func start(cwd: String, resume: String?, model: String?, systemPrompt: String? = nil, mcpConfig: String? = nil, permissionMode: String? = nil, remote: RemoteEngineHandle? = nil) throws {
+    func start(cwd: String, resume: String?, model: String?, systemPrompt: String? = nil, mcpConfig: String? = nil, permissionMode: String? = nil, remote: RemoteEngineHandle? = nil, catalogOnly: Bool = false) throws {
         if permissionMode == "readOnly", kind != .claude || remote != nil {
             throw NSError(domain: "TatwoReadOnlyReviewer", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "此引擎／設備不支援唯讀副審"])
         }
         let script = remote?.sidecarScript ?? Self.scriptPath(for: kind, allowsOverride: permissionMode != "readOnly")
         var args = [script, "--cwd", cwd]
+        if catalogOnly { args += ["--catalog-only"] }
         if let resume { args += ["--resume", resume] }
         if let model { args += ["--model", model] }
         if let systemPrompt, !systemPrompt.isEmpty { args += ["--system-prompt", systemPrompt] }
@@ -145,7 +155,51 @@ final class ClaudeSidecar {
         let runtimeBin = env["TATWO2_RUNTIME_BIN"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
             ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL).appendingPathComponent("runtime/bin", isDirectory: true)
         try Self.prepareEngineHomes(environment: &env, runtimeBin: runtimeBin)
-        if let mcpConfigForEnvironment, !mcpConfigForEnvironment.isEmpty { env[Self.mcpConfigEnvironmentKey] = mcpConfigForEnvironment }
+        if remote == nil {
+            let paths = EnginePaths(environment: env)
+            let id = UUID()
+            startupID = id
+            isRunning = true
+            startedWithAPIKeyOptOut = EngineDisableStore.disabled().contains(kind.rawValue)
+            // Version and signature subprocesses never run on the UI thread. Writes remain queued
+            // until this exact startup completes; cancellation discards them before any launch.
+            let engineKind = kind
+            startupTask = Task { @MainActor [weak self] in
+                do {
+                    let selected = try await paths.selectionAsync(for: engineKind, forceVerification: true)
+                    try Task.checkCancellation()
+                    guard let self, self.startupID == id else { return }
+                    var selectedEnvironment = env
+                    selectedEnvironment["TATWO2_CODEX_BIN"] = self.kind == .codex ? selected.executable.path : nil
+                    selectedEnvironment["TATWO2_CLAUDE_BIN"] = self.kind == .claude ? selected.executable.path : nil
+                    selectedEnvironment["TATWO2_GROK_BIN"] = self.kind == .grok ? selected.executable.path : selectedEnvironment["TATWO2_GROK_BIN"]
+                    selectedEnvironment["TATWO2_ENGINE_IDENTITY"] = selected.identity
+                    self.startedExecutableIdentity = selected.identity
+                    try self.launch(args: args, environment: selectedEnvironment, runtimeBin: runtimeBin,
+                                    cwd: cwd, remote: nil, mcpConfig: mcpConfigForEnvironment)
+                    self.startupTask = nil; self.startupID = nil
+                    self.onRuntimeSelection?()
+                } catch {
+                    guard let self, self.startupID == id, !Task.isCancelled else { return }
+                    self.startupTask = nil; self.startupID = nil; self.pendingWrites.removeAll()
+                    self.isRunning = false
+                    self.onEvent?(.error("sidecar 啟動失敗：\(error.localizedDescription)"))
+                    self.onEvent?(.closed)
+                }
+            }
+            return
+        }
+        try launch(args: args, environment: env, runtimeBin: runtimeBin, cwd: cwd, remote: remote,
+                   mcpConfig: mcpConfigForEnvironment)
+    }
+
+    private func launch(args: [String], environment: [String: String], runtimeBin: URL, cwd: String,
+                        remote: RemoteEngineHandle?, mcpConfig: String?) throws {
+        var env = environment
+        // W181 R3：勾了「不用 API 金鑰」的那家，啟動時拿掉它的 API 金鑰變數，只能用訂閱登入跑；沒勾不動。
+        let apiKeyOptedOut = EngineDisableStore.disabled()
+        EngineAPIKeyPolicy.removeAPIKeys(from: &env, for: kind, optedOut: apiKeyOptedOut)
+        if let mcpConfig, !mcpConfig.isEmpty { env[Self.mcpConfigEnvironmentKey] = mcpConfig }
         env["PATH"] = runtimeBin.path + ":/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         let executable: String
         let arguments: [String]
@@ -168,6 +222,7 @@ final class ClaudeSidecar {
             environment: env,
             currentDirectory: remote == nil ? cwd : NSHomeDirectory())
         child = grouped
+        startedWithAPIKeyOptOut = apiKeyOptedOut.contains(kind.rawValue)   // W181 R3
         grouped.onStdout = { [weak self] data in
             DispatchQueue.main.async { self?.consume(data) }
         }
@@ -184,6 +239,11 @@ final class ClaudeSidecar {
             }
         }
         isRunning = true
+        let queued = pendingWrites
+        pendingWrites.removeAll()
+        for data in queued {
+            guard grouped.write(data) else { grouped.terminateGroup(); throw POSIXError(.EPIPE) }
+        }
     }
 
     private func consume(_ d: Data) {
@@ -204,7 +264,14 @@ final class ClaudeSidecar {
                                      description: obj["description"] as? String))
             case "stderr": onEvent?(.stderr(obj["line"] as? String ?? ""))
             case "error":
-                if obj["terminal"] as? Bool == false {
+                if let details = obj["details"] as? String {
+                    var message: [String: Any] = ["type": "system",
+                        "subtype": obj["terminal"] as? Bool == false ? "turn_error" : "engine_error",
+                        "message": obj["message"] as? String ?? "?", "details": details,
+                        "retrying": obj["terminal"] as? Bool == false]
+                    if let turn = obj["client_turn_id"] as? String { message["client_turn_id"] = turn }
+                    onEvent?(.sdk(message))
+                } else if obj["terminal"] as? Bool == false {
                     var message: [String: Any] = ["type": "system", "subtype": "turn_error",
                         "message": obj["message"] as? String ?? "?"]
                     if let turn = obj["client_turn_id"] as? String { message["client_turn_id"] = turn }
@@ -218,13 +285,20 @@ final class ClaudeSidecar {
         }
     }
 
-    private func write(_ obj: [String: Any]) {
-        guard isRunning, let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        child?.write(d + Data([0x0A]))
+    /// W184 H4 修正第二輪（GPT-6 H4b 審查 #1）：回有沒有真的寫進引擎程序的 stdin（程序已經不在、管線斷了＝false，不再當作送出去了）。
+    @discardableResult
+    private func write(_ obj: [String: Any]) -> Bool {
+        guard isRunning, let d = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+        let line = d + Data([0x0A])
+        if startupTask != nil { pendingWrites.append(line); return true }
+        guard let child else { return false }
+        return child.write(line)
     }
 
+    /// false＝未交付；true＝已排隊或寫入。引擎是否收下仍以這一輪的第一個事件確認。
+    @discardableResult
     func send(text: String, uuid: String, attachments: [String] = [], model: String? = nil,
-              reasoningEffort: String? = nil, serviceTier: String? = nil) {
+              reasoningEffort: String? = nil, serviceTier: String? = nil) -> Bool {
         write(Self.sendCommand(kind: kind, text: text, uuid: uuid, attachments: attachments,
                                model: model, reasoningEffort: reasoningEffort, serviceTier: serviceTier))
     }
@@ -233,7 +307,7 @@ final class ClaudeSidecar {
                             model: String?, reasoningEffort: String?, serviceTier: String?) -> [String: Any] {
         var o: [String: Any] = ["op": "send", "text": text, "uuid": uuid]
         if !attachments.isEmpty { o["attachments"] = attachments }
-        if kind == .codex {
+        if kind == .codex || kind == .claude {
             // Bind model/options to this queued turn, not mutable sidecar state.
             if let model { o["model"] = model }
             if let reasoningEffort { o["effort"] = reasoningEffort }
@@ -265,6 +339,15 @@ final class ClaudeSidecar {
         write(["op": "goal_get"])
     }
     func interrupt(pauseGoal: Bool? = nil) {
+        if startupTask != nil {
+            terminate()
+            // Match process-exit delivery: let the current stop/archive transition finish first.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isRunning else { return }
+                self.onEvent?(.closed)
+            }
+            return
+        }
         var command: [String: Any] = ["op": "interrupt"]
         if let pauseGoal { command["pauseGoal"] = pauseGoal }
         write(command)
@@ -275,6 +358,8 @@ final class ClaudeSidecar {
         terminate()
     }
     func terminate() {
+        startupTask?.cancel(); startupTask = nil; startupID = nil
+        pendingWrites.removeAll()
         child?.terminateGroup()
         child = nil
         isRunning = false
@@ -291,6 +376,9 @@ final class SidecarGroupedProcess {
     private static let lock = NSLock()
     private static var live: [Int32: SidecarGroupedProcess] = [:]
     private static var overrideRoot: URL?
+    /// W183 R2：App 正在結束（terminateAll 已開始）：不再開新的 sidecar；看管的服務據此不要自動重開。
+    private static var terminating = false
+    static var isTerminating: Bool { lock.lock(); defer { lock.unlock() }; return terminating }
 
     let pid: pid_t
     let pgid: pid_t
@@ -303,6 +391,12 @@ final class SidecarGroupedProcess {
     var onStdout: ((Data) -> Void)?
     var onStderr: ((Data) -> Void)?
     var onExit: (() -> Void)?
+    /// W183 R2b：waitpid 拿到的原始結束狀態；在呼叫 onExit 之前設好（看管的服務用它分辨「自己發現被冒充而停下」）。
+    private(set) var exitStatus: Int32?
+    /// W183 R2b：正常結束時的結束碼（被 signal 殺掉的是 nil）。
+    var exitCode: Int32? { exitStatus.flatMap { ($0 & 0x7f) == 0 ? ($0 >> 8) & 0xff : nil } }
+    /// W183 R2b：這個 pid 現在還是當初開的那個行程（啟動時間對得上；已結束或 pid 被重用都算不在）。
+    var isRunning: Bool { startTime != nil && OSSocketCaller.processStartTime(pid) == startTime }
 
     private init(pid: pid_t, stdin: FileHandle, stdout: FileHandle, stderr: FileHandle) {
         self.pid = pid
@@ -321,9 +415,23 @@ final class SidecarGroupedProcess {
         executable: String,
         arguments: [String],
         environment: [String: String],
-        currentDirectory: String
+        currentDirectory: String,
+        closeInheritedDescriptors: Bool = false,  // W183 R2：對外的關口與 cloudflared 不繼承 App 的任何 fd
+        disclaimResponsibility: Bool = false,     // W183 R2：子行程自己負責 TCC，不沿用 App 的輔助使用／螢幕錄製／自動化權限
+        // W183 R2b：回呼在開始讀輸出、等結束之前就裝好。開好再設的話，很快就輸出或馬上失敗的子行程，最早的輸出與結束通知會掉。
+        onStdout: ((Data) -> Void)? = nil,
+        onStderr: ((Data) -> Void)? = nil,
+        onExit: (() -> Void)? = nil
     ) throws -> SidecarGroupedProcess {
+        if isTerminating { throw POSIXError(.ECANCELED) }   // W183 R2：App 結束途中不再開新的
         let input = Pipe(), output = Pipe(), errors = Pipe()
+        // W183 R2：Foundation 的 Pipe 沒設 FD_CLOEXEC；App 這邊的端點若被之後開的其他子行程繼承，
+        // 這個子行程在 App 當掉時就收不到 stdin 的 EOF。子行程那一端由 dup2 放到 0／1／2，dup2 會清掉 CLOEXEC。
+        for pipe in [input, output, errors] {
+            for fd in [pipe.fileHandleForReading.fileDescriptor, pipe.fileHandleForWriting.fileDescriptor] {
+                _ = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC)
+            }
+        }
         var actions: posix_spawn_file_actions_t? = nil
         var attributes: posix_spawnattr_t? = nil
         guard posix_spawn_file_actions_init(&actions) == 0,
@@ -345,8 +453,14 @@ final class SidecarGroupedProcess {
         var flags: Int16 = 0
         posix_spawnattr_getflags(&attributes, &flags)
         flags |= Int16(POSIX_SPAWN_SETPGROUP)
+        if closeInheritedDescriptors { flags |= Int16(POSIX_SPAWN_CLOEXEC_DEFAULT) }
         posix_spawnattr_setflags(&attributes, flags)
         posix_spawnattr_setpgroup(&attributes, 0)
+        if disclaimResponsibility, let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") {
+            // 私有 API（RTLD_DEFAULT 查得到才用）；查不到就照舊，靠 Seatbelt 規則擋 TCC 相關服務。
+            typealias Disclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>?, Int32) -> Int32
+            _ = unsafeBitCast(symbol, to: Disclaim.self)(&attributes, 1)
+        }
 
         let argumentStrings: [String] = [executable] + arguments
         let argv: [UnsafeMutablePointer<CChar>?] = argumentStrings.map { strdup($0) }
@@ -371,16 +485,28 @@ final class SidecarGroupedProcess {
             stdin: input.fileHandleForWriting,
             stdout: output.fileHandleForReading,
             stderr: errors.fileHandleForReading)
+        process.onStdout = onStdout; process.onStderr = onStderr; process.onExit = onExit   // W183 R2b：先裝回呼
         process.installReaders()
-        lock.lock(); live[spawnedPID] = process; lock.unlock()
+        lock.lock(); let late = terminating; live[spawnedPID] = process; lock.unlock()
+        if late { process.terminateGroup() }   // W183 R2：剛好碰上 App 結束，terminateAll 已經拿走清單
         persistRecords()
         DispatchQueue.global(qos: .utility).async { process.waitForExit() }
         return process
     }
 
-    func write(_ data: Data) {
-        try? stdin.write(contentsOf: data)
+    /// W184 H4 修正第二輪（審查 #1）：寫不進去（對方已經關了 stdin、程序不在）回 false，不再吞掉錯誤。
+    @discardableResult
+    func write(_ data: Data) -> Bool {
+        do { try stdin.write(contentsOf: data); return true } catch { return false }
     }
+
+    #if DEBUG
+    /// W183 R2 自測：模擬 App 當掉——關掉 App 這一端的 stdin；並讀 App 這一端三個 pipe 的 FD_CLOEXEC。
+    func debugCloseStdin() { try? stdin.close() }
+    var debugAppSideDescriptorsCloseOnExec: Bool {
+        [stdin.fileDescriptor, stdout.fileDescriptor, stderr.fileDescriptor].allSatisfy { fcntl($0, F_GETFD) & FD_CLOEXEC != 0 }
+    }
+    #endif
 
     func terminateGroup() {
         Self.lock.lock()
@@ -405,7 +531,7 @@ final class SidecarGroupedProcess {
     }
 
     static func terminateAll() {
-        lock.lock(); let groups = Array(live.values); lock.unlock()
+        lock.lock(); terminating = true; let groups = Array(live.values); lock.unlock()   // W183 R2：先標記，之後不再開新的
         groups.forEach { $0.terminateGroup() }
         let deadline = Date().addingTimeInterval(2)
         while groups.contains(where: { groupIsAlive($0.pgid) }), Date() < deadline { usleep(50_000) }
@@ -436,6 +562,7 @@ final class SidecarGroupedProcess {
     private func waitForExit() {
         var status: Int32 = 0
         while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        exitStatus = status   // W183 R2b
         stdout.readabilityHandler = nil
         stderr.readabilityHandler = nil
         try? stdin.close()
@@ -482,7 +609,10 @@ final class SidecarGroupedProcess {
         do {
             try process.run(); process.waitUntilExit()
             let command = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            // W183 R2b：打包後的關口在 Resources/chatgpt-hands；cloudflared 那組的看門程式 $0 是 chatgpt-hands/tunnel-guard，
+            // cloudflared 本身用它的設定檔路徑（<App Support>/TATWO OS Hands/cf.yml）認。
             return command.contains("Engines/") || command.contains("sidecar") || command.contains("sleep 300")
+                || command.contains("chatgpt-hands") || (command.contains("cloudflared") && command.contains("TATWO OS Hands/cf.yml"))
         } catch { return false }
     }
 

@@ -4,6 +4,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = process.env.TATWO2_CALLER_TRANSPORT_ROOT;
 assert.ok(root, 'TATWO2_CALLER_TRANSPORT_ROOT must be an existing isolated directory');
@@ -25,7 +26,7 @@ try {
     const env = { ...process.env, TATWO2_OS_SOCKET: socketPath };
     delete env.TATWO2_THREAD_ID;
     if (bound) env.TATWO2_THREAD_ID = '00000000-0000-0000-0000-00000000000A';
-    const child = spawn(process.execPath, [new URL('server.mjs', import.meta.url).pathname], { env, stdio: ['pipe', 'pipe', 'inherit'] });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('server.mjs', import.meta.url))], { env, stdio: ['pipe', 'pipe', 'inherit'] });
     const lines = readline.createInterface({ input: child.stdout })[Symbol.asyncIterator]();
     let id = 0;
     async function rpc(method, params = {}) {
@@ -39,7 +40,7 @@ try {
       const countBefore = calls.length;
       const reply = await rpc('tools/call', { name: tool.name, arguments: { callerThreadID: 'spoofed' } });
       // These stricter lanes reject supplied identity instead of stripping it.
-      if (tool.name.startsWith('computer_') || tool.name === 'os_binding_status' || tool.name === 'code_impact') {
+      if (tool.name.startsWith('computer_') || tool.name.startsWith('chatgpt_dispatch') || ['os_binding_status', 'code_impact', 'os_status', 'goal_index'].includes(tool.name)) {
         assert.equal(reply.result.isError, true);
         assert.equal(calls.length, countBefore);
         continue;
@@ -48,6 +49,26 @@ try {
       const last = calls.at(-1);
       assert.equal(last.params.callerThreadID, bound ? env.TATWO2_THREAD_ID : undefined);
       if (tool.name.startsWith('bot_')) assert.equal(last.params._threadID, bound ? env.TATWO2_THREAD_ID : undefined);
+    }
+    assert.deepEqual(list.result.tools.find(t => t.name === 'os_status').inputSchema.properties, {});
+    assert.deepEqual(list.result.tools.find(t => t.name === 'goal_index').inputSchema.properties,
+      { includeDone: { type: 'boolean', default: false } });
+    for (const [name, args] of [['os_status', {}], ['goal_index', {}],
+      ['goal_index', { includeDone: false }], ['goal_index', { includeDone: true }]]) {
+      const before = calls.length;
+      const reply = await rpc('tools/call', { name, arguments: args });
+      assert.ok(!reply.result.isError, JSON.stringify(reply));
+      assert.equal(calls.length, before + 1);
+      assert.deepEqual(calls.at(-1).params, bound ? { ...args, callerThreadID: env.TATWO2_THREAD_ID } : args);
+    }
+    for (const [name, args] of [['os_status', { path: '/' }], ['os_status', { includeDone: false }],
+      ['goal_index', { includeDone: null }], ['goal_index', { includeDone: 1 }],
+      ['goal_index', { includeDone: 'true' }], ['goal_index', { includeDone: [] }],
+      ['goal_index', { path: '/' }]]) {
+      const before = calls.length;
+      const reply = await rpc('tools/call', { name, arguments: args });
+      assert.equal(reply.result.isError, true, JSON.stringify({ name, args, reply }));
+      assert.equal(calls.length, before, 'invalid global-tool arguments must not reach App');
     }
     const exited = new Promise(resolve => child.once('exit', resolve));
     child.stdin.end();

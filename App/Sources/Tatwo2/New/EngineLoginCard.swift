@@ -1,33 +1,43 @@
-// 2.0 新畫面（不是照搬）：設定頁「模型登入」— 三家引擎各自登入／登出、額度條、禁用 API。
+// 2.0 新畫面（不是照搬）：設定頁「模型登入」— 三家引擎各自登入／登出、額度條、不用 API 金鑰（W181 R3 前叫「禁用 API」）。
 // 使用者 2026-09-05：標題改「模型登入」、GPT 改 OpenAI、少註解、額度條、列向左拖拽出「禁用 API」、登出鈕重設計並上下置中。
 import SwiftUI
 
 struct EngineLoginCard: View {
     @ObservedObject var model: ChatPageModel
+    @ObservedObject var chatGPT: ChatGPTTap = .shared
+    var environmentTarget: EnvironmentLoginTarget? = nil
+    #if DEBUG
+    final class Probe {
+        var details: [ClaudeSidecar.Kind: CGRect] = [:]
+        var expanded: Set<ClaudeSidecar.Kind> = []
+        var environmentToggle: CGRect?
+    }
+    var testProbe: Probe? = nil
+    #endif
+    @State private var environmentExpanded = false
+    @State private var expandedDetails: Set<ClaudeSidecar.Kind> = []
     @State private var loginInput = ""
     @State private var confirmResetCredit = false
-    /// W112 起設定頁不再有「完成」鈕；參數留著讓既有呼叫點不用改。
-    var onClose: (() -> Void)? = nil
 
     private let kinds: [ClaudeSidecar.Kind] = [.codex, .claude, .grok]
 
     var body: some View {
+        ScrollViewReader { proxy in
         ScrollView {
         VStack(alignment: .leading, spacing: TatwoSettingsPageMetrics.sectionSpacing) {
-            TatwoSettingsPageHeader(title: "模型登入") {
-                Button("重新檢查") { model.refreshEngineLogins(); model.refreshEngineQuotas() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+            TatwoSettingsPageHeader(title: "登入") {
+                OSChipButton(title: "重新檢查") { model.refreshEngineLogins(); model.refreshEngineQuotas() }
             }
             // W171 初始設定：登入任何一家就能開始對話。
-            let loggedIn = model.engineLogins.filter(\.isLoggedIn).map { SetupChecklist.brand($0.kind) }
-            SetupBanner(done: !loggedIn.isEmpty,
-                        text: loggedIn.isEmpty ? "登入下面其中一個就能開始對話，用你已經有的訂閱。之後隨時可以再加。"
-                            : "已登入 \(loggedIn.joined(separator: "、"))。回到 Coder 就能開始對話。") { EmptyView() }
+            if !model.engineLogins.contains(where: \.isLoggedIn) {
+                SetupBanner(done: false, text: "登入下面其中一個就能開始對話。") { EmptyView() }
+            }
 
             VStack(spacing: 0) {
+                ChatGPTTapLoginRow(tap: chatGPT).padding(.vertical, 8).padding(.horizontal, 6)
+                Divider().opacity(0.5)
                 ForEach(kinds, id: \.rawValue) { kind in
-                    SwipeRevealRow(revealWidth: 112, isRevealedInitially: false) {
+                    SwipeRevealRow(revealWidth: 132, isRevealedInitially: false) {
                         row(kind)
                             .padding(.vertical, 8)
                             .padding(.horizontal, 6)
@@ -36,14 +46,16 @@ struct EngineLoginCard: View {
                             Button {
                                 model.toggleEngineDisabled(kind)
                             } label: {
+                                // W181 R3：勾了只是不用 API 金鑰（按量計費），訂閱登入照常能跑。
                                 HStack(spacing: 5) {
-                                    Image(systemName: model.isEngineDisabled(kind) ? "checkmark.circle" : "nosign")
-                                    Text(model.isEngineDisabled(kind) ? "解除禁用" : "禁用 API")
+                                    Image(systemName: model.isAPIKeyOptedOut(kind) ? "checkmark.circle" : "nosign")
+                                    Text(model.isAPIKeyOptedOut(kind) ? "可以用 API 金鑰" : "不用 API 金鑰")
+                                        .lineLimit(1).minimumScaleFactor(0.8)
                                 }
                                 .font(.caption2.weight(.semibold))
                                 .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22)
                                 .foregroundStyle(.white)
-                                .background(model.isEngineDisabled(kind) ? Color.green : Color.red, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .background(model.isAPIKeyOptedOut(kind) ? Color.green : Color.red, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
                             .buttonStyle(.plain)
                             Spacer(minLength: 0)   // 以後的開關往下塞
@@ -60,11 +72,44 @@ struct EngineLoginCard: View {
             if model.engineLoginInProgress != nil {
                 loginProgress
             }
+            Button { environmentExpanded.toggle() } label: {
+                HStack { Text("環境登入"); Spacer(); Image(systemName: environmentExpanded ? "chevron.up" : "chevron.down") }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("login.environment.toggle")
+            #if DEBUG
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { testProbe?.environmentToggle = $0 }
+            #endif
+            if environmentExpanded {
+                EnvironmentLoginTabPicker()
+                GitHubBackupSetupBanner().id(EnvironmentLoginTarget.backup.rawValue)
+                    .accessibilityIdentifier("login.environment.backup")
+                UpdateAvailableCard().id(EnvironmentLoginTarget.update.rawValue)
+                    .accessibilityIdentifier("login.environment.update")
+                EnvironmentLoginContent(model: model).id(environmentTarget?.rawValue == "cloudflare" ? "cloudflare" : "github")
+                    .accessibilityIdentifier("login.environment.accounts")
+                TapSettingsView(chatGPT: chatGPT)
+            }
         }
         .padding(TatwoSettingsPageMetrics.inset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { model.refreshEngineLogins(); model.refreshEngineQuotas() }
+        .task(id: environmentTarget) {
+            guard let target = environmentTarget else { return }
+            if let tab = EnvironmentLoginTab(rawValue: target == .backup ? "github" : target.rawValue) {
+                UserDefaults.standard.set(tab.rawValue, forKey: EnvironmentLoginTab.storageKey)
+            }
+            environmentExpanded = true
+            await Task.yield()
+            proxy.scrollTo(target.rawValue, anchor: .top)
+        }
+        }
+    }
+
+    static func runtimeSummary(_ choice: EngineRuntimeSelection.Choice) -> String {
+        choice.source == "本機" ? "用的是本機較新的版本" : "用的是 App 內附的版本"
     }
 
     // MARK: 一列
@@ -73,13 +118,16 @@ struct EngineLoginCard: View {
     private func row(_ kind: ClaudeSidecar.Kind) -> some View {
         let status = model.engineLogins.first(where: { $0.kind == kind })
         let loggedIn = status?.isLoggedIn ?? false
-        let disabled = model.isEngineDisabled(kind)
+        // W181 R3：勾了不用 API 金鑰才有這一小行；blocked＝勾了、而且這台只有 API 金鑰（送不出）。不起子程序。
+        let optOut = EngineDisableStore.optOutLabel(kind, optedOut: model.disabledEngines)
+        let disabled = optOut?.blocked ?? false
         let detail = model.engineQuotaDetails[kind.rawValue]
         let account = detail?.accountLabel ?? status?.account
-        HStack(alignment: .center, spacing: 12) {
-            // 各家 logo 取代小圓點（使用者 2026-09-05）；未登入變淡、禁用加紅圈
+        HStack(alignment: .top, spacing: 12) {
+            // 各家 logo 取代小圓點（使用者 2026-09-05）；未登入變淡、送不出（W181 R3）加紅圈
             ZStack {
-                if let logo = ProviderSVGIconLoader.image(for: Self.logoID(kind)) {
+                if kind == .codex { ChatGPTLogo() }
+                else if let logo = ProviderSVGIconLoader.image(for: Self.logoID(kind)) {
                     Image(nsImage: logo)
                         .resizable()
                         .renderingMode(.template)      // SVG 是單色，淺色主題要跟著文字色，不然看不見
@@ -92,6 +140,7 @@ struct EngineLoginCard: View {
                         .frame(width: 20, height: 20)
                 }
             }
+            .padding(.top, 3)
             .opacity(loggedIn ? 1 : 0.35)
             .overlay(
                 Circle().stroke(Color.red.opacity(disabled ? 0.8 : 0), lineWidth: 1.5)
@@ -111,10 +160,11 @@ struct EngineLoginCard: View {
                     } else if let since = detail?.subscribedAt {
                         Text("訂閱起 \(Self.day(since))").font(.caption).foregroundStyle(.secondary)
                     }
-                    if disabled {
-                        Text("已禁用 API")
+                    if let optOut {
+                        Text(optOut.text)
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.red)
+                            .foregroundStyle(optOut.blocked ? Color.red : Color.secondary)
+                            .lineLimit(1)
                     }
                 }
                 // 第二行：帳號，靠左
@@ -148,7 +198,7 @@ struct EngineLoginCard: View {
                         .accessibilityLabel("重置券 \(tickets) 張").accessibilityIdentifier("engine.codex.resetTicket")
                     }
                 } else if loggedIn {
-                    Text(detail?.note.isEmpty == false ? detail!.note : "額度讀取中…")
+                    Text(detail?.note.isEmpty == false ? (detail?.note == ClaudeCredentialStore.accessDeniedReason ? "需要允許讀取額度" : "暫時讀不到額度，可稍後重新檢查。") : "額度讀取中…")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .lineLimit(2)
@@ -157,6 +207,34 @@ struct EngineLoginCard: View {
                         Button("允許讀取額度…") { model.authorizeClaudeQuotaRead() }
                         .buttonStyle(.link).font(.caption)
                     }
+                }
+                if let choice = status?.executableChoice {
+                    Text(Self.runtimeSummary(choice)).font(.caption2).foregroundStyle(.secondary)
+                }
+                if status?.executableChoice != nil || detail?.note.isEmpty == false {
+                    DisclosureGroup("詳細", isExpanded: Binding(
+                        get: { expandedDetails.contains(kind) },
+                        set: { expanded in
+                            if expanded { expandedDetails.insert(kind) } else { expandedDetails.remove(kind) }
+                            #if DEBUG
+                            testProbe?.expanded = expandedDetails
+                            #endif
+                        })) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            if let choice = status?.executableChoice {
+                                Text(choice.summary).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            if let note = detail?.note, !note.isEmpty {
+                                Text(note).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.caption2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    #if DEBUG
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                        testProbe?.details[kind] = frame
+                    }
+                    #endif
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,13 +253,11 @@ struct EngineLoginCard: View {
                     }
                     .buttonStyle(.plain)
                 } else {
-                    Button("登入") { model.loginEngine(kind) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+                    OSChipButton(title: "登入", isPrimary: true) { model.loginEngine(kind) }
                         .disabled(model.engineLoginInProgress != nil)
                 }
             }
-            .frame(maxHeight: .infinity, alignment: .center)
+            .frame(alignment: .top)
         }
         .opacity(disabled ? 0.6 : 1)
         .alert("確定要用掉一張重置券？", isPresented: $confirmResetCredit) {
@@ -244,9 +320,7 @@ struct EngineLoginCard: View {
                 TextField("輸入驗證碼", text: $loginInput)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { submit() }
-                Button("送出") { submit() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                OSChipButton(title: "送出", isPrimary: true) { submit() }
                     .disabled(loginInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -355,5 +429,39 @@ struct SwipeRevealRow<Content: View, Reveal: View>: View {
                 }
         }
         .clipped()
+    }
+}
+
+/// ChatGPT TAP 登入；與 Codex 的訂閱登入各自獨立。
+struct ChatGPTTapLoginRow: View {
+    @ObservedObject var tap: ChatGPTTap
+    @State private var showsLogin = false
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            ChatGPTLogo()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("ChatGPT").font(.subheadline.weight(.semibold))
+                Text(tap.isLoggedIn ? "已登入" : "未登入").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("login.chatgpt.status")
+            }
+            Spacer()
+            ChatGPTTapLoginButton(tap: tap) { showsLogin = true }
+        }
+        .accessibilityElement(children: .contain).accessibilityIdentifier("login.chatgpt.tap")
+        .sheet(isPresented: $showsLogin) {
+            if let pod = tap.webPod { TapPodSheet(title: "ChatGPT 登入", pod: pod) { showsLogin = false } }
+        }
+        .onChange(of: tap.isLoggedIn) { _, loggedIn in if loggedIn { showsLogin = false } }
+    }
+}
+
+struct ChatGPTTapLoginButton: View {
+    @ObservedObject var tap: ChatGPTTap
+    var onLogin: () -> Void
+    var body: some View {
+        OSChipButton(title: tap.isLoggedIn ? "登出" : "登入") {
+            if tap.isLoggedIn { tap.logout() }
+            else { tap.setEnabled(true); onLogin() }
+        }.accessibilityIdentifier("login.chatgpt.action")
     }
 }

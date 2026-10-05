@@ -20,7 +20,8 @@ import Combine
         let value = await read()
         reading = false
         guard !Task.isCancelled else { return }
-        count = max(0, min(20, value))
+        let next = max(0, min(20, value))
+        if count != next { count = next }
     }
     func observe() async {
         while !Task.isCancelled {

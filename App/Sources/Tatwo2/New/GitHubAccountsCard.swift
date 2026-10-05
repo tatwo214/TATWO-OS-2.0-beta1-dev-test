@@ -30,11 +30,9 @@ struct GitHubAccountsCard: View {
                     .font(.footnote)
                 Spacer()
                 if model.gitHubHelperInstalled {
-                    Button("還原原本設定") { model.restoreGitHubHelper() }
-                        .buttonStyle(.bordered)
+                    OSChipButton(title: "還原原本設定") { model.restoreGitHubHelper() }
                 } else {
-                    Button("讓 OS 接管 git 憑證") { model.installGitHubHelper() }
-                        .buttonStyle(.borderedProminent)
+                    OSChipButton(title: "讓 OS 接管 git 憑證", isPrimary: true) { model.installGitHubHelper() }
                         .disabled(model.gitHubAccounts.isEmpty)
                 }
             }
@@ -114,13 +112,12 @@ struct GitHubAccountsCard: View {
                                         mappingPath[account.username] = url.path
                                         return true
                                     }
-                                Button("加入") {
+                                OSChipButton(title: "加入") {
                                     let p = (mappingPath[account.username] ?? "").trimmingCharacters(in: .whitespaces)
                                     guard !p.isEmpty else { return }
                                     model.addGitHubFolderMapping(account: account.username, path: p)
                                     mappingPath[account.username] = ""
                                 }
-                                .buttonStyle(.bordered).controlSize(.small)
                                 .disabled((mappingPath[account.username] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                             }
                         }
@@ -135,13 +132,11 @@ struct GitHubAccountsCard: View {
                 Text("加帳號")
                     .font(.headline)
                 HStack(spacing: 8) {
-                    Button("從這台的 gh 匯入") { model.importGitHubAccountsFromGH() }
-                        .buttonStyle(.bordered)
-                    Button("用瀏覽器登入新帳號") {
+                    OSChipButton(title: "從這台的 gh 匯入") { model.importGitHubAccountsFromGH() }
+                    OSChipButton(title: "用瀏覽器登入新帳號") {
                         loginInput = ""
                         model.loginGitHubViaGH()
                     }
-                        .buttonStyle(.bordered)
                         .disabled(model.githubLoginInProgress)
                 }
                 Text("沒有 gh 的機器用第三種：到 GitHub › Settings › Developer settings 建一個 token（勾 repo），貼在這裡。")
@@ -150,11 +145,10 @@ struct GitHubAccountsCard: View {
                 HStack(spacing: 8) {
                     SecureField("貼 token", text: $tokenField)
                         .textFieldStyle(.roundedBorder)
-                    Button("驗證並加入") {
+                    OSChipButton(title: "驗證並加入", isPrimary: true) {
                         model.addGitHubToken(tokenField.trimmingCharacters(in: .whitespaces))
                         tokenField = ""
                     }
-                    .buttonStyle(.borderedProminent)
                     .disabled(tokenField.count < 10)
                 }
                 if model.githubLoginInProgress {
@@ -210,12 +204,10 @@ struct GitHubAccountsCard: View {
                         .font(.system(size: 28, weight: .semibold, design: .monospaced))
                         .textSelection(.enabled)
                         .fixedSize()
-                    Button("複製") {
+                    OSChipButton(title: "複製") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(code, forType: .string)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
             }
             if let url = model.githubVerificationURL {
@@ -226,9 +218,7 @@ struct GitHubAccountsCard: View {
                 TextField("輸入驗證碼（留白送出 Enter）", text: $loginInput)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { submitLoginInput() }
-                Button("送出") { submitLoginInput() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                OSChipButton(title: "送出", isPrimary: true) { submitLoginInput() }
             }
         }
         .padding(12)

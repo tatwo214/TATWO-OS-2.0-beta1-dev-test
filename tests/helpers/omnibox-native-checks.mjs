@@ -13,8 +13,14 @@ export function runOmniboxNativeChecks() {
   const evidence = process.env.W67_OMNIBOX_UI_EVIDENCE_DIR ?? testScratch('w67-omnibox-native-');
   mkdirSync(evidence, { recursive: true });
   const run = (command, args) => {
-    const result = spawnSync(command, args, { cwd: repo, encoding: 'utf8', timeout: 150_000, maxBuffer: 4 * 1024 * 1024 });
-    if (command === path.join(evidence, 'native-checks')) {
+    const native = command === path.join(evidence, 'native-checks');
+    const result = spawnSync(command, args, {
+      cwd: repo, encoding: 'utf8', timeout: 150_000, maxBuffer: 4 * 1024 * 1024,
+      // The real hit-layer collaborator consults a diagnostic UserDefaults key.
+      // Keep its preferences in the fixture, never the user's home.
+      ...(native ? { env: { HOME: evidence, CFFIXED_USER_HOME: evidence, TMPDIR: evidence, PATH: '/usr/bin:/bin' } } : {}),
+    });
+    if (native) {
       writeFileSync(path.join(evidence, 'native.stdout.log'), result.stdout ?? '');
       writeFileSync(path.join(evidence, 'native.stderr.log'), result.stderr ?? '');
       writeFileSync(path.join(evidence, 'native.status.json'), JSON.stringify({ status: result.status, signal: result.signal }) + '\n');
@@ -23,7 +29,7 @@ export function runOmniboxNativeChecks() {
     return result.stdout;
   };
   const lock = path.join(repo, 'scripts/tatwo-build-lock.sh');
-  const acquired = run('bash', [lock, 'acquire', '--pid', String(process.pid), '--timeout', '1']);
+  const acquired = run('bash', [lock, 'acquire', '--pid', String(process.pid), '--timeout', '120']);
   const token = acquired.match(/^token=([0-9a-f]+)$/m)?.[1];
   assert.ok(token);
   try {
@@ -32,6 +38,14 @@ export function runOmniboxNativeChecks() {
       + 'struct EmbeddedBrowserToolbar: View' + toolbar;
     const extracted = path.join(evidence, 'Toolbar.swift');
     writeFileSync(extracted, source);
+    // Keep the real hit registration / dismissal collaborator, not a no-op
+    // stand-in. The backdrop below this section belongs to the full workspace.
+    const hitLayerPath = 'App/Sources/Tatwo2/Browser/BrowserToolbarGlass.swift';
+    const hitLayer = readFileSync(path.join(repo, hitLayerPath), 'utf8');
+    const backdrop = hitLayer.indexOf('struct BrowserToolbarMaterial: View');
+    assert.ok(backdrop > 0, 'production chrome hit layer boundary');
+    const chrome = path.join(evidence, 'ChromeHitLayer.swift');
+    writeFileSync(chrome, hitLayer.slice(0, backdrop));
     const inputs = [
       'App/Sources/Tatwo2/Browser/BrowserOmniboxMetrics.swift',
       'App/Sources/Tatwo2/Browser/BrowserOmniboxInteraction.swift',
@@ -40,7 +54,7 @@ export function runOmniboxNativeChecks() {
     ];
     const binary = path.join(evidence, 'native-checks');
     run('xcrun', ['swiftc', '-j', '2', '-swift-version', '5', '-parse-as-library',
-      ...inputs.map(name => path.join(repo, name)), extracted, '-o', binary]);
+      ...inputs.map(name => path.join(repo, name)), extracted, chrome, '-o', binary]);
     const result = run(binary, [evidence]);
     assert.match(result, /W67 NATIVE RESULT checks=\d+ failures=0/);
     writeFileSync(path.join(evidence, 'result.log'), result);
@@ -49,7 +63,7 @@ export function runOmniboxNativeChecks() {
       .map(state => `${theme}-700-workspace-${state}.png`));
     writeFileSync(path.join(evidence, 'receipt.json'), JSON.stringify({
       timestamp: new Date().toISOString(), runID: path.basename(evidence),
-      sourceHashes: Object.fromEntries([...inputs, 'App/Sources/Tatwo2/Browser/EmbeddedBrowserToolbar.swift',
+      sourceHashes: Object.fromEntries([...inputs, hitLayerPath, 'App/Sources/Tatwo2/Browser/EmbeddedBrowserToolbar.swift',
         'App/Sources/Tatwo2/Visual/LiquidGlassTokens.swift'].map(name => [name, sha(readFileSync(path.join(repo, name)))])),
       screenshots: screenshots.map(name => ({ path: name, sha256: sha(readFileSync(path.join(evidence, name))),
         surface: 'EmbeddedBrowserToolbar', viewport: [700, 400] })),
@@ -57,6 +71,7 @@ export function runOmniboxNativeChecks() {
       result,
     }, null, 2) + '\n');
     console.log(result);
+    console.log('Evidence:', evidence);
   } finally {
     run('bash', [lock, 'release', '--pid', String(process.pid), '--token', token]);
   }

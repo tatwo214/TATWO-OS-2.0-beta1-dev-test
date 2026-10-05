@@ -873,6 +873,7 @@ enum TatwoChatProcessCompositionRegistry {
         let model = shared.makeChatPageModel(
             appMCPRuntimeProvider: appMCPRuntimeProvider)
         sharedChatPageModel = model
+        GlobalDMStore.shared.attach(model) // W179：私訊框只讀本機討論串、明確送出，不改 Coder 選取
         return model
     }
 }
@@ -961,6 +962,11 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(TatwoLaunchSurfacePolicy.initialActivationPolicy())
         installMainMenuWithEditCommands()
         installAlternateNewChatShortcutMonitor()
+        GlobalHotkeyMonitor.shared.install()
+        GlobalDMPanelController.shared.install() // W179：全域私訊框（主視窗子面板＋⌥⌘ 浮動框）
+        GlobalDMDeskController.shared.install() // 桌面圓鈕、App 前景箭頭、Carbon 直達鍵
+        EngineMemoryWatcher.shared.start() // W179：記憶變動時重產 Codex 讀的摘要（M 房）
+        TatwoMemorySync.shared.start() // W180 E1b：入口 memory/ 主副自動同步（60 秒一次、變動後 3 秒，背景跑）
         startLocalMCPServer()
         startSignedUpdateCoordinator()
         startAppPressureRuntime()
@@ -976,6 +982,14 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         if BrowserExternalURLQueue.shared.hasPendingURLs { showExternalBrowserWindow() }
         // W176：登入過 Spotify 就先把「TATWO OS」這台裝置開好。
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { SpotifyConnect.shared.startIfSignedIn() }
+        // W183 R2：「ChatGPT 手腳」開著才起關口與通道（自測／staging 不起；之後定時看開關）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { ChatGPTHandsService.shared.startIfEnabled() }
+        // W183 R6a：主機 App 重開、開關開著＝設定流程自動接著做（只到通道、關口、既有 grant；不開授權頁、不 offer、不解除安全停機）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { HandsSetup.shared.resumeIfEnabled() }
+        // W183 R8c：ChatGPT build 多設備的背景同步（不靠設定頁開著；自測／staging 不跑）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { HandsBuildSync.shared.start() }
+        // W183 R11：「連線」入口／「已連線」狀態開始看（私訊框、ChatGPT Space、hands_setup_status 同一份）。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { HandsConnectEntry.shared.start() }
         // W177：用過 ChatGPT Space（登入過）就在背景先準備好，點進分頁不用等網頁開機（使用者 09-25「載入速度需要加快」）。
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { ChatGPTSpaceModel.shared.prewarm() }
     }
@@ -1002,6 +1016,9 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(appItem)
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "隱藏 Tatwo Ultrawork", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(.separator())
+        // W179 E：縮成私訊鈕 ⌥⌘↓／恢復主視窗 ⌥⌘↑。
+        for item in GlobalDMDeskController.shared.makeAppMenuItems() { appMenu.addItem(item) }
         appMenu.addItem(.separator())
         let updateItem = appMenu.addItem(
             withTitle: "檢查更新…",
@@ -1066,6 +1083,8 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         alternateNewChatShortcutMonitor =
             NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
                 [weak self] event in
+                guard event.window is TatwoWorkOSWindow, event.window?.isKeyWindow == true
+                else { return event }
                 guard TatwoNewChatShortcutCatalog.matchesAlternate(event)
                 else { return event }
                 self?.requestNewChatFromShortcut(nil)
@@ -1098,6 +1117,8 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        GlobalHotkeyMonitor.shared.uninstall()
+        GlobalDMDeskController.shared.uninstall() // W179 E：Carbon 熱鍵與 install 成對移除
         sparkleUpdateCoordinator?.stop()
         if let alternateNewChatShortcutMonitor {
             NSEvent.removeMonitor(alternateNewChatShortcutMonitor)
@@ -1307,6 +1328,7 @@ final class TatwoWorkOSWindow: NSWindow {
     /// Esc 關窗。注意 `close()` **不會**經過 `windowShouldClose(_:)`（那只有 `performClose:` 才走），
     /// 所以這條路徑必須自己過同一道閘，否則 Esc 就成了繞過確認的後門。
     override func cancelOperation(_ sender: Any?) {
+        if CoderSheetEscapeGuard.preventsDMWindowClose(NSApp.currentEvent) { return }
         guard TatwoInterruptConfirmationPresenter.confirm(kind: .escapeClose, window: self) else {
             return
         }
@@ -2365,7 +2387,7 @@ private struct TatwoChatFirstFrameShell: View {
 }
 
 private struct TatwoHydratedPanelView: View {
-    @ObservedObject private var chatModel: ChatPageModel
+    @WorkspaceObservedObject private var chatModel: ChatPageModel
     @ObservedObject private var authorityBootstrapModel:
         TatwoAppAuthorityBootstrapModel
     let surface: TatwoAppSurfaceKind
@@ -2408,7 +2430,7 @@ private struct TatwoHydratedPanelView: View {
         initialModesAuthority: TatwoModesIssuedAuthorityResolution,
         initialLiveQuotaSnapshot: LiveQuotaDeckSnapshot? = nil
     ) {
-        self.chatModel = chatModel
+        _chatModel = WorkspaceObservedObject(wrappedValue: chatModel, forwardWhenHidden: ChatPageModel.presentationChanges, shouldForward: { _ in false })
         _authorityBootstrapModel = ObservedObject(
             wrappedValue: chatModel.authorityBootstrapModel)
         self.surface = surface
@@ -2644,7 +2666,7 @@ private struct TatwoHydratedPanelView: View {
                 if !chatRefreshed {
                     goalRevisionPreparationError =
                         "Goal revision 已 canonical promotion；"
-                        + "selected thread 重新綁定未通過驗證，已隔離而未建立新 chat session。"
+                        + "selected thread 重新綁定未通過驗證，已隔離而未建立新對話。"
                 }
             } else {
                 goalRevisionErrorMessage = payload.error
@@ -2840,6 +2862,8 @@ private struct TatwoHydratedPanelView: View {
             chatModel.scheduleColdStartHydrationAfterFirstFrame()
             TatwoChatPostFirstFrameLaunchSweep.schedule(
                 reason: "first-frame-presented")
+            // W180 B3：新版本跑穩後清一次舊的簽章副本（只動那個資料夾；失敗不影響啟動）。
+            CodeSignCloneCleaner.scheduleAfterLaunch()
         }
         .task(id: modesIssuedAuthorityMonitor.revision) {
             await refreshModesIssuedAuthority(
@@ -2854,6 +2878,13 @@ private struct TatwoHydratedPanelView: View {
             maxHeight: surface == .window ? .infinity : surfaceSize.height
         )
         .environment(\.tatwoSurfaceKind, surface)
+        .overlay(alignment: .top) {
+            // W182 R5：副設備在主設備離線時的頂端一行，放在紅綠燈那一列（左右讓出紅綠燈、側欄鈕與頂右鈕，不蓋內容；
+            // 展開的清單用 popover）；連回後消失。
+            if surface == .window {
+                PrimaryOfflineBannerHost(model: chatModel, rightPanelOpen: isRightPanelOpen)
+            }
+        }
         .overlay {
             if let failureMessage =
                 chatModel.coldStartHydrationFailureMessage
@@ -2867,10 +2898,10 @@ private struct TatwoHydratedPanelView: View {
                             .font(.callout)
                             .multilineTextAlignment(.center)
                             .foregroundStyle(.secondary)
-                        Button("重試恢復") {
+                        // W180 D1：不用系統藍按鈕，用 App 的玻璃 chip。
+                        OSChipButton(title: "重試恢復") {
                             chatModel.retryColdStartHydration()
                         }
-                        .buttonStyle(.borderedProminent)
                         .disabled(
                             !chatModel.canRetryColdStartHydration)
                     }
@@ -2884,6 +2915,7 @@ private struct TatwoHydratedPanelView: View {
                 }
             }
         }
+        .globalDMCovers(surface == .window && chatModel.coldStartHydrationFailureMessage != nil, id: "shell")
         .overlay(alignment: .topTrailing) {
             if let proposal = authorityBootstrapModel.pendingProposal {
                 VStack(alignment: .leading, spacing: 8) {
@@ -3100,6 +3132,7 @@ private struct TatwoHydratedPanelView: View {
                 .padding(.top, 0)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .opacity(selection == page ? 1 : 0)
+                .environment(\.tatwoWorkspaceVisible, selection == page)
                 .allowsHitTesting(selection == page)
                 .accessibilityHidden(selection != page)
                 .zIndex(selection == page ? 2 : 0)
@@ -3193,7 +3226,6 @@ private struct TatwoPanelChatLauncher: View {
                         .font(.caption.weight(.black))
                         .padding(.horizontal, 10)
                         .frame(height: 24)
-                        .foregroundStyle(LiquidGlassTokens.brandAccent)
                         .chatGlassChip(isSelected: true)
                 }
                 .buttonStyle(.plain)
@@ -3345,11 +3377,6 @@ struct TatwoWindowPageRail: View {
                     Image(systemName: "sidebar.right")
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: 30, height: 26)
-                        .foregroundStyle(
-                            isRightPanelOpen
-                                ? LiquidGlassTokens.brandAccent
-                                : Color.secondary
-                        )
                         .chatGlassChip(isSelected: isRightPanelOpen)
                 }
                 .buttonStyle(.plain)
@@ -3380,7 +3407,6 @@ struct CompactPageTitle: View {
                         .font(.caption.weight(.black))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
-                        .foregroundStyle(LiquidGlassTokens.brandAccent)
                         .chatGlassChip(isSelected: true)
                     Image(systemName: page.symbol)
                         .symbolRenderingMode(.hierarchical)

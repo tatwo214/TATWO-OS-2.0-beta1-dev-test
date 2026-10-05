@@ -13,6 +13,8 @@ const repo = fileURLToPath(new URL('../', import.meta.url));
 const read = p => readFileSync(new URL('../App/Sources/Tatwo2/' + p, import.meta.url), 'utf8');
 const registry = read('Browser/BrowserTabRegistry.swift');
 const host = read('Chat/ChatPage.swift');
+const observation = read('Chat/ChatPresentationObservation.swift');
+const browserLayout = observation.slice(observation.indexOf('final class ChatBrowserLayoutObservation:'));
 const layout = read('Chat/ChatRightPanelLayoutPolicy.swift');
 const design = read('Browser/BrowserWorkSpaceDesignView.swift');
 const chrome = read('Browser/BrowserWorkSpaceEmbeddedChrome.swift');
@@ -40,12 +42,7 @@ test('PR4 聊天旁瀏覽器有自己的分頁檔與 runtime，不動獨立 Brow
   // 獨立 Browser 的 tabs.json 不在清理範圍內。
   assert.doesNotMatch(cleanup, /defaultURL|tabs\.json/);
   assert.match(make, /discardMigratedChatInspectorStoreIfNeeded\(store: store\)/);
-  assert.match(host, /_browserWorkSpaceStore = StateObject\(wrappedValue: BrowserWorkSpaceStore\(registry: model.browserTabRegistry\)\)/);
-  assert.match(host, /let chatRegistry = BrowserTabRegistry.chatInspectorRegistry\(source: model.browserTabRegistry\)/);
-  // ChatPage 每次重建都重跑 init；registry 必須是同一個，否則 store 和 runtime 會分家。
-  assert.match(registry, /static func chatInspectorRegistry\(source: BrowserTabRegistry\) -> BrowserTabRegistry \{[\s\S]*?if let existing = chatInspectorRegistries\[key\] \{ return existing \}/);
-  assert.doesNotMatch(host, /BrowserTabRegistry.makeChatInspectorRegistry\(/);
-  assert.match(host, /chatBrowserRuntime = BrowserWorkSpaceRuntime.forChat\("chat-browser-inspector", registry: chatRegistry,/);
+  assert.doesNotMatch(host + browserLayout, /BrowserTabRegistry.makeChatInspectorRegistry\(/);
   assert.match(host, /BrowserWorkSpaceDesignView\(store: chatBrowserWorkSpaceStore,\s*onClose: \{ browserInspectorPresented = false \}, runtime: chatBrowserRuntime\)/);
 });
 
@@ -87,7 +84,9 @@ test('PR4c 聊天旁頂列固定在網頁上方（不浮在 CEF 上），chrome 
 
 test('PR4 兩種 chrome 共用同一份瀏覽器動作，AI 導覽先過既有政策', () => {
   // 獨立 Browser 仍有可見的「瀏覽器功能」選單；聊天旁改掛在新增分頁的右鍵。
-  assert.match(chrome, /var browserActionsButton: some View \{\s*Menu \{ browserActionsMenu \}/);
+  // W184 G2d：⋯ 那一顆抽成 BrowserActionsButton（私訊框的 Browser 用同一顆），主視窗照舊把 browserActionsMenu 交給它。
+  assert.match(chrome, /var browserActionsButton: some View \{\s*BrowserActionsButton \{ browserActionsMenu \}/);
+  assert.match(chrome, /struct BrowserActionsButton<Items: View>: View \{[\s\S]*?Menu \{ items\(\) \} label: \{\s*Image\(systemName: "ellipsis\.circle"\)/);
   assert.match(chrome, /\.contextMenu \{ browserActionsMenu \}/);
   assert.match(design, /if onClose == nil \{ browserActionsButton \}/);
   assert.match(design, /if onClose == nil \{ auxiliaryBrowserControls \} else \{ embeddedToolsExpander \}/);
@@ -187,7 +186,7 @@ import AppKit
 
 test('/goal 101: chat panel renders with its own runtime and never touches standalone Browser state', () => {
   const host = read('Chat/ChatPage.swift');
-  assert.match(host, /forChat\("chat-browser-inspector", registry: chatRegistry,\s*adoptsWorkSpaceTabs: true\)/);
+  assert.match(host, /BrowserWorkSpaceDesignView\(store: chatBrowserWorkSpaceStore,[\s\S]*?runtime: chatBrowserRuntime\)/);
   assert.doesNotMatch(host, /BrowserWorkSpaceLifecycleModifier\(store: chatBrowserWorkSpaceStore/);
   const design = read('Browser/BrowserWorkSpaceDesignView.swift');
   // The page surface must use the view's runtime; the default is the standalone Browser's shared one.
@@ -250,14 +249,19 @@ test('W109: chat-side browsers are listed in the Browser Session space by projec
   assert.match(section, /name\.hasPrefix\("thread:"\)/);
   assert.match(section, /if entry\.tabs\.count == 1, let tab = entry\.tabs\.first \{/);      // single tab opens directly
   assert.match(section, /ForEach\(entry\.tabs\) \{ tab in/);                                    // several tabs listed like bookmarks
-  assert.match(section, /let runtime = BrowserWorkSpaceRuntime\.forChat\("chat-browser-inspector", registry: registry, adoptsWorkSpaceTabs: true\)/);
+  const projection = read('Browser/BrowserSessionProjection.swift');
+  assert.match(projection, /runtime = BrowserWorkSpaceRuntime\.forChat\("chat-browser-inspector", registry: registry, adoptsWorkSpaceTabs: true\)/);
+  assert.match(section, /BrowserTabRegistry\.chatInspectorRegistry\(source: source\)/);
+  assert.match(section, /BrowserWorkSpaceDesignView\(store: session.store, runtime: session.runtime,/);
   const design = read('Browser/BrowserWorkSpaceDesignView.swift');
   assert.match(design, /BrowserChatSessionsSection\(registry: \.chatInspectorRegistry\(source: store\.registry\)\)/);
-  assert.match(design, /isSessionSpace, let pick = chatSessionSelection\.pick \{ BrowserChatSessionSurface\(pick: pick, source: store\.registry\) \}/);
+  assert.match(projection, /session == nil, onClose == nil, store.selectedSpace.isSessionSpace, let pick = chatSessionSelection.pick/);
+  assert.match(projection, /BrowserChatSessionSurface\(pick: pick, source: store.registry, sidebarStore: sidebarStore\)/);
+  assert.doesNotMatch(design, /BrowserChatSessionSurface\(/); // 路由在完整 chrome/快捷鍵外，不可再嵌入網頁區。
   assert.match(read('Chat/ChatPage.swift'), /BrowserChatSessionSelection\.shared\.titles = \{ \[weak model\] id in/);
 });
 
-test('列車 103 收尾：W107 鑰匙圈不在主執行緒讀、W108 空間不足不留大檔、刪討論串清分頁組、Session space 自己的導覽鈕', () => {
+test('列車 103 收尾：W107 鑰匙圈不在主執行緒讀、W108 空間不足不留大檔、刪討論串清分頁組、Session space 共用導覽', () => {
   const checker = read('Facade/GitHubReleaseUpdateChecker.swift');
   assert.doesNotMatch(checker, /GitHubAccountsStore|mcpToken|loadAccounts/);
   assert.doesNotMatch(checker, /if isPrivateChannel \{ return UpdateChannel\.privateRepository \}/);
@@ -273,5 +277,9 @@ test('列車 103 收尾：W107 鑰匙圈不在主執行緒讀、W108 空間不�
   assert.match(host, /live\.threadRecord\(chatBrowserThreadKey\) != nil else \{ return \}/);   // 資料沒載入就不清
   assert.match(host, /live\.threadRecord\(threadID\) == nil else \{ continue \}\s*registry\.removeSpace\(space\.id, closingTabs: true\)/);
   const section = read('Browser/BrowserChatSessionsSection.swift');
-  assert.match(section, /BrowserChatSessionControls\(runtime: runtime, tabID: pick\.tabID\) \{ command = EmbeddedBrowserCommand\(action: \$0\) \}/);
+  assert.doesNotMatch(section, /BrowserChatSessionControls|BrowserWorkSpaceCEFSurface\(/);
+  assert.match(section, /BrowserWorkSpaceDesignView\(store: session.store, runtime: session.runtime,/);
+  const projection = read('Browser/BrowserSessionProjection.swift');
+  assert.match(projection, /guard session\?\.acceptsCommands != false else \{ return \}/);
+  assert.doesNotMatch(projection, /\.selectThreadSpace\(|registry\.(?:move|removeSpace|close|openTab)\(/);
 });

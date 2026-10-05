@@ -2,8 +2,8 @@ import { writeBrowserVisualRenderer } from './helpers/browser-visual-render.mjs'
 import { writeBrowserVisualTokens, expandBrowserMetrics } from './helpers/browser-visual-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, mkdtempSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -54,7 +54,7 @@ test('mainPane gates design, fails closed on forced selection and excludes compo
   assert.match(panels, /else if model\.mode == \.browser \{\s*if ChatRunMode\.browserPreviewEnabled \{\s*BrowserWorkSpaceDesignView\(store: browserWorkSpaceStore\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
   assert.match(panels, /Color\.clear\s*\.onAppear \{ model\.mode = \.chat \}/);
   // W177：ChatGPT Space 自己有輸入框，也不掛 Coder 的 composer。
-  assert.match(panels, /if model\.mode != \.cli, model\.mode != \.bot, model\.mode != \.browser, model\.mode != \.chatgpt \{\s*composer/);
+  assert.match(panels, /if (?:model\.mode != \.tatwo, )?model\.mode != \.cli, model\.mode != \.bot, model\.mode != \.browser, model\.mode != \.chatgpt \{\s*composer/);
 });
 
 test('browser rejoins the shared chat sidebar shell and footer with no private shell', () => {
@@ -78,11 +78,6 @@ test('browser rejoins the shared chat sidebar shell and footer with no private s
   assert.match(host, /let workspaceOwnsSidebar = model\.mode == \.bot\n/);
   assert.match(host, /isChatProjectRailPinned \|\| model.mode == \.browser/);
   assert.match(host, /&& \(model.mode != \.browser \|\| ChatRunMode.browserPreviewEnabled\)/);
-  // PR #4：獨立 Browser 綁 app 層 registry，聊天旁的 inspector 另有自己的 registry 與 runtime。
-  assert.match(host, /@StateObject var browserWorkSpaceStore: BrowserWorkSpaceStore/);
-  assert.match(host, /_browserWorkSpaceStore = StateObject\(wrappedValue: BrowserWorkSpaceStore\(registry: model.browserTabRegistry\)\)/);
-  assert.match(host, /BrowserTabRegistry.chatInspectorRegistry\(source: model.browserTabRegistry\)/);
-  assert.match(host, /BrowserWorkSpaceRuntime.forChat\("chat-browser-inspector", registry: chatRegistry,\s*adoptsWorkSpaceTabs: true\)/);
   assert.match(browser, /contextMenu[\s\S]*?ForEach\(ChatRunMode.visibleChatTabs\)/);
   // W112（使用者 09-20）：Chat 的固定鈕搬到左上，跟 Browser 同一個位置；右上那排不再有。
   const controls = section(panels, "func rightPanelControlStrip", "if showsThreadControls");
@@ -103,7 +98,8 @@ test('v6 sidebar has five ordered sections, white selection and no chat or searc
   assert.doesNotMatch(store, /folderNames|Dia 對照稿|Sign in successful|Device Activation|platform\.claude\.com/);
   assert.match(store, /registry\.spaces\.map/);
   assert.match(design, /Image\(systemName: "folder.fill"\)\.foregroundStyle\(folderFill\)/);
-  assert.match(design, /BrowserBookmarkFolderRow\(store: store, folder: folder\)/);
+  // W184 G2d：同一行多一個借用模式的參數（主視窗不給＝nil，照舊）。
+  assert.match(design, /BrowserBookmarkFolderRow\(store: store, folder: folder, external: guest\?\.folder\(folder\)\)/);
   assert.match(read('App/Sources/Tatwo2/Browser/BrowserBookmarkRows.swift'), /Text\(folder.name\).fontWeight\(\.bold\)/);
   assert.match(design, /background\(selected \? fieldFill : \.clear, in: RoundedRectangle\(cornerRadius: 9\)\)/);
   assert.match(design, /shadowColor.opacity\(selected \? 0.14 : 0\)/);
@@ -111,7 +107,8 @@ test('v6 sidebar has five ordered sections, white selection and no chat or searc
   assert.match(design, /store\.close\(tab.id\)/);
   assert.match(design, /\.onHover/);
   assert.match(design, /ForEach\(store.spaces\)/);
-  assert.match(read('App/Sources/Tatwo2/Browser/BrowserSpaceMenu.swift'), /Button \{ store.selectSpace\(space.id\) \}/);   // W112：圓點搬到獨立檔（右鍵選單）
+  // W112：圓點搬到獨立檔（右鍵選單）。W184 G2d：主視窗那一顆（沒給 choose）照舊點＝store.selectSpace；私訊框那一顆給自己的選擇回呼。
+  assert.match(read('App/Sources/Tatwo2/Browser/BrowserSpaceMenu.swift'), /Button \{ if let choose \{ choose\(space\) \} else \{ store.selectSpace\(space.id\) \} \}/);
   assert.match(design, /Image\(systemName: "arrow.down.circle"\)/);
   assert.match(design, /popover\(isPresented: \$downloadsPresented, arrowEdge: \.bottom\)/);
   assert.match(design, /Button\("在 Finder 顯示"\) \{ downloadStore.reveal\(download\) \}/);
@@ -142,25 +139,36 @@ test('W54 compact downloads retain search, grouping, selection, clear and native
 });
 
 test('Search keeps its centered geometry without fake installed extension icons', () => {
-  const page = section(design, 'private var page:', 'private var searchBox:');
-  assert.match(page, /ZStack/);
-  assert.match(page, /RadialGradient\(colors: \[palette.brandAccent.opacity/);
-  assert.match(page, /searchBox\s*\.frame\(maxWidth: 560\)/);
-  assert.match(page, /\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
-  assert.doesNotMatch(page, /extensionStrip/);
+  // W184 G2d：置中的搜尋框抽成 BrowserStartSearch（私訊框的 Browser 沒分頁時用同一份）；主視窗的 page 只接自己的動作，樣子一個數字都沒變。
+  const page = section(design, 'private var page:', 'private var searchEngineMenu:');
+  assert.match(page, /BrowserStartSearch\(query: \$query, focus: \$focusedField, field: \.search, canAddTab: store\.canAddTab,/);
+  assert.match(page, /suggestions: store\.suggestions\(for: query\), notice: store\.notice,/);
+  assert.match(page, /onSubmit: submitSearch, onAddTab: \{ store\.addTab\(\); store\.searchFocusRequest \+= 1 \}/);
+  assert.match(page, /\) \{ searchEngineMenu \}/);
+  assert.doesNotMatch(page, /identifier:/);   // 主視窗照舊用 browser.startSearch
+  const start = expandBrowserMetrics(read('App/Sources/Tatwo2/Browser/BrowserStartSearch.swift'));
+  const body = section(start, 'var body: some View {', 'private var searchBox:');
+  assert.match(body, /ZStack/);
+  assert.match(body, /RadialGradient\(colors: \[palette.brandAccent.opacity/);
+  assert.match(body, /searchBox\s*\.frame\(maxWidth: 560\)/);
+  assert.match(body, /\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
+  assert.doesNotMatch(body, /extensionStrip/);
   assert.doesNotMatch(design, /ForEach\(\["文A", "S"\]/);
   // W122：拼圖鈕改成展開選單（popover），不再是全螢幕對話框；入口仍只有工具列那一顆。
   assert.match(design + chrome, /Button \{ extensionsPresented\.toggle\(\) \} label:/);
   assert.match(chrome, /popover\(isPresented: \$extensionsPresented/);
   assert.match(design + chrome, /puzzlepiece.extension/);
-  assert.match(design, /TextField\("Search", text: \$query\).font\(.system\(size: 14.5\)\)/);
-  assert.match(design, /magnifyingglass"\).font\(.system\(size: 16\)/);
-  assert.match(design, /padding\(.top, 13\).padding\(.horizontal, 14\).padding\(.bottom, 11\)/);
-  assert.match(design, /RoundedRectangle\(cornerRadius: 15\)/);
-  assert.match(design, /frame\(width: 30, height: 30\)/);
-  assert.match(design, /roundButton\("加入分頁", "plus"\)/);
-  assert.match(design, /roundButton\("搜尋", "arrow.up"/);
-  assert.doesNotMatch(design, /microphone|mic\.fill|"mic"|logo|標誌|標語|連接卡|arrow.left|arrow.right|arrow.clockwise|⌘K|keyboardShortcut\("k"/i);
+  assert.match(start, /TextField\("Search", text: \$query\).font\(.system\(size: 14.5\)\)/);
+  assert.match(start, /magnifyingglass"\).font\(.system\(size: 16\)/);
+  assert.match(start, /padding\(.top, 13\).padding\(.horizontal, 14\).padding\(.bottom, 11\)/);
+  assert.match(start, /RoundedRectangle\(cornerRadius: 15\)/);
+  assert.match(start, /frame\(width: 30, height: 30\)/);
+  assert.match(start, /roundButton\("加入分頁", "plus", action: onAddTab\)\.disabled\(!canAddTab\)/);
+  assert.match(start, /roundButton\("搜尋", "arrow.up", action: onSubmit\)/);
+  assert.match(start, /var identifier = "browser\.startSearch"/);
+  for (const source of [design, start]) {
+    assert.doesNotMatch(source, /microphone|mic\.fill|"mic"|logo|標誌|標語|連接卡|arrow.left|arrow.right|arrow.clockwise|⌘K|keyboardShortcut\("k"/i);
+  }
   // W57e removes implicit focus/search hotkeys; existing controls remain.
   assert.doesNotMatch(design, /keyboardShortcut\("s"/);
   assert.doesNotMatch(design, /keyboardShortcut\("a"/);
@@ -461,13 +469,18 @@ enum ChatTypography {
 extension View {
     func chatGlassChip(isSelected: Bool = false) -> some View { self }
 }
+enum ChatGlassChipModifier { static var chipForeground: Color { .primary } }
 `);
   writeFileSync(stubs, readFileSync(stubs, 'utf8') + '\nextension Notification.Name { static let tatwoChatSelectMode = Notification.Name("fixture.mode") }\n');
   // W112：頂列隱形要叫標題列拖曳區讓開；這裡只需要那個開關的型別簽名。
   writeFileSync(stubs, readFileSync(stubs, 'utf8') + '\nfinal class TatwoWindowDragNSView { @MainActor static var suppressed = false }\n');
   const toolbar = join(dir, 'Toolbar.swift');
   writeFileSync(toolbar, 'import SwiftUI\n' + read('App/Sources/Tatwo2/Browser/EmbeddedBrowserToolbar.swift').split('struct EmbeddedBrowserToolbar: View')[1].replace(/^/, 'struct EmbeddedBrowserToolbar: View'));
-  const viewSources = ['-num-threads', '2', writeBrowserVisualTokens(dir, { includeOmnibox: true }), ...registrySources, stubs, toolbar,
+  // Command Line Tools with the macOS 27 SDK may need the same macro plugins as the app build.
+  const plugins = process.env.TATWO_TEST_SWIFT_PLUGIN_PATH
+    ?? join(homedir(), 'tatwo-build/toolchains.noindex/macosx-plugins');
+  const pluginArgs = existsSync(join(plugins, 'libSwiftUIMacros.dylib')) ? ['-plugin-path', plugins] : [];
+  const viewSources = [...pluginArgs, '-num-threads', '2', writeBrowserVisualTokens(dir, { includeOmnibox: true }), ...registrySources, stubs, toolbar,
     ...['BrowserOmniboxMetrics.swift', 'BrowserOmniboxInteraction.swift', 'BrowserOmniboxGlass.swift']
       .map(name => join(root, 'App/Sources/Tatwo2/Browser', name)),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserNavigationProgress.swift'),
@@ -487,12 +500,16 @@ extension View {
     join(root, 'App/Sources/Tatwo2/Browser/BrowserFavoritesStrip.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserBookmarkExport.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserSidebarControls.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceCloseMenu.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserExtensionsMenu.swift'),
     join(root, 'App/Sources/Tatwo2/Shell/WorkspaceSpaceControls.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserToolbarGlass.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceEmbeddedChrome.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserFloatingToolsPanel.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserChatSessionsSection.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserStartSearch.swift'),   // W184 G2d：置中的搜尋框（主視窗與私訊框同一份）
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserSidebarGuest.swift'),   // W184 G2d：側欄的借用模式（私訊框借用同一份 BrowserWorkSpaceSidebarList）
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserSessionProjection.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift')];
   run('swiftc', ['-typecheck', ...viewSources]);
   if (process.env.W54_BROWSER_UI_EVIDENCE_DIR) {
@@ -506,7 +523,7 @@ extension View {
 
 
 test('W39 Browser-only shortcut, bookmark drops, blank-area menu and add-space control', () => {
-  const page = section(design, 'private var page:', 'private var searchBox:');
+  section(design, 'private var page:', 'private var searchEngineMenu:');   // W184 G2d：搜尋框本體搬到 BrowserStartSearch.swift
   assert.match(design, /onAction: performBrowserAction/);
   assert.match(design, /case \.newTab:[\s\S]{0,200}?if store.canAddTab/);   // W115：⌘T 第二下取消，中間多一行
   for (const name of ['ChatPage+Sidebar.swift', 'ChatPage.swift', 'ChatPage+Panels.swift', 'ChatPage+Composer.swift']) {

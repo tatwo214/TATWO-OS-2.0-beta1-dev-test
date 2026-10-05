@@ -84,7 +84,8 @@ test('W170 production Swift: goal list only appends, guards completion, keeps on
 test('W170 wiring: /goal for every engine, plan and plg create goals, engine tools, per-turn summary, Coder name, sidebar untouched', () => {
   const model = read('Facade/ChatPageModel.swift');
   assert.match(model, /first == "\/goal" \{[\s\S]*ThreadGoalRules\.add\(&\$0, title: text, userWords: text, proposed: false\)/);
-  assert.match(model, /prompt = ""\n[\s\S]{0,120}if isLocalNativeGoalCommand, engineLogin\.status\(for: \.codex\)\.isLoggedIn \{\n\s*let accepted = localLive\?\.setNativeGoal/, 'goal clears the composer once listed; OpenAI still hands it to the native goal');
+  const goal = model.slice(model.indexOf('// W170：/goal'), model.indexOf('if activeLive.isRunning(id)', model.indexOf('// W170：/goal')));
+  assert.match(goal, /let shouldStartNativeGoal = isLocalNativeGoalCommand[\s\S]*ThreadGoalRules\.add\([\s\S]*prompt = ""\n[\s\S]{0,120}if shouldStartNativeGoal, engineLogin\.status\(for: \.codex\)\.isLoggedIn \{\n\s*let accepted = localLive\?\.setNativeGoal/, 'capture OpenAI intent before clearing the listed goal; still hand it to the native goal');
   assert.doesNotMatch(model, /目前無法建立目標，草稿已保留/, 'a listed goal never leaves a draft behind to be added twice');
   assert.match(model, /userWords: "計畫：" \+ title/, 'confirmed plan becomes a goal');
   const bridge = read('Facade/OSAgentBridge.swift');

@@ -106,7 +106,6 @@ extension ChatPage {
     var routeChip: some View {
         Label(model.routeChoice.title, systemImage: model.routeChoice.engine.symbol)
             .font(.caption2.weight(.black))
-            .foregroundStyle(.secondary)
             .padding(.horizontal, 9)
             .frame(height: 24)
             .chatGlassChip()
@@ -115,6 +114,8 @@ extension ChatPage {
     @ViewBuilder
     var sidebar: some View {
         switch model.mode {
+        case .tatwo:
+            tatwoSidebar
         case .chat, .custom:
             chatSidebar
         case .cli:
@@ -208,8 +209,7 @@ extension ChatPage {
                 HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    TextField("搜尋", text: $model.searchText)
+                    ChatChipTextField(title: "搜尋", text: $model.searchText)
                         .font(ChatTypography.systemUI(12, weight: .regular))
                         .textFieldStyle(.plain)
                 }
@@ -229,12 +229,11 @@ extension ChatPage {
                                 projectSidebarSectionHeader
 
                                 if projectsSectionExpanded {
-                                    if !model.filteredProjects.isEmpty {
-                                        ForEach(model.filteredProjects) { project in
-                                            projectSection(project)
-                                        }
-                                    } else {
-                                        emptySidebarText("尚無專案")
+                                    // W180 E3：Coder 照目前的專案空間過濾（自訂 Space 不過濾）；「全部專案」跟以前一樣。
+                                    CoderSpaceProjectList(projects: model.filteredProjects, filtering: model.mode == .chat) { project in
+                                        projectSection(project)
+                                    } empty: { text in
+                                        emptySidebarText(text)
                                             .padding(.horizontal, 4)
                                     }
                                 }
@@ -285,7 +284,7 @@ extension ChatPage {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .scrollIndicators(.hidden)
+                    .coderScrollIndicators()
                     // W98d：設備頁按「遠端設備專案」時捲到那台的區塊（展開由區塊自己接同一個訊號）。
                     .onReceive(model.$sidebarDeviceFocus) { focus in
                         guard let focus else { return }
@@ -298,6 +297,19 @@ extension ChatPage {
                 workspaceSidebarFooter
             }
             .frame(maxHeight: .infinity, alignment: .topLeading)
+        }
+        // W180 E3：專案空間切換器放紅綠燈那一列，只在 Coder（自訂 Space 共用這個側欄但不放）。
+        // 側欄沒固定時收合鈕在紅綠燈右邊，切換器排在它後面，不擋紅綠燈也不擋收合鈕。
+        .overlay(alignment: .topLeading) {
+            if model.mode == .chat {
+                let leading = isChatProjectRailPinned ? WindowChromeMetrics.appControlLeadingX
+                    : WindowChromeMetrics.trafficLightSafeWidth + Self.sidebarPinButtonReserve
+                TrafficLightAlignedTitle(height: WorkspaceSidebarMetrics.spaceSwitcherHeight) {
+                    CoderProjectSpaceSwitcher(model: model, width: min(WorkspaceSidebarMetrics.spaceSwitcherMenuWidth,
+                                                                       WorkspaceSidebarMetrics.width - leading - 8))
+                        .padding(.leading, leading)
+                }
+            }
         }
         .ignoresSafeArea(.container, edges: [.top, .bottom])
     }
@@ -320,6 +332,21 @@ extension ChatPage {
                     }
                 ChatGPTSpaceSidebarList(model: ChatGPTSpaceModel.shared)
                     .frame(maxHeight: .infinity)
+                workspaceSidebarFooter
+            }
+            .frame(maxHeight: .infinity, alignment: .topLeading)
+        }
+        .ignoresSafeArea(.container, edges: [.top, .bottom])
+    }
+
+    var tatwoSidebar: some View {
+        WorkspaceSidebarShell {
+            VStack(alignment: .leading, spacing: WorkspaceSidebarMetrics.sectionSpacing) {
+                workspaceModeSection
+                    .padding(.top, WorkspaceSidebarMetrics.headerTopInset)
+                    .contextMenu { workspaceUtilityContextMenu }
+                AssistantSidebarList()
+                Spacer(minLength: 0)
                 workspaceSidebarFooter
             }
             .frame(maxHeight: .infinity, alignment: .topLeading)
@@ -357,11 +384,7 @@ extension ChatPage {
 
                     // 額度條已撤（額度移進 TATWO OS 選單）。
 
-                    SidebarUpdateShortcut {
-                        updateSettingsSection = .github
-                        showOSMenu = false
-                        showSettingsPage = true
-                    }
+                    SidebarUpdateShortcut()
                     userRowTrailingControls
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -459,7 +482,7 @@ extension ChatPage {
             VStack(alignment: .leading, spacing: WorkspaceSidebarMetrics.sectionSpacing) {
                 sidebarModeSwitcher.padding(.top, WorkspaceSidebarMetrics.headerTopInset)
                 Menu {
-                    ForEach(model.document.projects) { project in
+                    ForEach(model.document.coderProjects) { project in
                         Menu(project.name.isEmpty ? project.workdir : project.name) {
                             ForEach(project.threads) { thread in
                                 Button(thread.title) { model.select(projectID: project.id, threadID: thread.id) }
@@ -489,7 +512,7 @@ extension ChatPage {
                         appearance: .osTheme(TatwoActivePalette.current),
                         send: { model.cliHistoryPresented = false; model.sendCLIWorkbench($0) })   // 點終端分頁就回到終端
                 }
-                .scrollIndicators(.hidden)
+                .coderScrollIndicators()
                 cliHistoryEntry
                 workspaceSidebarFooter
             }
@@ -763,11 +786,6 @@ extension ChatPage {
                         .font(.caption2.weight(.black))
                         .padding(.horizontal, 8)
                         .frame(height: 22)
-                        .foregroundStyle(
-                            selection.wrappedValue.id == value.id
-                                ? LiquidGlassTokens.brandAccent
-                                : Color.secondary
-                        )
                         .chatGlassChip(isSelected: selection.wrappedValue.id == value.id)
                 }
                 .buttonStyle(.plain)
@@ -813,7 +831,8 @@ extension ChatPage {
             .frame(minHeight: 30)
             Spacer(minLength: 8)
             Button {
-                model.createProjectFromExistingFolder()
+                let created = model.createProjectFromExistingFolder()
+                if model.mode == .chat { CoderProjectSpaces.shared.adoptLocalProject(created) }   // W180 E3：Coder 裡建的歸進目前的專案空間
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 11, weight: .black))
@@ -901,6 +920,7 @@ extension ChatPage {
             .buttonStyle(.plain)
             .help(project.workdir)
             .chatMenuRowHover()
+            .coderSpaceMoveMenu(projectID: project.id, enabled: model.mode == .chat)   // W180 E3
             // 2026-09-02：專案列可直接開新聊天（Codex App 同款；之前只有
             // 建專案時的第一個 thread，之後無法在專案內再開）。
             .overlay(alignment: .trailing) {
@@ -919,6 +939,11 @@ extension ChatPage {
             }
 
             if project.isExpanded {
+                ChatGPTRoomRow(projectID: project.id, workdir: project.workdir) { id in
+                    model.select(projectID: project.id, threadID: id)
+                }
+                .sourceProject(project.name)
+                .padding(.leading, 24)
                 ForEach(visibleRows) { row in
                     VStack(alignment: .leading, spacing: 3) {
                         threadRow(project: project, thread: row.thread,
@@ -979,15 +1004,10 @@ extension ChatPage {
             HStack(spacing: 6) {
                 Image(systemName: isCompressed ? "checkmark.circle.fill" : "number")
                     .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(isSelected ? LiquidGlassTokens.brandAccent : Color.secondary)
                     .frame(width: 13)
-                // 討論串就是簡單拿來討論：只留標題，關閉才 dim，不再用刪除線。
+                // 狀態由圓點表示；chip 文字維持可讀對比。
                 Text("# \(discussion.title)")
                     .font(ChatTypography.systemUI(11.5, weight: isSelected ? .bold : .regular))
-                    .foregroundStyle(
-                        isCompressed
-                            ? Color.secondary.opacity(0.75)
-                            : (isSelected ? LiquidGlassTokens.brandAccent : .primary))
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 Circle()
@@ -1073,7 +1093,6 @@ extension ChatPage {
                             .font(ChatTypography.systemUI(10, weight: .semibold))
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(LiquidGlassTokens.brandAccent)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1177,7 +1196,7 @@ extension ChatPage {
             if project != nil {
                 Button {
                     model.handoffThreadToCLISession(project: project, thread: thread)
-                } label: { Label("接到 CLI session", systemImage: "terminal") }
+                } label: { Label("接到 CLI 對話", systemImage: "terminal") }
             }
             Button {
                 selectThreadForRow(project: project, thread: thread)
@@ -1194,7 +1213,12 @@ extension ChatPage {
                         }
                         .disabled(!section.isOnline)
                     }
-                } label: { Label("併回設備…", systemImage: "arrow.up.forward.app") }
+                } label: { Label("移到其他設備…", systemImage: "arrow.up.forward.app") }   // W181 R3：原「併回設備…」，功能不變
+            }
+            if let source = model.coderImportSource(thread.id) {   // W180 E3：匯入的串看完整紀錄
+                Button {
+                    CoderSheetPresenter.presentImport(model: model, focusPath: source.path)
+                } label: { Label("看原檔", systemImage: "doc.text.magnifyingglass") }
             }
             Button {
                 selectThreadForRow(project: project, thread: thread)
@@ -1263,7 +1287,6 @@ extension ChatPage {
             .lineLimit(1)
             .padding(.horizontal, 8)
             .frame(height: 24)
-            .foregroundStyle(.secondary)
             .chatGlassChip()
     }
 
@@ -1281,7 +1304,6 @@ extension ChatPage {
                     .frame(width: 16, height: 16)
                 Text(title)
                     .font(.system(size: 10, weight: .black, design: .rounded))
-                    .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
             }
 
@@ -1310,9 +1332,6 @@ extension ChatPage {
                 Spacer(minLength: 0)
                 Text("\(total)")
                     .font(.system(size: 9, weight: .black, design: .rounded))
-                    .foregroundStyle(
-                        total > 0 ? LiquidGlassTokens.brandAccent : Color.secondary
-                    )
                     .padding(.horizontal, 6)
                     .frame(height: 18)
                     .chatGlassChip(isSelected: total > 0)
@@ -1324,11 +1343,9 @@ extension ChatPage {
                         HStack(spacing: 6) {
                             Image(systemName: "doc")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.secondary)
                                 .frame(width: 12)
                             Text(file)
                                 .font(.system(size: 10, weight: .semibold, design: .rounded))
-                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
@@ -1336,7 +1353,6 @@ extension ChatPage {
                     if total > files.count {
                         Text("+\(total - files.count) more")
                             .font(.system(size: 9, weight: .black, design: .rounded))
-                            .foregroundStyle(.secondary)
                             .padding(.leading, 18)
                     }
                 }
@@ -1351,12 +1367,10 @@ extension ChatPage {
         VStack(alignment: .leading, spacing: 2) {
             Label(title, systemImage: systemImage)
                 .font(.system(size: 9, weight: .black, design: .rounded))
-                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .labelStyle(.titleAndIcon)
             Text(value.isEmpty ? "—" : value)
                 .font(.system(size: 11, weight: .bold, design: title == "Contract" ? .monospaced : .rounded))
-                .foregroundStyle(title == "Contract" ? tint : Color.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
@@ -1449,7 +1463,6 @@ extension ChatPage {
                     }
                     Image(systemName: threadInfoPluginsExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2.weight(.black))
-                        .foregroundStyle(.secondary)
                         .frame(width: 11)
                 }
                 .contentShape(Rectangle())
@@ -1459,7 +1472,6 @@ extension ChatPage {
 
             Text("Chat：僅做需求判斷／上下文提示；未開放 Plugin invocation。真正執行需切到可授權流程並由人類確認。")
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if threadInfoPluginsExpanded {
@@ -1467,7 +1479,6 @@ extension ChatPage {
                     HStack {
                         Text("管理")
                             .font(.system(size: 9, weight: .black, design: .rounded))
-                            .foregroundStyle(.secondary)
                             .textCase(.uppercase)
                         Spacer()
                         Button {
@@ -1482,7 +1493,6 @@ extension ChatPage {
                     if model.availableThreadPluginEntries.isEmpty {
                         Text("正在掃描技能…")
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
                     } else {
                         ForEach(model.availableThreadPluginEntries.prefix(7)) { entry in
                             threadPluginToggle(entry)
@@ -1500,7 +1510,6 @@ extension ChatPage {
     func pluginCountBubble(_ count: Int) -> some View {
         Text("\(count)")
             .font(.system(size: 9, weight: .black, design: .rounded))
-            .foregroundStyle(count > 0 ? LiquidGlassTokens.brandAccent : Color.secondary)
             .padding(.horizontal, 6)
             .frame(height: 18)
             .chatGlassChip(isSelected: count > 0)
@@ -1511,7 +1520,6 @@ extension ChatPage {
         if selected.isEmpty {
             Text("無常駐")
                 .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
         } else {
             HStack(spacing: 4) {
                 ForEach(Array(selected.prefix(2))) { entry in
@@ -1520,13 +1528,11 @@ extension ChatPage {
                         .lineLimit(1)
                         .padding(.horizontal, 6)
                         .frame(height: 18)
-                        .foregroundStyle(LiquidGlassTokens.brandAccent)
                         .chatGlassChip(isSelected: true)
                 }
                 if selected.count > 2 {
                     Text("+\(selected.count - 2)")
                         .font(.system(size: 9, weight: .black, design: .rounded))
-                        .foregroundStyle(.secondary)
                 }
             }
             .frame(maxWidth: 112, alignment: .trailing)
@@ -1543,7 +1549,6 @@ extension ChatPage {
             HStack(spacing: 7) {
                 Image(systemName: enabled ? "puzzlepiece.extension.fill" : "puzzlepiece.extension")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(enabled ? LiquidGlassTokens.brandAccent : Color.secondary)
                     .frame(width: 14)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(entry.name)
@@ -1552,13 +1557,11 @@ extension ChatPage {
                     HStack(spacing: 4) {
                         Text(entry.kind.rawValue)
                             .font(.system(size: 9, weight: .black, design: .rounded))
-                            .foregroundStyle(enabled ? LiquidGlassTokens.brandAccent : Color.secondary)
                             .padding(.horizontal, 5)
                             .frame(height: 15)
                             .chatGlassChip(isSelected: enabled)
                         Text(pluginMicroSummary(entry.purpose))
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
@@ -1580,4 +1583,3 @@ extension ChatPage {
     }
 
 }
-

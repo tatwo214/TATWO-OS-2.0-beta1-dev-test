@@ -12,7 +12,7 @@ const canvas = read('App/Sources/Tatwo2/Chat/ChatPage+Plan.swift');
 const checks = read('App/Sources/Tatwo2/SelfTest.swift');
 
 test('plan is real state, with exact slash token and reopen request', () => {
-  assert.match(model, /var isPlanModeEnabled: Bool \{ activePlanArtifact\?\.state == \.discussing \}/);
+  assert.match(model, /var isPlanModeEnabled: Bool[\s\S]*plan\.state == \.discussing[\s\S]*plan\.kind != "pr" \|\| plan\.isPRModeActive/);
   assert.doesNotMatch(model, /var isPlanModeEnabled: Bool \{ false \}/);
   assert.match(model, /planCommand\.split\(whereSeparator: \\\.isWhitespace\)\.first == "\/plan"/);
   assert.match(model, /objective: String\(objective\.prefix\(60\)\)/);
@@ -94,10 +94,20 @@ test('production Swift start predicate and planContext enforce two-stage and PR 
   const startAction = model.slice(model.indexOf('    func startActivePlan()'), model.indexOf('    func returnActivePRToDiscussion()'));
   const rules = planEngine.slice(planEngine.indexOf('    static let feedbackDiscussionRules'), planEngine.indexOf('    private func planURL'));
   const context = planEngine.slice(planEngine.indexOf('    func planContext'), planEngine.indexOf('    func updatePlanFromReply'));
+  const policy = read('App/Sources/Tatwo2/Chat/CanvasCommandPolicy.swift').split('enum CanvasCommandPolicy')[1];
   writeFileSync(join(root, 'main.swift'), `import Foundation
+enum CanvasCommandPolicy ${policy}
+// W180 E4：/蒸餾 規則段引用的型別（這個測試只管計畫／PR 的兩段式，蒸餾給最小替身）。
+enum DistillOutputKind: Equatable { case skill, checklist, sop, gbrain; var label: String { "技能" } }
+enum DistillCanvas {
+ static func template(for output: DistillOutputKind) -> String { "" }
+ static func output(of plan: TatwoPlanArtifactV1) -> DistillOutputKind { .skill }
+}
 struct TatwoPlanArtifactV1 {
  enum State { case discussing, confirmed, ready }
  var kind: String? = nil, state: State = .discussing, executionTurnID: String? = nil
+ var distillSubmission: String? = nil
+ var isPRModeActive: Bool { kind == "pr" && state != .ready }
  let threadID = UUID()
  func editableText() -> String { "fixture plan" }
  ${predicate}
@@ -109,7 +119,7 @@ struct ChatLiveEngine {
 }
 let engine = ChatLiveEngine()
 var plan = TatwoPlanArtifactV1()
-let starts = ["開始", "開始吧", "開始！", " 開始 ", "start", "START", "go", " Go\\n"]
+let starts = ["開始", "開始吧", "開始！", " 開始 ", "start", "START", "go", " Go\\n", "/plg", "/plg sample"]
 for text in starts {
  precondition(!plan.acceptsStart(text))
  precondition(engine.planContext(plan, userText: text)!.contains("只討論不動手"))
@@ -119,7 +129,7 @@ for text in starts {
  precondition(plan.acceptsStart(text))
  precondition(engine.planContext(plan, userText: text)!.contains("現在可以動手"))
 }
-for text in ["等一下", "", "restart", "start now", "go!"] {
+for text in ["等一下", "", "restart", "start now", "go!", "/plg-sample", "/plggo"] {
  precondition(!plan.acceptsStart(text))
  precondition(engine.planContext(plan, userText: text)!.contains("不可執行"))
 }
@@ -132,7 +142,7 @@ for kind in ["pr", "feedback"] {
   plan.state = state
   for text in starts {
    precondition(!plan.acceptsStart(text))
-   precondition(!engine.planContext(plan, userText: text)!.contains("現在可以動手"))
+   precondition(engine.planContext(plan, userText: text)?.contains("現在可以動手") != true)
   }
  }
 }
@@ -141,6 +151,10 @@ final class LocalLive {
  func isRunning(_ id: UUID) -> Bool { running }
 }
 final class Model {
+ enum RuntimeAdapter { case codex, chatgptTap }
+ struct Route { var runtimeAdapter = RuntimeAdapter.codex }
+ var routeChoice = Route(), hint: String?
+ func flashComposerHint(_ text: String) { hint = text }
  var selectedRemote: String? = nil, selectedThreadID: UUID? = nil
  var activePlanArtifact: TatwoPlanArtifactV1?
  var localLive: LocalLive? = LocalLive()
@@ -169,6 +183,14 @@ for accept in [false, true] {
  if accept { m.startActivePlan(); precondition(m.calls == 1) }
  else { precondition(m.activePlanArtifact!.executionTurnID == nil) }
 }
+let tap = Model()
+tap.activePlanArtifact = TatwoPlanArtifactV1()
+tap.activePlanArtifact!.state = .confirmed
+tap.selectedThreadID = tap.activePlanArtifact!.threadID
+tap.routeChoice.runtimeAdapter = .chatgptTap
+tap.startActivePlan()
+precondition(tap.calls == 0 && tap.hint == CanvasCommandPolicy.tapUnsupported)
+precondition(tap.prompt == "existing draft" && tap.droppedPaths == ["draft.png"] && tap.activePlanArtifact!.executionTurnID == nil)
 print("W32 production plan fixture passed")
 `);
   const build = spawnSync('swiftc', [join(root, 'main.swift'), '-o', join(root, 'fixture')], { encoding: 'utf8' });

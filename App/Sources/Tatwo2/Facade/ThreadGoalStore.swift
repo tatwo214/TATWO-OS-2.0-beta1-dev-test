@@ -25,11 +25,12 @@ final class ThreadGoalStore: ObservableObject, @unchecked Sendable {
     @discardableResult
     func update<T>(_ thread: UUID, _ change: (inout ThreadGoalList) throws -> T) throws -> T {
         lock.lock()
-        var list = read(thread)
+        var list = read(thread); let eventBefore = list
         let result: T
         do { result = try change(&list); try write(list, thread) }
         catch { lock.unlock(); throw error }
         lock.unlock()
+        eventsGoals(thread, before: eventBefore, after: list, root: root.deletingLastPathComponent())
         Task { @MainActor in self.revision += 1 }
         return result
     }

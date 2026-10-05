@@ -22,7 +22,12 @@ test('頭像：引擎回報的模型要存檔；換引擎不沿用上一家回�
   const store = read('Facade/ChatLiveStore.swift');
   assert.match(store, /var modelID: String\? = nil/);
   assert.match(store, /modelID = m\.modelID/);
-  assert.match(store, /message\.modelID = modelID/);
+  assert.match(store, /var modelDisplayName: String\? = nil/);
+  assert.match(store, /modelDisplayName = m\.modelDisplayName/);
+  assert.match(store, /var message = ChatMessage\(id: id, role: r, text: text, status: status,\s*modelID: modelID, modelDisplayName: modelDisplayName,/);
+  const message = read('Chat/ChatPageModels.swift');
+  assert.match(message, /self\.modelID = modelID\s*self\.modelDisplayName = modelDisplayName \?\? modelID\.map \{ ChatRouteChoice\.resolve\(\$0\)\.title \}/);
+  assert.match(message, /guard modelID != oldValue else \{ return \}\s*modelDisplayName = modelID\.map \{ ChatRouteChoice\.resolve\(\$0\)\.title \}/);
   const engine = read('Facade/ChatLiveEngine.swift');
   assert.match(engine, /if attestedEngine\[threadID\] != engine \{ attestedModel\[threadID\] = nil; attestedEngine\[threadID\] = engine \}/);
   assert.match(engine, /row\.modelID = attestedModel\[threadID\]/);

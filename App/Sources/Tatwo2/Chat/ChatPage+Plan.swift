@@ -389,6 +389,7 @@ struct PlanTranscriptInspectorView: View {
     let artifact: TatwoPlanArtifactV1?
     @Binding var isPresented: Bool
     var isWriting: Bool = false
+    var isExecuting: Bool = false
     let selection: TatwoPlanArtifactV1.PlanFlowSelectionV1?
     let localActionPresentation:
         ChatPlanWorkOSLocalActionPresentation
@@ -404,9 +405,11 @@ struct PlanTranscriptInspectorView: View {
     let onExecute: () -> Void
     var onStart: () -> Void = {}
     var onFeedbackSubmitted: (UUID) -> Void = { _ in }
-    var onDistillSubmission: (UUID, DistillSubmission) -> Bool = { _, _ in false }
+    var distillActions: DistillCanvasActions = .unavailable   // W180 E4：/蒸餾 預覽、確認寫入、還原
     var onPRSubmit: () -> Void = {}
     var onPRDiscuss: () -> Void = {}
+    var onPRRetry: () -> Void = {}
+    var onExitMode: () -> Void = {}
 
     @State private var isCollapsed = false
     @State private var copied = false
@@ -424,8 +427,12 @@ struct PlanTranscriptInspectorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
+                if artifact != nil {
+                    Button("離開模式", action: onExitMode)
+                        .accessibilityIdentifier("plan-canvas-exit-mode")
+                }
                 Spacer()
-                Button("Close") {
+                Button("關閉") {
                     onDismissUltrawork()
                     isPresented = false
                 }
@@ -444,11 +451,12 @@ struct PlanTranscriptInspectorView: View {
                                     .padding(12)
                             } else if artifact.kind == "distill" {
                                 DistillPlanActions(artifact: artifact, isDisabled: isEditing || isWriting,
-                                                   onSubmission: onDistillSubmission)
+                                                   actions: distillActions)
                                     .id(artifact.planID).padding(12)
                             } else if artifact.kind == "pr" {
                                 PRPlanActions(artifact: artifact, isDisabled: isEditing || isWriting,
-                                              onConfirm: onExecute, onSubmit: onPRSubmit, onReturnToDiscussion: onPRDiscuss)
+                                              onConfirm: onExecute, onSubmit: onPRSubmit, onReturnToDiscussion: onPRDiscuss,
+                                              onRetrySubmission: onPRRetry)
                                     .id(artifact.planID).padding(12)
                             } else if showsUltraworkCanvas {
                                 VStack(alignment: .leading, spacing: 6) {
@@ -484,9 +492,14 @@ struct PlanTranscriptInspectorView: View {
                                                 .disabled(isEditing || isWriting)
                                                 .accessibilityIdentifier("plan-canvas-start")
                                         } else {
-                                            Button("實作中…") {}
-                                                .disabled(true)
-                                                .accessibilityIdentifier("plan-canvas-start")
+                                            if isExecuting {
+                                                Button("實作中…") {}
+                                                    .disabled(true)
+                                                    .accessibilityIdentifier("plan-canvas-start")
+                                            } else {
+                                                Text("實作已結束")
+                                                    .accessibilityIdentifier("plan-canvas-completed")
+                                            }
                                         }
                                     } else {
                                         Button("確認計畫", action: onExecute)
@@ -545,6 +558,7 @@ struct PlanTranscriptInspectorView: View {
             }
         }
         .padding(16)
+        .coderScrollIndicators()
         .inspectorColumnWidth(min: 320, ideal: 420, max: 560)
     }
 
@@ -643,12 +657,13 @@ struct PlanTranscriptInspectorView: View {
                     .frame(height: 160)
                     .allowsHitTesting(false)
 
-                Button("Expand plan") {
+                Button("展開計畫") {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isCollapsed = false
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12).frame(height: 30).chatGlassChip()
                 .padding(.bottom, 12)
             }
         }
@@ -798,10 +813,9 @@ private struct PlanExecutionHandoffView: View {
                     .frame(maxWidth: .infinity, minHeight: 34)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChatGlassChipButtonStyle())
             .chatGlassChip(isSelected: confirmActionIsEnabled)
             .disabled(!confirmActionIsEnabled)
-            .opacity(confirmActionIsEnabled ? 1 : 0.45)
             .accessibilityIdentifier("plan-execution-run")
         }
         .padding(12)
@@ -838,7 +852,6 @@ private struct PlanExecutionHandoffView: View {
                         design: .monospaced))
                 Text(subtitle)
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: 34)
             .contentShape(Rectangle())

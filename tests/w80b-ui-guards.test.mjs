@@ -20,8 +20,16 @@ struct EnginePaths {
     var runtimeBinDirectory: URL { URL(fileURLWithPath: "/fixture-missing") }
 }
 enum ClaudeSidecar {
-    enum Kind { case claude }
+    enum Kind { case claude, codex }
     static func scriptPath(for kind: Kind) -> String { "/fixture-missing/claude-sidecar/sidecar.mjs" }
+}
+// W181 R3：GBrain 帶金鑰前問「不用 API 金鑰」（這支測試的服務在 isEnabled 就停下，不會走到這裡）。
+enum EngineDisableStore {
+    static func disabled() -> Set<String> { [] }
+    static func allowsAPIKey(_ kind: ClaudeSidecar.Kind, optedOut: Set<String>? = nil) -> Bool { true }
+}
+enum EngineAPIKeyPolicy {
+    static func gbrainProviderEnvironment(optedOut: Set<String>, read: (String) throws -> String?) rethrows -> [String: String] { [:] }
 }
 struct FixtureRecord { var id = ""; var role: DeviceRole?; var host = ""; var user = ""; var sshPort = 22; var name = "" }
 enum DeviceStatusReader { static func registry() -> [FixtureRecord] { [] } }

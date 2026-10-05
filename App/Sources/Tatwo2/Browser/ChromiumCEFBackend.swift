@@ -2730,10 +2730,10 @@ final class TatwoCEFTabHostView: NSView {
     var protectedTabIDs: Set<String> {
         Set(entries.compactMap { id, entry in
             entry.container.browserView?.preventsAutomaticSleep == true ? id : nil
-        })
+        }).union(lentTabs.keys)   // W184 E：借給倒放的分頁不睡（算進睡眠保護；記憶體吃緊時也不睡）
     }
     func preventsAutomaticSleep(tabID: String) -> Bool {
-        entries[tabID]?.container.browserView?.preventsAutomaticSleep == true
+        lentTabs[tabID] != nil || entries[tabID]?.container.browserView?.preventsAutomaticSleep == true
     }
     var onDailyShortcut: ((String, String) -> Void)?
     var onFindResult: ((String, Int, Int) -> Void)?
@@ -2782,14 +2782,21 @@ final class TatwoCEFTabHostView: NSView {
         humanInputMonitor = nil
         guard window != nil else { return }
         humanInputMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel, .systemDefined]) { [weak self] event in
             MainActor.assumeIsolated { self?.recoverHumanInput(event) }
             return event
         }.map(HumanInputMonitor.init(token:))
     }
 
+    static func allowsHumanRecovery(_ event: NSEvent, host: String?, spotifyInput: (NSEvent, String?, Bool) -> Void) -> Bool {
+        spotifyInput(event, host, true)
+        return event.type != .systemDefined
+    }
+
     private func recoverHumanInput(_ event: NSEvent) {
-        guard event.window === window, !isHiddenOrHasHiddenAncestor,
+        let mediaKey = SpotifyConnect.isMediaKeyDown(event)
+        guard event.window === window || (mediaKey && event.window == nil && window?.isKeyWindow == true),
+              !isHiddenOrHasHiddenAncestor,
               let selectedTabID, let entry = entries[selectedTabID],
               let browser = entry.container.browserView,
               !entry.container.isHiddenOrHasHiddenAncestor else { return }
@@ -2799,14 +2806,16 @@ final class TatwoCEFTabHostView: NSView {
         }
         guard source != Int64(getpid()) else { return }
         let target: NSView?
-        if event.type == .keyDown { target = window?.firstResponder as? NSView }
+        if event.type == .systemDefined && !mediaKey { return }
+        if event.type == .keyDown || mediaKey { target = window?.firstResponder as? NSView }
         else if let parent = entry.container.superview {
             target = entry.container.hitTest(parent.convert(event.locationInWindow, from: nil))
         } else { target = nil }
-        guard let target, target === entry.container || target.isDescendant(of: entry.container),
-              browser.browserActor == .agent || browser.agentControlled || browser.humanPreferencesDeferred else { return }
+        guard let target, target === entry.container || target.isDescendant(of: entry.container) else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard event.timestamp.isFinite, now >= event.timestamp, now - event.timestamp <= 1 else { return }
+        guard Self.allowsHumanRecovery(event, host: URL(string: browser.currentURLString ?? "")?.host, spotifyInput: SpotifyConnect.shared.spotifyInput) else { return }
+        guard browser.browserActor == .agent || browser.agentControlled || browser.humanPreferencesDeferred else { return }
         // Invalidate queued navigation immediately, but retain strict actor/prefs until idle.
         BrowserAgentBridge.shared.revokeRequests()
         pendingCommand = nil
@@ -2819,6 +2828,7 @@ final class TatwoCEFTabHostView: NSView {
 
     /// W112 就地翻譯：對某個分頁的頁面腳本下指令（sample／collect／apply／restore）；回 JSON 或 nil。
     func translate(tabID: String, operation: String, payload: String? = nil, limit: Int = 0) async -> String? {
+        returnLent(tabID, reason: .command)   // W184 E：主視窗對借給倒放的分頁動手＝先拿回來再做
         guard let browser = entries[tabID]?.container.browserView else { return nil }
         return await withCheckedContinuation { continuation in
             browser.translateOperation(operation, payload: payload, limit: limit) { continuation.resume(returning: $0) }
@@ -2872,6 +2882,11 @@ final class TatwoCEFTabHostView: NSView {
             if let tabID { failedTabIDs.remove(tabID) }
         }
         failedTabIDs.formIntersection(openTabIDs)
+        // W184 E：要關、要睡的分頁（不在 openTabIDs）：借給倒放的先還回、告訴借用者，再照舊關；影片播放紀錄一起清掉。
+        for id in Array(entries.keys) where !openTabIDs.contains(id) {
+            returnLent(id, reason: .closing)
+            BrowserVideoTabs.shared.forget(id)
+        }
         for id in Array(entries.keys) where !openTabIDs.contains(id) {
             closeTab(id)
         }
@@ -2909,7 +2924,8 @@ final class TatwoCEFTabHostView: NSView {
         }
         // Do not race an old context's asynchronous native close with a new
         // root context at the same profile path.
-        guard !entries.isEmpty || closingCount == 0 else {
+        // W183 R5b：私訊框的敏感頁面開著時也在 closingCount 佔一格（租約留著）；它們不是「在關」。
+        guard !entries.isEmpty || closingCount == sensitivePages.count else {
             publishClosingWait(tabID)
             return
         }
@@ -2917,14 +2933,16 @@ final class TatwoCEFTabHostView: NSView {
         // Existing human tabs are never converted into agent tabs to satisfy browser_login.
         let agentMount = selectedIsAgentTab
         let sameActorEntries = entries.values.filter { $0.container.browserView?.browserActor == (agentMount ? .agent : .human) }
-        let source = entries.values.compactMap { $0.container.browserView }
+        let source = (entries.values.compactMap { $0.container.browserView } + (agentMount ? [] : sensitivePages))   // W183 R5b
             .first { $0.canShareRequestContext && $0.browserActor == (agentMount ? .agent : .human) &&
                 (agentMount || !$0.agentControlled) }
         // A different actor may remain alive while the last context in this group closes.
-        guard source != nil || closingCount == 0 else {
+        guard source != nil || closingCount == sensitivePages.count else {
             publishClosingWait(tabID)
             return
         }
+        // W183 R5b：這個設定檔的根 context 是私訊框的敏感頁面、還在啟動：等它就緒（它的狀態回呼會叫回這裡），不另起第二個根。
+        if !agentMount, source == nil, !sensitivePages.isEmpty { return }
         if !sameActorEntries.isEmpty && source == nil {
             // The first context's actual readiness callback resumes this work.
             // A failed source is not readiness and must not cause a retry loop.
@@ -3028,6 +3046,8 @@ final class TatwoCEFTabHostView: NSView {
                 else { self.onPopupRequested(url) }
             } }
             if !agentMount { browser.onAudibleChange = { audible in BrowserAudibleTabs.shared.set(tabID, audible: audible) } }
+            // W184 E：這個分頁有沒有影片在播（倒放挑分頁用；只有一個布林）。
+            if !agentMount { browser.onVideoPlayingChange = { playing in BrowserVideoTabs.shared.set(tabID, playing: playing) } }
             if initialNavigation == nil { browser.loadURLString(initialURL.absoluteString) }
             if let initialNavigation {
                 // Frame is still zero and unmounted, so this pairs URL + gate
@@ -3099,6 +3119,8 @@ final class TatwoCEFTabHostView: NSView {
             }
             browser.contextSearchEngineTitle = BrowserGeneralSettings.load().searchEngine.title
             browser.onBrowserKeyEquivalent = { [weak self, weak browser, weak entry] event in
+                // W184 E：借到倒放框的頁面：⌘ 組合鍵不落到主選單（⌘W 不會關到主視窗的東西）；編輯鍵照常，瀏覽器快捷鍵不作用到主視窗。
+                if let self, self.isLent(tabID) { return BrowserLentKeys.claims(event) }
                 guard let self, let browser, let entry, !self.isClosing,
                       self.entries[tabID] === entry, self.selectedTabID == tabID,
                       browser.browserActor == .human, !browser.agentControlled,
@@ -3109,6 +3131,7 @@ final class TatwoCEFTabHostView: NSView {
                 return true
             }
             browser.onDailyShortcut = { [weak self, weak browser, weak entry] kind in
+                if let self, self.isLent(tabID) { return }   // W184 E：借到倒放框的頁面按的鍵不作用到主視窗
                 guard let self, let browser, let entry, !self.isClosing,
                       self.entries[tabID] === entry, self.selectedTabID == tabID,
                       browser.browserActor == .human, !browser.agentControlled else { return }
@@ -3198,6 +3221,10 @@ final class TatwoCEFTabHostView: NSView {
     private func executePendingCommand(on browser: TatwoCEFBrowserView) {
         guard let command = pendingCommand else { return }
         pendingCommand = nil
+        // W184 E：主視窗對借給倒放的分頁下指令（重新整理、網址、上一頁、尋找、縮放…）：先拿回來再做，不作用到倒放框裡的頁面。
+        if let lent = lentTabs.keys.first(where: { entries[$0]?.container.browserView === browser }) {
+            returnLent(lent, reason: .command)
+        }
         let container = entries.values.first { $0.container.browserView === browser }?.container
         let enqueue: @MainActor () -> Void
         switch command.action {
@@ -3277,6 +3304,215 @@ final class TatwoCEFTabHostView: NSView {
            browser.currentURLString == metadata.url {
             onPageMetadataChange?(tabID, metadata.url, metadata.title, metadata.favicon)
         }
+    }
+
+    // MARK: W184 E：借給私訊框倒放（影片子畫面）
+    // 只搬 TatwoCEFBrowserView 這一個 NSView（同 W118 全螢幕）：container.browserView 不清（主視窗選到這個分頁時照樣沿用、
+    // 不重建、不重新載入）；切分頁的函式（showSelectedTab）不動——借出的頁面不在容器裡，容器藏或不藏都碰不到它。
+
+    private struct LentTab {
+        /// 借出前的全螢幕回呼（BrowserWebFeatures 的）；還回時放回去。
+        let fullscreen: ((Bool) -> Void)?
+    }
+    private var lentTabs: [String: LentTab] = [:]
+    /// 借出中的頁面（AI 與 Computer Use 找頁面時跳過：它們只找在自己分頁容器裡的頁面）。
+    static let lentBrowsers = NSHashTable<TatwoCEFBrowserView>.weakObjects()
+    /// 主機自己還回（分頁要關、主視窗下指令或按「拿回來」、頁面要全螢幕）之後叫：借用者跟著改。
+    var onLentReturned: ((String, BrowserTabReturnReason) -> Void)?
+
+    var lentTabIDs: Set<String> { Set(lentTabs.keys) }
+    func isLent(_ tabID: String) -> Bool { lentTabs[tabID] != nil }
+
+    /// 這個分頁的原生旗標（倒放挑分頁用）；原生頁面還沒建好＝nil。
+    /// 「正在主視窗呈現」寧可多算：主視窗排在畫面上、沒縮到 Dock，被別的視窗蓋住也算（不搶、不收回；GPT-6 審查新發現 4）。
+    func lendingNative(tabID: String) -> BrowserLendableTab.Native? {
+        guard let entry = entries[tabID], let browser = entry.container.browserView else { return nil }
+        let window = entry.container.window
+        let onScreen = browser.superview === entry.container && !entry.container.isHiddenOrHasHiddenAncestor
+            && (window.map { $0.isVisible && !$0.isMiniaturized } ?? false)
+        return BrowserLendableTab.Native(isHuman: browser.browserActor == .human, agentControlled: browser.agentControlled,
+                                         sensitivePage: browser.sensitivePage, httpsOnly: browser.httpsOnly, isPod: browser.isPod,
+                                         isOnScreen: onScreen, navigationGeneration: browser.navigationGeneration,
+                                         pageURL: browser.currentURLString)
+    }
+
+    /// 借出：把這個分頁的頁面搬進 target（倒放框的容器）。只借使用者本人、沒被 AI 控制、不是敏感頁／受保護頁／Pod 的頁面。
+    /// 第一次借：先退出全螢幕與檔案框（cancelWebFeatures：W118 的全螢幕視窗退出時把畫面放回分頁容器）、清掉頁面裡的鍵盤焦點；
+    /// 借出中頁面要全螢幕＝先還回（倒放框裡不開）。已經借著＝換到新的 target（停靠框↔浮動框換手）。
+    @discardableResult
+    func lend(tabID: String, into target: NSView) -> Bool {
+        guard !isClosing, let entry = entries[tabID], let browser = entry.container.browserView,
+              browser.browserActor == .human, !browser.agentControlled, !browser.sensitivePage, !browser.httpsOnly,
+              !browser.isPod else { return false }
+        if lentTabs[tabID] == nil {
+            browser.cancelWebFeatures()
+            Self.resignPageFocus(browser)
+            let original = browser.onFullscreenModeChange
+            lentTabs[tabID] = LentTab(fullscreen: original)
+            Self.lentBrowsers.add(browser)
+            browser.onFullscreenModeChange = { [weak self] full in
+                guard full, let self, self.lentTabs[tabID] != nil else { original?(full); return }
+                self.fullscreenWhileLent(tabID, original: original)
+            }
+        }
+        if browser.superview !== target {
+            browser.frame = target.bounds
+            browser.autoresizingMask = [.width, .height]
+            target.addSubview(browser)
+        }
+        browser.isHidden = false
+        browser.needsLayout = true
+        return true
+    }
+
+    /// 還回：放回自己的分頁容器（照 W118 全螢幕退出的放法），全螢幕回呼放回去。focus＝鍵盤還給頁面（「回到 Browser」「拿回來」）。
+    func giveBack(tabID: String, focus: Bool = false) {
+        guard let lent = lentTabs.removeValue(forKey: tabID) else { return }
+        guard let entry = entries[tabID], let browser = entry.container.browserView else { return }
+        Self.lentBrowsers.remove(browser)
+        browser.onFullscreenModeChange = lent.fullscreen
+        Self.resignPageFocus(browser)   // 鍵盤焦點不留在私訊框
+        if browser.superview !== entry.container {
+            entry.container.addSubview(browser)
+            browser.frame = entry.container.bounds
+            browser.autoresizingMask = [.width, .height]
+            entry.container.needsLayout = true
+        }
+        browser.isHidden = false
+        if focus { Self.focusPage(browser, attempts: 4) }
+    }
+
+    /// 主視窗那一格的「拿回來」：還回、鍵盤給頁面，再告訴借用者。
+    func takeBack(tabID: String) {
+        guard lentTabs[tabID] != nil else { return }
+        giveBack(tabID: tabID, focus: true)
+        onLentReturned?(tabID, .takenBack)
+    }
+
+    /// 主機這邊要動這個分頁（關、下指令）：借出中就先還回，再告訴借用者。
+    private func returnLent(_ tabID: String, reason: BrowserTabReturnReason) {
+        guard lentTabs[tabID] != nil else { return }
+        giveBack(tabID: tabID)
+        onLentReturned?(tabID, reason)
+    }
+
+    /// 借出中頁面要全螢幕：先還回原分頁，再照原本的路走（BrowserWebFeatures：主視窗看得到這個分頁才開，否則退出全螢幕）。
+    private func fullscreenWhileLent(_ tabID: String, original: ((Bool) -> Void)?) {
+        giveBack(tabID: tabID)
+        original?(true)
+        let entry = entries[tabID]
+        let started = entry.map { entry in entry.container.browserView.map { $0.superview !== entry.container } ?? false } ?? false
+        onLentReturned?(tabID, .fullscreen(started: started))
+    }
+
+    private static func resignPageFocus(_ browser: NSView) {
+        guard let window = browser.window, let responder = window.firstResponder as? NSView,
+              responder === browser || responder.isDescendant(of: browser) else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    /// 鍵盤給頁面（CEF 的原生子元件；外層的 TatwoCEFBrowserView 本身不接）。主視窗可能還在切到 Browser：等它掛上視窗再給。
+    private static func focusPage(_ browser: TatwoCEFBrowserView, attempts: Int) {
+        Task { @MainActor [weak browser] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let browser else { return }
+            guard let window = browser.window, !browser.isHiddenOrHasHiddenAncestor else {
+                if attempts > 1 { focusPage(browser, attempts: attempts - 1) }
+                return
+            }
+            var queue: [NSView] = [browser]
+            var visited = 0
+            while !queue.isEmpty, visited < 400 {
+                let next = queue.removeFirst()
+                visited += 1
+                if next !== browser, !next.isHidden, next.acceptsFirstResponder {
+                    window.makeFirstResponder(next)
+                    return
+                }
+                queue.append(contentsOf: next.subviews)
+            }
+        }
+    }
+
+    // MARK: W183 R5b：私訊框的敏感頁面（Cloudflare 授權；手機 App 的內嵌瀏覽器，見 DM/GlobalDMWebSheet.swift）
+
+    /// 還開著的敏感頁面。每一張在 closingCount 佔一格：它開著，這個 host 的設定檔租約就留著（releaseLeaseIfIdle 不用改）；
+    /// 收回後等 CEF 真的關完才還那一格。不在 entries：不進分頁清單、不接 BrowserAgentBridge／WebMCP、不記瀏覽紀錄。
+    private var sensitivePages: [TatwoCEFBrowserView] = []
+
+    /// 在這個 human 設定檔開一張敏感頁面（actor 一律 .human）：有已就緒的 human 分頁（或另一張敏感頁面）就共用它的 context；
+    /// 都沒有就走分頁同一套啟動（這個 host 的租約、同一個 runtime），不另外搶設定檔租約。
+    /// 有 human 分頁還在啟動、或有分頁還在關：丟 .busy（呼叫端稍後再試），不另起第二個根 context。
+    /// W183 R5b 審查（GPT-6）：頁面一律是敏感頁（sensitivePage：只准 https、頁內新視窗不開原生視窗）；configure＝放進私訊框那一疊
+    /// （頁內新視窗疊在同一張頁面）；onState 帶實際載入的主框架網址（頂列顯示用）。
+    func openSensitivePage(url: URL, configure: (TatwoCEFBrowserView) -> Void,
+                           onState: @escaping @MainActor (_ committedURL: String?, _ loading: Bool, _ error: String?) -> Void) throws -> TatwoCEFBrowserView {
+        guard !isClosing, mountIdentity.profilePolicyTag == .humanPersistent else { throw BrowserSensitivePageError.unavailable }
+        let humans = entries.values.compactMap { $0.container.browserView }.filter { $0.browserActor == .human } + sensitivePages
+        let browser: TatwoCEFBrowserView
+        if let source = humans.first(where: { $0.canShareRequestContext && !$0.agentControlled }) {
+            browser = try TatwoCEFBrowserView(frame: .zero, sharingContextWith: source, initialURL: "about:blank", actor: .human)
+        } else {
+            guard humans.isEmpty, closingCount == 0 else { throw BrowserSensitivePageError.busy }
+            guard let location = try TatwoCEFProfileLocationResolver.resolve(profile: mountIdentity.profile),
+                  location.profilePolicyTag == mountIdentity.profilePolicyTag else { throw BrowserSensitivePageError.unavailable }
+            if profileLease == nil { profileLease = try TatwoCEFProfileLocationResolver.prepareForRuntime(location) }
+            do {
+                TatwoCEFRuntime.configureRendererProcessLimit(BrowserMemorySettings.load().limit() ?? 0)
+                do {
+                    try TatwoCEFRuntime.initialize(
+                        withRootCachePath: location.rootCachePath, helperExecutablePath: location.helperExecutablePath,
+                        logFilePath: location.logFilePath,
+                        bundledDenyListPath: BrowserBundledHostDenyList.verifiedResourceURL().path)
+                    BrowserEngineStartupTelemetry.shared.initialized()
+                    ChromeStyleSpike.installOnce()
+                } catch {
+                    BrowserEngineStartupTelemetry.shared.failed()
+                    throw error
+                }
+                browser = try TatwoCEFBrowserView(frame: .zero, persistentProfile: location.persistentProfilePath,
+                                                  initialURL: "about:blank", actor: .human)
+            } catch {
+                releaseLeaseIfIdle()
+                throw error
+            }
+        }
+        sensitivePages.append(browser)
+        closingCount += 1
+        // W183 R5b 審查：第一次載入前就設成敏感頁（只准 https；帶尺寸、about:blank 的新視窗也不開原生視窗）。
+        browser.sensitivePage = true
+        // 頁內開新視窗（例如用 Google 登入 Cloudflare）留在同一張頁面裡：疊在上面（configure 給的那一疊，保住 opener）。
+        BrowserHumanInteraction.shared.configure(browser, onForegroundTab: { [weak browser] url in
+            browser?.loadURLString(url.absoluteString)
+        }) { [weak browser] url in
+            browser?.loadURLString(url.absoluteString)
+        }
+        browser.onPopupCreated = nil   // 不用 BrowserPopupFeatures（原生視窗用的）
+        configure(browser)
+        browser.stateHandler = { [weak self] committed, _, _, _, isLoading, phase, _, _, _, visibleError in
+            onState(committed, isLoading || phase == .creating, visibleError)
+            self?.ensureSelectedTab()   // 有分頁在等這個 context 就緒
+        }
+        browser.loadURLString(url.absoluteString)
+        return browser
+    }
+
+    /// 收回敏感頁面：馬上從畫面拿掉（不留在停泊視窗）、要求 CEF 關掉；真的關完才還 closingCount 那一格（最後一個＝還租約）。
+    /// completion（自測看）：CEF 真的關完（頁內新視窗也關完）之後。
+    func closeSensitivePage(_ browser: TatwoCEFBrowserView, completion: (@MainActor () -> Void)? = nil) {
+        guard let index = sensitivePages.firstIndex(where: { $0 === browser }) else { return }
+        sensitivePages.remove(at: index)
+        browser.stateHandler = nil
+        browser.onContainedPopup = nil
+        TatwoCEFContainerTeardownContract.detachFromHostWindow(browser)
+        browser.closeBrowser(completion: {
+            Task { @MainActor in
+                self.closingCount -= 1
+                self.releaseLeaseIfIdle()
+                if !self.isClosing { self.ensureSelectedTab() }
+                completion?()
+            }
+        })
     }
 
     private func closeTab(_ tabID: String) {

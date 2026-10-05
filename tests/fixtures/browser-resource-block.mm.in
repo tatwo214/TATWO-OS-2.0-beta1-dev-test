@@ -58,6 +58,8 @@ typedef NS_ENUM(NSInteger, TatwoCEFBrowserActor) { TatwoCEFBrowserActorAgent, Ta
 @property BOOL agentControlled;
 @property BOOL blocksThirdPartyCookies;
 @property BOOL adBlock;
+@property BOOL sensitivePage;
+@property BOOL httpsOnly;
 @property TatwoCEFBrowserActor browserActor;
 @property(readonly) BOOL currentDocumentIsPDF;
 @property(copy) void (^onPrivateNetworkRequested)(NSString*, void (^)(BOOL));
@@ -244,6 +246,15 @@ int main() { @autoreleasepool {
   // Human private literal and DNS alias requests wait for the same Swift callback.
   view.browserActor=TatwoCEFBrowserActorHuman; view.adBlock=YES;
   auto human=ActorRequestPolicy(view);
+  check(!human.https_only,"ordinary human context is not HTTPS-only");
+  for (bool sensitive : {false,true}) {
+    view.sensitivePage=sensitive; view.httpsOnly=!sensitive;
+    auto protectedPolicy=ActorRequestPolicy(view);
+    check(protectedPolicy.https_only,"sensitive and protected contexts both require HTTPS");
+    check(!IsActorURLAllowed(protectedPolicy,@"http://example.com/"),"protected context rejects HTTP");
+    check(IsActorURLAllowed(protectedPolicy,@"https://example.com/"),"protected context allows HTTPS");
+  }
+  view.sensitivePage=NO; view.httpsOnly=NO;
   for (const char* url : {"http://192." "168.1.1/", "https://example.com/private"}) {
     dnsResult=PublicAddressResult::kNonPublic;
     for (bool consent : {false,true}) {

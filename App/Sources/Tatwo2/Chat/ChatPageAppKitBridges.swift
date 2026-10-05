@@ -180,6 +180,13 @@ struct ChatComposerTextView: NSViewRepresentable {
     var slashCommands = ChatComposerSlashCatalog.commands
     /// 也收「照片」App／瀏覽器拖出來的圖（檔案承諾）；預設關，只有接得住的地方（ChatGPT Space）打開。
     var acceptsPhotoDrags = false
+    /// SwiftUI 的 hidden 不會跨 NSViewRepresentable 傳到原生文字區。
+    var accessibilityHidden = false
+    /// W184 G3：交出這個輸入框（聽寫要綁在它身上：確認焦點還在它才開始）；預設沒有，其他地方不受影響。
+    var onTextView: ((NSTextView) -> Void)? = nil
+    /// W184 G3b 第二輪（審查 #6）：ChatGPT 的「/」清單只拿沒有修飾鍵的 ↑↓ 與 Enter；←→、Shift 選取照常給輸入框，
+    /// 組字中（有 marked text）全部交回輸入法。預設關：Coder 的 skill 建議照舊。
+    var suggestionKeysVerticalOnly = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -199,7 +206,6 @@ struct ChatComposerTextView: NSViewRepresentable {
         // and visually fought the Codex-like clean composer.
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
         let textView = ComposerNSTextView()
@@ -209,6 +215,7 @@ struct ChatComposerTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         textView.onSubmit = onSubmit
         textView.onSuggestionKey = onSuggestionKey
+        textView.suggestionKeysVerticalOnly = suggestionKeysVerticalOnly
         textView.onPasteImage = onPasteImage
         textView.acceptsPhotoDrags = acceptsPhotoDrags
         textView.accessibilityTextLabel = accessibilityTextLabel
@@ -240,6 +247,8 @@ struct ChatComposerTextView: NSViewRepresentable {
         textView.insertionPointColor = NSColor.labelColor
         scrollView.documentView = textView
         scrollView.composerTextView = textView
+        updateAccessibility(scrollView, textView: textView)
+        onTextView?(textView)
         DispatchQueue.main.async {
             context.coordinator.refreshContentHeight(for: textView)
         }
@@ -248,6 +257,7 @@ struct ChatComposerTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? ComposerNSTextView else { return }
+        updateAccessibility(scrollView, textView: textView)
         context.coordinator.text = $text
         context.coordinator.contentHeight = $contentHeight
         context.coordinator.minimumHeight = minimumHeight
@@ -259,6 +269,7 @@ struct ChatComposerTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         textView.onSubmit = onSubmit
         textView.onSuggestionKey = onSuggestionKey
+        textView.suggestionKeysVerticalOnly = suggestionKeysVerticalOnly
         textView.onPasteImage = onPasteImage
         textView.acceptsPhotoDrags = acceptsPhotoDrags
         textView.accessibilityTextLabel = accessibilityTextLabel
@@ -275,7 +286,7 @@ struct ChatComposerTextView: NSViewRepresentable {
         // 只有「外部程式改了 binding」(text != coordinator 上次回報的值) 才寫回 textView；
         // 使用者正在打字時 updateNSView 可能拿到舊快照，若照舊無條件覆蓋會把剛打的字吃掉。
         if text != context.coordinator.lastReportedText, textView.string != text {
-            textView.string = text
+            textView.replaceExternalDraft(text)
             context.coordinator.lastReportedText = text
             textView.invalidateSlashHighlightStyle()
         }
@@ -395,7 +406,13 @@ struct ChatComposerTextView: NSViewRepresentable {
         }
     }
 
-    final class ComposerScrollView: NSScrollView {
+    private func updateAccessibility(_ scrollView: NSScrollView, textView: ComposerNSTextView) {
+        scrollView.setAccessibilityHidden(accessibilityHidden)
+        scrollView.contentView.setAccessibilityHidden(accessibilityHidden)
+        textView.setAccessibilityHidden(accessibilityHidden)
+    }
+
+    final class ComposerScrollView: CoderOverlayScrollView {
         weak var composerTextView: ComposerNSTextView?
 
         override var acceptsFirstResponder: Bool { false }
@@ -411,6 +428,16 @@ struct ChatComposerTextView: NSViewRepresentable {
     }
 
     final class ComposerNSTextView: NSTextView {
+        // 每個輸入框自己持有復原紀錄，清草稿不清掉同視窗其他輸入框的紀錄。
+        private lazy var draftUndoManager = UndoManager()
+        override var undoManager: UndoManager? { draftUndoManager }
+
+        func replaceExternalDraft(_ text: String) {
+            breakUndoCoalescing()
+            undoManager?.removeAllActions()
+            string = text
+        }
+
         override func setFrameSize(_ newSize: NSSize) {
             let oldWidth = frame.width
             super.setFrameSize(newSize)
@@ -511,6 +538,7 @@ struct ChatComposerTextView: NSViewRepresentable {
         }
         var onFocusChange: ((Bool) -> Void)?
         var onSuggestionKey: ((ChatComposerSuggestionKey) -> Bool)?
+        var suggestionKeysVerticalOnly = false
         var onPasteImage: ((NSPasteboard) -> Bool)?
         var acceptsPhotoDrags = false {
             didSet { if oldValue != acceptsPhotoDrags { updateDragTypeRegistration() } }
@@ -596,6 +624,18 @@ struct ChatComposerTextView: NSViewRepresentable {
         /// 回傳 true 代表這顆鍵被 skill 建議面板消化，呼叫端不應再送出/移動游標。
         private func consumeAsSuggestionKey(_ event: NSEvent) -> Bool {
             guard let onSuggestionKey else { return false }
+            // W184 G3b 第二輪（審查 #6）：ChatGPT 的「/」清單：組字中全部交回輸入法（選字要用方向鍵與 Enter）；
+            // 只有沒修飾鍵的 ↓↑ 與 Enter 給清單，←→、Shift＋方向鍵（選取）、Shift＋Enter（換行）照常。
+            if suggestionKeysVerticalOnly {
+                guard !hasMarkedText() else { return false }
+                guard event.modifierFlags.intersection([.shift, .option, .command, .control]).isEmpty else { return false }
+                switch event.keyCode {
+                case 125: return onSuggestionKey(.next)
+                case 126: return onSuggestionKey(.prev)
+                case 36, 76: return onSuggestionKey(.commit)
+                default: return false
+                }
+            }
             let isReturn = event.keyCode == 36 || event.keyCode == 76
             let wantsNewline = event.modifierFlags.contains(.shift)
             switch event.keyCode {
@@ -641,6 +681,9 @@ struct ChatComposerTextView: NSViewRepresentable {
         }
 
         override func keyDown(with event: NSEvent) {
+            // W184 H4 修正（審查 #6）：這個視窗有模式卡開著：Esc、方向鍵、Tab、Return 是卡的（卡自己的鍵盤監看收），
+            // 輸入框不送出、不動游標、不選建議；組字中照舊給輸入法（yieldsToCard 看 marked text）。
+            if TatwoComposerModeKeyboard.yieldsToCard(event, in: window) { return }
             let blockedArrowModifiers: NSEvent.ModifierFlags = [
                 .command, .control, .option, .shift
             ]
@@ -668,7 +711,7 @@ struct ChatComposerTextView: NSViewRepresentable {
         }
 
         override func isAccessibilityElement() -> Bool {
-            true
+            !isAccessibilityHidden()
         }
 
         override func accessibilityRole() -> NSAccessibility.Role? {
@@ -757,6 +800,8 @@ struct ChatComposerTextView: NSViewRepresentable {
             if !event.modifierFlags.intersection(blockedModifierMask).isEmpty {
                 return event
             }
+            // W184 H4 修正（審查 #6）：模式卡開著：卡要的鍵原封不動往下傳（卡的監看收），這裡不送出、不選建議。
+            if TatwoComposerModeKeyboard.yieldsToCard(event, in: window) { return event }
             // #2 skill 建議面板優先吃 →/←/Enter（有選中時）；否則照常。
             if consumeAsSuggestionKey(event) { return nil }
             let isReturn = event.keyCode == 36 || event.keyCode == 76

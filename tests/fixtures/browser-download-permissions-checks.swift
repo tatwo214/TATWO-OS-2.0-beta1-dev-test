@@ -5,6 +5,7 @@
     var onPrivateNetworkRequested: ((String, @escaping (Bool) -> Void) -> Void)?
     var onPermissionRequested: ((String, String, @escaping (Bool) -> Void) -> Void)?
     var onPopupRequested: ((String) -> Void)?
+    var onForegroundTabRequested: ((String) -> Void)?
     var onPopupCreated: ((TatwoCEFBrowserView) -> Void)?
     var onDownloadEvent: (([String: Any]) -> Void)?
     var onDownloadProgress: ((String, String, Int64, Int64, Bool) -> Void)?
@@ -40,6 +41,26 @@ struct BrowserActorPolicy {
     @MainActor static func main() async {
         let answers = ConsentAnswers()
         let consent = BrowserHumanInteraction(prompt: answers.ask)
+        // Exercise the real configure() wiring, not just the new callback's type.
+        let browser = TatwoCEFBrowserView()
+        var foreground: [URL] = [], background: [URL] = []
+        consent.configure(browser, onForegroundTab: { foreground.append($0) }, onPopup: { background.append($0) })
+        precondition(browser.onForegroundTabRequested != nil)
+        browser.onForegroundTabRequested?("https://example.test/foreground")
+        browser.onPopupRequested?("https://example.test/background")
+        precondition(foreground.map(\.path) == ["/foreground"] && background.map(\.path) == ["/background"])
+        // Malformed URLs must not reach either navigation callback.
+        browser.onForegroundTabRequested?("http://[")
+        browser.onPopupRequested?("http://[")
+        precondition(foreground.count == 1 && background.count == 1)
+        let popup = TatwoCEFBrowserView()
+        browser.onPopupCreated?(popup)
+        popup.onForegroundTabRequested?("https://example.test/inherited")
+        precondition(foreground.map(\.path) == ["/foreground", "/inherited"] && background.count == 1)
+        let fallback = TatwoCEFBrowserView()
+        consent.configure(fallback, onPopup: { background.append($0) })
+        fallback.onForegroundTabRequested?("https://example.test/fallback")
+        precondition(background.map(\.path) == ["/background", "/fallback"])
         let first = Task { await consent.allowPrivateHost("NAS.LOCAL.") }
         let second = Task { await consent.allowPrivateHost("nas.local") }
         while answers.continuation == nil { await Task.yield() }

@@ -1,0 +1,18 @@
+{
+  "schema": "tatwo.historical-gateway-fixture.v1",
+  "purpose": "Historical route-boundary contract only; not a claim about the current runtime.",
+  "distribution": "External private staging only. Historical source bytes must not be committed or published.",
+  "environment": "TATWO_GATEWAY_CONTINUATION_FIXTURE_DIR",
+  "commit": "dafc8fc4a63445789354bc6dffea1b51e1aa7550",
+  "sourceDirectory": "candidates/model-gateway-continuation-20260803-v1",
+  "files": {
+    "server.js": {
+      "blob": "740d1a82e4224d6f06fc7705c706ded5bdb81ce4",
+      "sha256": "3d876f9b224dbf78af5ebbc918682a5c3c547a2bb86ccb53ad431ddae600f9e5"
+    },
+    "package.json": {
+      "blob": "04a06066762d976f6ca93f52ecf868590973b2f3",
+      "sha256": "d2669b0923603fa04f548859918fafe8be67392012e8d7f62012b2e46f057845"
+    }
+  }
+}

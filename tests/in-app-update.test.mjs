@@ -21,7 +21,9 @@ test('W22 exact delta naming, size boundary and quoted handoff', () => {
 
 test('update card shares the guarded update action and keeps the terminal fallback', () => {
   assert.match(card, /await updater\.activateUpdateMark\(to: release\.tag_name, repository: checker\.repository\)/);
-  assert.match(card, /\.buttonStyle\(\.borderedProminent\)/);
+  // W180 D1：設定頁不用系統藍按鈕，主要動作是強調的玻璃 chip。
+  assert.match(card, /OSChipButton\(title: updater\.updateMarkTitle, isPrimary: true\)/);
+  assert.doesNotMatch(card, /\.borderedProminent|\.buttonStyle\(\.bordered/);
   assert.match(card, /DisclosureGroup\("進階：用終端機更新"\)/);
   assert.match(card, /checker\.terminalInstallCommand/);
   assert.match(stubs, /InAppUpdater\.shared\.consumeResultOnLaunch\(\)/);
@@ -439,9 +441,14 @@ test('sidebar observes shared update state and retains settings integration', ()
   assert.match(card, /if let release = checker\.availableRelease, !checker\.dismissed/);
   assert.match(card, /updater\.updateMarkTitle/);
   assert.match(card, /updater\.activateUpdateMark/);
-  assert.match(source('Chat/ChatPage+Sidebar.swift'), /SidebarUpdateShortcut \{\s*updateSettingsSection = \.github/);
   assert.match(source('Chat/ChatPage+Panels.swift'), /TatwoSettingsPage\(model: model, initialSection: updateSettingsSection\)/);
-  assert.match(source('Shell/ChatPageSettings.swift'), /if let initialSection \{ section = initialSection \}/);
+  const settings = source('Shell/ChatPageSettings.swift');
+  assert.match(settings, /if let initialSection \{ open\(initialSection\) \}/);
+  assert.match(settings, /open\(target, focus: \(notification\.userInfo\?\["environmentTarget"\]/);
+  assert.match(settings, /environmentTarget = target == \.github \? \(focus \?\? EnvironmentLoginTarget\.pending \?\? \.update\) : nil/);
+  assert.match(settings, /section = target == \.github \? \.modelAccess : target/);
+  assert.match(settings, /EngineLoginCard\(model: model, environmentTarget: environmentTarget\)/);
+  assert.match(settings, /case \.modelAccess: "登入"/);
   assert.match(source('Chat/ChatPage.swift'), /\.overlay \{\s*if showSettingsPage \{\s*tatwoSettingsOverlay/);
   assert.match(source('Chat/ChatPage+Panels.swift'), /\.contentShape\(Rectangle\(\)\)\s*\.onTapGesture \{\s*withAnimation[^\n]*showSettingsPage = false/);
 });

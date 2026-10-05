@@ -74,7 +74,8 @@ test('W89 settings › Space empty state is not an error and owns the only creat
   assert.match(view, /controller\.error == nil \? SpaceCreation\.loadingText : "Work Space 資料未就緒"/);
   assert.match(view, /\} else if controller\.isEmptyWorkspace \{\n\s*SpaceEmptyDomainView\(\)/);
   assert.match(empty, /Text\(SpaceCreation\.emptyExplanation\)/);
-  assert.match(empty, /Button\(SpaceCreation\.createTitle, action: create\)/);
+  // W180 D1：設定頁的按鈕是玻璃 chip。
+  assert.match(empty, /OSChipButton\(title: SpaceCreation\.createTitle, isPrimary: true, action: create\)/);
   assert.match(empty, /\.onSubmit\(create\)/);
   // W160：空狀態只有名稱欄與建立鈕，沒有「先建立 bot」「先選擇專案」的擋路分支。
   assert.doesNotMatch(empty, /needsBot|needsProject|openBotPage/);

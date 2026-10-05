@@ -12,10 +12,11 @@ if [[ "${1:-}" == "--check-inputs" ]]; then
     Apps/TatwoUltraworkMac/Sources/TatwoUltraworkMac/Resources/BrowserBlocklists
     App/Sources/Tatwo2/Resources/os-upstream.md)
   for engine in claude codex grok; do inputs+=("Engines/$engine-sidecar/sidecar.mjs"); done
-  inputs+=(Engines/claude-sidecar/package.json Engines/browser-mcp/server.mjs Engines/os-mcp/server.mjs scripts/impact.mjs
+  inputs+=(Engines/model-capabilities.mjs Engines/claude-sidecar/package.json Engines/browser-mcp/server.mjs Engines/os-mcp/server.mjs scripts/impact.mjs
     Engines/gbrain-adapter/server.mjs Engines/gbrain-adapter/service.mjs scripts/bundle-gbrain.py
     Engines/spotify-helper/Cargo.toml Engines/spotify-helper/Cargo.lock Engines/spotify-helper/src/main.rs
     Engines/spotify-helper/LICENSE-librespot scripts/bundle-spotify.py)
+  inputs+=(Engines/chatgpt-hands/gateway.mjs Engines/chatgpt-hands/fsop.mjs Engines/chatgpt-hands/gateway.sb Engines/chatgpt-hands/cloudflared.sb Engines/chatgpt-hands/tunnel-guard.sh)
   for input in "${inputs[@]}"; do
     [[ -e "$ROOT/$input" ]] || { echo "missing build input: $input" >&2; exit 1; }
   done
@@ -64,6 +65,7 @@ cp "$BIN_PATH/Tatwo2" "$CONTENTS/MacOS/tatwo2"
 for eng in claude codex grok; do
   cp -R "Engines/$eng-sidecar" "$CONTENTS/Resources/$eng-sidecar"
 done
+cp Engines/model-capabilities.mjs "$CONTENTS/Resources/model-capabilities.mjs"
 # 內建瀏覽器 MCP 與三家 sidecar 同層，sidecar 以相對路徑註冊。
 cp -R "Engines/browser-mcp" "$CONTENTS/Resources/browser-mcp"
 # 內建派工 MCP（E1）同理。
@@ -74,6 +76,8 @@ python3 -E "$ROOT/scripts/bundle-gbrain.py" prepare "$APP"
 python3 -E "$ROOT/scripts/bundle-spotify.py" prepare "$APP"
 # The one-shot code_impact implementation is shared with the standalone CLI.
 cp "scripts/impact.mjs" "$CONTENTS/Resources/os-mcp/impact.mjs"
+# W183 R2／R2b：ChatGPT 手腳的對外關口（Node 內建模組；App 用 sandbox-exec 直接開，沒有 supervisor）。cloudflared 不打包，先用使用者已裝的。
+cp -R "Engines/chatgpt-hands" "$CONTENTS/Resources/chatgpt-hands"
 bash "$ROOT/scripts/stage-ipad-use-device.sh" \
   "$ROOT/Device/iPadUseDevice" "$CONTENTS/Resources/iPadUseDevice"
 cp -R \

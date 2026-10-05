@@ -12,6 +12,15 @@ test('real AppKit composer does not publish stale or unlaid-out heights', { time
   const source = fs.readFileSync(path.join(repo, 'App/Sources/Tatwo2/Chat/ChatPageAppKitBridges.swift'), 'utf8');
   const start = source.indexOf('enum ChatComposerSuggestionKey');
   assert.ok(start > 0);
+  // W184 H4 修正：模式卡開著時輸入框把卡要的鍵讓出去（ComposerNSTextView 看 TatwoComposerModeKeyboard.yieldsToCard）——
+  // 那個正式檔整份一起編（它只用到 AppKit／SwiftUI 與上面這段裡的 ComposerNSTextView），不另外做替身。
+  const keyboard = fs.readFileSync(path.join(repo, 'App/Sources/Tatwo2/Chat/TatwoComposerModeKeyboard.swift'), 'utf8')
+    .split('\n').filter(line => !/^import /.test(line)).join('\n');
+  assert.ok(keyboard.includes('enum TatwoComposerModeKeyboard'));
+  // W213：輸入框的捲動區繼承 CoderOverlayScrollView（Chat/CoderScrollIndicators.swift）；正式檔整份一起編。
+  const scrollers = fs.readFileSync(path.join(repo, 'App/Sources/Tatwo2/Chat/CoderScrollIndicators.swift'), 'utf8')
+    .split('\n').filter(line => !/^import /.test(line)).join('\n');
+  assert.ok(scrollers.includes('class CoderOverlayScrollView'));
   const scratch = testScratch('composer-layout.');
   const program = path.join(scratch, 'checks.swift');
   fs.writeFileSync(program, `
@@ -22,6 +31,8 @@ enum ChatTypography { static let composerPointSize: CGFloat = 14 }
 enum ChatComposerSlashCatalog { static let commands = ["/討論串"] }
 enum LiquidGlassTokens { static let brandAccent = Color.blue }
 ${source.slice(start)}
+${keyboard}
+${scrollers}
 @MainActor func probe() {
     _ = NSApplication.shared
     var text = "", height: CGFloat = 24

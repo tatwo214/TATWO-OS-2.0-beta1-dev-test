@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { testScratch } from './helpers/test-scratch.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +8,7 @@ import { performance } from 'node:perf_hooks';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-const script = new URL('../scripts/per-file-delta.py', import.meta.url).pathname;
+const script = fileURLToPath(new URL('../scripts/per-file-delta.py', import.meta.url));
 const install = readFileSync(new URL('../install.sh', import.meta.url), 'utf8');
 const tree = install.split('# DELTA-TREE-BEGIN\n')[1].split('# DELTA-TREE-END')[0];
 const run = (cmd, args) => {
