@@ -185,11 +185,15 @@ enum AssistantSpaceAcceptance {
         model.prompt = "Coder draft"
         model.assistantPrompt = "Assistant draft"
         let coderModel = model.selectedModel
+        let coderPreferences = engine.threadRecord(coderID)
         model.mode = .tatwo
         check(model.assistantThreadID == assistantID && model.selectedThreadID == coderID
               && engine.doc.selectedThreadID == coderID, "(e) entering TATWO does not select assistant")
         model.setAssistantModel("gpt-6-astra")
-        check(model.selectedModel == coderModel && engine.threadRecord(coderID)?.requestedModel == nil,
+        check(model.selectedModel == coderModel
+              && engine.threadRecord(coderID)?.requestedModel == coderPreferences?.requestedModel
+              && engine.threadRecord(coderID)?.requestedEffort == coderPreferences?.requestedEffort
+              && engine.threadRecord(coderID)?.requestedSpeedTier == coderPreferences?.requestedSpeedTier,
               "assistant model preference does not alter Coder model")
         model.mode = .chat
         check(model.selectedThreadID == coderID && engine.doc.selectedThreadID == coderID
@@ -204,8 +208,20 @@ enum AssistantSpaceAcceptance {
               && reopened.transcript(for: assistantID).last?.text == "Persistent assistant history",
               "(c) reopen preserves one assistant project/thread and history")
         check(reopened.doc.selectedThreadID == coderID, "reopen preserves Coder selection")
-        let assistantPrompt = reopened.composedSystemPrompt(threadID: assistantID)
-        let coderPrompt = reopened.composedSystemPrompt(threadID: coderID, systemPrompt: "Existing persona")
+        let overrides = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        UserDefaults.standard.setVolatileDomain(overrides.merging(["tatwo2.sidecarPath.codex": FileManager.default.currentDirectoryPath + "/Engines/codex-sidecar/sidecar.mjs"]) { _, new in new }, forName: UserDefaults.argumentDomain)
+        let previousLaunch = ClaudeSidecar.fixtureLaunch
+        defer { reopened.shutdownAll(); ClaudeSidecar.fixtureLaunch = previousLaunch; UserDefaults.standard.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain) }
+        @MainActor func launchedPrompt(_ thread: UUID, persona: String? = nil) async throws -> String? {
+            var arguments: [String] = []
+            ClaudeSidecar.fixtureLaunch = { _, args, _, _ in arguments = args }
+            check(reopened.fixtureStartSidecar(thread, engine: .codex, systemPrompt: persona), "(f) prompt captured through production launch")
+            try await DeviceFleetEighthRoundAcceptance.waitForLaunch { !arguments.isEmpty }
+            guard let index = arguments.firstIndex(of: "--system-prompt"), arguments.indices.contains(index + 1) else { return nil }
+            return arguments[index + 1]
+        }
+        let assistantPrompt = try await launchedPrompt(assistantID)
+        let coderPrompt = try await launchedPrompt(coderID, persona: "Existing persona")
         check(OSUpstream.assistantPersona()?.hasPrefix("# TATWO 助理") == true
               && assistantPrompt?.contains("# TATWO 助理") == true, "(f) assistant prompt contains packaged persona")
         check(coderPrompt?.contains("# TATWO 助理") == false
@@ -213,6 +229,7 @@ enum AssistantSpaceAcceptance {
               "(f) ordinary thread prompt unchanged")
         check(!model.sendToAssistant(text: " \n") && engine.transcript(for: coderID).isEmpty,
               "explicit-target send rejects empty input without touching Coder")
+        model.seedSendLoginStatusForSelfTest(.init(kind: .codex, isLoggedIn: false, account: nil, detail: "synthetic logged out"), checkedAt: Date())
         model.sendAssistantDraft()
         check(model.assistantPrompt == "Assistant draft"
               && model.assistantMessages.last?.status == "error|登入"

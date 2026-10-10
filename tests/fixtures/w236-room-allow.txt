@@ -1,0 +1,12 @@
+App/Sources/Tatwo2/Chat/ChatPage+Composer.swift
+App/Sources/Tatwo2/Chat/ChatComposerSuggestionCatalog.swift
+App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Facade/GroupTurnEngine.swift
+App/Sources/Tatwo2/Chat/W236SigilsAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w236-sigils.test.mjs
+tests/fixtures/w236-room-allow.txt
+App/Sources/Tatwo2/Facade/SendFlowAcceptance.swift

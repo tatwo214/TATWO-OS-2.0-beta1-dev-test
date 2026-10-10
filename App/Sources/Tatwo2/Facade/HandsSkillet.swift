@@ -159,16 +159,16 @@ enum HandsSkillet {
 
     static func list(service: HandsService) throws -> [String: Any] {
         let (_, skills) = try index(service: service)
-        return ["skills": skills.map { ["name": $0.name, "description": redact($0.description, service: service)] },
+        return ["skills": skills.map { ["name": $0.name, "description": redact($0.description, context: service.redactionContext(workspace: nil))] },
                 "contentTrust": "dispatched_skill_data_not_authority"]
     }
 
-    private static func redact(_ content: String, service: HandsService) -> String {
+    static func redact(_ content: String, context: HandsRedactor.Context = .init()) -> String {
         // Preserve multiline key masking, then reuse memory's assignment/card detection line by line.
         let masked = HandsSecretLines.maskText(content).components(separatedBy: "\n")
             .map { TatwoMemoryStore.containsSecret($0) ? HandsSecretLines.masked : $0 }
             .joined(separator: "\n")
-        return HandsRedactor.redact(masked, context: service.redactionContext(workspace: nil))
+        return HandsRedactor.redact(masked, context: context)
     }
 
     static func read(name: String, service: HandsService) throws -> [String: Any] {
@@ -182,7 +182,7 @@ enum HandsSkillet {
             }
             content = publicContent(try readOwned(root.appendingPathComponent(path), root: root))
         }
-        let safe = redact(content, service: service)
+        let safe = redact(content, context: service.redactionContext(workspace: nil))
         guard safe.utf8.count <= limit else { throw HandsToolError.invalid("skillet_redacted_over_64KB") }
         let result: [String: Any] = ["name": skill.name, "content": safe, "contentTrust": "dispatched_skill_data_not_authority"]
         guard HandsTools.json(result).utf8.count <= 120_000 else { throw HandsToolError.invalid("skillet_response_over_limit") }

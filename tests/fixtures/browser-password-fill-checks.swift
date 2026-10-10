@@ -33,7 +33,8 @@ final class FakePasswordBridge: BrowserPasswordAssistBridge {
     var onPasswordAssistInvalidated: ((Bool, Bool) -> Void)?
     var fills: [(username: String, password: String, form: String, generation: UInt64)] = []
     func fillCredentialUsername(_ username: String, password: String, formID: String,
-                                navigationGeneration: UInt64) {
+                                navigationGeneration: UInt64, userApproved: Bool) {
+        precondition(userApproved)
         fills.append((username, password, formID, navigationGeneration))
     }
     func detect(_ username: String = "") {

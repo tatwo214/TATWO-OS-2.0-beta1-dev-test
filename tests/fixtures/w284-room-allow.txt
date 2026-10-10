@@ -1,0 +1,25 @@
+# 工作路徑的本機 resource 讀取、檢查與逐字保留的原子寫入。
+App/Sources/Tatwo2/Onboarding/WorkPath.swift
+# 設定與開始使用共用的唯讀工作路徑列、玻璃 chip 與資料夾面板。
+App/Sources/Tatwo2/New/WorkPathRow.swift
+# 文件頁加入工作路徑列。
+App/Sources/Tatwo2/New/OSDocumentsCard.swift
+# 開始使用在設備身分後加入標準步驟列，不阻擋其他步驟。
+App/Sources/Tatwo2/Shell/SetupGuide.swift
+# 登記隔離的 W284 畫面與互動自測。
+App/Sources/Tatwo2/SelfTest.swift
+# 正式頁面淺深色截圖與排序、狀態、選擇、條件還原、拒寫互動驗收。
+App/Sources/Tatwo2/New/W284Acceptance.swift
+# 隔離假入口測試 byte 保留、舊格式、原子失敗、公開路徑與 UI。
+tests/w284-workpath.test.mjs
+# 自測截圖證據（低容量使用 50 GB 邊界輸入；拒寫使用真實唯讀假資料夾）。
+tests/fixtures/w284-shots/documents-light.png
+tests/fixtures/w284-shots/documents-dark.png
+tests/fixtures/w284-shots/getting-started-light.png
+tests/fixtures/w284-shots/getting-started-dark.png
+tests/fixtures/w284-shots/unwritable-light.png
+tests/fixtures/w284-shots/unwritable-dark.png
+tests/fixtures/w284-shots/low-space-light.png
+tests/fixtures/w284-shots/low-space-dark.png
+# 本房檔案白名單與理由。
+tests/fixtures/w284-room-allow.txt

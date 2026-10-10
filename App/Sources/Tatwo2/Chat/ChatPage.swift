@@ -10,10 +10,13 @@ struct ChatPage: View {
     /// Standalone Browser mode keeps the app-wide workspace registry.
     @StateObject private var browserLayout: ChatBrowserLayoutObservation
     var browserWorkSpaceStore: BrowserWorkSpaceStore { browserLayout.store }
+    @StateObject var webSpaceChromeReveal = BrowserChromeReveal()
+    var usesBrowserTopChrome: Bool { !isPanel && ChatGPTWebSpace.usesBrowserChrome(model.mode) }
     /// Chat's inspector owns a separate registry and CEF profile.
     private var chatBrowserWorkSpaceStore: BrowserWorkSpaceStore { browserLayout.inspectorStore }
     private var chatBrowserRuntime: BrowserWorkSpaceRuntime { browserLayout.inspectorRuntime }
     @State var islandFooterHovering = false
+    @StateObject var coderVoice: ChatGPTVoiceMode
     @State var globalNoteOpen = ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT"] != nil && ["1", "2"].contains(ProcessInfo.processInfo.environment["TATWO_ULTRAWORK_EXPORT_GLOBAL_NOTE"] ?? "")
     @Environment(\.tatwoSurfaceKind) var surface
     @WorkspaceObservedObject var model: ChatPageModel
@@ -178,6 +181,7 @@ struct ChatPage: View {
 
     init(
         model: ChatPageModel,
+        coderVoice: ChatGPTVoiceMode? = nil,
         retainedLifecycle: TatwoRetainedChatLifecycle? = nil,
         quotaProviders: [UsageProviderStatus] = [],
         initialLiveQuotaSnapshot: LiveQuotaDeckSnapshot? = nil,
@@ -186,6 +190,7 @@ struct ChatPage: View {
         isRightPanelOpen: Binding<Bool> = .constant(false)
     ) {
         self.retainedLifecycle = retainedLifecycle
+        _coderVoice = StateObject(wrappedValue: coderVoice ?? ChatGPTVoiceMode(tap: .shared, holderNotice: "Coder 的語音模式還開著"))
         self.quotaProviders = quotaProviders
         self.initialLiveQuotaSnapshot = initialLiveQuotaSnapshot
         self.gatewayLiveStatus = gatewayLiveStatus
@@ -200,7 +205,24 @@ struct ChatPage: View {
     @AppStorage("tatwo.chat.dockedBrowserWidth") private var dockedBrowserWidthSignal = 0.0
     @State private var sharedBrowserDragStart: CGFloat?
 
-    var body: some View {
+    @ViewBuilder var body: some View {
+        Group {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w288" {
+                w288ComposerFixture
+            } else { mainBody }
+            #else
+            mainBody
+            #endif
+        }
+        .overlay {
+            if coderVoice.voiceActive {
+                ChatGPTVoiceOverlay(model: coderVoice, identifier: "tatwo.coder.voiceMode", stopIdentifier: "tatwo.coder.voiceMode.stop")
+            }
+        }
+    }
+
+    @ViewBuilder private var mainBody: some View {
         #if DEBUG
         let _ = ChatRenderProbe.record("ChatPage.body")
         let _ = ChatRenderProbe.enabled ? (ChatRenderProbe.browserStore = browserWorkSpaceStore) : ()
@@ -334,9 +356,9 @@ struct ChatPage: View {
                     layoutWidth: chatCanvasWidth,
                     railPinned: showSidebar,
                     sidebarVisible: showSidebar)
-                let leadingReserve: CGFloat = (isPanel || workspaceOwnsSidebar || model.mode == .browser) ? 0 : layoutPolicy.leadingReserve
-                let trailingReserve: CGFloat = (isPanel || workspaceOwnsSidebar || model.mode == .browser) ? 0 : layoutPolicy.trailingReserve
-                let sidebarContentGap = model.mode == .browser ? WorkspaceSidebarMetrics.browserContentGap : WorkspaceSidebarMetrics.contentGap
+                let leadingReserve: CGFloat = (isPanel || workspaceOwnsSidebar || usesBrowserTopChrome) ? 0 : layoutPolicy.leadingReserve
+                let trailingReserve: CGFloat = (isPanel || workspaceOwnsSidebar || usesBrowserTopChrome) ? 0 : layoutPolicy.trailingReserve
+                let sidebarContentGap = usesBrowserTopChrome ? WorkspaceSidebarMetrics.browserContentGap : WorkspaceSidebarMetrics.contentGap
                 let mainAvailableWidth = max(
                     320,
                     chatCanvasWidth
@@ -387,7 +409,7 @@ struct ChatPage: View {
                         }
                         .frame(width: chatCanvasWidth, alignment: .topLeading)
                         .frame(maxHeight: .infinity, alignment: .topLeading)
-                        .background(WindowTrafficLightVisibilitySync(sidebarPinned: sidebarPinnedPref, managedByBrowser: model.mode == .browser))
+                        .background(WindowTrafficLightVisibilitySync(sidebarPinned: sidebarPinnedPref, managedByBrowser: usesBrowserTopChrome))
                         // 資訊卡/瀏覽器/檔案：對齊 Codex chrome 頂右單一列（#50/#51）；上移到 band 高度內，與交通燈同水平。
                         // 2026-09-02 使用者：常駐鈕、資訊卡、工具箱三顆一起放在頂右、紅綠燈基準線。
                         .overlay(alignment: .topTrailing) {
@@ -396,7 +418,7 @@ struct ChatPage: View {
                                 rightPanelControlStrip(showsThreadControls: hasThreadInfo)
                                     .padding(.trailing, 14)
                                     .offset(y: -WindowChromeMetrics.chromeRowLift)
-                            } else if !isPanel && model.mode == .chatgpt {
+                            } else if !isPanel && model.mode == .chatgpt && !ChatGPTWebSpace.isEnabled {
                                 // ChatGPT 的臨時聊天／分享／⋯ 跟 ChatGPT 桌面版一樣在標題那一列右上（使用者 09-25 #125）；
                                 // 拖曳區本來就讓出頂右這塊（chatRightControlsReserve），點得到。
                                 ChatGPTTopBarControls(model: ChatGPTSpaceModel.shared)
@@ -406,9 +428,24 @@ struct ChatPage: View {
                             }
                         }
                         .overlay(alignment: .topLeading) {
-                            if !isPanel && (model.mode != .browser || browserWorkSpaceStore.hoverRailShown) {
+                            if !isPanel && (!usesBrowserTopChrome || (model.mode == .browser && browserWorkSpaceStore.hoverRailShown)) {
                                 sidebarPinButton(sidebarShown: showSidebar, sidebarWidth: sidebarWidth)
                                     .offset(y: -WindowChromeMetrics.chromeRowLift + (26 - BrowserOmniboxMetrics.collapsedHeight) / 2)
+                            } else if usesBrowserTopChrome && model.mode == .chatgpt && (webSpaceChromeReveal.revealed || browserWorkSpaceStore.hoverRailShown) {
+                                // 側欄滑出時展開鈕跟著出現（使用者 10-07「左欄收起時缺少展開鈕 這個bowser是有的」）；頂列底板只在頂列顯示時畫。
+                                HStack(spacing: BrowserOmniboxMetrics.controlGap) {
+                                    if browserWorkSpaceStore.focusMode && !browserWorkSpaceStore.hoverRailShown { Color.clear.frame(width: WindowChromeMetrics.trafficLightSafeWidth) }
+                                    BrowserSidebarControls(store: browserWorkSpaceStore)
+                                    Spacer(minLength: 0)
+                                }
+                                .foregroundStyle(LiquidGlassTokens.browserOmniboxInk)
+                                .padding(.leading, browserWorkSpaceStore.hoverRailShown ? sidebarWidth - BrowserOmniboxMetrics.collapsedHeight - 2 * BrowserOmniboxMetrics.horizontalInset : 0)
+                                .padding(.horizontal, BrowserOmniboxMetrics.horizontalInset)
+                                .frame(height: BrowserOmniboxMetrics.toolbarHeight)
+                                .background { if webSpaceChromeReveal.revealed { BrowserFloatingToolbarBackdrop() } }
+                                .padding(.leading, showSidebar ? sidebarWidth : 0)
+                                .ignoresSafeArea(.container, edges: .top)
+                                .transition(.opacity).zIndex(BrowserOmniboxMetrics.chromeZIndex)
                             }
                         }
                         // 懸浮資訊卡浮層（使用者 2026-07-12：資訊卡要懸浮，不開右頁）；掛在 strip 之上、可點外關閉。
@@ -587,38 +624,40 @@ struct ChatPage: View {
             if request != nil { planInspectorPresented = true }
         }
         .inspector(isPresented: $planInspectorPresented) {
-            PlanTranscriptInspectorView(
-                artifact: model.activePlanArtifact,
-                isPresented: $planInspectorPresented,
-                isWriting: model.isRunning,
-                isExecuting: model.isActivePlanExecutionRunning,
-                selection: model.planFlowSelectionProjection?.selection,
-                localActionPresentation:
-                    model.planWorkOSLocalActionPresentation,
-                editableText: model.editablePlanTextForCanvas(),
-                onSelectionChange: model.updatePlanFlowSelection,
-                onSaveEditedText: model.saveEditedPlanCanvasText,
-                ultraworkPanel: AnyView(planUltraworkCanvasPanel),
-                ultraworkPrimaryModelID:
-                    collaborationRoleModelID(for: .primary),
-                ultraworkSecondaryModelID:
-                    planUltraworkAuxiliaryCount > 0
-                        ? collaborationRoleModelID(for: .auxiliary(0))
-                        : nil,
-                ultraworkAuxiliaryCount: planUltraworkAuxiliaryCount,
-                onDismissUltrawork: {
-                    showUltraworkPanel = false
-                    ultraworkRolePickerTarget = nil
-                },
-                onExecute: model.confirmActivePlan,
-                onStart: model.startActivePlan,
-                onFeedbackSubmitted: model.finishFeedbackPlan,
-                distillActions: model.distillCanvasActions,   // W180 E4
-                onPRSubmit: model.submitActivePRPlan,
-                onPRDiscuss: model.returnActivePRToDiscussion,
-                onPRRetry: model.retryActivePRSubmission,
-                onExitMode: model.exitActiveCanvasMode)
-                .id(model.activePlanArtifact?.planID)
+            if planInspectorPresented {
+                PlanTranscriptInspectorView(
+                    artifact: model.activePlanArtifact,
+                    isPresented: $planInspectorPresented,
+                    isWriting: model.isRunning,
+                    isExecuting: model.isActivePlanExecutionRunning,
+                    selection: model.planFlowSelectionProjection?.selection,
+                    localActionPresentation:
+                        model.planWorkOSLocalActionPresentation,
+                    editableText: model.editablePlanTextForCanvas(),
+                    onSelectionChange: model.updatePlanFlowSelection,
+                    onSaveEditedText: model.saveEditedPlanCanvasText,
+                    ultraworkPanel: AnyView(planUltraworkCanvasPanel),
+                    ultraworkPrimaryModelID:
+                        collaborationRoleModelID(for: .primary),
+                    ultraworkSecondaryModelID:
+                        planUltraworkAuxiliaryCount > 0
+                            ? collaborationRoleModelID(for: .auxiliary(0))
+                            : nil,
+                    ultraworkAuxiliaryCount: planUltraworkAuxiliaryCount,
+                    onDismissUltrawork: {
+                        showUltraworkPanel = false
+                        ultraworkRolePickerTarget = nil
+                    },
+                    onExecute: model.confirmActivePlan,
+                    onStart: model.startActivePlan,
+                    onFeedbackSubmitted: model.finishFeedbackPlan,
+                    distillActions: model.distillCanvasActions,   // W180 E4
+                    onPRSubmit: model.submitActivePRPlan,
+                    onPRDiscuss: model.returnActivePRToDiscussion,
+                    onPRRetry: model.retryActivePRSubmission,
+                    onExitMode: model.exitActiveCanvasMode)
+                    .id(model.activePlanArtifact?.planID)
+            }
         }
         .onAppear {
             model.updateGatewayLiveStatus(gatewayLiveStatus)
@@ -681,7 +720,7 @@ struct ChatPage: View {
         .onChange(of: browserWorkSpaceStore.focusMode) { _, _ in
             resetChatProjectHover()
         }
-        .onChange(of: isChatProjectRailHovering && model.mode == .browser && browserWorkSpaceStore.focusMode, initial: true) { _, shown in
+        .onChange(of: isChatProjectRailHovering && usesBrowserTopChrome && !isChatProjectRailPinned, initial: true) { _, shown in
             browserWorkSpaceStore.hoverRailShown = shown   // W114：Browser 的浮出側欄也要有紅綠燈與收納鈕
         }
         .onChange(of: browserWorkSpaceStore.sidebarInteractionActive) { _, active in

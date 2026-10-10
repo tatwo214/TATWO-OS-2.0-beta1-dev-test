@@ -115,6 +115,7 @@ struct TatwoComposerMode {
 extension TatwoComposerMode {
     /// chip 上模型的短名：GPT 系列去掉「GPT-」（同 Coder 模型 chip：「6 fast」），其他照助理 chip 的短名（「Opus 5.5」「Fable 5.1」）。
     static func shortModelName(_ route: ChatRouteChoice) -> String {
+        if route.runtimeAdapter == .chatgptTap { return route.commandLabel }
         if route.title.hasPrefix("GPT-") { return String(route.title.dropFirst("GPT-".count)) }
         return AssistantModelRouting.chipName(route)
     }
@@ -336,7 +337,7 @@ extension TatwoComposerMode {
         let suffix: String? = route.supportsNativeSpeedControl ? speedTitle(model.selectedSpeedTier)
             : (route.supportsNativeReasoningControl && forwardsEffort(route) ? model.selectedEffort.compactDisplayName : nil)
         var segments = [modelSegment(title: shortModelName(route), suffix: suffix,
-                                     accessibilityTitle: [route.title, suffix].compactMap { $0 }.joined(separator: " "),
+                                     accessibilityTitle: [route.runtimeAdapter == .chatgptTap ? route.commandLabel : route.title, suffix].compactMap { $0 }.joined(separator: " "),
                                      identifier: "chat-composer-model")]
         if let memory { segments.append(memorySegment(memory)) }
         segments.append(collaborationSegment(level, identifier: "chat-composer-ultrawork"))

@@ -89,6 +89,7 @@ extension ChatPageModel {
     }
 
     func distillRoute() -> DistillRoute {
+        guard !managedAssistantIsLocal else { return .local }
         let primary = distillPrimary()
         if let remote = selectedRemote {
             let name = distillRemoteName(remote.deviceID)
@@ -116,6 +117,7 @@ extension ChatPageModel {
 
     /// 遠端 session 的畫布在那台：開、讀、改都直接找那台（寫入走哪裡另外看 distillRoute）。
     private func distillCanvasTransport() -> (transport: DistillTransport, name: String)? {
+        guard !managedAssistantIsLocal else { return nil }
         guard let remote = selectedRemote, let transport = distillTransport(deviceID: remote.deviceID) else { return nil }
         return (transport, distillRemoteName(remote.deviceID))
     }
@@ -130,6 +132,7 @@ extension ChatPageModel {
 
     /// 這台是副設備時的主設備（id、名稱＋連得到時的通道）；主設備、單機是 nil。
     private func distillPrimary() -> (id: String?, name: String, transport: DistillTransport?)? {
+        guard !managedAssistantIsLocal else { return nil }
         #if DEBUG
         if let test = distillState.testPrimary { return (test.id, test.name, test.transport()) }
         #endif

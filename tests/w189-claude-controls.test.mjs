@@ -11,7 +11,8 @@ function fixture(supportsControls=true) {
     rl:{on:(name,handler)=>{if(name==='line')line=handler;}},pending:new Map(),
     emit:value=>emitted.push(value),push:value=>prompts.push({settingsCount:settings.length,value}),
     closed:false};
-  vm.runInNewContext(source.slice(source.indexOf("rl.on('line'"),source.indexOf("rl.on('close'")),context);
+  const state = source.slice(source.indexOf('let activeTurn;'), source.indexOf('const pending = new Map();'));
+  vm.runInNewContext(state + source.slice(source.indexOf("rl.on('line'"),source.indexOf("rl.on('close'")),context);
   return {line,emitted,prompts,settings};
 }
 test('M10 Claude max and fast are applied before sending the prompt; standard clears fast',async()=>{

@@ -1,4 +1,5 @@
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetDispatchCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -19,11 +20,10 @@ test('MCP cards bind only liveness, removal confirms via Island, builtins preced
   assert.match(card, /PluginLivenessStatusPill\(state: entry\.liveness\)/);
   const pill = card.slice(0,card.indexOf('struct PluginConnectionCard'));
   assert.doesNotMatch(pill, /InstallState|installState/);
-  for (const label of ['內建','誰能用：','工具數：','最近呼叫：','移除登記']) assert.ok(card.includes(label), label);
-  assert.match(card, /entry\.kind == \.mcp && entry\.liveness\.state == \.unreachable/);
+  for (const label of ['內建','誰能用：','工具數：','最近呼叫：']) assert.ok(card.includes(label), label);
+  assert.ok(!card.includes('移除登記'), 'engine MCP removal button stays deleted (W240 M8)');
   const page = read(app+'Pages/PluginsPage.swift');
   assert.match(page, /IslandNotice\.shared\.confirm/);
-  assert.match(page, /guard await IslandNotice[\s\S]*remove\(entry\)/);
   assert.match(page, /重新探活/);
   assert.match(page, /refreshMCP\(force: true\)/);
   assert.match(page, /builtins \+ fresh\.filter/);
@@ -227,15 +227,17 @@ check(!process.isRunning,"owned timed out process cleaned")
 check(!resistant.isRunning && kill(-ownedGroup,0) != 0,"TERM-resistant owned group cleaned")
 print("W62 \(checks) production checks PASS")
 `);
-  const files=['Facade/PluginLiveness.swift','Facade/PluginServerConfiguration.swift','Facade/PluginsSource.swift',
+  const files=['Facade/PluginLiveness.swift','Facade/PluginServerConfiguration.swift','Facade/PluginsSource.swift','Facade/OSMCPRegistry.swift',
     // W80b: compile the real managed-service dependency closure; do not stub its availability.
     'Facade/GBrainService.swift','Facade/GBrainKeychain.swift','Facade/TatwoEntry.swift',
     'Facade/DeviceIdentity.swift','Facade/DeviceStatus.swift','Facade/DeviceRegistry.swift',
+    'Facade/DevicePairingAuth.swift','Facade/DeviceSignature.swift','Facade/DeviceFleetRoster.swift','Facade/DeviceFleetGraph.swift','Facade/DeviceFleetTransfer.swift','Facade/DeviceFleetRevocation.swift','Facade/DeviceFleetGate.swift',
     'Facade/OSUpstream.swift','Facade/OSUpstreamRefresh.swift','Facade/TatwoResources.swift',
     'Facade/PluginsBuiltinSource.swift','Facade/PluginsRemoval.swift','Facade/EnginePaths.swift','Facade/EngineRuntimeSelection.swift','Engine/NativeStagingIsolation.swift',
     // W181 R3：GBrain 帶金鑰前問「不用 API 金鑰」的判斷（真的檔）。
     'Facade/EngineDisableStore.swift','Facade/EngineAPIKeyPolicy.swift',
     'Browser/Diagnostics/BrowserDiagnosticsAudit.swift','Browser/Diagnostics/BrowserDiagnosticsPrivacy.swift'].map(p=>path.join(root,app+p));
+  fs.appendFileSync(path.join(dir,'stubs.swift'), fleetDispatchCompileStubs());
   run('swiftc',['-num-threads','2',...files,path.join(dir,'stubs.swift'),path.join(dir,'main.swift'),'-o',path.join(dir,'fixture')]);
   // Keep sockets below sockaddr_un's bound by using an owned short temporary fixture root.
   const scratch=testScratch('plugins-data-');
@@ -287,7 +289,7 @@ ${glass}
   ]
   let content=VStack(alignment:.leading,spacing:12) {
    HStack { ForEach(PluginLiveness.allCases,id:\\.rawValue) { PluginLivenessStatusPill(state:.init(state:$0)) } }
-   ForEach(rows) { entry in PluginConnectionCard(entry:entry,requestRemoval:{}) }
+   ForEach(rows) { entry in PluginConnectionCard(entry:entry) }
   }.padding(20).frame(width:900).background(Color(red:0.94,green:0.94,blue:0.95)).environment(\\.colorScheme,.light)
   let renderer=ImageRenderer(content:content); renderer.scale=1
   guard let image=renderer.cgImage, let png=NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { fatalError("render failed") }

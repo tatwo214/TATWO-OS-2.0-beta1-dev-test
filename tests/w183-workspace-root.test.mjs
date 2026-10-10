@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {runIsolated} from './helpers/w187-runtime.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -202,22 +203,22 @@ test('guard 2: one shared policy (real path, any case, file identity) at the pla
   const model = swift('Facade/ChatPageModel.swift');
   assert.match(between(model, 'func createProjectFromExistingFolder()', 'func newChat()'),
     /if ExternalWorkspacePolicy\.contains\(url\.path\) \{ flashComposerHint\(ExternalWorkspacePolicy\.projectRefusal\); return nil \}[^\n]*\n\s*let pid = live\.newProject/);
-  assert.match(between(model, 'func openCLITab(', 'private func launchForCLI('),
+  assert.match(between(model, 'func openCLITab(', 'func launchForCLI('),
     /if engine != \.generic, let problem = ExternalWorkspacePolicy\.engineProblem\(cwd: cwd\) \{ flashComposerHint\(problem\); return nil \}/);
-  const engine = swift('Facade/ChatLiveEngine.swift');
-  const ensure = between(engine, 'private func ensureSidecar(', 'let s = ClaudeSidecar(kind: engine)');
-  const cwdAt = ensure.indexOf('let cwd = thread.cwdOverride ?? doc.projects.first { $0.id == thread.projectID }?.workdir ?? NSHomeDirectory()');
-  const refuseAt = ensure.indexOf('if thread.deviceID == nil, let problem = ExternalWorkspacePolicy.engineProblem(cwd: cwd) {');
-  assert.ok(cwdAt >= 0 && refuseAt > cwdAt, 'refused before the engine starts');
-  assert.match(ensure, /appendSystem\(threadID, problem, status: "error\|外部工作區"\)\n\s*runningThreads\.remove\(threadID\)\n\s*return nil/);
+  const {output} = runIsolated('w187fleet', {TATWO2_W187_R8:'r11-external'});
+  assert.match(output, /W183-external-workspace-refused-before-engine-launch/);
+  assert.match(output, /W183-external-workspace-refusal-visible/);
   // 派工：不在 chatgpt/ 裡的專案建工作副本（房間的引擎也就不會在那裡跑）。Coder 匯入照 W180 裁決不改落點（只能看的紀錄），接著用就被上面擋。
-  assert.match(swift('Facade/DispatchEngine.swift'),
-    /if ExternalWorkspacePolicy\.contains\(project\.workdir\) \{ throw DispatchGitFailure\(message: ExternalWorkspacePolicy\.engineRefusal\) \}\n\s*worktree = try Self\.prepareRoomWorktree\(workdir: project\.workdir, roomID: roomID\)/);
+  const refusedDispatch = runIsolated('w187fleet', {TATWO2_W187_R8:'r13-external-dispatch'}).output;
+  assert.match(refusedDispatch, /W183-external-workspace-dispatch-refused-before-worktree/);
   assert.match(service, /let insideForbidden = deniedDirectories \+ \[home \+ "\/Library", handsRoot\] \+ chatgptFolders/, 'chatgpt/ can never be a Hands project');
   assert.match(service, /if ExternalWorkspacePolicy\.contains\(realPath, entries: \[entryRoot, workspaceEntry\]\.compactMap \{ \$0 \}\) \{ return "folder_inside_protected_area" \}/);
   // 入口派發（副設備拿到的入口副本）只有 os.md、skillet.md、選配檔、note/。
   const dispatch = swift('Facade/DeviceDispatch.swift');
-  assert.match(dispatch, /guard path == "os\.md" \|\| path == "skillet\.md" \|\| Self\.optionalFiles\.contains\(path\) \|\| path\.hasPrefix\("note\/"\) else \{/);
+  const refusedPaths = runIsolated('w187fleet', {TATWO2_W187_R8:'r13-validate-files'}).output;
+  for (const path of ['chatgpt_private.txt','memory_private.txt','.git_config','.._os.md','note_.._.._os.md']) {
+    assert.ok(refusedPaths.includes('W183-dispatch-path-refused-' + path));
+  }
   assert.match(dispatch, /let paths = try \["os\.md", "skillet\.md"\] \+ optional \+ notePaths\(\)/);
   assert.doesNotMatch(between(dispatch, 'static let optionalFiles', '\n'), /chatgpt/);
   // 記憶索引只看 memory/ 最上層。

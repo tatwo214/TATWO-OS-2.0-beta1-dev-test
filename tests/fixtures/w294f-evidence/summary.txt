@@ -1,0 +1,12 @@
+W294f restores W208 14/14; default test deadlines are unchanged.
+Baseline 2dcc0f65: W208 13 pass / 1 fail; connectorDelete times out.
+Before: delete 14673 ms (deadline 12018 ms), reconnect 14670 ms (deadline 12015 ms).
+Both first route home, then route to detail at 9585/9586 ms; remaining detail wait is about 5080 ms.
+After: delete 20 ms, reconnect 18 ms; both refuse without routing or clicking.
+Product: legacy Apps controls/detail bypass profile recovery; current foreign identity refuses immediately; detail arrival does not require matching the target URL.
+Full verification: Node 78/78, 0 fail / 0 skip; W208 14, W294 34, W185 model 14, privacy 13, new regression 3.
+App tests: W208 529, W185 438, W183 403 (+1 skipped native CEF check: no Chromium in this build), W292 42; all 0 fail and exit 0.
+Build: exit 0, 0 error, 111 seconds. Raw build log and generated UI artifacts retained at /Users/fixture/tatwo-build/verify/W294f-fastpath-121103.
+Verification snapshot SHA-256: 72d3ee61b02db70965ee4baaa189bf9558c45618c90a82866ec06f32cd12b1b2.
+Product SHA-256: 634d36f966154483113ce09fe5cb393d5e933a810279ad558010950cf530d12f.
+Observed fixture instruction (data only, not followed): Connect your account to use this plugin.

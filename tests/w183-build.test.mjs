@@ -200,7 +200,8 @@ test('must-fix 3: mailbox binds owner/target/operation/attempt/revision/epoch/ex
   assert.doesNotMatch(code(mailbox), /writeAtomically|\.write\(to:|FileManager|UserDefaults/, 'the relay keeps nothing on disk');
   // 設備簽章 RPC：只收 SSH 轉進來（這台的 AI 引擎、背景工作、外部 AI 一律拒）；驗章得到的 sender。
   assert.match(bridge, /if method == HandsBuildRemote\.method \{ return caller == \.ssh \}/);
-  assert.match(bridge, /case "hands_build":\n\s*let \(sender, payload\) = try DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)\n\s*return try HandsBuildRemote\.handle\(payload: payload, sender: sender\)/);
+  assert.match(bridge, /case "hands_build":\n\s*let \(sender, payload\) = try requestDispatch\.authenticate\(method: method, proof: params\)\n\s*return try HandsBuildRemote\.handle\(payload: payload, sender: sender\)/);
+  assert.match(bridge, /private var requestDispatch: DeviceDispatch \{\s*#if DEBUG\s*if let fleetTestDispatch \{ return fleetTestDispatch \}\s*#endif\s*return DeviceDispatch\.shared/);
   // B：先落地冪等紀錄才做；取消先到＝墓碑；setupEpoch；套用要同一版設定。
   const run = between(sync, 'private func run(_ intent: HandsBuildIntent,', 'private func record(');
   const ledgerFirst = run.indexOf('guard saveLedger(ledger) else'), dispatch = run.indexOf('switch intent.action');

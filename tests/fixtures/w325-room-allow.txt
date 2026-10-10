@@ -1,0 +1,6 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Facade/W304bInstalledAcceptance.swift
+tests/fixtures/w304b-native-pod.mjs
+tests/fixtures/w325-pluginsettings-dom.mjs
+tests/fixtures/w325-room-allow.txt
+tests/w325-pluginsettings-dom.test.mjs

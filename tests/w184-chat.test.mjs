@@ -571,7 +571,6 @@ test('G3 voice owner lives in ChatGPTTap: claimed before the start is sent, one 
   // 第三輪：關頁前先把排著的送出拿出來（見下一個測試），有人看著或有人在排隊就重開。
   assert.match(tap, /func forceEndVoice\(_ claim: VoiceClaim\) \{\s*guard voiceClaim == claim else \{ return \}[\s\S]{0,400}let users = !leases\.isEmpty \|\| !waiting\.isEmpty\s*sleep\(\)/);
   // 語音拿著 Pod 時：排隊的送出等它、會換頁的指令不做、連接器與「新增」拿不到。
-  // W197（.056）：Dots 借用同一個 Pod 時送出也先排隊。
   assert.match(tap, /if paging, command != "voice", voiceClaim != nil \{ throw TapError\.remote\("語音模式開著；結束語音再試"\) \}/);
   // 共用的語音控制器：停止中一直留著（voiceStopping），確認停了或關掉那一頁才收；「開始」還沒回來不放。
   const voiceMode = slice(kit, 'final class ChatGPTVoiceMode', '\n}\n');
@@ -616,8 +615,7 @@ test('G3 round 3: voice follows the Space screen too; the DM says who holds voic
   const tap = read('TAP/ChatGPTTap.swift');
   const session = read('TAP/ChatGPTConversationSession.swift');
   // 修正核對 #1：Space 主畫面不在了（切到其他模式、關分頁）＝結束 Space 的語音（跟私訊框同一條規則）。
-  // W197（.056）：離開 Space 先把借給 Dots 的 Pod 收回來，其餘順序照舊。
-  assert.match(space, /func disappear\(\) \{\s*closeDots\(\)\s*visible = false\s*tap\.setSpaceVisible\(false\)\s*(\/\/[^\n]*\n\s*)+voice\.endVoice\(\)/);
+  assert.match(space, /func disappear\(\) \{\s*visible = false\s*tap\.setSpaceVisible\(false\)\s*(\/\/[^\n]*\n\s*)+voice\.endVoice\(\)/);
   assert.match(space, /private init\(\) \{\s*tap = \.shared\s*voice = ChatGPTVoiceMode\(tap: tap, holderNotice: "ChatGPT Space 的語音模式還開著"\)/);
   // 私訊框：另一邊拿著語音時說一句、給「結束那邊的語音」（請那一邊走它自己的確認結束）。
   assert.match(view, /if let elsewhere = session\.voiceElsewhere \{\s*GlobalDMNoticeRow\(icon: "waveform", text: elsewhere, actionTitle: "結束那邊的語音",\s*identifier: "tatwo\.dm\.voiceElsewhere"\) \{ session\.endVoiceElsewhere\(\) \}/);
@@ -625,9 +623,8 @@ test('G3 round 3: voice follows the Space screen too; the DM says who holds voic
   assert.match(tap, /func requestVoiceEnd\(\) -> Bool \{\s*guard voiceClaim != nil, let voiceEndRequest else \{ return false \}\s*voiceEndRequest\(\)/);
   assert.match(kit, /tap\.claimVoice\(owner: owner, holderNotice: holderNotice,\s*onEndRequest: \{ \[weak self\] in self\?\.endVoice\(\) \}\)/);
   // 排在語音後面不能無限期「打字中」：太久就不送、交回畫面放回輸入框（私訊框、Space 都放回）。
-  // W203 extends the same deadline to Dots; voice timeout still returns the draft.
-  assert.match(tap, /if voiceClaim != nil \|\| dotsLease != nil \{ scheduleQueueDeadline\(id\) \}/);
-  assert.match(tap, /self\.voiceClaim != nil \|\| self\.dotsLease != nil \|\| self\.connection != \.ready else \{ return \}[\s\S]*self\.sendQueue\.removeAll \{ \$0\.id == id \}[\s\S]*else \{ self\.streams\[id\]\?\.yield\(\.failed\(Self\.queueTimeoutReason\)\)/);
+  assert.match(tap, /if voiceClaim != nil \{ scheduleQueueDeadline\(id\) \}/);
+  assert.match(tap, /self\.voiceClaim != nil \|\| self\.connection != \.ready else \{ return \}[\s\S]*self\.sendQueue\.removeAll \{ \$0\.id == id \}[\s\S]*self\.streams\[id\]\?\.yield\(\.failed\(Self\.queueTimeoutReason\)\)/);
   assert.match(session, /case \.failed\(let message, _\) where message == ChatGPTTap\.queueTimeoutReason && self\.state == \.queued && !hasResponse:/);
   assert.match(session, /self\.returnedDrafts\.append\(unsent\)[\s\S]*let restored = returnDraft\(unsent\)\s*if restored \{ self\.confirmReturnedDraft\(id\) \}/);
   assert.match(dmStore, /session\.returned = \{ \[weak self\]/);
@@ -746,7 +743,8 @@ test('G3b／G3c top bar: the page circle stays top-left; only 臨時聊天 top r
   assert.match(bar, /if let chatGPTWidth \{\s*GlobalDMChatGPTTopControls\(store: store, session: store\.chatGPT, width: max\(0, chatGPTWidth - margin \* 2\)\)\s*\}/);
   // 頁面圓鈕畫在上面一層（指到向右展開時蓋在上面）。
   assert.ok(bar.indexOf('GlobalDMChatGPTTopControls(') < bar.indexOf('GlobalDMIconStrip(store: store, besideBrowser: form.isDuo)'));
-  assert.match(phoneBox, /private var chatGPTColumnShown: Bool \{\s*store\.target == \.chatGPT && !\(store\.isBrowsing && !form\.isDuo\) && store\.chatGPTAvailable\s*\}/);
+  // W265: the original native controls apply only when web Space is disabled.
+  assert.match(phoneBox, /private var chatGPTColumnShown: Bool \{\s*!ChatGPTWebSpace\.isEnabled && store\.target == \.chatGPT && !\(store\.isBrowsing && !form\.isDuo\) && store\.chatGPTAvailable\s*\}/);
   assert.match(phoneBox, /\.environment\(\\\.globalDMChatGPTTopWidth, chatGPTColumnShown \? look\.chatWidth\(in: width\) : nil\)/);
   const controls = slice(nav, 'struct GlobalDMChatGPTTopControls: View', 'struct GlobalDMChatGPTRoundButton: View');
   // W184 G3c（使用者：「chatgpt的展開鈕是多餘的 我們只要滑鼠指到左側展開即可」「右上隱私對話鈕無效 ui也跟原版不同」）：守——頂列沒有 ≡、

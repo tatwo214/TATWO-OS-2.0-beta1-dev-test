@@ -1,10 +1,18 @@
 import Foundation
 import Darwin
 
-/// Normal staging uses real engines, but must not inherit the formal App's
-/// credentials or plugin discovery roots. This is not a fixture/test mode.
+/// Bundle identity selects staging. Test flags independently select fixture isolation.
 enum NativeStagingIsolation {
+    static var isW276Bundle: Bool { Bundle.main.bundleIdentifier == "ai.tatwo.tatwo2.staging" }
+    static func isSelfTest(_ environment: [String: String]) -> Bool {
+        environment.contains { key, value in
+            key.hasPrefix("TATWO2_") && (key == "TATWO2_SELFTEST" || key.hasSuffix("TEST"))
+                && !value.isEmpty && value != "0"
+        }
+    }
     static func isEnabled(_ environment: [String: String]) -> Bool {
+        if isW276Bundle { return true }
+        guard isSelfTest(environment) else { return false }
         guard let home = environment["TATWO_STAGING_SCRATCH_HOME"] else { return false }
         return !home.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -29,6 +37,9 @@ enum NativeStagingIsolation {
                   URL(fileURLWithPath: value).standardizedFileURL.path != root.standardizedFileURL.path,
                   allowsRead(URL(fileURLWithPath: value), within: root)
             else { return "invalid staging path: \(key)" }
+        }
+        if isW276Bundle && environment["TATWO_OS_ROOT"] != environment["TATWO2_OS_ROOT"] {
+            return "inconsistent staging entry root"
         }
         guard environment["HOME"] == environment["TATWO_STAGING_SCRATCH_HOME"],
               environment["CFFIXED_USER_HOME"] == environment["HOME"],

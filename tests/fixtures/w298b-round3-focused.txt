@@ -1,0 +1,18 @@
+BUILD W298b-aiinstall @ c96ec963 (lock wait 45s)
+free+inactive 40.1GB
+swift build exit=0 seconds=28
+== node tests/w298b-ai-install.test.mjs tests/w298a-ai-update.test.mjs
+ℹ tests 11
+ℹ pass 11
+ℹ fail 0
+ℹ skipped 0
+== selftest w298b
+PASS lines: 90
+W298B SUMMARY failures=0 passed=90
+selftest w298b exit=0
+== selftest w298a
+PASS lines: 39
+W298A PASS defer preserves config and dispatch remains blocked
+W298A SUMMARY failures=0 passed=39
+selftest w298a exit=0
+DONE ~/tatwo-build/verify/W298b-aiinstall-132522

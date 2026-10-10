@@ -67,20 +67,10 @@ extension ChatPageModel {
     /// Exclude managed worktrees in the shared git directory, including linked worktrees.
     nonisolated static func excludeRoomWorktrees(workdir: String) {
         do {
-            let process = Process(), output = Pipe()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            process.arguments = ["-C", workdir, "rev-parse", "--git-common-dir"]
-            var environment = ProcessInfo.processInfo.environment
-            for key in environment.keys where key.hasPrefix("GIT_") { environment[key] = nil }
-            process.environment = environment
-            process.standardInput = FileHandle.nullDevice
-            process.standardOutput = output
-            process.standardError = FileHandle.nullDevice
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { throw DispatchGitFailure(message: "git common directory unavailable") }
-            let path = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let output = HandsGit.hostRead(["rev-parse", "--git-common-dir"], cwd: workdir) else {
+                throw DispatchGitFailure(message: "git common directory unavailable")
+            }
+            let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
             let directory = URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: workdir, isDirectory: true)).standardizedFileURL
             let exclude = directory.appendingPathComponent("info/exclude")
             let fm = FileManager.default
@@ -95,24 +85,25 @@ extension ChatPageModel {
 
     /// 便利呼叫：parent 用目前選取的討論串。os-mcp 的 dispatch_rooms 不帶 parent 參數，靠這個解析。
     @discardableResult
-    func dispatch(rooms: [RoomSpec]) -> [DispatchedRoom] {
+    func dispatch(rooms: [RoomSpec]) async -> [DispatchedRoom] {
         guard let parent = selectedThreadID else { return [] }
-        return (try? dispatchChecked(rooms: rooms, parent: parent)) ?? []
+        return (try? await dispatchChecked(rooms: rooms, parent: parent)) ?? []
     }
 
     /// 每個房間＝ live.newThread 開一條子討論串、指到自己的 git worktree（或普通資料夾）、然後真的送出 brief。
     @discardableResult
-    func dispatch(rooms: [RoomSpec], parent: UUID) -> [DispatchedRoom] {
-        (try? dispatchChecked(rooms: rooms, parent: parent)) ?? []
+    func dispatch(rooms: [RoomSpec], parent: UUID) async -> [DispatchedRoom] {
+        (try? await dispatchChecked(rooms: rooms, parent: parent)) ?? []
     }
 
     @discardableResult
-    func dispatchChecked(rooms: [RoomSpec], parent: UUID) throws -> [DispatchedRoom] {
+    func dispatchChecked(rooms: [RoomSpec], parent: UUID) async throws -> [DispatchedRoom] {
         guard isLive, let live else { return [] }
         guard let parentRecord = live.threadRecord(parent),
               let project = live.doc.projects.first(where: { $0.id == parentRecord.projectID })
         else { return [] }
         // Validate the whole batch before creating threads, worktrees or remote sessions.
+        guard !rooms.contains(where: { $0.model.flatMap { EngineAIUpdate.retired($0) } != nil }) else { throw DispatchGitFailure(message: "角色模型已下架，需要你選；先不派工。") }
         // Other engines remain unavailable until their native boundaries are verified.
         if rooms.contains(where: \.readOnly) {
             guard live is ChatLiveEngine, parentRecord.deviceID == nil,
@@ -165,7 +156,7 @@ extension ChatPageModel {
                 do {
                     // W183 R6c 審查：專案在入口 chatgpt/（ChatGPT 的工作區，外部資料）＝不在那裡建工作副本、不派工。
                     if ExternalWorkspacePolicy.contains(project.workdir) { throw DispatchGitFailure(message: ExternalWorkspacePolicy.engineRefusal) }
-                    worktree = try Self.prepareRoomWorktree(workdir: project.workdir, roomID: roomID)
+                    worktree = try await DispatchGit.background { try Self.prepareRoomWorktree(workdir: project.workdir, roomID: roomID) }
                 } catch {
                     live.appendSystemMessage(threadID: threadID, text: "派工工作副本建立失敗，未送出：\(error)", status: "error|派工")
                     throw error
@@ -207,7 +198,9 @@ extension ChatPageModel {
     private static func prepareRemoteRoomWorktree(ref: RemoteDeviceRef, workdir: String, roomID: String) throws -> String {
         let plan = remoteWorktreePlan(workdir: workdir, roomID: roomID)
         // 缺主機金鑰指紋就在這裡擋掉（訊息沿用既有的派工錯誤通道：請重新配對），不會退回 TOFU。
-        let pin = try SSHHostPin.make(deviceID: ref.id, name: ref.name)
+        let pin = try DeviceFleetSSHPins.withEnvironment(deviceID: ref.id, name: ref.name) {
+                try SSHHostPin.make(deviceID: ref.id, name: ref.name, environment: $0)
+            }
         for command in plan.commands { try runSSH(ref, command: command, pin: pin) }
         return plan.worktree
     }
@@ -234,7 +227,7 @@ extension ChatPageModel {
 
     /// 本機分支名為 tatwo2-room-<roomID 前 8 碼>。
     /// workdir 是 git repo → 底下建 worktree（<workdir>/.tatwo2/wt/<roomID>）；不是 → 建普通資料夾（<workdir>/.tatwo2/rooms/<roomID>）。
-    static func prepareRoomWorktree(workdir: String, roomID: String) throws -> String {
+    nonisolated static func prepareRoomWorktree(workdir: String, roomID: String) throws -> String {
         let fm = FileManager.default
         guard UUID(uuidString: roomID) != nil else {
             throw DispatchGitFailure(message: "無效的派工房間 ID")
@@ -244,21 +237,9 @@ extension ChatPageModel {
             throw DispatchGitFailure(message: "派工專案資料夾不存在")
         }
         func run(_ args: [String], cwd: String) throws -> (status: Int32, out: String) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-            p.arguments = ["-c", "core.hooksPath=/dev/null"] + args
-            p.currentDirectoryURL = URL(fileURLWithPath: cwd)
-            var environment = ProcessInfo.processInfo.environment
-            for key in environment.keys where key.hasPrefix("GIT_") { environment[key] = nil }
-            environment["LC_ALL"] = "C"
-            environment["GIT_TERMINAL_PROMPT"] = "0"
-            p.environment = environment
-            p.standardInput = FileHandle.nullDevice
-            let out = Pipe(); p.standardOutput = out; p.standardError = out
-            try p.run()
-            let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            p.waitUntilExit()
-            return (p.terminationStatus, text)
+            let result = try HandsGit.run(args, cwd: cwd, timeout: 30, cap: 256 * 1024)
+            guard !result.truncated else { throw DispatchGitFailure(message: "git output exceeded limit") }
+            return (result.status, result.out)
         }
         let (gitStatus, gitOut) = try run(["rev-parse", "--is-inside-work-tree"], cwd: workdir)
         let isRepo = gitStatus == 0 && gitOut.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
@@ -298,7 +279,7 @@ extension ChatPageModel {
     }
 
     /// 房間收尾的唯一回收路徑：git worktree 先 stash 再解除；普通資料夾只搬進 .tatwo2/trash。
-    func reclaimRoom(_ roomID: UUID, keepBranch: Bool = true) throws -> ReclaimedRoom {
+    func reclaimRoom(_ roomID: UUID, keepBranch: Bool = true) async throws -> ReclaimedRoom {
         guard isLive, let live, let room = live.threadRecord(roomID),
               room.parentThreadID != nil,
               let project = live.projectRecord(room.projectID),
@@ -311,6 +292,7 @@ extension ChatPageModel {
                                  stash: nil, branch: nil, branchDeleted: false)
         }
 
+        return try await DispatchGit.background {
         let fm = FileManager.default
         let workdir = URL(fileURLWithPath: project.workdir, isDirectory: true).standardizedFileURL.path
         let path = URL(fileURLWithPath: roomPath, isDirectory: true).standardizedFileURL.path
@@ -326,31 +308,30 @@ extension ChatPageModel {
         }
 
         if path.hasPrefix(gitRoomRoot + "/") {
-            let hands = room.engine == ChatLiveEngine.handsEngine   // W183 R1：手腳房間的 worktree 是沙盒寫的，git 一律加固
-            let branchResult = Self.runGit(["branch", "--show-current"], cwd: path, hands: hands)
+            let branchResult = Self.runGit(["branch", "--show-current"], cwd: path)
             guard branchResult.status == 0 else { throw RoomReclaimError.gitFailed(branchResult.output) }
             let branch = branchResult.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let status = Self.runGit(["status", "--porcelain", "--untracked-files=all"], cwd: path, hands: hands)
+            let status = Self.runGit(["status", "--porcelain", "--untracked-files=all"], cwd: path)
             guard status.status == 0 else { throw RoomReclaimError.gitFailed(status.output) }
             var stashName: String?
             if !status.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let stash = Self.runGit(["stash", "push", "-u", "-m", "reclaim \(roomID.uuidString)"], cwd: path, hands: hands)
+                let stash = Self.runGit(["stash", "push", "-u", "-m", "reclaim \(roomID.uuidString)"], cwd: path)
                 guard stash.status == 0 else { throw RoomReclaimError.gitFailed(stash.output) }
-                let latest = Self.runGit(["stash", "list", "-1", "--format=%gd"], cwd: path, hands: hands)
+                let latest = Self.runGit(["stash", "list", "-1", "--format=%gd"], cwd: path)
                 stashName = latest.status == 0
                     ? latest.output.trimmingCharacters(in: .whitespacesAndNewlines)
                     : nil
             }
-            let removal = Self.runGit(["worktree", "remove", "--force", path], cwd: workdir, hands: hands)
+            let removal = Self.runGit(["worktree", "remove", "--force", path], cwd: workdir)
             guard removal.status == 0 else { throw RoomReclaimError.gitFailed(removal.output) }
 
             var deleted = false
             if !keepBranch, !branch.isEmpty {
-                let merged = Self.runGit(["branch", "--merged", "--format=%(refname:short)"], cwd: workdir, hands: hands)
+                let merged = Self.runGit(["branch", "--merged", "--format=%(refname:short)"], cwd: workdir)
                 guard merged.status == 0 else { throw RoomReclaimError.gitFailed(merged.output) }
                 let mergedBranches = Set(merged.output.split(whereSeparator: \.isNewline).map(String.init))
                 if mergedBranches.contains(branch) {
-                    let deletion = Self.runGit(["branch", "-d", branch], cwd: workdir, hands: hands)
+                    let deletion = Self.runGit(["branch", "-d", branch], cwd: workdir)
                     guard deletion.status == 0 else { throw RoomReclaimError.gitFailed(deletion.output) }
                     deleted = true
                 }
@@ -380,26 +361,14 @@ extension ChatPageModel {
             throw RoomReclaimError.archiveFailed(error.localizedDescription)
         }
         return ReclaimedRoom(roomID: roomID.uuidString, originalPath: path, archivedPath: destination.path, stash: nil, branch: nil, branchDeleted: false)
+        }
     }
 
-    private static func runGit(_ arguments: [String], cwd: String, hands: Bool = false) -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        process.arguments = hands ? HandsGit.arguments(arguments) : arguments
-        if hands { process.environment = HandsGit.environment() }   // W183 R1
-        process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+    nonisolated private static func runGit(_ arguments: [String], cwd: String) -> (status: Int32, output: String) {
         do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return (-1, error.localizedDescription)
-        }
-        return (
-            process.terminationStatus,
-            String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+            let result = try HandsGit.run(arguments, cwd: cwd, timeout: 30, cap: 256 * 1024)
+            return result.truncated ? (-1, "git output exceeded limit") : (result.status, result.out)
+        } catch { return (-1, String(describing: error)) }
     }
 
     enum RoomReclaimError: Error, CustomStringConvertible {
@@ -425,7 +394,8 @@ extension ChatPageModel {
 extension ChatPageModel {
     /// Composer entrypoint: worktree creation is also off-main; existing synchronous bridge API is unchanged.
     func dispatchPromptRoom(_ spec: RoomSpec, parent: UUID) async throws -> [DispatchedRoom] {
-        if spec.readOnly { return try dispatchChecked(rooms: [spec], parent: parent) }
+        if let id = spec.model, EngineAIUpdate.retired(id) != nil { throw DispatchGitFailure(message: "角色模型已下架，需要你選；先不派工。") }
+        if spec.readOnly { return try await dispatchChecked(rooms: [spec], parent: parent) }
         guard let source = live, let record = source.threadRecord(parent),
               let project = source.projectRecord(record.projectID) else {
             throw DispatchGitFailure(message: "找不到派工專案")

@@ -102,11 +102,11 @@ test('(a) the effective scope is the central setting (level) + every project on 
 // ---------- (b) 專案全部可見、實盤類最多 L0 ----------
 
 test('(b) every project is visible (new ones included); trading projects (one constant list) are at most L0 — L1/L2 tools are refused on the host', () => {
-  // 守：清單只有一個常數、就是施工單那五個字；不分大小寫；看專案名與資料夾名（最後一段）。
+  // 守：同一份關鍵字、不分大小寫；設定資料夾名與真實路徑的家目錄以下每一段均用包含比對。
   assert.deepEqual(swiftList(floors, 'keywords'), ['實盤', '交易', 'trading', 'hermes', 'btc']);
   assert.match(floors, /static let maxLevel = 0/);
   assert.match(between(floors, 'static func isTrading(name: String, folder: String) -> Bool {', '\n    }'),
-    /let texts = \[name\.lowercased\(\), \(folder as NSString\)\.lastPathComponent\.lowercased\(\)\]\s*return keywords\.contains \{ keyword in texts\.contains \{ \$0\.contains\(keyword\.lowercased\(\)\) \} \}/);
+    /let texts = \[name\.lowercased\(\), \(folder as NSString\)\.lastPathComponent\.lowercased\(\)\] \+ tail\.split\(separator: "\/"\)\.map\(String\.init\)\s*return keywords\.contains \{ keyword in texts\.contains \{ \$0\.contains\(keyword\.lowercased\(\)\) \} \}/);
   // 守：全部可見＝這台全部看得到的專案（新專案自動加入），不是本機清單。
   assert.match(rooms, /let setting = settings\.allProjects \? host : Set\(settings\.allowedProjectIDs\)/);
   assert.match(swift('Facade/HandsService.swift'), /let records = current\.allProjects \? buildProjectRecords\(\) : projectRecords\(Set\(current\.allowedProjectIDs\)\)/);
@@ -677,8 +677,8 @@ test('(e) auto-tick: only the one known box, by CEF\'s node-verified native (isT
   const action = between(pod, 'private func action(_ command: String, _ arguments: [String: Any]) async -> HandsConnectorAction {', 'nonisolated static func armToken(');
   assert.match(action, /let before = surface\(\)\?\.nativeView\?\.navigationGeneration \?\? 0/);
   assert.match(action, /let after = surface\(\)\?\.nativeView\?\.navigationGeneration \?\? 0\s*let generation = before == after \? after : 0/);
-  const target = between(connect, 'init?(wire raw: Any?, generation: UInt64 = 0) {', 'init(x: Double');
-  assert.match(target, /width >= 8, height >= 8, vw >= 1, vh >= 1, vw <= 10_000, vh <= 10_000,\s*x >= 0, y >= 0, x \+ width <= vw, y \+ height <= vh/);
+  const target = between(connect, 'init?(wire raw: Any?, generation: UInt64 = 0, minimumHeight: Double = 8) {', 'init(x: Double');
+  assert.match(target, /width >= 8, height >= minimumHeight, vw >= 1, vh >= 1, vw <= 10_000, vh <= 10_000,\s*x >= 0, y >= 0, x \+ width <= vw, y \+ height <= vh/);
   assert.match(target, /Set\(object\.keys\)\.isSubset\(of: \["x", "y", "w", "h", "vw", "vh"\]\)/);
   // W183 R10 第二輪（GPT-6 2）：不走裸座標——拿著 Pod、還是量的那一份文件（導頁世代）、沒縮放、畫面大小對得上；快照裡同一個位置
   // 剛好一個控制項；走 CEF 的節點驗證點擊（clickElement：送出之前再核那一點最上面還是它、沒被蓋、位置沒變）；送出那一刻還拿著同一次獨占。
@@ -721,7 +721,8 @@ test('(e) auto-tick: only the one known box, by CEF\'s node-verified native (isT
   assert.match(tap, /if \(e\.isTrusted !== true\) \{\s*if \(type === 'click'\) \{ taint \+= 1;/);
   // 守（R9 的一次性記號，W183 R10 第二輪改成兩步按）：armed 的那一刻表單的確認就用掉（同一個確認再帶一次＝ack_replayed），
   // 真的按（connectorPress）之前再用掉 armed 的記號（第二次＝ack_replayed）；動態反例在 w183-connect 的 two-step press 那一條。
-  assert.match(tap, /const armPress = \(owned, button, kind, check\) => \{\s*const token = newMark\(\);\s*spentMarks\[owned\.mark\] = 'used';/);
+  assert.match(tap, /const armPress = \(owned, button, kind, check\) => \{\s*const token = newMark\(\), accountEpoch = authEpoch;\s*spentMarks\[owned\.mark\] = 'used';/);
+  assert.match(tap, /if \(authEpoch !== accountEpoch\) return stale\('account_changed'\);/);
   assert.match(tap, /rec\.armed = null;\s*consume\(\{ mark: t, rec \}\);\s*kpress\(arm\.button\);/);
   for (const label of ['W183 R10 代勾：Pod 說只剩「I understand」那一格＝TATWO 點那一格', 'W183 R10 代勾點不下去：交給你勾', 'W183 R10 點了沒勾到：不再點第二次',
     'W183 R10 第二輪 代勾只點「同一份文件、同一個位置剛好一個」的那個節點', 'W183 R10 第三輪 派送代勾前核到同意內容變了']) {
@@ -787,7 +788,7 @@ test('(f) auto-fill only on the bound page that the press opened (anchor first, 
   assert.match(connect, /if let why = pressAnchor\.flatMap\(\{ Self\.anchorProblem\(frame, anchor: \$0, leftChatGPT: mainLeftChatGPT\) \}\)\s*\?\? Self\.provenanceProblem\(frame, since: pressAnchor\?\.at \?\? awaitingSince \?\? \.distantFuture\) \{/);
   // Pod 端：每一步之前都核「還是綁住的那一頁」（同一個導頁世代、同一組參數，常數時間比對）；表單只認這台主機的那一張。
   const fill = between(pod, 'func fillPairingCode(', 'private func boundView(');
-  assert.match(fill, /guard view\.navigationGeneration == generation, let current = view\.currentURLString\.flatMap\(\{ URL\(string: \$0\) \}\) else \{ return false \}/);
+  assert.match(fill, /view\.navigationGeneration == generation && sameEvidence\(\) && view\.zoomLevel == 0 && Self\.sameViewport\(view\.bounds\.size, viewport\)/);
   assert.match(fill, /return HandsConnectFlow\.authorizeEvidence\(current, publicHost: publicHost\)\.map \{ HandsAuth\.constantTimeEqual\(\$0, evidence\) \} \?\? false/);
   assert.ok((fill.match(/stillBound\(\)/g) || []).length >= 4, 'checked before the snapshot, after it, before every key and before submit');
   const form = between(pod, 'nonisolated static func pairingForm(', 'private nonisolated static func rect(');

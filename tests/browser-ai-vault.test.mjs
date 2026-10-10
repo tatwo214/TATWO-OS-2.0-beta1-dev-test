@@ -1,9 +1,11 @@
+import { keychainFixtureFiles } from './helpers/w255b-keychain-fixture.mjs';
 import { testScratch } from './helpers/test-scratch.mjs';
 import { writeBrowserVisualTokens } from './helpers/browser-visual-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
+import {readFileSync, writeFileSync, mkdirSync, existsSync} from 'node:fs';
 import {join} from 'node:path';
+import {homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {spawnSync, spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -106,14 +108,16 @@ test('W58 production Swift vault, coordinator, CSV, Touch ID ordering/cache and 
   const profile=read(app+'Browser/EmbeddedBrowserProfile.swift');
   const metadata=profile.slice(profile.indexOf('struct EmbeddedBrowserPasswordFormMetadata:'),profile.indexOf('struct EmbeddedBrowserNavigationJournal:'));
   writeFileSync(join(dir,'metadata.swift'),'import Foundation\nimport WebKit\n'+metadata);
-  const files=['Browser/BrowserPasswordVault.swift','Browser/BrowserPasswordAssist.swift','Browser/BrowserGeneralSettings.swift','Browser/BrowserShortcuts.swift',
+  const files=['Engine/NativeStagingIsolation.swift','Browser/BrowserPasswordVault.swift','Browser/BrowserPasswordAssist.swift','Browser/BrowserGeneralSettings.swift','Browser/BrowserShortcuts.swift',
     'Custody/TOTP.swift','Custody/AIICloudImport.swift','Custody/AIAccountEditView.swift',
     'Browser/BrowserAIVault.swift','Browser/BrowserAILogin.swift','Browser/BrowserPasswordsSettingsView.swift','Browser/BrowserAIVaultSettingsView.swift',
     'Browser/Import/BrowserPasswordCSVImport.swift','Browser/Diagnostics/BrowserDiagnosticsAudit.swift','Browser/Diagnostics/BrowserDiagnosticsPrivacy.swift',
     'Chat/TatwoPermissionPreset.swift','Chat/TatwoCodexSandboxMode.swift',
     'Browser/TatwoBrowserLaneCore.swift','Browser/BrowserTabRegistry.swift'].map(f=>app+f);
   const binary=join(dir,'fixture');
-  const compile=spawnSync('swiftc',['-parse-as-library','-swift-version','6','-num-threads','2',...files,join(dir,'metadata.swift'),
+  const plugins=process.env.TATWO_TEST_SWIFT_PLUGIN_PATH ?? join(homedir(),'tatwo-build/toolchains.noindex/macosx-plugins');
+  const pluginArgs=existsSync(join(plugins,'libSwiftUIMacros.dylib')) ? ['-plugin-path',plugins] : [];
+  const compile=spawnSync('swiftc',[...pluginArgs,'-parse-as-library','-swift-version','6','-num-threads','2',...keychainFixtureFiles(dir, files),join(dir,'metadata.swift'),
     'App/Sources/Tatwo2/Visual/WorkspaceSidebarMetrics.swift', 'App/Sources/Tatwo2/Browser/BrowserSettingsComponents.swift', writeBrowserVisualTokens(dir), 'tests/fixtures/browser-ai-vault-dependencies.swift','tests/fixtures/browser-ai-vault-checks.swift','-o',binary],{cwd:root,encoding:'utf8',timeout:150000});
   assert.equal(compile.status,0,compile.stdout+compile.stderr);
   const run=spawnSync(binary,[dir],{encoding:'utf8',timeout:20000});

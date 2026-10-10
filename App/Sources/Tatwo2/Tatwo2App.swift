@@ -7,6 +7,9 @@ import AppKit
 enum Tatwo2App {
     @MainActor
     static func main() {
+        if ProcessInfo.processInfo.environment["TATWO2_FLEET_UPGRADE_CHECK"] == "1" {
+            print(DeviceFleetStore.upgradeCheck(environment: ProcessInfo.processInfo.environment)); exit(0)
+        }
         // Snapshot before launch environment sanitization; CEF snapshots in +load.
         _ = StagingBrowserLoopbackPolicy.runtimeEnvironment
         _ = StagingBrowserLoopbackPolicy.runtimeBundleIdentifier
@@ -27,10 +30,12 @@ enum Tatwo2App {
         TatwoLaunchEnvironmentGuard.sanitizeInheritedExternalVolumeEnvironment()
         TatwoLaunchEnvironmentGuard.moveWorkingDirectoryOffExternalVolumes()
         let application: NSApplication = TatwoCEFApplication.shared
+        _ = BrowserDownloadFlight.shared
         application.setActivationPolicy(TatwoLaunchSurfacePolicy.initialActivationPolicy())
         TatwoLaunchEnvironmentGuard.configureHostResourceGovernorAtLaunch()
         if TatwoPanelSnapshotExporter.exportIfRequested() { return }
         if TatwoSingleInstanceGuard.forwardToExistingInstanceAndExitIfNeeded() { return }
+        RemoteHostLink.reapOrphans()
         BrowserTabRegistry.shared.prepareForLaunch()
         _ = DisplayIslandFeedback.shared
         _ = DisplayControlService.shared
@@ -39,6 +44,7 @@ enum Tatwo2App {
         let cliDelegate = Tatwo2CLITerminationDelegate(wrapped: delegate)
         retainedCLITerminationDelegate = cliDelegate
         OSPresence.shared.install()
+        EngineAIUpdate.shared.startDailyChecks()
         application.delegate = cliDelegate
         application.run()
     }
@@ -82,8 +88,18 @@ private final class SidecarTerminationObserver {
         _ = CLISessionsTermination.shouldTerminate()
         OSEventLog.flushAll()
         wrapped.applicationWillTerminate(notification)
+        RemoteHostLink.terminateOwned()
+        CrashRelaunch.willTerminate()
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if CrashRelaunch.launch() { exit(0) }
+        wrapped.applicationDidFinishLaunching(notification)
+    }
+    func application(_ application: NSApplication, openFile filename: String) -> Bool {
+        CrashRelaunch.hasLaunchTargets = true; return false
     }
     func application(_ application: NSApplication, open urls: [URL]) {
+        CrashRelaunch.hasLaunchTargets = true
         wrapped.application(application, open: urls)
     }
 }

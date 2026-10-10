@@ -1,0 +1,7 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift
+App/Sources/Tatwo2/Facade/W315Acceptance.swift
+App/Sources/Tatwo2/Facade/W208TapAcceptance.swift
+tests/w317-installedwhy.test.mjs
+tests/w312-composerpicker.test.mjs
+tests/fixtures/w317-room-allow.txt

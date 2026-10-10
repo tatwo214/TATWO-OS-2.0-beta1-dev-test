@@ -1,0 +1,25 @@
+BUILD W294f-fastpath @ 2dcc0f65 (lock wait 0s)
+free+inactive 40.3GB
+swift build exit=0 seconds=111
+== node tests/w208-tap-stress.test.mjs tests/w294-plugins.test.mjs tests/w185-tap-model.test.mjs tests/w294f-fastpath.test.mjs tests/public-privacy.test.mjs
+ℹ tests 78
+ℹ pass 78
+ℹ fail 0
+ℹ skipped 0
+== selftest w208tap
+PASS lines: 529
+W208 PASS W294 scan failure writes the exact blocked step in one connection-log line
+W208 SUMMARY failures=0 passed=529
+selftest w208tap exit=0
+== selftest w185tap
+PASS lines: 438
+W185TAP SUMMARY failures=0 passed=438
+selftest w185tap exit=0
+== selftest w183connect
+PASS lines: 403
+W183CONNECT SUMMARY failures=0 passed=403 skipped=1
+selftest w183connect exit=0
+== selftest w292
+PASS lines: 42
+W292 SUMMARY failures=0
+selftest w292 exit=0

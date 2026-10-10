@@ -1,0 +1,14 @@
+BUILD W298b-aiinstall @ c96ec963 (lock wait 0s)
+free+inactive 38.4GB
+swift build exit=0 seconds=31
+== selftest w298b
+PASS lines: 83
+W298B FAIL R1 failed Claude update restores full version tree and exact launcher
+W298B FAIL R2 verification uses private snapshot despite source mutation
+W298B FAIL R2 preexisting backup is reverified before adoption
+W298B FAIL R3 rollback validation waits for in-flight update
+W298B FAIL R4 only user rollback records explicit version pin
+W298B FAIL R5 failed current publication preserves exact previous pointer
+W298B SUMMARY failures=6 passed=83
+selftest w298b exit=1
+DONE ~/tatwo-build/verify/W298b-aiinstall-131849

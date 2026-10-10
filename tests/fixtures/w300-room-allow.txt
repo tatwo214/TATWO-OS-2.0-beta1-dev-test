@@ -1,0 +1,10 @@
+App/Sources/Tatwo2/Facade/RemoteOfflineCache.swift
+App/Sources/Tatwo2/Shell/AppShell.swift
+App/Sources/Tatwo2/Facade/W295Acceptance.swift
+tests/w295-xsmooth.test.mjs
+tests/fixtures/w300-*
+tests/fixtures/w294f-evidence/baseline-node.txt
+tests/fixtures/w294f-evidence/selftest-w183connect.txt
+tests/fixtures/w294f-evidence/selftest-w185tap.txt
+tests/fixtures/w294f-evidence/selftest-w208tap.txt
+tests/fixtures/w294f-evidence/summary.txt

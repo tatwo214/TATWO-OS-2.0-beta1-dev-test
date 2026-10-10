@@ -22,16 +22,16 @@ enum SendFlowAcceptance {
         model.refreshIssueLists()
         let entry = engine.issues(threadID: thread, global: false).first!
         let prefix = "sample  text\n```swift\n    let example = 1\n```\n"
-        model.prompt = prefix + "@fixture  \n"
+        model.prompt = prefix + "!fixture  \n"
         model.pickIssueMention(entry)
         check("send-12/F4 only trailing token removed, formatting preserved", model.prompt == prefix + "  \n")
-        for token in ["@fixture", "@"] {
+        for token in ["!fixture", "!"] {
             model.prompt = prefix + token
             model.issueMentionSelectedIndex = nil
             check("send-12 unselected Enter submits \(token)", !model.handleIssueMentionKey(.commit))
             check("send-12 unselected Enter preserves draft", model.prompt == prefix + token)
         }
-        model.issueMentionSelectedIndex = 0
+        _ = model.handleIssueMentionKey(.next)
         check("send-12 selected Enter picks issue", model.handleIssueMentionKey(.commit))
         try documentRecovery(root: root.appendingPathComponent("document-fixture"), env: env, check: check)
         try await StopFlowAcceptance.run(root: root.appendingPathComponent("stop-fixture"), env: env, check: check)

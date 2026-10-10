@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
+import { fleetDispatchCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const read = path => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
 const peer = read('App/Sources/Tatwo2/Facade/PeerUpdateSource.swift');
@@ -63,10 +64,9 @@ test('production Swift: registry/available round-trip, LAN order, argv, capture-
     const token = randomUUID();
     writeFileSync(join(root, 'owner.json'), JSON.stringify({ token }));
     const fixtureTypes = sync.slice(sync.indexOf('enum RemoteEngineSyncError'), sync.indexOf('struct RemoteEngineSync {'));
-    const harness = `
+    const harness = fleetDispatchCompileStubs() + `
 import Foundation
 // W76 的 DeviceRole 只在 DeviceRegistry 當欄位型別；同 case 同 rawValue 的 stub，避免拖進 DeviceIdentity 的整串依賴。
-enum DeviceRole: String, Codable, Sendable { case primary, secondary }
 // SSHHostPin.make(deviceID:) 只用這一個查表；harness 給空表（本測試不走有 pin 的路徑）。
 enum DeviceStatusReader { static func registry(environment: [String: String]) -> [DeviceRecord] { [] } }
 ${fixtureTypes}
@@ -103,7 +103,7 @@ ${fixtureTypes}
     for wrong in [path.replacingOccurrences(of: "/sample/", with: "/../"), path + "\\n", "/etc/passwd"] {
       precondition(!PeerUpdateSource.cachePath(wrong, tag: "v2.0.4", name: "TATWO-OS-app.zip"))
     }
-    let registry = DeviceRegistry(root: root.appendingPathComponent("live"), authorizedKeysURL: root.appendingPathComponent("keys"))
+    let registry = DeviceRegistry(root: root.appendingPathComponent("live"), authorizedKeysURL: root.appendingPathComponent("keys"), knownHostsURL: root.appendingPathComponent("known_hosts"))
     try registry.add(device); precondition(registry.list().first?.lanHost == "sample.local")
     var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: registry.url)) as! [[String: Any]]
     legacy[0].removeValue(forKey: "lanHost")
@@ -146,6 +146,7 @@ ${fixtureTypes}
     const compile = spawnSync('swiftc', ['-D', 'DEBUG', '-swift-version', '5', '-parse-as-library',
       fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/PeerUpdateSource.swift', import.meta.url)),
       fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/DeviceRegistry.swift', import.meta.url)),
+      ...['TatwoEntry', 'DeviceIdentity', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate'].map(name => fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/' + name + '.swift', import.meta.url))),
       fileURLToPath(new URL('../App/Sources/Tatwo2/Facade/SSHHostPin.swift', import.meta.url)),
       join(root, 'Main.swift'), '-o', binary], { encoding: 'utf8', timeout: 90_000 });
     assert.equal(compile.status, 0, compile.stderr);

@@ -109,8 +109,10 @@ test('v6 sidebar has five ordered sections, white selection and no chat or searc
   assert.match(design, /ForEach\(store.spaces\)/);
   // W112：圓點搬到獨立檔（右鍵選單）。W184 G2d：主視窗那一顆（沒給 choose）照舊點＝store.selectSpace；私訊框那一顆給自己的選擇回呼。
   assert.match(read('App/Sources/Tatwo2/Browser/BrowserSpaceMenu.swift'), /Button \{ if let choose \{ choose\(space\) \} else \{ store.selectSpace\(space.id\) \} \}/);
-  assert.match(design, /Image\(systemName: "arrow.down.circle"\)/);
-  assert.match(design, /popover\(isPresented: \$downloadsPresented, arrowEdge: \.bottom\)/);
+  assert.match(design, /BrowserDownloadIndicator\(scope: store\.downloadScope\)/);
+  assert.match(design, /popover\(isPresented: \$downloadsPresented, arrowEdge: \.top\)/);   // 10-07：往下開會擠出螢幕並讓 NSPopover 重排迴圈當機
+  assert.match(design, /if !downloadStore\.downloads\.isEmpty \{/);   // 10-07：下載鈕有下載才出現
+  assert.doesNotMatch(design, /onGeometryChange\(for: CGFloat\.self\) \{ \$0\.size\.height \} action: \{ downloadsContentHeight/);
   assert.match(design, /Button\("在 Finder 顯示"\) \{ downloadStore.reveal\(download\) \}/);
   assert.match(design, /Button\("清除紀錄", action: downloadStore.clearDownloads\)/);
   assert.doesNotMatch(design, /sidebar.left/);
@@ -381,6 +383,7 @@ test('swiftc typechecks complete design and real wrapping picker against isolate
   const modeSection = section(sidebar, '    var workspaceModeSection:', '    var cliSidebar:');
   const stubs = join(dir, 'VisualSignatures.swift');
   writeFileSync(stubs, `import SwiftUI
+@MainActor final class TatwoCEFBrowserView: NSView {}
 @MainActor enum BrowserWebFeatures { static func focusOwner(for view: NSView) -> NSView { view } }
 struct BrowserDiagnosticsView: View { var body: some View { EmptyView() } }
 struct BrowserLoginHelpView: View { let currentURL: String; var body: some View { EmptyView() } }
@@ -459,6 +462,7 @@ struct TatwoThemePalette {
 }
 enum TatwoActivePalette { static var current: TatwoThemePalette { .init() } }
 enum LiquidGlassTokens {
+    static var brandAccent: Color { TatwoActivePalette.current.brandAccent }
     static let radiusCard: CGFloat = 20
     static let radiusChip: CGFloat = 12
     static let shapeStyle = RoundedCornerStyle.continuous
@@ -491,6 +495,9 @@ enum ChatGlassChipModifier { static var chipForeground: Color { .primary } }
     join(root, 'App/Sources/Tatwo2/Shell/WorkspaceSidebarShell.swift'),
     join(root, 'App/Sources/Tatwo2/Shell/TrafficLightAlignedTitle.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserDownloadFeedback.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/BrowserDownloadFlight.swift'),
+    join(root, 'App/Sources/Tatwo2/Browser/ChatBrowserDownloadsView.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserWorkSpacePolicies.swift'), join(root, 'App/Sources/Tatwo2/Browser/BrowserMemoryPolicy.swift'), join(root, 'App/Sources/Tatwo2/Browser/BrowserMemorySettings.swift'), join(root, 'App/Sources/Tatwo2/Browser/BrowserNativeMemoryBudget.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserGeneralSettings.swift'),
     join(root, 'App/Sources/Tatwo2/Browser/BrowserShortcuts.swift'),

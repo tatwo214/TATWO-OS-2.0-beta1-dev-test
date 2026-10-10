@@ -1,0 +1,11 @@
+--- tests/w208-tap-stress.test.mjs
++++ tests/w208-tap-stress.test.mjs
+@@ -92,7 +92,7 @@
+   const { pod, clicks } = connectorPage([foreign]); await pod.signIn();
+   const scan = (await pod.command({ cmd: 'connectorScan', url: MCP })).data;
+   assert.deepEqual(scan.matches, []); assert.deepEqual(scan.conflictingNames, [NAME]);
+-  const result = await pod.command({ cmd: 'connectorDelete', url: MCP, connectorID: foreign.id, name: NAME, keeping: 'active-connector' });
++  const result = await pod.command({ cmd: 'connectorDelete', url: MCP, connectorID: foreign.id, name: NAME, keeping: 'active-connector', detailPath: '/plugins/' + foreign.id });
+   assert.equal(result.data.deleted, false); assert.deepEqual(clicks.delete, []); assert.equal(clicks.create, 0);
+ });
+ 

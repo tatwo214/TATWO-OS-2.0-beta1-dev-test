@@ -825,6 +825,7 @@ final class GlobalDMPanelController {
         let drawer = GlobalDMChatGPTKeys.matches(event, keyCode: GlobalDMChatGPTKeys.drawerKeyCode)
         let newChat = GlobalDMChatGPTKeys.matches(event, keyCode: GlobalDMChatGPTKeys.newChatKeyCode)
         guard drawer || newChat, form != .tent, !isComposing(in: window) else { return event }
+        guard !ChatGPTWebSpace.isEnabled else { return event }
         let left = store.target == .chatGPT && store.chatGPTAvailable && !store.isEditingDirectKeys && !(store.isBrowsing && !form.isDuo)
         let right = form.isDuo && !left
             && !GlobalDMDuoLayout.rightColumnShowsBrowser(browsing: store.isBrowsing, browsingBeside: store.isBrowsingBeside,
@@ -881,7 +882,6 @@ final class GlobalDMPanelController {
         // W184 E：倒放沒有 Browser 那一頁、也沒有對象清單（整塊是影片子畫面）：Esc＝收框（影片還回主視窗的分頁），不給倒放框裡的網頁。
         if form == .tent {
             if window === floating { store.isFloatingOpen = false } else if store.isOpen { store.isOpen = false } else { return event }
-            CoderSheetEscapeGuard.armForDM(after: event)
             return nil
         }
         // W184 G2 修正（GPT-6 4；查證 #5、#8）：Browser 自己的操作面板（網址卡與它的輸入框、切換空間選單、書籤／珍藏 sheet）開著＝
@@ -905,7 +905,6 @@ final class GlobalDMPanelController {
         if store.isPickerOpen { store.isPickerOpen = false; return nil }
         if store.isEditingDirectKeys { store.isEditingDirectKeys = false; return nil }
         if window === floating { store.isFloatingOpen = false } else if store.isOpen { store.isOpen = false } else { return event }
-        CoderSheetEscapeGuard.armForDM(after: event)
         return nil
     }
 

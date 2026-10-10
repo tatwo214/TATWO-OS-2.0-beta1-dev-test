@@ -13,7 +13,7 @@ protocol BrowserPasswordAssistBridge: AnyObject {
     var onPasswordAssistPageLoaded: ((String, UInt64, Bool, Bool) -> Void)? { get set }
     var onPasswordAssistInvalidated: ((Bool, Bool) -> Void)? { get set }
     func fillCredentialUsername(_ username: String, password: String, formID: String,
-                                navigationGeneration: UInt64)
+                                navigationGeneration: UInt64, userApproved: Bool)
 }
 
 /// One native tab lifetime. Secrets exist only in ephemeral callbacks/pending submission;
@@ -164,7 +164,7 @@ final class BrowserPasswordAssist {
                 let password = try vault.passwordForApprovedFill(account.id)
                 guard epoch == ticket, current(origin: origin, generation: generation) else { return }
                 self.bridge?.fillCredentialUsername(account.username, password: password,
-                                                    formID: formID, navigationGeneration: generation)
+                                                    formID: formID, navigationGeneration: generation, userApproved: true)
             } catch {
                 // Arbitrary Keychain/provider errors are never logged or shown with secret data.
             }

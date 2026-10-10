@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import "TatwoPlanExport.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -189,8 +190,8 @@ typedef void (^TatwoCEFFileDialogHandler)(NSInteger mode, NSString *title, NSStr
 @property(nonatomic, copy, nullable) void (^onCredentialSubmitted)(NSString *origin, NSString *username, NSString *password);
 @property(nonatomic, copy, nullable) void (^onPasswordAssistPageLoaded)(NSString *origin, uint64_t generation, BOOL successful, BOOL hasPasswordForm);
 @property(nonatomic, copy, nullable) void (^onPasswordAssistInvalidated)(BOOL reload, BOOL preserveSubmission);
-- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g
-    NS_SWIFT_NAME(fillCredentialUsername(_:password:formID:navigationGeneration:));
+- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g userApproved:(BOOL)approved
+    NS_SWIFT_NAME(fillCredentialUsername(_:password:formID:navigationGeneration:userApproved:));
 #pragma mark - W57c End
 #pragma mark - W58 AI vault login; strictly agent actor, never credential results
 @property(nonatomic, copy, readonly) NSDictionary *agentLoginState;
@@ -276,8 +277,11 @@ typedef void (^TatwoCEFFileDialogHandler)(NSInteger mode, NSString *title, NSStr
          characters:(NSString *)characters unmodified:(NSString *)unmodified
           modifiers:(NSUInteger)modifiers phase:(int)phase navigationGeneration:(uint64_t)generation;
 - (void)releaseAgentKey;
+@property(nonatomic, readonly, copy) NSString *lastAgentKeyRefusal;
 - (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation
     dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion;
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion;
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect pairing:(BOOL)pairing dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion;
 - (void)selectValue:(NSString *)value elementID:(NSString *)elementID
     navigationGeneration:(uint64_t)generation dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
     completion:(TatwoCEFBrowserInputHandler)completion;
@@ -289,6 +293,10 @@ typedef void (^TatwoCEFFileDialogHandler)(NSInteger mode, NSString *title, NSStr
 /// No missing-gate fallback; the older overload is for non-agent host callers.
 - (void)typeText:(NSString *)text elementID:(NSString *)elementID
     navigationGeneration:(uint64_t)generation submit:(BOOL)submit
+    dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
+    completion:(TatwoCEFBrowserInputHandler)completion;
+- (void)typeText:(NSString *)text elementID:(NSString *)elementID
+    navigationGeneration:(uint64_t)generation submit:(BOOL)submit pairing:(BOOL)pairing
     dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
     completion:(TatwoCEFBrowserInputHandler)completion;
 #pragma mark - W57a

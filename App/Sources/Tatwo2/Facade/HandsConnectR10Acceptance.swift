@@ -10,7 +10,7 @@ import Foundation
 //   （卡片一句話）；代勾的時候（Create 還沒按）出現配對頁＝當場終止、那一筆作廢、不填。
 // - 代填：主機核對過綁住的那一頁才給碼；Pod 在那一頁填好送出，碼不上卡片（presenter 從沒顯示碼）；填不成、送了沒被收下（剩幾次變少、太久）＝退回顯示碼；
 //   手動模式不代填；沒綁上（攻擊者先占交易）＝不填。
-// - 配對表單的辨識（畫面快照→欄位）與配對碼的按鍵：純資料的規則在這裡驗；真的 CEF（原生點擊、按鍵落在網頁上）這個建置沒有 Chromium，主導實機驗。
+// - 配對表單的辨識（畫面快照→欄位）與節點綁定：純資料的規則在這裡驗；真的 CEF（原生點擊、節點綁定 typeText）由 W328 在隔離的 loopback Pod 驗。
 
 extension HandsConnectAcceptance {
     @MainActor static func r10Checks(_ check: Checker, _ base: URL) async throws {
@@ -583,6 +583,7 @@ extension HandsConnectAcceptance {
         let pod = ChatGPTConnectorPod(tap: tap, surface: { surface })
         pod.restoreTimeout = 3
         pod.attach()
+        surface.onPluginsLoaded = { transport.onEvent?(#"{"type":"hello","loggedIn":true}"#) }
         surface.commit("https://chatgpt.com/plugins")
         var anchors: [HandsPressAnchor] = []
         pod.onPressDispatch = { anchors.append($0) }
@@ -632,7 +633,7 @@ extension HandsConnectAcceptance {
               "good=\(String(describing: good?.elementID)) leaked=\(leaked)")
     }
 
-    // MARK: 配對表單的辨識（畫面快照→欄位）與配對碼的按鍵
+    // MARK: 配對表單的辨識（畫面快照→欄位）與節點綁定
 
     @MainActor static func r10PairingForm(_ check: Checker) {
         let host = publicHost
@@ -667,10 +668,10 @@ extension HandsConnectAcceptance {
         check(found?.field == NSRect(x: 40, y: 300, width: 380, height: 44) && found?.submit == NSRect(x: 40, y: 360, width: 380, height: 44) && leaked.isEmpty,
               "W183 R10 代填只認這一頁的這一張表單：這台主機、同一份文件、畫面大小對得上、送到這台主機的 POST、剛好一格文字欄＋一顆送出、都在畫面裡；其他一律不填",
               "found=\(String(describing: found)) leaked=\(leaked)")
-        let a = ChatGPTConnectorPod.key(for: "A"), seven = ChatGPTConnectorPod.key(for: "7")
-        check(a?.characters == "A" && a?.flags.contains(.shift) == true && a?.windowsCode == 65 && seven?.characters == "7" && seven?.windowsCode == 55
-              && ChatGPTConnectorPod.key(for: "0") == nil && ChatGPTConnectorPod.key(for: "I") == nil && ChatGPTConnectorPod.key(for: "o") == nil,
-              "W183 R10 配對碼的按鍵：字母用 Shift 打大寫、數字照打；字元集外的（0、1、I、O）不打")
+        var missingNode = good
+        missingNode["forms"] = [form([["type": "text", "rect": ["x": 40, "y": 300, "width": 380, "height": 44]], field("submit", 360)])]
+        check(found?.elementID == "cef-300" && ChatGPTConnectorPod.pairingForm(missingNode, publicHost: host, generation: 7, viewport: viewport) == nil,
+              "W330 代填綁定快照中同一格的 elementID；缺少節點 ID 時拒絕")
     }
 }
 #endif

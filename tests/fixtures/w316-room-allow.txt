@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/fixtures/w304b-installed-sidebar.mjs
+tests/fixtures/w316-realmenu.mjs
+tests/fixtures/w316-room-allow.txt
+tests/w316-realmenu.test.mjs

@@ -28,7 +28,10 @@ extension ChatPage {
             } else if model.mode == .bot {
                 // 金樣快照維持 Gen-4 12 場景（凍結的視覺基線不動）；
                 // 互動 runtime 走 Gen-5 工作室版（2026-09-09 使用者收斂）。
-                if BotPageRootView.snapshotExportMode && !BotStudioRootView.exportGen5 {
+                if PetSettings.enabled() {
+                    PetsRootView(model: model)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if BotPageRootView.snapshotExportMode && !BotStudioRootView.exportGen5 {
                     BotPageRootView.forScene(Self.botExportScene ?? "rail-tree", onSwitchMode: { newMode in
                         withAnimation(.easeInOut(duration: 0.14)) { model.mode = newMode }
                     })
@@ -53,8 +56,20 @@ extension ChatPage {
             } else if model.mode == .chatgpt {
                 // W177：ChatGPT Space 自己有對話與輸入框；視窗裡分享／⋯／臨時聊天在紅綠燈那一列的右上（ChatPage 的頂右 overlay），
                 // 對話直接從那一列下面開始（使用者 09-25 #125「上方chatgpt的空間空太多 文字都被擠在下面」）。
-                ChatGPTSpaceMainPane(model: ChatGPTSpaceModel.shared, osModel: model, showsHeader: surface != .window)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if ChatGPTWebSpace.isEnabled {
+                    let tap = ChatGPTWebSpace.windowTap
+                    ChatGPTWebSpacePane(tap: tap, pod: tap.pod)
+                        .ignoresSafeArea(.container, edges: isPanel ? [] : .top)
+                        .background {
+                            if !isPanel {
+                                BrowserChromeRevealHost(reveal: webSpaceChromeReveal, sidebarVisible: isChatProjectRailPinned || isChatProjectRailInteractionActive || browserWorkSpaceStore.hoverRailShown, chromeHeight: BrowserOmniboxMetrics.toolbarHeight)
+                            }
+                        }
+                        .onDisappear { if !isPanel { webSpaceChromeReveal.stop() } }
+                } else {
+                    ChatGPTSpaceMainPane(model: ChatGPTSpaceModel.shared, osModel: model, showsHeader: surface != .window)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             } else if model.mode == .cli {
                 // 2026-08-23 sol 一致性收尾 R2：loops 僅留在 chat 右欄；
                 // CLI 主畫面固定為右上、多卡向下排列的終端工作區。
@@ -199,16 +214,8 @@ extension ChatPage {
     // 使用者 2026-07-12：資訊卡要懸浮，不是開右側頁。
     var chatFloatingInfoCardOverlay: some View {
         ZStack(alignment: .topTrailing) {
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
-                        infoCardFloatingOpen = false
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
             threadInfoCard
+                .background(TatwoComposerModeClickAway(anchor: nil) { infoCardFloatingOpen = false })
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
                 .frame(width: 336, alignment: .topLeading)
@@ -540,7 +547,7 @@ extension ChatPage {
     static let sidebarPinButtonReserve: CGFloat = BrowserOmniboxMetrics.horizontalInset + BrowserOmniboxMetrics.collapsedHeight + 8
     func sidebarPinButton(sidebarShown: Bool, sidebarWidth: CGFloat) -> some View {
         // Browser 的側欄被滑鼠喚出時（使用者 09-20：「遺失紅綠燈跟收納鈕」）：紅綠燈右邊是空間名稱，鈕放在側欄右上角；按下去走 Browser 自己的固定／收合。
-        let browserRail = model.mode == .browser
+        let browserRail = usesBrowserTopChrome   // Browser 與網頁 GPT Space 共用同一組左欄狀態
         let pinned = browserRail ? !browserWorkSpaceStore.focusMode : sidebarPinnedPref
         return Button {
             withAnimation(.easeInOut(duration: 0.2)) { if browserRail { browserWorkSpaceStore.toggleSidebar() } else { sidebarPinnedPref.toggle() } }
@@ -556,7 +563,7 @@ extension ChatPage {
         .accessibilityLabel(pinned ? "收合側欄" : "展開並固定側欄")
         .accessibilityIdentifier("chat.sidebarToggle")
         .accessibilityValue(pinned ? "已展開" : "已收合")
-        .padding(.leading, browserRail ? sidebarWidth - BrowserOmniboxMetrics.collapsedHeight - BrowserOmniboxMetrics.horizontalInset
+        .padding(.leading, usesBrowserTopChrome ? sidebarWidth - BrowserOmniboxMetrics.collapsedHeight - BrowserOmniboxMetrics.horizontalInset
             : (sidebarShown ? sidebarWidth : WindowChromeMetrics.trafficLightSafeWidth) + BrowserOmniboxMetrics.horizontalInset)
     }
 

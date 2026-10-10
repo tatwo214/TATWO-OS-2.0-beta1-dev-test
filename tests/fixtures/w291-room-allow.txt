@@ -1,0 +1,12 @@
+# W291 使用者 10-08：反覆使用 Browser 翻譯鈕；只修翻譯狀態與 renderer 原文取樣。
+App/Sources/Tatwo2/Browser/BrowserPageTranslation.swift # 每輪 invalidate、還原排序、任務取消與過期回呼隔離；共用 Apple／fixture 流程。
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm # sample 讀已收集的原文，避免第二輪誤判語言。
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift # DEBUG 的隔離 CEF 假站驗收入口。
+App/Sources/Tatwo2/Browser/W291TranslationAcceptance.swift # DEBUG 真 CEF 通道驗收與淺色截圖；不計產品行數。
+tests/w291-translate.test.mjs # 本機假站；編譯原版重現與修正版流程測試。
+tests/helpers/w291-translation.swift # 非持久 WebKit 測試傳輸、fake provider、取消競態與 Apple 已安裝語言包冒煙。
+tests/fixtures/w291-page.html # 英文 260 段長頁與動態新增內容。
+tests/fixtures/w258-server.py # 既有 loopback 假站加 W291 路由。
+tests/fixtures/w291-shots/*.png # 翻譯前、第一次後、第二次後淺色畫面。
+tests/fixtures/w291-room-allow.txt # 記錄房間範圍及理由。
+tests/fixtures/w291-report.md # 20 行內交付報告與驗收證據。

@@ -36,9 +36,9 @@ extension HandsConnectAcceptance {
         check(leaked.isEmpty, "W183 R9 外掛頁跟預期不一樣：每一種都寫成一句話（不再只有代號，例如「（plus）」），都給「再連一次、改用手動」", leaked.joined(separator: " | "))
         let entry = ["plus", "new_button", "new_menu", "mcp_item"].map { HandsConnectFlow.pageMismatchText(.notFound($0)) }
         let missing = HandsConnectFlow.newMenuMissingText
-        check(entry.allSatisfy { $0 == missing } && missing.contains("找不到『新增 → 建立 MCP 應用程式』") && missing.contains("ChatGPT 改版")
+        check(entry.allSatisfy { $0 == missing } && missing.contains("新增選單裡找不到加 MCP 伺服器的那一項") && missing.contains("ChatGPT 改版")
               && missing.contains("開發者模式") && missing.contains("再連一次") && missing.contains("手動"),
-              "W183 R9 兩條路都找不到（舊的＋、新增 ▾、選單、建立 MCP 應用程式那一項）：卡片寫「ChatGPT 外掛頁找不到『新增 → 建立 MCP 應用程式』（ChatGPT 改版，或這個帳號沒開開發者模式）」",
+              "W303 新舊建立入口都找不到：卡片寫「外掛頁的新增選單裡找不到加 MCP 伺服器的那一項」（改版或沒開開發者模式）",
               entry.joined(separator: " | "))
         let ack = HandsConnectorAck(form: "fabc123456", warning: "0123abcd-40")
         let decoded = ChatGPTConnectorPod.decodeAction(["status": "needs_user", "reason": "risk_ack", "form": "fabc123456", "warning": "0123abcd-40"])
@@ -150,6 +150,7 @@ extension HandsConnectAcceptance {
         let pod = ChatGPTConnectorPod(tap: tap, surface: { surface })
         pod.restoreTimeout = 2
         pod.attach()
+        surface.onPluginsLoaded = { transport.onEvent?(#"{"type":"hello","loggedIn":true}"#) }
         surface.commit("https://chatgpt.com/plugins")
         let acquired = await pod.acquireExclusive(timeout: 1)
         surface.commit("https://chatgpt.com/gpts/mine")
@@ -256,30 +257,36 @@ extension HandsConnectAcceptance {
     // MARK: 手動模式的步驟
 
     @MainActor static func r9Manual(_ check: Checker, _ base: URL) async throws {
-        let world = try World(base, "r9-manual")
-        world.pod.createResult = .notFound("mcp_item")
-        world.flow.offer()
-        _ = await waitUntil(5) { isConfirm(world.flow.card) }
-        world.flow.connect()
-        _ = await waitUntil(5) { world.flow.phase == .needsManual }
-        world.flow.retry(manual: true)
-        let shown = await waitUntil(5) { if case .manual? = world.flow.card { return true }; return false }
-        var steps: [String] = []
-        if case .manual(_, let list)? = world.flow.card { steps = list }
-        let all = steps.joined(separator: "\n")
-        let order = ["「新增 ▾」", "「建立 MCP 應用程式」", "Name（名稱）填 TATWO（Primary One）", "「Server URL」", "https://\(publicHost)/mcp", "OAuth",
-                     "「I understand and want to continue」", "「Create」", "8 碼"].map { all.range(of: $0)?.lowerBound }
-        let inOrder = order.allSatisfy { $0 != nil } && zip(order, order.dropFirst()).allSatisfy { ($0.0 ?? all.startIndex) <= ($0.1 ?? all.startIndex) }
-        // W183 R9 審查（Claude #5）：畫面上的每個字都附另一種語言（中文介面、英文介面都對得上）。
-        let bilingual = ["外掛（Plugins）", "「新增 ▾」（New", "「建立 MCP 應用程式」（Create MCP app）", "Name（名稱）", "Connection（連線）",
-                         "「Server URL」（伺服器 URL", "Tunnel／通道", "Authentication（驗證）", "「I understand and want to continue」（我了解並想要繼續）",
-                         "「Create」（建立）"]
-        let missingLanguage = bilingual.filter { !all.contains($0) }
-        check(shown && inOrder && missingLanguage.isEmpty && !all.contains("＋") && all.contains("不要選 Tunnel")
-              && world.pod.calls.contains("highlight") && world.copied == ["https://\(publicHost)/mcp"],
-              "W183 R9 手動模式照新介面：外掛 →「新增 ▾」→「建立 MCP 應用程式」→ Name 填 TATWO（<設備名>）→ Connection 選 Server URL、貼上網址 → OAuth → 自己勾 → Create → 打 8 碼；每個畫面上的字都附另一種語言；標出「新增」、網址已複製",
-              "missing=\(missingLanguage) \(all)")
-        world.flow.cancel(reason: "test_done")
+        for (label, known, matches) in [
+            ("unknown", false, [HandsConnectorScan.Match]()),
+            ("empty", true, []),
+            ("existing", true, [.init(id: "fixture", name: "TATWO（Primary One）", auth: "oauth")])
+        ] {
+            let world = try World(base, "w321-manual-" + label)
+            world.pod.scanResult = HandsConnectorScan(listKnown: known, devMode: true, matches: matches)
+            world.pod.createResult = .notFound("mcp_item")
+            world.pod.reconnectResult = .notFound("open")
+            world.flow.offer()
+            _ = await waitUntil(5) { isConfirm(world.flow.card) }
+            world.flow.connect()
+            _ = await waitUntil(5) { world.flow.phase == .needsManual }
+            world.flow.retry(manual: true)
+            let shown = await waitUntil(5) { if case .manual? = world.flow.card { return true }; return false }
+            var steps: [String] = []
+            if case .manual(_, let list)? = world.flow.card { steps = list }
+            let all = steps.joined(separator: "\n")
+            let reuse = !known || !matches.isEmpty
+            let words = reuse
+                ? ["Plugins", "Installed", "TATWO（Primary One）", "Manage", "Plugin settings", "URL 完全等於", "https://\(publicHost)/mcp", "Reconnect", "8 碼"]
+                : ["Plugins", "Add", "Add custom MCP server", "Name（名稱）填 TATWO（Primary One）", "Server URL", "https://\(publicHost)/mcp", "OAuth", "I understand and want to continue", "Create as a plugin", "8 碼"]
+            let order = words.map { all.range(of: $0)?.lowerBound }
+            let inOrder = order.allSatisfy { $0 != nil } && zip(order, order.dropFirst()).allSatisfy { ($0.0 ?? all.startIndex) <= ($0.1 ?? all.startIndex) }
+            check(shown && inOrder && world.pod.calls.contains("highlight") && world.pod.calls.filter { $0 == "scan" }.count == 2
+                  && world.copied == ["https://\(publicHost)/mcp"] && all.contains("只在你自己剛按了")
+                  && (!reuse || (all.contains("如果 Installed 裡沒有任何 TATWO 才改走新建") && !all.contains("Create as a plugin"))),
+                  "W321 手動卡 \(label)：讀不到先沿用，完整清單確定沒有才新建；新版按鈕、URL 與 8 碼提醒", all)
+            world.flow.cancel(reason: "test_done")
+        }
     }
 
     // MARK: 專案：卡片與 ChatGPT Dev 面板說法一致（W183 R10：兩邊都是這台全部專案）

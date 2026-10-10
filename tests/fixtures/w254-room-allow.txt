@@ -1,0 +1,6 @@
+# W254：只加驗收自測名稱別名；沿用 CommandModeAcceptance 全部檢查。
+App/Sources/Tatwo2/SelfTest.swift
+docs/specs/189-coder-health/converge.md
+docs/specs/189-coder-health/user-check.md
+tests/fixtures/w254-room-allow.txt
+tests/fixtures/w254-report.md

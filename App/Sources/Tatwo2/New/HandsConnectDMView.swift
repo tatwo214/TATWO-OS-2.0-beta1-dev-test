@@ -56,6 +56,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     private let currentCard: @MainActor () -> HandsConnectCard?
     /// W183 R12（主導 1）：任務版面——連線要開網頁時私訊框換成內橫（兩頁），左頁放授權卡、右頁整頁網頁；結束還原。
     let taskLayout: GlobalDMTaskLayout
+    @Published var inSettings = false { didSet { browser.presentsInPlace = inSettings } }
     @Published private(set) var isShown = false
     @Published private(set) var podVisible = false
     @Published private(set) var codeVisible = false
@@ -109,13 +110,13 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
         }
     }
 
-    var isAvailable: Bool { store.isEnabled }
+    var isAvailable: Bool { inSettings || store.isEnabled }
 
     /// 現在的卡片（正式＝HandsConnectFlow.shared.card；自測換）。
     var card: HandsConnectCard? { currentCard() }
 
     func show() {
-        guard store.isEnabled else { return }
+        guard isAvailable else { return }
         store.isPickerOpen = false
         store.isEditingDirectKeys = false
         if !isShown {
@@ -129,6 +130,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
         } else if inProcess {
             BrowserSensitivePageGate.pageAppeared()   // W183 R11：從「已連線／已斷線」換回過程卡、再叫一次：照樣馬上撤銷
         }
+        guard !inSettings else { return }
         taskLayout.begin(.connect, on: store)   // W183 R12：掛上連線任務（形態是兩頁＝左頁就放卡）
         requestBox()
         if floatsInBrowser {
@@ -141,6 +143,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     func hide() {
         guard isShown else { return }
         isShown = false
+        inSettings = false
         taskLayout.end(.connect)   // W183 R12：左頁還給私訊、形態回到開始之前（使用者中途自己換過＝不動）
         store.coveredBySheet = false   // W184 G3 第三輪
         Self.shown.removeAll { $0.value == nil || $0.value === self }
@@ -164,6 +167,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     /// W184 AB（GPT-6 複核 新發現 1–3）：叫私訊框出來＝一個開框請求：倒放、轉換中整個排隊；收卡片＝撤銷；出列前再看卡片還在不在；
     /// 框真的開好之後才收掉對象清單、直達鍵頁。已經有一個在排＝不再排（出列時就會打開）。
     private func requestBox() {
+        guard !inSettings else { return }
         if let pendingOpen, !pendingOpen.isFinished { return }
         let request = GlobalDMOpenRequest(valid: { [weak self] in self?.isShown == true },
                                           then: { [weak self] in
@@ -190,7 +194,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     func setPodVisible(_ visible: Bool) {
         podVisible = visible
         guard visible else { return browser.suspendPod() }   // W183 R8b 審查（Claude）：這一步不用看 Pod＝從分頁拿下來（分頁留著）
-        if isShown { taskLayout.want(.connect) }   // W183 R12：要看 ChatGPT 的網頁了＝換成內橫
+        if isShown && !inSettings { taskLayout.want(.connect) }   // W183 R12：要看 ChatGPT 的網頁了＝換成內橫
         if !podHooked {
             podHooked = true
             hookPod(browser)
@@ -206,7 +210,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
 
     /// W183 R8b：Pod 另開的配對頁已經收進 Browser 的分頁（ChatGPTConnectorPod.onSensitivePopup）；這裡把它叫到前面。
     func placePopup(key: Int) {
-        if isShown { taskLayout.want(.connect) }   // W183 R12：配對頁（網頁）要出來了＝兩頁
+        if isShown && !inSettings { taskLayout.want(.connect) }   // W183 R12：配對頁（網頁）要出來了＝兩頁
         browser.focusPopup(key: key)
     }
 
@@ -238,7 +242,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     func showsSurface(_ surface: Int) -> Bool { browser.showsSurface(surface) }
 
     /// W183 R12（主導 1）：私訊框看得到、連線的網頁（Pod 或它開的頁）正放在畫面上。收起私訊框、換到別的分頁＝不算（流程不倒數、不取消）。
-    var webOnScreen: Bool { store.isShowingBox && browser.shownSurface != nil }
+    var webOnScreen: Bool { (inSettings || store.isShowingBox) && browser.shownSurface != nil }
 
     /// 這張卡片可以把配對碼顯示出來嗎（碼綁住的那一頁正在畫面上）。
     func revealsCode(_ card: HandsConnectCard) -> Bool {
@@ -319,7 +323,7 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
 
     /// W183 R8b：按了［連線］之後的卡片浮在 Browser 的連線分頁上（確認卡、讀取中照舊蓋在私訊框上）。沒有連線分頁＝退回蓋在私訊框上。
     var floatsInBrowser: Bool {
-        guard isShown, let card = currentCard() else { return false }
+        guard isShown, !inSettings, let card = currentCard() else { return false }
         switch card {
         case .loading, .confirm: return false
         default: return browser.hasConnectTab
@@ -327,17 +331,17 @@ final class HandsConnectPresenter: ObservableObject, HandsConnectPresenting {
     }
 
     /// W183 R12（主導 1）：卡片在兩頁的左頁（連線任務掛著、形態是內橫）：右頁整頁是網頁，沒有卡片蓋在上面；不出底部 sheet。
-    var onLeftPage: Bool { isShown && currentCard() != nil && taskLayout.leftPageTask(for: store) == .connect }
+    var onLeftPage: Bool { !inSettings && isShown && currentCard() != nil && taskLayout.leftPageTask(for: store) == .connect }
 
     /// 底部 sheet（確認卡、讀取中；不是兩頁的時候）。
-    var showsSheet: Bool { isShown && currentCard() != nil && !floatsInBrowser && !onLeftPage }
+    var showsSheet: Bool { !inSettings && isShown && currentCard() != nil && !floatsInBrowser && !onLeftPage }
 
     /// 卡片跟著 Browser 的連線分頁（不是兩頁的時候：單欄、內直）——W183 R12：擺在網頁下面，網頁讓出那一段（不蓋網頁）。
     var cardWithBrowser: Bool { floatsInBrowser && !onLeftPage }
 
     /// 這個私訊框現在被卡片蓋著（底下的輸入列拿掉）。浮在 Browser 上的時候不算（框裡是 Browser，沒有輸入列）。
     /// W183 R12：左頁蓋著私訊也算（ChatGPT 那一欄不在畫面上）。
-    func covers(_ box: GlobalDMStore) -> Bool { isShown && box === store && (!floatsInBrowser || onLeftPage) }
+    func covers(_ box: GlobalDMStore) -> Bool { !inSettings && isShown && box === store && (!floatsInBrowser || onLeftPage) }
 }
 
 /// 蓋在私訊框上的那一層（GlobalDMWebSheetOverlay 裡一起掛；框的外觀不動）：確認卡、讀取中（R6b）；卡片浮在 Browser 上的時候不蓋。

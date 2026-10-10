@@ -1,0 +1,7 @@
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+scripts/x-diag-summary.py
+tests/w308-xmedia.test.mjs
+tests/w278-media-cost.test.mjs
+tests/w289-xdiag.test.mjs
+tests/fixtures/w308-room-allow.txt
+!App/Sources/Tatwo2/*

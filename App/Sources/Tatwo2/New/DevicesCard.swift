@@ -1,27 +1,13 @@
-// 2.0 新畫面（不是照搬）：遠端系統 R1／R2 的設定頁「設備」卡。白話：家裡的 mini 是主機，MacBook 是遙控器。
-// 新畫面一律放 New/；Facade 禁自畫 View。
 import SwiftUI
 
-/// 設定頁「設備」：配對碼（主機端）、加入主機（副機端）、已配對清單、遙控模式開關。
+/// 設備群的唯讀入口；變更由私訊框的 TATWO 助理處理。
 struct DevicesCard: View {
+    @Environment(\.colorScheme) private var scheme
     @ObservedObject var model: ChatPageModel
-    @State private var hostField = ""
-    @State private var portField = ""
-    @State private var codeField = ""
-    @State private var nameField = (try? DeviceIdentityStore.readLocal())?.name
-        ?? Host.current().localizedName ?? "這台"
-    @StateObject private var pairingClipboard = DevicePairingClipboard()
-    @FocusState private var hostFieldFocused: Bool
-    @State private var updateOffers: [String: [String: PeerUpdateEntry]] = [:]
-    /// W98：展開哪幾台（只在這個畫面存活，不持久化）。
-    @State private var expandedDevices: Set<String> = []
-    // W171 初始設定：第一次打開自動給的名字與身分。
-    @State private var renaming = false
-    @State private var renameText = ""
-    @State private var confirmSwitch = false
-    @State private var setupMessage: String?
-    @State private var setupRevision = 0
+    @State private var updates: [String: [String: PeerUpdateEntry]] = [:]
+    @StateObject private var fleet = DeviceFleetUIModel()
     @State private var outboxRevision = 0
+    @State private var expandedDevices: Set<String> = []
     #if DEBUG
     var testProbe: PrimaryOutboxViewProbe? = nil
     #endif
@@ -29,208 +15,35 @@ struct DevicesCard: View {
     var body: some View {
         let _ = outboxRevision
         ScrollView {
-        VStack(alignment: .leading, spacing: TatwoSettingsPageMetrics.sectionSpacing) {
-            TatwoSettingsPageHeader(title: "設備")
-
-            setupBanner
-
-            PrimaryTransferPanel()
-
-            // 主機端：出一組碼
-            VStack(alignment: .leading, spacing: 8) {
-                Text("讓另一台加入這台（這台當主機）")
-                    .font(.headline)
-                if let window = model.pairingWindow {
-                    let listen = model.pairingListenAddress ?? "—"
-                    HStack(spacing: 12) {
-                        Text(window.code)
-                            .font(.system(size: 28, weight: .bold, design: .monospaced))
-                            .textSelection(.enabled)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 8) {
-                                Text(listen)
-                                    .font(.system(.footnote, design: .monospaced))
-                                    .textSelection(.enabled)
-                                OSChipButton(title: pairingClipboard.copied == .address ? "已複製" : "複製") {
-                                    pairingClipboard.copy(.address, address: listen, code: window.code,
-                                                          expiresAt: window.expiresAt)
-                                }
-                                .accessibilityLabel("複製這台的配對位址與埠")
-                                .disabled(window.expiresAt <= Date() || listen == "—")
-                            }
-                            Text("5 分鐘內有效、只能用一次；\(Self.remaining(window.expiresAt)) 後失效")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        OSChipButton(title: pairingClipboard.copied == .all ? "已複製" : "全部複製") {
-                            pairingClipboard.copy(.all, address: listen, code: window.code,
-                                                  expiresAt: window.expiresAt)
-                        }
-                        .help("複製一行配對資訊，到另一台的「那台的位址」貼上；碼不會自動傳送。")
-                        .disabled(window.expiresAt <= Date() || listen == "—")
-                        OSChipButton(title: "取消") {
-                            pairingClipboard.clear()
-                            model.cancelPairingWindow()
-                        }
-                    }
-                    Text("到另一台的「那台的位址」貼上；「全部複製」會連 6 碼一起填好。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    HStack {
-                        Text("按下去會出一組 6 碼，對方輸入後它的鑰匙就進這台的名單。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        OSChipButton(title: "產生配對碼", isPrimary: true) { model.startPairingWindow() }
-                    }
-                }
+            DeviceFleetPage(snapshot: fleet.snapshot, openAssistant: {
+                GlobalDMDeskController.shared.openDirect(.assistant)
+            })
+            .padding(TatwoSettingsPageMetrics.inset)
+            ForEach(model.devices.filter { row in fleet.snapshot.devices.contains { $0.id == row.id } }) { device in
+                deviceRow(device)
+                    .padding(.horizontal, TatwoSettingsPageMetrics.inset)
             }
-
-            Divider()
-
-            // 副機端：加入主機
-            VStack(alignment: .leading, spacing: 8) {
-                Text("把這台加到另一台主機（這台當遙控器）")
-                    .font(.headline)
-                Text("先在那台按「產生配對碼」，再把「全部複製」的那一行貼進下面的位址欄。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("那台的位址").font(.footnote)
-                        TextField("例：192.0.2.10:18815；也可貼全部配對資訊", text: $hostField)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("那台的位址")
-                            .focused($hostFieldFocused)
-                            .onChange(of: hostField) { previous, value in
-                                if DevicePairingInput.isBulkEdit(previous: previous, current: value) {
-                                    parseHostField()
-                                }
-                            }
-                            .onSubmit { parseHostField() }
-                            .onChange(of: hostFieldFocused) { _, focused in
-                                if !focused { parseHostField() }
-                            }
-                    }
-                    .frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("那台畫面上冒號後面的數字").font(.footnote)
-                        TextField("例：18815", text: $portField)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("那台畫面上冒號後面的數字")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("那台畫面上的 6 碼").font(.footnote)
-                        TextField("A–Z、0–9，共 6 碼", text: $codeField)
-                            .font(.system(.body, design: .monospaced))
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("那台畫面上的 6 碼")
-                            .onChange(of: codeField) { _, value in
-                                let normalized = DevicePairingInput.normalizedCode(value)
-                                if codeField != normalized { codeField = normalized }
-                            }
-                    }
-                    .frame(maxWidth: .infinity)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("這台的名字").font(.footnote)
-                        TextField("這台的名字", text: $nameField)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                HStack(spacing: 8) {
-                    OSChipButton(title: "加入", isPrimary: true) {
-                        guard pairingValidationMessage == nil,
-                              let port = DevicePairingInput.portNumber(portField) else { return }
-                        model.pairWithHost(host: hostField.trimmingCharacters(in: .whitespacesAndNewlines),
-                                           port: port,
-                                           code: codeField,
-                                           name: nameField.trimmingCharacters(in: .whitespacesAndNewlines))
-                    }
-                    .disabled(pairingValidationMessage != nil)
-                    Text(pairingValidationMessage ?? "資訊已填好，可以加入。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let pairMessage = model.pairingClientMessage {
-                    if let failure = DevicePairingFeedback.failure(pairMessage) {
-                        Text(failure.message)
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                        Text("工程資訊：\(failure.detail)")
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    } else {
-                        Text(pairMessage)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            Divider()
-
-            // 已配對清單
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("已配對（\(model.devices.count)）")
-                        .font(.headline)
-                    Spacer()
-                    if let remote = model.remoteMode {
-                        Text("遙控中：\(remote.name)")
-                            .font(.footnote.weight(.semibold))
-                        OSChipButton(title: "回到本機") { model.exitRemoteMode() }
-                    }
-                }
-                if model.devices.isEmpty {
-                    Text("還沒有配對任何設備。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(model.devices) { device in
-                        deviceRow(device)
-                    }
-                }
-            }
-        }
-        .padding(TatwoSettingsPageMetrics.inset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onChange(of: model.pairingWindow?.code) { _, _ in pairingClipboard.clear() }
-        .onDisappear { pairingClipboard.clear() }
-        #if DEBUG
-        .onAppear { if testProbe != nil { nameField = "Secondary One" } }
-        #endif
+        .task { await fleet.observe() }
+        .task(id: model.devices) {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] != nil { return }
+            #endif
+            let offers = await PeerUpdateSource.discover(model.devices.filter { row in fleet.snapshot.devices.contains { $0.id == row.id } })
+            updates = Dictionary(uniqueKeysWithValues: offers.map { ($0.device.id, $0.entries) })
+        }
+        .task(id: fleet.snapshot.devices) {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] != nil { return }
+            #endif
+            let offers = await PeerUpdateSource.discover(model.devices.filter { row in fleet.snapshot.devices.contains { $0.id == row.id } })
+            updates = Dictionary(uniqueKeysWithValues: offers.map { ($0.device.id, $0.entries) })
+        }
         .onReceive(NotificationCenter.default.publisher(for: PrimaryOutbox.didChange)) { note in
             guard let outbox = note.object as? PrimaryOutbox, outbox === model.primaryOutbox else { return }
             outboxRevision += 1
         }
-        .task(id: model.devices) {
-            #if DEBUG
-            if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] != nil { return } // 假設備自測不探訪任何設備。
-            #endif
-            updateOffers = [:]
-            for offer in await PeerUpdateSource.discover(model.devices) {
-                updateOffers[offer.device.id] = offer.entries
-            }
-        }
-    }
-
-    private var pairingValidationMessage: String? {
-        DevicePairingInput.validationMessage(host: hostField, port: portField, code: codeField, name: nameField)
-    }
-
-    private func parseHostField() {
-        guard let parsed = DevicePairingInput.parseAddress(hostField) else { return }
-        hostField = parsed.host
-        portField = parsed.port
-        if let code = parsed.code { codeField = code }
     }
 
     /// W98：一台設備一列，收法照設定 › Computer Use 的列（左 chevron、標題 13 semibold、副標 11.5）。
@@ -243,7 +56,7 @@ struct DevicesCard: View {
         // 主設備列用此刻的連線，不拿最近 10 分鐘的時間冒充在線。
         let isOnline = isPrimary ? primary?.engine != nil : RemoteDevicePresentation.isOnline(device, sections: model.remoteSidebarSections)
         let queued = isPrimary ? model.primaryOfflineDetails : nil
-        let update = PeerUpdateSource.summary(updateOffers[device.id] ?? [:])
+        let update = PeerUpdateSource.summary(updates[device.id] ?? [:])
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Image(systemName: "chevron.right")
@@ -291,6 +104,7 @@ struct DevicesCard: View {
             if isExpanded {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
+                    RemoteOfflineCacheRow(model: model, device: device)   // W182 R4
                     if isPrimary, let outbox = model.primaryOutbox {
                         #if DEBUG
                         PrimaryOfflineOutboxList(model: model, outbox: outbox, testProbe: testProbe)
@@ -306,28 +120,12 @@ struct DevicesCard: View {
                             device.hostKeyFingerprint == nil || device.clientKeyFingerprint == nil
                                 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                         .fixedSize(horizontal: false, vertical: true)
-                    DeviceEndpointsRow(device: device) { updated in
-                        if let index = model.devices.firstIndex(where: { $0.id == updated.id }) {
-                            model.devices[index] = updated
-                        }
-                    }
+                    Text("連線路徑：\(device.orderedEndpoints.map(\.label).joined(separator: "、"))")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Text("加入 \(Self.stamp(device.addedAt))・最近 \(Self.stamp(device.lastSeenAt))")
                         .font(.footnote)
                         .foregroundStyle(.tertiary)
-                    RemoteOfflineCacheRow(model: model, device: device)   // W182 R4：這台存的離線副本＋清除（卡片內確認）
-                    HStack(spacing: 8) {
-                        if model.remoteMode?.id != device.id {
-                            // W98d：設備頁只負責帶路——把左列「遠端設備（名稱）」那個區塊展開並捲過去；
-                            // 要不要進遠端模式由使用者在那邊點討論串決定，這顆不自己進。
-                            OSChipButton(title: "遠端設備專案") {
-                                model.requestSidebarDeviceSection(device.id)
-                            }
-                            .help("到左列的「遠端設備（\(device.name)）」區塊，點裡面的討論串就在那台上工作")
-                        }
-                        OSChipButton(title: "移除") { model.removeDevice(device.id) }
-                            .help("移除這台配對；它存在這台的離線副本一起移到垃圾桶（可以放回）")   // W182 R4
-                        Spacer()
-                    }
+
                 }
                 .padding(.horizontal, 14)
                 .padding(.leading, 18)
@@ -351,58 +149,6 @@ struct DevicesCard: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(color.opacity(0.12), in: Capsule())
-    }
-
-    /// W171：第一次打開時自動定了這台的名字、當成第一台；在這裡確認、改名，或改成加入已有的那台。
-    @ViewBuilder private var setupBanner: some View {
-        let _ = setupRevision
-        if FirstRunDefaults.record?.appliedAt != nil, let identity = try? DeviceIdentityStore.readLocal() {
-            let waiting = FirstRunDefaults.awaitsDeviceConfirmation
-            let role = identity.role == .secondary ? "等著跟你的第一台配對（在下面「把這台加到另一台主機」輸入那台給的碼）" : "你的第一台（規則正本放這裡）"
-            SetupBanner(done: !waiting, label: waiting ? "初始設定 · 先用了預設" : "初始設定",
-                        text: "這台叫「\(identity.name)」，是\(role)。"
-                            + (waiting && identity.role == .primary ? "你已經有另一台 TATWO OS 的話，改成跟那台配對。" : "")) {
-                if renaming {
-                    TextField("這台的名字", text: $renameText).textFieldStyle(.roundedBorder).frame(width: 220)
-                        .onSubmit(saveName)
-                    OSChipButton(title: "儲存", isPrimary: true, action: saveName)
-                    OSChipButton(title: "取消") { renaming = false }
-                } else {
-                    OSChipButton(title: "這樣就好", isPrimary: true) { FirstRunDefaults.confirm(); refreshSetup() }
-                    OSChipButton(title: "改名字") { renameText = identity.name; renaming = true }
-                    if identity.role == .primary {
-                        OSChipButton(title: "我已經有一台 · 改成配對") { confirmSwitch = true }
-                    }
-                }
-            }
-            .confirmationDialog("改成加入你已經有的那台？", isPresented: $confirmSwitch, titleVisibility: .visible) {
-                Button("改成配對") {
-                    do { try FirstRunDefaults.switchToExistingPrimary(); setupMessage = "已改好。到下面「把這台加到另一台主機」輸入那台給的碼。" }
-                    catch { setupMessage = "沒改成：\(error.localizedDescription)" }
-                    refreshSetup()
-                }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("第一次打開時自動建立的規則正本會搬到入口的 archive 資料夾（可搬回來）。之後規則由那台送過來。")
-            }
-            if let setupMessage { Text(setupMessage).font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func saveName() {
-        do { try FirstRunDefaults.rename(renameText); renaming = false; setupMessage = nil }
-        catch { setupMessage = "沒改成：\(error.localizedDescription)" }
-        refreshSetup()
-    }
-
-    private func refreshSetup() {
-        setupRevision += 1
-        SetupChecklist.shared.refresh(logins: model.engineLogins)
-    }
-
-    private static func remaining(_ date: Date) -> String {
-        let s = max(0, Int(date.timeIntervalSinceNow))
-        return "\(s / 60) 分 \(s % 60) 秒"
     }
 
     private static func stamp(_ date: Date) -> String {

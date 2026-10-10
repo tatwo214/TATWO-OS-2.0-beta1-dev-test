@@ -115,6 +115,16 @@ enum DevicePairingFeedback {
         let detail: String
     }
 
+    static func invitationFailure(_ error: Error) -> String {
+        switch error as? DeviceFleetError {
+        case .malformed: return "請填完整的派系名稱與職員看到的管理者名稱。"
+        case .primaryRequired: return "請在主設備上加入；副設備不能開啟邀請。"
+        case .role, .managedLocked: return "這台沒有新增或恢復設備的權限；請在主設備確認。"
+        case .keyConflict: return "這台已有較新的配對紀錄或金鑰已變更；請選最新紀錄，或在主設備重新配對。"
+        case .staleProposal: return "恢復對象或原派系已改變；請重新選擇並確認。"
+        default: return "無法產生配對碼；請確認這台有新增設備的權限。"
+        }
+    }
     static func failure(_ modelMessage: String) -> Failure? {
         let prefix = "配對失敗："
         guard modelMessage.hasPrefix(prefix) else { return nil }
@@ -124,6 +134,12 @@ enum DevicePairingFeedback {
             ? String(detail.dropFirst("pairing_rejected:".count)) : detail
         let message: String
         switch reason {
+        case "fleet_primaryRequired", "primaryRequired":
+            message = "新增受管或沙盒邀請要由你的主設備發起；請在主設備的 TATWO 助理開啟邀請。"
+        case "fleet_previewNotAllowed":
+            message = "這組碼是邀請你自己的設備用的；請在主設備開受管或沙盒邀請。"
+        case "fleet_local_pairing_required":
+            message = "新增設備需要在主設備本機重新配對並確認。"
         case "invalid_host":
             message = "請填那台畫面上的位址，或直接貼上它的全部配對資訊。"
         case "invalid_port":

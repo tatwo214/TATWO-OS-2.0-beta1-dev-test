@@ -9,7 +9,7 @@ import { testScratch } from './helpers/test-scratch.mjs';
 test('W213 Always: real Coder scroll views never show permanent scrollbars', { timeout: 120_000 }, t => {
   if (process.platform !== 'darwin') return t.skip('native macOS UI required');
   const checkout = fileURLToPath(new URL('..', import.meta.url));
-  const binary = process.env.TATWO_W213_BINARY ?? path.resolve(checkout, '../../build-cache/scroll/debug/Tatwo2');
+  const binary = process.env.TATWO_W213_BINARY ?? process.env.TATWO2_TEST_BINARY ?? path.resolve(checkout, '../../build-cache/scroll/debug/Tatwo2');
   assert.ok(fs.existsSync(binary), `Build native Tatwo2 first: ${binary}`);
   const root = fs.realpathSync(testScratch('w213-scroll-'));
   for (const dir of ['home', 'live', 'engines/codex', 'engines/claude', 'os', 'docs', 'artifacts']) {

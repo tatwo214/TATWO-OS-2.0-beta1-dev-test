@@ -22,6 +22,8 @@ function fixture() {
   const env = {
     PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: at('h'), CFFIXED_USER_HOME: at('h'),
     TATWO_STAGING_ROOT: root, TATWO_STAGING_SCRATCH_HOME: at('h'),
+    TATWO2_AUTHORIZED_KEYS: at('authorized_keys'), TATWO2_SSH_KNOWN_HOSTS: at('known_hosts'),
+    TATWO2_SSH_KEY_PATH: at('fixture-key'), TATWO2_SSH_HOST_KEY_PUB: at('fixture-host.pub'), SSH_AUTH_SOCK: at('absent-agent'),
     TATWO2_LIVE_ROOT: at('l'), TATWO2_ENGINES_ROOT: at('e'),
     CODEX_HOME: at('e/codex'), TATWO2_CODEX_SOURCE_HOME: at('e/codex'),
     CLAUDE_CONFIG_DIR: at('e/claude'), CLAUDE_SECURESTORAGE_CONFIG_DIR: at('e/claude'),
@@ -162,12 +164,13 @@ test('W178 os.sock: other local programs only reach status and proposal methods;
 test('W180 E1b memory sync RPCs: signed-device group only', () => {
   const bridge = fs.readFileSync(new URL('../App/Sources/Tatwo2/Facade/OSAgentBridge.swift', import.meta.url), 'utf8');
   const list = name => bridge.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
-  for (const method of ['memory_sync_target', 'memory_sync_receive']) {
+  for (const method of ['memory_sync_target', 'memory_sync_receive', 'memory_sync_export', 'memory_sync_import']) {
     assert.ok(list('untrustedCallerMethods').includes(`"${method}"`), `${method} reachable only with a device signature`);
     assert.ok(!list('sshForwardMethods').includes(`"${method}"`), `${method} not an SSH remote-control method`);
     assert.ok(!list('stagingReadOnlyMethods').includes(`"${method}"`), `${method} not a staging read-only method`);
   }
-  assert.match(bridge, /"memory_sync_target", "memory_sync_receive":\n\s*let \(sender, payload\) = try DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)/);
+  assert.match(bridge, /private var requestDispatch: DeviceDispatch \{[\s\S]*?#endif\s*return DeviceDispatch\.shared/);
+  assert.match(bridge, /"memory_sync_target", "memory_sync_receive", "memory_sync_export", "memory_sync_import":\n\s*let \(sender, payload\) = try requestDispatch\.authenticate\(method: method, proof: params\)/);
 });
 
 // W182 R5：副設備離線時那段助理問答補回主設備（assistant_append_offline）——只給已配對設備（SSH 轉進來），

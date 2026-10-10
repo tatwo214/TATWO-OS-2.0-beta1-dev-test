@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/TAP/TapWebPod.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift
+App/Sources/Tatwo2/TAP/W294ePodSizeAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/fixtures/w294-plugins-page.mjs
+tests/w294-plugins.test.mjs
+tests/fixtures/w294e-room-allow.txt

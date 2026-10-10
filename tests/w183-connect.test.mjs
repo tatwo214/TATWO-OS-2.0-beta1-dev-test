@@ -78,9 +78,11 @@ test('host: one attempt at a time (same ID idempotent, other ID busy); window, t
   assert.ok(tools.indexOf('let grant = try authorized(params, current)') < tools.indexOf('admit(grantID: grant.grantID)'));
   assert.ok(tools.indexOf('admit(grantID: grant.grantID)') < tools.indexOf('noteMCP(grantID: grant.grantID)'));
   const call = between(service, 'case "hands_call":', 'default:');
-  assert.ok(call.indexOf('if grant.provisional { throw HandsWireError.rateLimited }') > call.indexOf('let grant = try authorized(params, current)'));
+  assert.ok(call.indexOf('if grant.provisional {') > call.indexOf('let grant = try authorized(params, current)'));
   assert.ok(call.indexOf('if grant.provisional') < call.indexOf('try call(name: name'), 'a provisional grant cannot call tools');
-  assert.doesNotMatch(call, /noteMCP/);
+  // W333：暫時 grant 的呼叫也算這個 attempt 的 /mcp（先 admit 核世代範圍期限），但照樣請稍後、不給工具；轉正的 grant 呼叫不回報。
+  assert.match(call, /if grant\.provisional \{\s*(?:\/\/[^\n]*\n\s*)*guard HandsConnectHost\.attached\(to: self\)\?\.admit\(grantID: grant\.grantID\) \?\? true else \{ throw HandsWireError\.unauthorized \}\s*HandsConnectHost\.attached\(to: self\)\?\.noteMCP\(grantID: grant\.grantID\)\s*throw HandsWireError\.rateLimited\s*\}/);
+  assert.equal(call.match(/noteMCP/g).length, 1, 'only the provisional branch reports');
   assert.match(between(service, 'func updateSettings(', 'func setEnabled'), /DispatchQueue\.global\(qos: \.userInitiated\)\.async \{ host\.validateBeforeAuthorize\(\) \}/);
 });
 
@@ -108,7 +110,7 @@ test('success = this attempt\'s grant plus that grant\'s first /mcp; cancel and 
   assert.match(grant, /voidLocked\(attemptID, reason: attempt\.reason \?\? "cancelled", &after\)/);
   // 第一次 /mcp 只到 tools_ready；已連線只由擁有者的確認產生（grant 轉正）。
   const mcp = between(host, 'func noteMCP(grantID: String)', 'func noteRegistered');
-  assert.match(mcp, /guard var attempt = current, attempt\.terminal == nil, attempt\.grantID == grantID else \{ return \}/);
+  assert.match(mcp, /guard var attempt = current, attempt\.terminal == nil, attempt\.grantID == grantID,\s*service\.auth\.grantRecord\(grantID\)\?\.isActive == true else \{ return \}/);
   assert.match(mcp, /attempt\.mcpSeen = true/);
   assert.doesNotMatch(mcp, /\.connected/);
   const confirm = between(host, 'func confirm(attemptID: String, sender: String)', 'func validateBeforeAuthorize');
@@ -233,7 +235,7 @@ test('Pod: exclusive lease (no page switch mid-chat), commands only on chatgpt.c
   // W183 R10 第二輪：connectorPress（Create／重新連線的第二步：App 記下錨點之後才送）也只走這條、一樣要帶獨占。
   // W183 R12（主導 2）：多一個 connectorGesture（要真人點的那一顆指給他看；只標、不按），一樣只走這條、一樣要帶獨占。
   // W183 R12（.033 實機）：再多一個 connectorOutline（對不上時的結構快照；只讀、DOM 文字），一樣只走這條、一樣要帶獨占。
-  assert.match(tap, /static let connectorCommands: Set<String> = \["connectorScan", "connectorDevMode", "connectorCreate", "connectorReconnect",\s*"connectorPress", "connectorConsent", "connectorHighlight", "connectorHome", "connectorSettings",\s*"connectorAbort", "connectorAccount", "connectorNavigated",\s*"connectorGesture",[^\n]*\n\s*"connectorOutline",[^\n]*\n\s*"connectorTick",[^\n]*\n\s*"connectorInspect", "connectorDelete"\]/);   // W183 R12（.034）：代勾的 DOM 驗證
+  assert.match(tap, /static let connectorCommands: Set<String> = \["connectorScan", "connectorDevMode", "connectorCreate", "connectorReconnect",\s*"connectorPress", "connectorConsent", "connectorHighlight", "connectorHome", "connectorSettings",\s*"connectorAbort", "connectorAccount", "connectorNavigated",\s*"connectorGesture",[^\n]*\n\s*"connectorOutline",[^\n]*\n\s*"connectorTick",[^\n]*\n\s*"connectorInspect", "connectorDelete", "connectorProbe"\]/);   // W183 R12（.034）：代勾的 DOM 驗證
   assert.match(tap, /static let connectorReads: Set<String> = \["connectorDevMode", "connectorAccount"\]/);
   // 審查：會換頁的指令在獨占時一律不做；連接器的寫入指令要帶著目前的獨占。
   // W183 R9：原生外掛頁的「新增 ▾」（pluginNewMenu）也會換頁：一樣在獨占時不做。
@@ -244,7 +246,7 @@ test('Pod: exclusive lease (no page switch mid-chat), commands only on chatgpt.c
   const release = between(podDriver, 'func releaseExclusive() {', 'func scan(url: String)');
   assert.ok(release.indexOf('await self.restore(id)') < release.indexOf('tap.endConnectorHold(id)'));
   assert.match(release, /await request\("connectorAbort"/);
-  assert.match(release, /surface\.loadMain\(ChatGPTTap\.homeURL\)/);
+  assert.match(release, /surface\.loadMain\(\(surface as\? TapWebPod\)\?\.homeURL \?\? ChatGPTTap\.homeURL\)/);
   assert.match(release, /if tap\.helloCount != hellos, mainURL\?\.host\?\.lowercased\(\) == "chatgpt\.com" \{ return \}/);
   assert.match(release, /tap\.restart\(\)/);
   // 等待會在流程取消時停（不空轉）。
@@ -292,7 +294,7 @@ test('DM: native card over the DM (not a chat message); composer removed; code m
   // W183 R8b：Pod 的畫面＝Browser 的「ChatGPT Dev」分頁；配對頁 popup 收進分頁（不再擺原生視窗）；完成＝標「完成」。
   assert.match(presenter, /browser\.openPod\(purpose: \.chatgptDeveloper, currentURL: podURL\(\), onCancel: cancelFlow\)/);
   // W183 R12（主導 1）：配對頁要出來了＝先叫任務版面換成兩頁（taskLayout.want），再叫到前面；守的一樣。
-  assert.match(presenter, /func placePopup\(key: Int\) \{\s*if isShown \{ taskLayout\.want\(\.connect\) \}[^\n]*\n\s*browser\.focusPopup\(key: key\)/);
+  assert.match(presenter, /func placePopup\(key: Int\) \{\s*if isShown && !inSettings \{ taskLayout\.want\(\.connect\) \}[^\n]*\n\s*browser\.focusPopup\(key: key\)/);
   assert.match(presenter, /func markDone\(\) \{\s*browser\.markDone\(purpose: \.chatgptDeveloper\)\s*browser\.markDone\(purpose: \.chatgptPairing\)/);
   assert.match(presenter, /connector\.onSensitivePopup = \{ \[weak browser\] popup, key, pairing in\s*browser\?\.adoptPopup\(DMBrowserPopupPage\(popup: popup\), key: key/);
   assert.doesNotMatch(code(dmView), /positionPopup|setFrame\(rect|orderFrontRegardless|NSWindow\.Level/);
@@ -301,7 +303,7 @@ test('DM: native card over the DM (not a chat message); composer removed; code m
   // 確認卡蓋在框上；按了［連線］之後的卡片浮在 Browser 的連線分頁下方。
   assert.match(presenter, /case \.loading, \.confirm: return false\s*default: return browser\.hasConnectTab/);
   // W183 R12（主導 1）：sheet 出不出來改看 showsSheet（還是「不浮在 Browser」＋多一個「不在左頁」：兩頁攤開時卡片在左頁）；守的一樣。
-  assert.match(dmView, /var showsSheet: Bool \{ isShown && currentCard\(\) != nil && !floatsInBrowser && !onLeftPage \}/);
+  assert.match(dmView, /var showsSheet: Bool \{ !inSettings && isShown && currentCard\(\) != nil && !floatsInBrowser && !onLeftPage \}/);
   assert.match(dmView, /if presenter\.showsSheet, presenter\.store === store, let card = flow\.card \{/);
   assert.match(dmView, /struct HandsConnectFloatingCard: View/);
   // 卡片最少要顯示的（one-switch.md；T15：Pod 目前帳號、主機、服務網址、等級白話、專案、callback 網域、交易編號）。
@@ -2648,7 +2650,7 @@ test('W183 R9 App side: step codes become sentences (no more 「（plus）」), 
   // 找不到＝一句話；不再把代號放進括號。
   assert.doesNotMatch(connect, /跟預期的不一樣（\\\(step\)）/);
   assert.match(connect, /case \.notFound, \.ambiguous:\s*return needsManual\(Self\.pageMismatchText\(action\), my: my\)/);
-  assert.match(connect, /static let newMenuMissingText = "ChatGPT 外掛頁找不到『新增 → 建立 MCP 應用程式』（ChatGPT 改版，或這個帳號沒開開發者模式）；可以再連一次，或改用手動"/);
+  assert.match(connect, /static let newMenuMissingText = "ChatGPT 外掛頁的新增選單裡找不到加 MCP 伺服器的那一項（ChatGPT 改版，或這個帳號沒開開發者模式）；可以再連一次，或改用手動"/);
   assert.match(connect, /if entry\.contains\(step\) \{ return newMenuMissingText \}/);
   assert.match(connect, /if step == "form_open" \{ return formOpenText \+ tail \}/);
   // 「I understand and want to continue」：W183 R10 起 TATWO 代勾（App 的原生點擊）；交給使用者勾的卡只剩退路，卡片講清楚是 TATWO 這次沒勾成。
@@ -2663,12 +2665,12 @@ test('W183 R9 App side: step codes become sentences (no more 「（plus）」), 
   assert.match(connect, /: Self\.warningCardText\(reason\),/);
   assert.match(connect, /case "connection_not_server_url": "ChatGPT 表單的 Connection 不是「Server URL」/);
   for (const reason of ['form_replaced', 'name_mismatch', 'ack_replayed']) assert.match(connect, new RegExp(`case "${reason}": "`), reason);
-  // 手動步驟照新介面；W183 R9 審查（Claude #5）：畫面上的字都附另一種語言。
-  const manual = between(connect, 'static func manualSteps(_ url: String, name: String = "TATWO", existing: Bool = false) -> [String] {', 'static let riskAckCardText');
-  for (const words of ['外掛（Plugins）', '「新增 ▾」（New', '「建立 MCP 應用程式」（Create MCP app）', 'Name（名稱）填 \\(name)',
-    'Connection（連線）選「Server URL」（伺服器 URL；不要選 Tunnel／通道）', 'Authentication（驗證）選 OAuth',
-    '自己勾「I understand and want to continue」（我了解並想要繼續）', '按「Create」（建立）', '打 8 碼']) assert.ok(manual.includes(words), words);
-  assert.match(connect, /選單的英文（New、Create MCP app）與表單的中文[^\n]*是猜的、還沒對過實機/);
+  // W321：手動步驟採用十月介面的實際按鈕名稱。
+  const manual = between(connect, 'static func manualSteps(', 'static let riskAckCardText');
+  for (const words of ['Plugins', 'Installed', 'Manage', 'Plugin settings', 'Reconnect', 'Add custom MCP server',
+    'Name（名稱）填 \\(name)', 'Server URL（伺服器 URL）', 'Authentication（驗證）選 OAuth',
+    '勾 I understand and want to continue', '按 Create as a plugin', '打 8 碼']) assert.ok(manual.includes(words), words);
+  assert.doesNotMatch(manual, /新增 ▾|Create MCP app|設定 › Apps › 自己建立的/);
   assert.doesNotMatch(manual, /按「＋」/);
   // W183 R12（.036 實機；主導裁決：撞名就自動換名字重建）：名字改用 connectorNameInUse（沒改過＝「TATWO（<設備名稱>）」；撞名改過＝後面加 2…9，重連沿用本機記下的）。
   assert.match(connect, /steps: Self\.manualSteps\(intent\.mcpURL, name: connectorNameInUse\(offer\), existing:/);
@@ -2734,7 +2736,7 @@ test('W183 R9 native 外掛頁「新增 ▾」: glass chip top-right, a popover 
   assert.match(connectorPod, /guard let hold, commandsInFlight == 0, tap\.connection == \.ready else \{ return \}/);
   assert.match(connectorPod, /tap\.connectorRequest\("connectorNavigated", \["path": path\], hold: hold, timeout: \.seconds\(3\)\)/);
   // W183 R12（主導 2）：清單後面多一個 connectorGesture（只標、不按）；connectorNavigated 照舊在清單裡。
-  assert.match(tap, /"connectorAccount", "connectorNavigated",\s*"connectorGesture",[^\n]*\n\s*"connectorOutline",[^\n]*\n\s*"connectorTick",[^\n]*\n\s*"connectorInspect", "connectorDelete"\]/);
+  assert.match(tap, /"connectorAccount", "connectorNavigated",\s*"connectorGesture",[^\n]*\n\s*"connectorOutline",[^\n]*\n\s*"connectorTick",[^\n]*\n\s*"connectorInspect", "connectorDelete", "connectorProbe"\]/);
   const picker = swift('TAP/TapPodFilePicker.swift');
   assert.match(picker, /\(mode == 0 \|\| mode == 1\) && context\.guarded && context\.visible && context\.human && context\.window != nil/);
   assert.doesNotMatch(picker, /\.urls = |directoryURL = URL\(fileURLWithPath: defaultPath\)\n|selectFile|panel\.url = /);

@@ -33,7 +33,8 @@ final class CLITmuxRuntime: @unchecked Sendable {
         self.executable = executable
         let digest = SHA256.hash(data: Data(root.standardizedFileURL.path.utf8))
             .prefix(6).map { String(format: "%02x", $0) }.joined()
-        socket = "/tmp/tatwo2-cli-\(getuid())/\(digest).sock"
+        let socketRoot = Bundle.main.bundleIdentifier == "ai.tatwo.tatwo2.staging" ? root.appendingPathComponent("cli-runtime").path : "/tmp/tatwo2-cli-\(getuid())"
+        socket = "\(socketRoot)/\(digest).sock"
         configuration = root.appendingPathComponent("cli-runtime/tmux.conf").path
     }
     static func name(_ id: UUID) -> String { "os2-" + id.uuidString.lowercased() }

@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetDispatchCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = resolve('App/Sources/Tatwo2');
 const source = name => readFileSync(join(app, name), 'utf8');
@@ -32,7 +33,7 @@ import Foundation
                   "whole-line-fills-three-fields")
         try check(Input.parseAddress("  TATWO 配對 " + address + " dqt2gq \n")?.code == code,
                   "whole-line-lowercase-uppercase")
-        try check(Input.parseAddress("device.example:18815")?.host == "device.example", "DNS-colon-port")
+        try check(Input.parseAddress("fixture.example:18815")?.host == "fixture.example", "DNS-colon-port")
         try check(Input.parseAddress("[2001:db8::1]:18815")?.host == "2001:db8::1", "bracketed-IPv6")
         try check(Input.parseAddress("[fe80::1%en0]:18815")?.host == "fe80::1%en0", "IPv6-zone")
         try check(!Input.isBulkEdit(previous: "192.0.2.47:", current: "192.0.2.47:1"),
@@ -55,7 +56,7 @@ import Foundation
         try check(Input.normalizedCode("0o1i2z") == "0O1I2Z", "letters-and-digits-not-substituted")
         try check(Input.normalizedCode("") == "", "empty-code")
         func validation(host: String = "192.0.2.47", port: String = "18815",
-                        code: String = "DQT2GQ", name: String = "Studio") -> String? {
+                        code: String = "DQT2GQ", name: String = "fixture") -> String? {
             Input.validationMessage(host: host, port: port, code: code, name: name)
         }
         try check(validation() == nil, "all-four-valid-enables-join")
@@ -81,6 +82,8 @@ import Foundation
         try check(feedback("invalid_port")?.message == "配對埠要填那台畫面上冒號後面的數字",
                   "invalid-port-human-language")
         try check(feedback("invalid_port")?.detail == "invalid_port", "raw-code-retained-separately")
+        try check(feedback("fleet_primaryRequired")?.message.contains("主設備") == true && feedback("fleet_primaryRequired")?.message.contains("沙盒") == true,
+                  "R3-PAIR-06-secondary-sandbox-explained-with-primary-device")
         for (raw, human) in [
             ("pairing_rejected:pairing_code_mismatch：配對碼不對", "配對碼不對"),
             ("pairing_rejected:pairing code expired", "已過期"),
@@ -169,12 +172,13 @@ import Foundation
     }
 }
 `);
+  writeFileSync(join(root, 'FleetStubs.swift'), fleetDispatchCompileStubs());
   const binary = join(root, 'driver');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
     ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingCode', 'DevicePairingStubs',
-      'DevicePairingAuth', 'DevicePairingClient', 'DevicePairingInput', 'DevicePairingClipboard']
+      'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate', 'DevicePairingClient', 'DevicePairingInput', 'DevicePairingClipboard']
       .map(name => join(app, 'Facade', name + '.swift')),
-    join(root, 'Driver.swift'), '-o', binary],
+    join(root, 'Driver.swift'), join(root, 'FleetStubs.swift'), '-o', binary],
   { encoding: 'utf8', timeout: 120_000 });
   const output = execFileSync(binary, [], {
     encoding: 'utf8', timeout: 30_000,
@@ -185,39 +189,15 @@ import Foundation
   console.log(output.trim());
 });
 
-test('W185P device card uses the production validation, parser, copy and feedback paths', () => {
-  const ui = source('New/DevicesCard.swift');
-  for (const label of ['那台的位址', '那台畫面上冒號後面的數字', '那台畫面上的 6 碼', '這台的名字']) {
-    assert.ok(ui.includes(`Text("${label}")`), label);
-  }
-  assert.match(ui, /nameField = \(try\? DeviceIdentityStore\.readLocal\(\)\)\?\.name/);
-  assert.match(ui, /Host\.current\(\)\.localizedName/);
-  assert.match(ui, /onChange\(of: hostField\)[\s\S]*?DevicePairingInput\.isBulkEdit\(previous: previous, current: value\)/);
-  assert.match(ui, /guard let parsed = DevicePairingInput\.parseAddress\(hostField\) else \{ return \}/);
-  assert.match(ui, /hostField = parsed\.host\s+portField = parsed\.port\s+if let code = parsed\.code \{ codeField = code \}/);
-  assert.match(ui, /\.onSubmit \{ parseHostField\(\) \}/);
-  assert.match(ui, /onChange\(of: hostFieldFocused\)[\s\S]*?if !focused \{ parseHostField\(\) \}/);
-  assert.match(ui, /onChange\(of: codeField\)[\s\S]*?DevicePairingInput\.normalizedCode\(value\)/);
-  assert.match(ui, /TextField\("A–Z、0–9，共 6 碼"[\s\S]*?design: \.monospaced/);
-  assert.match(ui, /guard pairingValidationMessage == nil,\s+let port = DevicePairingInput\.portNumber\(portField\)/);
-  assert.match(ui, /\.disabled\(pairingValidationMessage != nil\)/);
-  assert.match(ui, /Text\(pairingValidationMessage \?\?/);
-  assert.match(ui, /DevicePairingInput\.validationMessage\(host: hostField, port: portField, code: codeField, name: nameField\)/);
-  assert.doesNotMatch(ui, /Int\(portField\) \?\? 0/);
-  for (const item of ['address', 'all']) {
-    assert.match(ui, new RegExp(`pairingClipboard\\.copy\\(\\.${item}, address: listen, code: window\\.code`));
-    assert.match(ui, new RegExp(`pairingClipboard\\.copied == \\.${item} \\? "已複製"`));
-  }
-  assert.match(ui, /DevicePairingFeedback\.failure\(pairMessage\)/);
-  assert.match(ui, /Text\(failure\.message\)/);
-  assert.match(ui, /Text\("工程資訊：\\\(failure\.detail\)"\)[\s\S]*?\.caption2/);
+test('W187 device settings retired the W185 pairing controls and direct changes', () => {
+  const ui = source('New/DevicesCard.swift').split('enum RemoteDevicePresentation')[0];
+  assert.match(ui, /DeviceFleetPage\(snapshot: fleet\.snapshot/);
+  assert.match(ui, /GlobalDMDeskController\.shared\.openDirect\(\.assistant\)/);
+  assert.doesNotMatch(ui, /TextField|pairWithHost|startPairingWindow|PrimaryTransferPanel|removeDevice|FirstRunDefaults/);
 });
 
 test('W185P code clipboard expires and clears on close without logging, persistence or protocol changes', () => {
-  const ui = source('New/DevicesCard.swift');
   const clipboard = source('Facade/DevicePairingClipboard.swift');
-  assert.match(ui, /onChange\(of: model\.pairingWindow\?\.code\).*pairingClipboard\.clear\(\)/);
-  assert.match(ui, /\.onDisappear \{ pairingClipboard\.clear\(\) \}/);
   assert.match(clipboard, /prepareForNewContents\(with: \[\]\)/);
   assert.match(clipboard, /guard expiresAt > now/);
   assert.match(clipboard, /expiresAt\.timeIntervalSince\(now\)/);

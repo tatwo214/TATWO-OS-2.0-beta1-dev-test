@@ -362,6 +362,7 @@ final class GitHubAccountsStore: ObservableObject, @unchecked Sendable {
     }
 
     func installHelper() throws {
+        guard !NativeStagingIsolation.isW276Bundle else { return }
         let source = TatwoResources.url(forResource: "tatwo2-git-credential", withExtension: nil)
         guard let source else { throw GitHubAccountsError.helperResourceMissing }
         try fileManager.createDirectory(
@@ -657,7 +658,8 @@ final class GitHubAccountsStore: ObservableObject, @unchecked Sendable {
     }
 
     private func ghIsAvailable() -> Bool {
-        run(
+        if NativeStagingIsolation.isW276Bundle { return false }
+        return run(
             executable: "/usr/bin/env",
             arguments: ["gh", "--version"],
             environment: environment).status == 0

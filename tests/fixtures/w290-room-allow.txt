@@ -1,0 +1,19 @@
+# W290: remove the main window Escape-close endpoint and correct close documentation.
+App/Sources/Tatwo2/Shell/AppShell.swift
+# Register the real NSEvent acceptance suite.
+App/Sources/Tatwo2/SelfTest.swift
+# Let the acceptance suite instantiate the existing production shortcut recorder.
+App/Sources/Tatwo2/Browser/BrowserShortcutsSettingsView.swift
+# Real window, popover, DM, recorder, composition and sheet regressions.
+App/Sources/Tatwo2/Facade/W290EscapeAcceptance.swift
+# Update the old real-window control that expected Escape to close main.
+App/Sources/Tatwo2/Facade/CoderImportBrowserAcceptance.swift
+# Existing tests must expect Escape to stop at the main window.
+tests/island-notice.test.mjs
+tests/w189-dm.test.mjs
+# Replace the old import-suite label that promised Escape would close main.
+tests/w181-import.test.mjs
+# Extract the complete window class without depending on the old Escape-close comment.
+tests/window-traffic-lights.test.mjs
+# Track this room's allowed paths and reasons.
+tests/fixtures/w290-room-allow.txt

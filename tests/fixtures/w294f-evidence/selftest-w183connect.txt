@@ -1,0 +1,414 @@
+W183CONNECT PASS 複製配對碼：字母數字八碼原樣複製，不含分隔空白（合成碼）
+W183CONNECT PASS 複製配對碼：流程清除會移除自己寫入的碼
+W183CONNECT PASS 複製配對碼：hidden 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：stale 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：finished 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：expired 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：missing 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：attempts 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：malformed 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：disallowed 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：unicode 拒絕且不碰剪貼簿
+W183CONNECT PASS 複製配對碼：不清掉使用者後來複製的內容
+W183CONNECT PASS 複製配對碼：到期自動清除
+W183CONNECT PASS 複製配對碼：原生卡片畫面證據（合成資料、配對碼遮蔽）
+W183CONNECT PASS 準備：一筆手動配對的舊 grant
+W183CONNECT PASS ［連線］卡：Pod 目前帳號、主機、服務網址、L1、專案（沒有）、回到的網域；phase＝等你按
+W183CONNECT PASS 卡片出來之前不開配對窗口（T15：按［連線］才開）
+W183CONNECT PASS 順序：讀清單時窗口關著；按建立之前主機才開窗口
+W183CONNECT PASS 配對頁在私訊框（同頁）：卡片上方顯示交易碼、剩餘時間、8 碼（跟主機這一筆一樣）；碼在畫面上＝敏感
+W183CONNECT PASS authorize_begin 用按下時的範圍快照
+W183CONNECT PASS 綁 attempt 的確認卡不上設定頁與 Island（HandsState 不收）
+W183CONNECT PASS 所有設備輪詢的 remote_hands_status 裡沒有配對碼
+W183CONNECT PASS 使用者照卡片打 8 碼：換到一次性授權碼
+W183CONNECT PASS 授權完成（verifying）跟工具連上分開：grant 有了但還沒 /mcp＝不是已連線
+W183CONNECT PASS 擁有者確認之前：這個 attempt 的 grant 是暫時的，不能呼叫工具（只能拿工具清單）
+W183CONNECT PASS W183 R8a 審查 暫時的 grant：畫面不算已連線（HandsState.confirmedGrants 不含、remote_hands_status 標 provisional）
+W183CONNECT PASS 別的 grant 的 /mcp 不算這次成功（不是「任何有效 grant」）
+W183CONNECT PASS 這個 attempt 的 grant 第一次 /mcp 成功、擁有者再核對一次 Pod 帳號並確認＝已連線（終態；grant 轉正）
+W183CONNECT PASS W183 R8a 審查 grant 轉正之後才算已連線（HandsState.confirmedGrants 含它）
+W183CONNECT PASS 確認過的 grant：App 重開照樣有效
+W183CONNECT PASS 流程紀錄與錯誤文字沒有配對碼、state、client_id
+W183CONNECT PASS 成功之後的取消不改終態
+W183CONNECT PASS 配對頁在另開的視窗：那個視窗放到私訊框的位置、卡片照樣顯示碼
+W183CONNECT PASS R6a 的 cancel(reason:)：窗口關掉、卡片收回、phase 回 idle
+W183CONNECT PASS 錯碼：還可以錯 4 次（卡片跟著變）
+W183CONNECT PASS 對的碼：授權碼等 ChatGPT 來換
+W183CONNECT PASS 取消＝窗口、交易、還沒兌換的授權碼作廢；取消後舊授權碼換不到 grant；卡片收起、回到等你按
+W183CONNECT PASS 取消與 /token 同時：只有一個終態（取消），token 先到也被撤銷，沒有留下有效 grant
+W183CONNECT PASS 開發者模式沒開：不代按、私訊框顯示 Pod 那一頁、等的時候配對窗口關著
+W183CONNECT PASS 使用者自己打開之後：重建意圖（新 attempt）、窗口開好才按建立
+W183CONNECT PASS 開發者模式：拿著 Pod 換到設定頁等（聊天不會把頁面換走）；自動接著做時不帶「看過警語」（新的表單照樣交給使用者）
+W183CONNECT PASS 已有指向同網址（OAuth）的：不重建、只重新連線清單認出的那一個 id（以網址＋OAuth 辨識，不看名字）
+W183CONNECT PASS 同網址但不是 OAuth：不重用、不降成免驗證、不開窗口（需要手動）
+W183CONNECT PASS 讀不到外掛清單＝不知道有沒有建過：不按建立
+W183CONNECT PASS 表單不只一個（或找不到）：不猜、這次取消（窗口關掉）、給「再連一次」或「手動」
+W183CONNECT PASS 手動：網址已複製、Pod 標出要按哪裡、窗口開著；配對頁出來後照樣顯示碼
+W183CONNECT PASS 表單網址被改：明確不符＝終止、窗口關掉、沒有顯示碼
+W183CONNECT PASS 按了建立、結果未知：先讀清單，不再按建立
+W183CONNECT PASS 授權頁沒出現：先提示在頁面上點一下（popup 手勢保護不放寬），時限到＝取消、要手動
+W183CONNECT PASS 授權頁在別的網域：明確不符＝終止、沒有碼
+W183CONNECT PASS 攻擊者先占交易：Pod 看到的配對頁對不上＝終止、不顯示碼、那一筆作廢、沒有新 grant
+W183CONNECT PASS 回答裡的授權連結（沒按［連線］、不是這一輪的建立之後）：不算、不開窗口、沒有碼
+W183CONNECT PASS 配對中途 Pod 出現另一組授權參數的配對頁：明確不符＝終止、碼收起來
+W183CONNECT PASS 一次只接受一個 attempt：同 ID 冪等、不同 ID 回忙碌（兩台設備、兩次點擊並行）
+W183CONNECT PASS 非擁有者要狀態、要碼、要取消：一律拒絕
+W183CONNECT PASS 範圍在按下之後改了：這個 attempt 取消，authorize_begin 不用新的範圍
+W183CONNECT PASS 舊世代晚到、範圍快照對不上、替別台申請：一律不收
+W183CONNECT PASS attempt 進行中世代換了：取消、窗口關掉
+W183CONNECT PASS 結束了的 attempt 同 ID 再送：回原來的終態、不重開
+W183CONNECT PASS 鎖螢幕：這個 attempt 取消（窗口關掉）、碼收起來、回到等你按（卡片再出來）
+W183CONNECT PASS 按下時 Pod 帳號跟卡片上的不一樣：不開窗口，卡片換成新帳號讓你再看一次
+W183CONNECT PASS Pod 沒登入：私訊框顯示 Pod 讓你登入（不換別的瀏覽器；等的時候窗口關著）；W183 R11 登入好自動接著連（不回到確認卡、不用再按一次）
+W183CONNECT PASS 關配對窗口（收掉配對、關開關）：還沒兌換的授權碼一起作廢
+W183CONNECT PASS 副設備的裸 start_pairing 停用（不開不綁人的窗口）
+W183CONNECT PASS connect_* 沒帶簽章涵蓋的 expires_at：不收
+W183CONNECT PASS 副設備：卡片內容經設備簽章 RPC 從主機拿（connect_offer）
+W183CONNECT PASS 副設備：begin_connect／connect_status 走簽章；碼只給按的那台（擁有者）
+W183CONNECT PASS 舊的 stop_pairing 碰到綁連線意圖的窗口：拒絕，窗口與交易照舊
+W183CONNECT PASS 非擁有者（主機本機）要碼被拒；remote_hands_status 裡沒有碼
+W183CONNECT PASS begin_connect 的擁有設備要是驗章得到的那台（payload 不能替別台申請）
+W183CONNECT PASS 副設備：這個 attempt 的 grant 第一次 /mcp＝已連線
+W183CONNECT PASS 警語：等的時候窗口關著、拿著 Pod（表單不被關掉）；按「繼續」才帶回他看過的那一張表單與那段警語的指紋
+W183CONNECT PASS 綁住的配對頁一開始載入、或視窗關掉：碼當下收起來（不等下一圈）；回到同一頁才再顯示
+W183CONNECT PASS 配對中途被帶到外站的授權頁：當下終止（不等下一圈）、碼收起來、交易作廢、配對頁視窗關掉
+W183CONNECT PASS 配對頁被帶到別的網站（不是這台主機、不是 ChatGPT）：當下終止
+W183CONNECT PASS 等授權頁時，從對話頁打開的授權連結（網域、參數都對）：不算、終止、不顯示碼、交易作廢
+W183CONNECT PASS 按下建立之前就開著的視窗延遲導到配對頁：不算、終止、不顯示碼
+W183CONNECT PASS 第一次 /mcp 之後 Pod 帳號變了：不確認、撤銷這次的 grant（主機不會自己變成已連線）
+W183CONNECT PASS 第一次 /mcp 之後讀不到 Pod 帳號：不當成通過、撤銷
+W183CONNECT PASS 取消晚了一步（主機已連上）：畫面照實顯示已連線，不假裝取消了
+W183CONNECT PASS 取消送不到主機（結果不確定）：明講不確定，不收成「已取消」
+W183CONNECT PASS 取消一回來（公布「已取消」的同時），這個 attempt 換到的 token 就已經撤銷
+W183CONNECT PASS 送了對的碼之後主機世代換了：換 token 前就取消，換不到 grant
+W183CONNECT PASS 有了暫時的 grant 之後世代換了：第一次 /mcp 前重核＝撤銷，不給工具
+W183CONNECT PASS 有 grant 的 attempt 過了最後期限：一樣到期、撤銷（不因為有 grant 就不收）
+W183CONNECT PASS 設定（範圍）一改：進行中的 attempt 當下作廢（窗口、交易），不等輪詢
+W183CONNECT PASS App 重開時還沒確認的連線 grant：一律撤銷，不自動恢復
+W183CONNECT PASS begin 還沒回就取消：取消先記成墓碑，晚到的 begin 不開窗口
+W183CONNECT PASS 主機：取消比 begin 先到＝墓碑；之後同 ID 的 begin 回「已取消」、不開窗口
+W183CONNECT PASS 按了建立、結果不確定、清單又找不到它：再連一次也不再按建立（改手動）
+W183CONNECT PASS W183 R10 卡片：範圍＝這台全部專案（入口本身、入口的 chatgpt/、資料夾不見的不在裡面）＋設定的等級；本機 allowed_project_ids 是空的也一樣；卡上不選（沒有 project_choices、flow 沒有選擇）；交易類另外列出（只能看）；不帶完整路徑
+W183CONNECT PASS W183 R10 按［連線］：範圍快照＝全部專案（allProjects）＋L2；本機設定一個字都不寫
+W183CONNECT PASS W183 R10 這次連上的 grant：核准的是「這台全部專案」（新專案自動包含）＋L2
+W183CONNECT PASS W183 R10 新專案自動包含：連上之後才加的專案 list_projects 就看得到；交易實盤類（名字含實盤、資料夾含 hermes）標 read_only
+W183CONNECT PASS W183 R10 底線 B：交易實盤類專案（名字或資料夾名）開工作區一律被拒（主機自己查 Coder 的名字與資料夾）；讀的工具不擋（只能看）
+W183CONNECT PASS W183 R10 反例：外部 AI（ChatGPT）沒有、也叫不動改等級或專案的工具（34 個真實工具帶等級、專案參數都被拒）；設定照舊
+W183CONNECT PASS W183 R10 主機一律不收卡上選的範圍（等級、專案，連跟現在一樣的也不收）：connect_scope_invalid、設定不動、不開窗口（範圍只照 ChatGPT build 的中央設定）
+W183CONNECT PASS W183 R10 不帶範圍的 begin（新版擁有者）：核對世代與 digest 之後開窗口，設定一個字都不寫
+W183CONNECT PASS W183 R10 反例：外部 AI 在授權請求裡塞等級、專案：整個請求不收；交易照舊用快照（L1＋全部專案），設定不動
+W183CONNECT PASS W183 R10 remote_hands_status：主機的專案清單＝這台全部能當專案的（id、名稱、資料夾最後一段，不帶完整路徑）
+W183CONNECT PASS W183 R10 副設備：卡片經簽章 RPC 拿到「全部專案」的卡片（沒有可以選的清單）；begin_connect 不帶等級、專案；快照＝設定的等級＋全部專案
+W183CONNECT PASS W183 R10 接口：全部可見的卡片來回一樣（含只能看的清單）；digest 的專案那一段是「*」（多一個專案不會讓進行中的連線作廢）；舊格式（照清單）照舊；all_projects 不是布林＝不收
+W183CONNECT PASS W183 R7a begin_connect 的範圍欄位照舊嚴格解析（等級只收整數、專案 id 只收字串；只帶一半＝拒）；W183 R10 解析得出來的也一律不收（scopeHostRules）
+W183CONNECT PASS W183 R10 中央設定即生效：本機是 L0、allowed_project_ids 空的，中央給 L2＝有效範圍 L2＋這台全部專案（不再取小、不再 ∩ 本機）
+W183CONNECT PASS W183 R10 中央收窄照舊立刻生效：有效等級跟著降、跑著的工作超出就收掉、卡片跟著改
+W183CONNECT PASS W183 R10 底線 B：交易實盤類（名字含實盤、資料夾名含 hermes）L1、L2 的工作在最後一道也被擋；L0 與一般專案不受影響
+W183CONNECT PASS W183 R10 第二輪 中央設定 L1 → L2：已經連上的 L1 grant 照舊只有 L1（工具清單沒有 L2 的、叫 open_workspace 被拒、一個工作區都沒開）；新的連線才拿得到 L2
+W183CONNECT PASS W183 R7a 審查 取消比 begin 先到（墓碑）：晚到的 begin 不開窗口、設定不動
+W183CONNECT PASS W183 R7a 審查 同一個 attempt id、不同的內容：在任何副作用之前被拒（窗口是第一個的）
+W183CONNECT PASS W183 R10 資料夾暫時不見的專案：不在「這台全部專案」裡（外接碟沒掛上）；按［連線］不寫設定，它的工作區沒有被鎖
+W183CONNECT PASS W183 R10 主機有 70 個專案：卡片拿到完整的清單（不截在 64 個）；快照＝全部專案
+W183CONNECT PASS W183 R7a 反例：沒有設備簽章的 begin_connect（引擎身分真的走 os.sock 的處理路徑）、沒配對的金鑰、別的方法的簽章、重放舊序號一律拒；設定、窗口都沒動
+W183CONNECT PASS W183 R7a 反例：外部 AI 的身分叫不到 remote_hands_action（begin_connect）與 hands_setup_step（真的走 os.sock 的處理路徑）
+W183CONNECT PASS W183 R10 有效簽章的 begin_connect 帶了等級、專案＝connect_scope_invalid：設定不動、不開窗口
+W183CONNECT PASS W183 R10 對照組：同一條 os.sock 路徑、有效的設備簽章、不帶範圍才開得了窗口（上面的拒絕不是空驗）；設定照舊不寫
+W183CONNECT PASS W183 R9 外掛頁跟預期不一樣：每一種都寫成一句話（不再只有代號，例如「（plus）」），都給「再連一次、改用手動」
+W183CONNECT PASS W183 R9 兩條路都找不到（舊的＋、新增 ▾、選單、建立 MCP 應用程式那一項）：卡片寫「ChatGPT 外掛頁找不到『新增 → 建立 MCP 應用程式』（ChatGPT 改版，或這個帳號沒開開發者模式）」
+W183CONNECT PASS W183 R9 Pod 回 risk_ack（沒帶位置）＝交給你勾（帶回那一張表單）；Connection 不是 Server URL＝拒絕（一句話：TATWO 不用 Tunnel）
+W183CONNECT PASS W183 R10 第二輪 Pod 回 consent unknown＝不代勾（卡片說不認得）；代勾的位置記下量的那一份文件；armed 的記號只收該有的樣子
+W183CONNECT PASS W183 R10 Pod 回 risk_ack＋那一格的位置＝TATWO 代勾（點格子中間的整數點）；位置不合理＝交給你；警語大改、沒見過的勾選框＝交給你（一句話的原因）；［連線］旁那一行小字
+W183CONNECT PASS W183 R9 審查：勾選框不是你按的＝交回（卡片寫取消再自己勾）；表單被換掉、Name 被改、確認重放＝拒絕（一句話、沒有代號）
+W183CONNECT PASS W183 R9 審查（GPT-6 N3、N9）：每交回一次＝新的一輪（卡片寫這一次自己再勾一次、上一次勾的不算）；警語太長或看不出範圍＝不自動按 Create，一句話請你改手動
+W183CONNECT PASS W183 R9c（GPT-6 C1）：Pod 的網頁少了 TATWO 安全判斷需要的瀏覽器功能＝連接器與「新增」都不自動操作（不退回網頁自己的方法），卡片與原生頁各一句話
+W183CONNECT PASS W183 R10 退路：Pod 量不到「I understand and want to continue」那一格的位置＝不代勾，卡片寫「TATWO 這次沒辦法替你勾…自己勾…，再按［繼續］」；等的時候窗口關著；按［繼續］才帶回同一張表單再按 Create
+W183CONNECT PASS W183 R9 外掛頁找不到「新增 → 建立 MCP 應用程式」：這次取消（窗口關掉）、卡片寫一句話（改版或沒開開發者模式；再連一次或手動），沒有代號、沒有碼
+W183CONNECT PASS W183 R9 表單的 Connection 不是 Server URL（Tunnel、讀不出來）：明確不符＝終止、窗口關掉、沒有顯示碼（TATWO 不用 Tunnel）
+W183CONNECT PASS W183 R9 審查（GPT-6 N9）：Pod 說警語太長或看不出範圍＝這次不自動按 Create（窗口關掉、不帶確認再試），卡片一句話請你改手動
+W183CONNECT PASS W183 R9c（GPT-6 C3）：連接器拿著 Pod、沒有自己的指令在跑時，原生看到主框架的路徑換了（含同一份文件裡的導頁）就告訴網頁腳本那個路徑（離開過＝那一張的確認永久作廢）；同一個路徑不重送；指令在跑、放掉 Pod 之後不送
+W183CONNECT PASS W183 R9 手動模式照新介面：外掛 →「新增 ▾」→「建立 MCP 應用程式」→ Name 填 TATWO（<設備名>）→ Connection 選 Server URL、貼上網址 → OAuth → 自己勾 → Create → 打 8 碼；每個畫面上的字都附另一種語言；標出「新增」、網址已複製
+W183CONNECT PASS W183 R10 專案：卡片（也經設備簽章 RPC 給副設備）與 ChatGPT Dev 面板是同一份——這台全部能當專案的；不再有「先到 ChatGPT Dev 勾」
+W183CONNECT PASS W183 R10 底線 B：面板的「只能看」與卡片的交易類清單用同一個判斷（名字、資料夾名）；卡片寫「這台全部（N 個）」＋交易類只能看
+W183CONNECT PASS W224-5 專案範圍仍是全部、交易類仍只能看；退休畫面文字不作為範圍證據
+W183CONNECT PASS 5.retained-short-copy.0:ChatGPT build
+W183CONNECT PASS 5.retained-short-copy.1:ChatGPT build 是什麼
+W183CONNECT PASS 5.retained-short-copy.2:已關閉
+W183CONNECT PASS 5.retained-short-copy.3:準備中…
+W183CONNECT PASS 5.retained-short-copy.4:等你在私訊框授權
+W183CONNECT PASS 5.retained-short-copy.5:已連線・Codex、記憶
+W183CONNECT PASS 5.retained-short-copy.6:GPT
+W183CONNECT PASS 5.retained-short-copy.7:Pod
+W183CONNECT PASS 5.retained-short-copy.8:主
+W183CONNECT PASS 5.retained-short-copy.9:副
+W183CONNECT PASS 5.retained-short-copy.10:Cloudflare
+W183CONNECT PASS 5.retained-short-copy.11:未登入
+W183CONNECT PASS 5.retained-short-copy.12:ChatGPT Dev
+W183CONNECT PASS 5.retained-short-copy.13:已連線
+W183CONNECT PASS 5.retained-short-copy.14:ChatGPT
+W183CONNECT PASS 5.retained-short-copy.15:設備
+W183CONNECT PASS 5.retained-short-copy.16:登入 Cloudflare
+W183CONNECT PASS 5.retained-short-copy.17:套用
+W183CONNECT PASS 5.retained-short-copy.18:連線
+W183CONNECT PASS 5.retained-short-copy.19:啟用 ChatGPT
+W183CONNECT PASS 5.retained-short-copy.20:Pod 休眠中
+W183CONNECT PASS 5.retained-short-copy.21:Pod 啟動中
+W183CONNECT PASS 5.retained-short-copy.22:開發者模式已開
+W183CONNECT PASS 5.retained-short-copy.23:開發者模式：連線時檢查
+W183CONNECT PASS 5.retained-short-copy.24:主設備
+W183CONNECT PASS 5.retained-short-copy.25:副設備
+W183CONNECT PASS 5.retained-short-copy.26:這台
+W183CONNECT PASS 5.retained-short-copy.27:（網域）
+W183CONNECT PASS 5.retained-short-copy.28:工程細節
+W183CONNECT PASS 5.retained-short-copy.29:返回
+W183CONNECT PASS 5.retained-short-copy.30:施工房
+W183CONNECT PASS 5.retained-short-copy.31:環境登入 › Cloudflare
+W183CONNECT PASS 5.retained-short-copy.32:解除安全鎖
+W183CONNECT PASS 5.retained-short-copy.33:替長長長長長長長長登入
+W183CONNECT PASS 5.retained-short-copy.34:連 長長長長長長長長長長
+W183CONNECT PASS 5.retained-short-copy.35:設定進行中，等一下再按
+W183CONNECT PASS 5.retained-short-copy.36:先打開 ChatGPT build
+W183CONNECT PASS 5.retained-short-copy.37:子網域只能小寫英數與「-」
+W183CONNECT PASS 5.retained-short-copy.38:還沒拿到設定，等一下
+W183CONNECT PASS 5.retained-short-copy.39:先選網域
+W183CONNECT PASS 5.retained-short-copy.40:先勾設備
+W183CONNECT PASS 5.retained-short-copy.41:畫面剛更新，再看一次
+W183CONNECT PASS 5.retained-short-copy.42:重試
+W183CONNECT PASS 5.retained-short-copy.43:重新登入
+W183CONNECT PASS 5.retained-short-copy.44:解除安全鎖
+W183CONNECT PASS 5.retained-short-copy.45:再連一次
+W183CONNECT PASS 5.retained-short-copy.46:重試
+W183CONNECT PASS 5.retained-short-copy.47:重試
+W183CONNECT PASS 5.retained-short-copy.48:重新授權
+W183CONNECT PASS 5.retained-short-copy.49:重試
+W183CONNECT PASS 5.retained-short-copy.50:重試
+W183CONNECT PASS 5.retained-short-copy.51:重試
+W183CONNECT PASS 5.retained-short-copy.52:重試
+W183CONNECT PASS 5.retained-short-copy.53:重試
+W183CONNECT PASS 5.retained-short-copy.54:完成
+W183CONNECT PASS 5.retained-short-copy.55:等你
+W183CONNECT PASS 5.retained-short-copy.56:進行中
+W183CONNECT PASS 5.retained-short-copy.57:未選
+W183CONNECT PASS 5.retained-short-copy.58:出錯
+W183CONNECT PASS 5.current-card-shows-capability-and-connect.false
+W183CONNECT PASS 5.current-card-has-no-retired-summaries-or-levels.false
+W183CONNECT PASS 5.current-inline-copy-short-except-capability.false
+W183CONNECT PASS 5.long-description-stays-in-info.false
+W183CONNECT PASS 5.current-card-shows-capability-and-connect.true
+W183CONNECT PASS 5.current-card-has-no-retired-summaries-or-levels.true
+W183CONNECT PASS 5.current-inline-copy-short-except-capability.true
+W183CONNECT PASS 5.long-description-stays-in-info.true
+W183CONNECT PASS W183 R10 代勾：Pod 說只剩「I understand」那一格＝TATWO 點那一格（只點一次；窗口開著、不回頭交給使用者），再帶同一張表單的記號按 Create
+W183CONNECT PASS W183 R10 代填：主機核對過綁住的那一頁才給碼，Pod 在那一頁（同一個畫面、同一組參數）填好送出；卡片從沒叫你勾、從沒顯示碼；紀錄裡沒有碼與參數
+W183CONNECT PASS W183 R10 代勾點不下去：交給你勾（卡片一句話：TATWO 沒勾到、自己勾再按［繼續］），等的時候窗口關著，不再點第二次
+W183CONNECT PASS W183 R10 點了沒勾到：不再點第二次、交給你勾；你勾完按［繼續］＝帶回同一張表單按 Create（R9 的真人證據鏈照舊）；這個假 Pod 填不了碼＝退回顯示碼
+W183CONNECT PASS W183 R10 ChatGPT 的風險說明跟 TATWO 認得的不一樣：TATWO 不代勾，卡片一句話說原因、交給你勾再按［繼續］
+W183CONNECT PASS W183 R10 表單上有 TATWO 沒見過的勾選框：TATWO 不代勾，卡片一句話說原因、交給你勾再按［繼續］
+W183CONNECT PASS W183 R10 Create 之前出現的配對頁：當場終止、不填、不給碼、那一筆作廢（也不按 Create）
+W183CONNECT PASS W183 R10 代填找不到欄位（頁面改版）：退回顯示碼（卡片寫 TATWO 沒填成、照這 8 碼自己打），你照打就連上
+W183CONNECT PASS W183 R10 代填送了沒被收下（剩的次數變少）：馬上退回顯示碼（只填一次）
+W183CONNECT PASS W183 R10 代填送出去沒被收下（等太久）：退回顯示碼，不再填第二次
+W183CONNECT PASS W183 R10 手動模式（建立是你自己按的、來源確認不了）：不代填，照舊顯示碼
+W183CONNECT PASS W183 R10 沒綁上（占著窗口的交易不是 Pod 看到的那一頁）：主機不給碼＝不填、不顯示、那一筆作廢
+W183CONNECT PASS W183 R10 第二輪 準備期間（Create 還沒送出、不只代勾那一段）冒出的配對頁：當場終止、那一筆作廢、不填、不給碼
+W183CONNECT PASS W183 R10 第二輪 送了 Create、回覆沒回來（unknown）：不把「看到配對頁」反推成按下去了來代填——只顯示碼、卡片說確認不了來源
+W183CONNECT PASS W183 R10 第二輪 錨點那一刻已經開著的 popup 裡出現的配對頁：不算、終止、不給碼
+W183CONNECT PASS W183 R10 第二輪 錨點之後主框架離開過 chatgpt.com 再回來才出現的配對頁：不算、終止、不給碼
+W183CONNECT PASS W183 R10 第二輪 對照組：錨點（press dispatched）在前、配對頁（authorize observed）在後，照常綁住
+W183CONNECT PASS W183 R10 第三輪 錨點之後多開了別的 popup（不只一條路）：配對頁照樣綁住，但不代填、只顯示碼（卡片說確認不了來源）
+W183CONNECT PASS W183 R10 第三輪 配對頁所在的 popup 不是 Pod 主框架開的：不代填、只顯示碼
+W183CONNECT PASS W183 R10 第三輪 對照組：錨點之後剛好一個新 popup、配對頁就在裡面＝照常代填（碼沒上卡片）
+W183CONNECT PASS W183 R10 第三輪 派送代勾前核到同意內容變了：不點、交給你（卡片說跟 TATWO 認得的不一樣），不按 Create、沒有錨點
+W183CONNECT PASS W183 R10 第三輪 取消→重連→舊操作的錨點晚到：不收（取消之後、重連之後都一樣），新的一次照常綁住配對頁
+W183CONNECT PASS W183 R10 第四輪 錨點之後先開的 popup 一直在載入（沒有網址）：一開窗就算，配對頁在另一個 popup＝不代填、只顯示碼
+W183CONNECT PASS W183 R10 第四輪 錨點之後開的 popup 沒載入完就關了：照樣算它開過，配對頁在另一個 popup＝不代填、只顯示碼
+W183CONNECT PASS W183 R10 第四輪 真的 Pod 驅動：原生一開窗就通知流程（還在載入也算、畫面帶著開窗者），配對頁在另一個 popup＝不代填
+W183CONNECT PASS W183 R10 第四輪 真的 Pod 驅動：錨點之後有 popup 是子框架開的（開了就關）＝配對頁在主框架也不代填、只顯示碼
+W183CONNECT PASS W183 R10 第三輪 取消→重連→舊的 armed 晚到（真的 Pod 驅動）：舊操作不記錨點、不送「按」（不會用到新的獨占）
+W183CONNECT PASS W183 R10 代填只認這一頁的這一張表單：這台主機、同一份文件、畫面大小對得上、送到這台主機的 POST、剛好一格文字欄＋一顆送出、都在畫面裡；其他一律不填
+W183CONNECT PASS W183 R10 配對碼的按鍵：字母用 Shift 打大寫、數字照打；字元集外的（0、1、I、O）不打
+W183CONNECT PASS W183 R10 第二輪 代勾只點「同一份文件、同一個位置剛好一個」的那個節點（走 CEF 的節點驗證點擊，不走裸座標）；換位、多個、導頁、別的網站、停用一律不點
+W183CONNECT PASS W183 R11 新的一份 ChatGPT build：預設 L2＝Codex（沙盒工作區）＋記憶（讀、遮敏感），不用再選範圍
+W183CONNECT PASS W183 R11 舊的一份（沒有 level_default）照一次：舊預設 L1 的記成待升 L2（還不升：現有連線不能因為遷移就放大）；刻意收窄的 L0 不動、不列；照過就不再照
+W183CONNECT PASS W183 R11 第二輪 待升的那台：舊版主機（回報沒有 level_guard）＝不升（W183 R11 最後一輪：沒有連線也不升）；回報說會先封頂＝升到 L2（版本 +1）；不在待升清單的不動
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 1 反例）舊版主機零連線的回報（剛收到的、一小時前的）＝不調高、請它先更新；會先封頂的主機回報太舊、時間在未來、還沒套用到這一版＝先等它回報；新的、套用到這一版＝可以
+W183CONNECT PASS W183 R11 主設備讀到舊的設定檔：照一次並存回去（level_default、待升清單記下；還是 L1），第二次讀是存下來的那一份；W183 R12：L0 也記成待升（還是 L0）
+W183CONNECT PASS W183 R11 第二輪 主設備收到那台的回報：舊版有連線＝還是 L1；回報說會先封頂＝升到 L2 並存起來（重讀也是）
+W183CONNECT PASS W183 R11 接上之後拿到什麼（照等級）：L2＝「已連線：Codex、記憶」；L1＝記憶、提案；L0＝只看
+W183CONNECT PASS W183 R11 退路卡（沒勾到、要你勾、登入、開發者模式、手動）都只留一句短話；整句留在提示與無障礙（不刪、不改流程的字）
+W183CONNECT PASS W183 R11 連線中＝進度點（準備→建外掛→配對→確認，四格）；讀取中、取消中、斷線中照舊一句＋轉圈
+W183CONNECT PASS W183 R11 已連線卡：「已連線：Codex、記憶」＋［斷線］＋完成；已斷線卡：一句＋［連線］＋完成
+W183CONNECT PASS W183 R11 Computer Use 閘門：確認、登入、警語、配對、確認中、出錯（再連＝重新同意）照舊擋；只剩結果的已連線／已斷線卡不擋（連上之後在閘門外看得到狀態）
+W183CONNECT PASS W183 R11 確認卡：一句能力（W183 R12：「連上後：看全部專案・可用 Codex・記憶只讀＋收件匣」，不畫等級膠囊）；網址、專案、授權後回到哪一行小字
+W183CONNECT PASS W183 R11 入口的狀態：ChatGPT build 沒開＝不出來；網址還沒好＝到設定；好了＝「連線」；連線中；目前這個帳號連上＝「已連線・Codex、記憶」；主機上只有別的帳號（或核對不了）、那一條不在了＝「連線」；能力沒有證據＝「已連線・能力未確認」
+W183CONNECT PASS W183 R11 膠囊的字：圖示＋「連線」兩個字；連上＝「已連線・Codex、記憶」；hands_setup_status 的 connection 同一份（connected、codex、memory、L2）
+W183CONNECT PASS W183 R11 ＋ › 外掛程式那一頁：返回下面第一列就是「連線」（ChatGPT 的工具清單照舊在下面）；沒開＝不列；第一頁不多東西
+W183CONNECT PASS W183 R11 私訊框的膠囊：ChatGPT 對象的主畫面才出來（卡片、抽屜在上面、別的對象、ChatGPT build 沒開＝不出來）
+W183CONNECT PASS W183 R11 按一下［連線］就接上：範圍 L2，ChatGPT 拿到的工具有 Codex（開工作區、讀寫檔、跑指令、交件）與記憶（搜尋、讀、寫收件匣）
+W183CONNECT PASS W183 R11 已連線卡：「已連線：Codex、記憶」留著（按完成才收、上面有［斷線］）；中間走過的四格進度點照順序
+W183CONNECT PASS W183 R11 ［斷線］一下就斷乾淨：授權撤銷（ChatGPT 再叫 hands_tools＝被拒）、卡片「已斷線」＋［連線］
+W183CONNECT PASS W183 R11 撤銷沒成（這裡沒接上）：照實說沒斷成、已連線卡照舊（［斷線］可以再按），不假裝斷了
+W183CONNECT PASS W183 R11 斷線之後再按［連線］重接：ChatGPT 裡的 TATWO 連接器照舊，重新連線拿到新的授權；斷掉的那一組照舊被拒
+W183CONNECT PASS W183 R11（B）沒登入 ChatGPT：同一顆［連線］＝框裡顯示 ChatGPT 登入頁（卡片一句「登入好自動接著連」、這時窗口關著）；登入好自動接著建外掛、代填、連上（不用再按、不回頭找入口）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 1 反例）L2 grant → 中央 L1 → 遷移成 L2：舊的 token 照舊只有 L1（工具清單沒有 Codex 的、grant 紀錄封頂成 L1）
+W183CONNECT PASS W183 R11 第二輪 遷移之後新的連線（看過確認卡）＝L2（Codex、記憶）；舊的那一條照舊 L1
+W183CONNECT PASS W183 R11 第二輪 重開 App 之後：舊的照舊 L1、新的照舊 L2（封頂寫進授權檔）
+W183CONNECT PASS W183 R11 第二輪 reconcile 先寫本機設定（遷移的 L2）：寫之前就封頂——舊的 token 照舊 L1（退步＝寫完才看本機，會變 L2）
+W183CONNECT PASS W183 R11 第二輪 中央收窄＝grant 也降（寫進授權檔）；之後再調高也回不去（要按［連線］重新同意）
+W183CONNECT PASS W183 R11 第二輪 封頂存不進去：全部撤銷、刪授權檔（舊的 token 被拒，不會用新的等級）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11b 審查 2 反例）封頂存不進去、授權檔也刪不掉：一律不收、不記下新的等級（封頂檔不是 L2）、留下待完成的上限 L1、本機等級不往上改
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11b 審查 2 反例）重開 App：磁碟還壞＝照樣先封頂、還是存不進去＝一律不收（舊的 L2 不會回來）；磁碟好了＝先照待完成的上限封頂、存好了才收——舊的 token 照舊 L1、標記清掉
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 2 反例）封頂、刪授權檔、寫待完成標記都失敗：這段期間一律不收、磁碟上的封頂檔（L2）不清；中央調回 L2＝本機等級不往上改
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 2 反例）重開 App（沒有待完成標記、封頂檔 L2、中央 L2）：本機設定是 L1＝先照較低的 L1 封頂——舊的 token 照舊 L1，不會回到 L2
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 2 反例）封頂還沒做完：又關掉又調高＝整次不收（本機還是 L1、還開著）；單純關掉照樣關得掉（等級不動）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 4 反例）主機上是帳號 A 的連線：目前是 A＝已連線；目前是 B、帳號讀不到、這台沒記過＝給［連線］（不拿別的帳號的連線說目前帳號已連上）；中央收窄＝等級跟著
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 3）新的回報優先：那一條在別處撤銷了＝不在了；那台停了、暫停、安全鎖＝不在了；回報太舊、沒有回報＝核對不了（不說斷、也不說連著）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 3 反例）剛連上只樂觀到期限：回報還沒跟上＝期限內算連著、過了期限＝不再算；連上之後取樣的回報沒有它＝不在了（不用等）；那台停了＝馬上不算（不等期限）
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 4 反例）延遲快照：連上之前取樣、連上之後 20 秒才送到的回報（沒有這一條／說停了）＝不算撤銷、不算停了（期限內算連著，之後「未確認」）
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 4 反例）這台的鐘倒退（連線紀錄在「未來」）：不再算剛連上；新的回報沒有這一條＝照版本判撤銷；比不了先後＝未確認（都不會變成已連線）
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 4 反例）這台的鐘往前大跳：不算剛連上（沒有證據的就「未確認」，不當成已連線）
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 4 反例）時鐘剛跳過：這份回報不說已連線、也不說撤銷或停了（一律「未確認」）；也不拿它證明卡片可以恢復
+W183CONNECT PASS W183 R11 最後一輪 單調時鐘比連線那一刻小（重開機過）＝不算剛連上（未確認）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 5 反例）舊版主機（回報沒有逐筆等級）：剛連上＝已連線・能力未確認（不推定 L2）；過了期限核對不了＝給［連線］；W183 R11 最後一輪：沒有可以比的版本＝不推定撤銷（期限內算連著、之後「未確認」）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 2 反例）確認卡是帳號 A、按之前 Pod 登出：按原卡＝回到確認卡（沒登入的樣子）；之後登入 B 也不會自己接著建連接器、開窗口
+W183CONNECT PASS W183 R11 第二輪 確認卡是 A、按之前換成 B：回到確認卡、寫著 B（再按一次才連）
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 2）本來就沒登入按的：登入之後自動接著連；進度卡上寫著登入的那個帳號
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11 審查 6 反例）三台斷一台成：斷了的那台馬上不算連著（紀錄拿掉）；送不到的、不知道結果的分開照實說、留在卡上
+W183CONNECT PASS W183 R11 第二輪 再按［斷線］只重試還沒斷的兩台；撤銷了但沒存成＝算斷了、照實說要重新配對；全部斷了＝「已斷線」卡
+W183CONNECT PASS W183 R11 第二輪（GPT-6 R11b 審查 4）已連線卡上的那台核對不了：卡片改成「連線狀態未確認」、不寫 Codex／記憶、［斷線］留著；沒斷成照舊是「未確認」；核對得到＝回到「已連線：Codex、記憶」
+W183CONNECT PASS W183 R11 最後一輪（GPT-6 R11c 審查 4 反例）誤判「已斷線」之後：核對不了＝不動；新的回報證明卡上那台還連著＝卡片回到「已連線：Codex、記憶」（［斷線］照樣在）
+W183CONNECT PASS W183 R11 最後一輪 收起來的「已斷線」卡：之後的回報不再把它叫回來（只看還開著的那一張）
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-1-entry.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-2-confirm.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-2b-confirm-not-logged-in.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-3-login.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-4-progress.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-5-connected.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-5b-entry-connected.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-6-disconnected.png
+W183CONNECT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w183connect/r11-7-plugins.png
+W183CONNECT PASS W183 R11 畫面證據 PNG：入口、確認卡（有登入／沒登入）、登入、進行中、已連線（卡與膠囊）、已斷線、外掛程式那一頁
+W183CONNECT PASS W183 R12（主導 3）ChatGPT 的說明改了、讀得到全文：卡片顯示那一段全文＋［同意並繼續］（不叫你去小網頁找勾選框）；還沒按＝什麼都沒記
+W183CONNECT PASS W183 R12（主導 3）按［同意並繼續］＝記下這一版（本機只記 SHA-256）、帶著它再走一次（網頁腳本整份一字不差才代勾）
+W183CONNECT PASS W183 R12（主導 3）同一版以前同意過：不出卡片、TATWO 自動帶著它代勾（恢復一鍵完成）
+W183CONNECT PASS W183 R12（主導 3）帶著同意過的那一份再走一次還是對不上：回到［同意並繼續］的卡（不會一直自動重來）
+W183CONNECT PASS W183 R12（主導 3）讀不到全文（沒有那一份）：照舊是「看完自己勾，再按繼續」的卡
+W183CONNECT PASS W183 R12（主導 3）外來的說明只當文字顯示：控制字元拿掉、只收 TATWO 那一份的樣子、連結只收 https
+W183CONNECT PASS W183 R12（主導 5）按過建立、還沒出現在清單：記進這台的檔（只有雜湊，沒有帳號、網址）
+W183CONNECT PASS W183 R12（主導 5）重開 App 之後再按［連線］：記得上次按過建立、清單裡找不到＝不再建第二個（講清楚到 ChatGPT 看一下）
+W183CONNECT PASS W183 R12（主導 5）本輪明確確認不存在後重試才重建（不會卡死，也不清掉持久紀錄）
+W183CONNECT PASS W183 R12（主導 5）ChatGPT 裡已經有同一個 TATWO 連接器（同網址、OAuth）：沿用它繼續授權，不建第二個
+W183CONNECT PASS W183 recovery open：只提示確認不存在；保留 pending，不自動建立
+W183CONNECT PASS W183 recovery open：fresh flow 重讀持久名稱仍先 byName，不沿用上輪重建授權
+W183CONNECT PASS W183 recovery open：同 flow 明確 retry 只建立一次、仍沿用名稱，不再陷入 byName 迴圈
+W183CONNECT PASS W183 recovery open：建立已送出後授權消耗；再次重試先查既有外掛，不再自動建立
+W183CONNECT PASS W183 recovery by_name：只提示確認不存在；保留 pending，不自動建立
+W183CONNECT PASS W183 recovery by_name：fresh flow 重讀持久名稱仍先 byName，不沿用上輪重建授權
+W183CONNECT PASS W183 recovery by_name：同 flow 明確 retry 只建立一次、仍沿用名稱，不再陷入 byName 迴圈
+W183CONNECT PASS W183 recovery by_name：建立已送出後授權消耗；再次重試先查既有外掛，不再自動建立
+W183CONNECT PASS W183 recovery verify：不授權重建、不清名稱；retry 仍只重連
+W183CONNECT PASS W183 recovery connect：不授權重建、不清名稱；retry 仍只重連
+W183CONNECT PASS W183 recovery id：不授權重建、不清名稱；retry 仍只重連
+W183CONNECT PASS W183 recovery unsupported：不授權重建、不清名稱；retry 仍只重連
+W183CONNECT PASS W183 recovery：明確重建後仍先 scan；同 URL 有 OAuth 外掛必須優先 reuse
+W183CONNECT PASS W183 recovery listUnknown：不能建立；這次授權作廢，恢復空清單也不自動建立
+W183CONNECT PASS W183 recovery ambiguous：不能建立；這次授權作廢，恢復空清單也不自動建立
+W183CONNECT PASS W183 recovery：ack=nil 的警語續接與同意卡不丟掉本輪重建選擇、不回 byName；只有最後一次才 pressed
+W183CONNECT PASS W183 recovery named consent：原 byName 重連遇警語／同意卡仍只重連；ack 非 nil 不得改成 create
+W183CONNECT PASS W183 recovery：取消清掉當輪提示／授權，重新連線仍先 byName
+W183CONNECT PASS W183 recovery account：換目標必須重新確認，舊重建授權不能跨帳號／網址
+W183CONNECT PASS W183 recovery url：換目標必須重新確認，舊重建授權不能跨帳號／網址
+W183CONNECT PASS W183 recovery：同帳號登入世代改變，舊重建提示不得轉成授權
+W183CONNECT PASS W183 recovery consent generation：舊重建選擇與 ack 不得跨失效事件；重新連線仍 byName
+W183CONNECT PASS W183 recovery consent cancel：舊重建選擇與 ack 不得跨失效事件；重新連線仍 byName
+W183CONNECT PASS W183 recovery consent pod_lost：舊重建選擇與 ack 不得跨失效事件；重新連線仍 byName
+W183CONNECT PASS W183 R12（主導 1）收起私訊框：等 ChatGPT 開配對頁的時間不倒數、流程不取消；打開之後照常倒數
+W183CONNECT PASS W183 R12 所有設備一律 L2：還沒照過的一份照一次——低於 L2 的每一台（L0 也算）記成待升、不直接升（現有連線不因此放大）；已經 L2 的不列；照過就不再照；新的一份一開始就照過
+W183CONNECT PASS W183 R12 待升的 L0 那台：會先封頂的主機、回報新、已經套用到這一版＝升到 L2（那台的版本 +1）；舊版主機（沒有連線也一樣）、還沒套用到這一版＝不升
+W183CONNECT PASS W183 R12 拿掉等級選擇：ChatGPT Dev 面板＝「連上後：看全部專案・可用 Codex・記憶只讀＋收件匣」（跟確認卡同一句）；狀態寫「已連線・Codex、記憶」；主卡片的字沒有 L0／L1／L2
+W183CONNECT PASS 5.retained-short-copy.0:ChatGPT build
+W183CONNECT PASS 5.retained-short-copy.1:ChatGPT build 是什麼
+W183CONNECT PASS 5.retained-short-copy.2:已關閉
+W183CONNECT PASS 5.retained-short-copy.3:準備中…
+W183CONNECT PASS 5.retained-short-copy.4:等你在私訊框授權
+W183CONNECT PASS 5.retained-short-copy.5:已連線・Codex、記憶
+W183CONNECT PASS 5.retained-short-copy.6:GPT
+W183CONNECT PASS 5.retained-short-copy.7:Pod
+W183CONNECT PASS 5.retained-short-copy.8:主
+W183CONNECT PASS 5.retained-short-copy.9:副
+W183CONNECT PASS 5.retained-short-copy.10:Cloudflare
+W183CONNECT PASS 5.retained-short-copy.11:未登入
+W183CONNECT PASS 5.retained-short-copy.12:ChatGPT Dev
+W183CONNECT PASS 5.retained-short-copy.13:已連線
+W183CONNECT PASS 5.retained-short-copy.14:ChatGPT
+W183CONNECT PASS 5.retained-short-copy.15:設備
+W183CONNECT PASS 5.retained-short-copy.16:登入 Cloudflare
+W183CONNECT PASS 5.retained-short-copy.17:套用
+W183CONNECT PASS 5.retained-short-copy.18:連線
+W183CONNECT PASS 5.retained-short-copy.19:啟用 ChatGPT
+W183CONNECT PASS 5.retained-short-copy.20:Pod 休眠中
+W183CONNECT PASS 5.retained-short-copy.21:Pod 啟動中
+W183CONNECT PASS 5.retained-short-copy.22:開發者模式已開
+W183CONNECT PASS 5.retained-short-copy.23:開發者模式：連線時檢查
+W183CONNECT PASS 5.retained-short-copy.24:主設備
+W183CONNECT PASS 5.retained-short-copy.25:副設備
+W183CONNECT PASS 5.retained-short-copy.26:這台
+W183CONNECT PASS 5.retained-short-copy.27:（網域）
+W183CONNECT PASS 5.retained-short-copy.28:工程細節
+W183CONNECT PASS 5.retained-short-copy.29:返回
+W183CONNECT PASS 5.retained-short-copy.30:施工房
+W183CONNECT PASS 5.retained-short-copy.31:環境登入 › Cloudflare
+W183CONNECT PASS 5.retained-short-copy.32:解除安全鎖
+W183CONNECT PASS 5.retained-short-copy.33:替長長長長長長長長登入
+W183CONNECT PASS 5.retained-short-copy.34:連 長長長長長長長長長長
+W183CONNECT PASS 5.retained-short-copy.35:設定進行中，等一下再按
+W183CONNECT PASS 5.retained-short-copy.36:先打開 ChatGPT build
+W183CONNECT PASS 5.retained-short-copy.37:子網域只能小寫英數與「-」
+W183CONNECT PASS 5.retained-short-copy.38:還沒拿到設定，等一下
+W183CONNECT PASS 5.retained-short-copy.39:先選網域
+W183CONNECT PASS 5.retained-short-copy.40:先勾設備
+W183CONNECT PASS 5.retained-short-copy.41:畫面剛更新，再看一次
+W183CONNECT PASS 5.retained-short-copy.42:重試
+W183CONNECT PASS 5.retained-short-copy.43:重新登入
+W183CONNECT PASS 5.retained-short-copy.44:解除安全鎖
+W183CONNECT PASS 5.retained-short-copy.45:再連一次
+W183CONNECT PASS 5.retained-short-copy.46:重試
+W183CONNECT PASS 5.retained-short-copy.47:重試
+W183CONNECT PASS 5.retained-short-copy.48:重新授權
+W183CONNECT PASS 5.retained-short-copy.49:重試
+W183CONNECT PASS 5.retained-short-copy.50:重試
+W183CONNECT PASS 5.retained-short-copy.51:重試
+W183CONNECT PASS 5.retained-short-copy.52:重試
+W183CONNECT PASS 5.retained-short-copy.53:重試
+W183CONNECT PASS 5.retained-short-copy.54:完成
+W183CONNECT PASS 5.retained-short-copy.55:等你
+W183CONNECT PASS 5.retained-short-copy.56:進行中
+W183CONNECT PASS 5.retained-short-copy.57:未選
+W183CONNECT PASS 5.retained-short-copy.58:出錯
+W183CONNECT PASS 5.current-card-shows-capability-and-connect.false
+W183CONNECT PASS 5.current-card-has-no-retired-summaries-or-levels.false
+W183CONNECT PASS 5.current-inline-copy-short-except-capability.false
+W183CONNECT PASS 5.long-description-stays-in-info.false
+W183CONNECT PASS 5.current-card-shows-capability-and-connect.true
+W183CONNECT PASS 5.current-card-has-no-retired-summaries-or-levels.true
+W183CONNECT PASS 5.current-inline-copy-short-except-capability.true
+W183CONNECT PASS 5.long-description-stays-in-info.true
+W183CONNECT PASS W183 R12（主導 2）要真人點的那一步：Pod 指出那一顆（亮框＋箭頭）＝卡片「點一下亮起來的「Connect」」（兩頁時「點一下右邊亮起來的「Connect」」、後面帶倒數）；指著的時候不換成舊的那一句；配對頁出來＝拿掉亮框；TATWO 不按
+W183CONNECT PASS W183 R12（.034 實機）找不到那一顆：卡片講清楚「點一下上面的頁面上的「Connect」」（兩頁時「右邊的頁面」）＋還剩多久；不會一分鐘就放棄
+W183CONNECT PASS W183 R12（.033 實機）正式版的連線紀錄：一行一步（時間、這次嘗試的代號、步驟、內容）、結構快照整段一行；信箱、token、配對碼、網址查詢字串一律遮掉；檔案 0600
+W183CONNECT PASS W294b second log mask removes custom account names, email and aria/title/alt subtree
+W183CONNECT PASS W183 R12 連線紀錄超過上限：只留最後一段（整行為單位）；最新的在
+W183CONNECT PASS W183 R12 流程的每一步都進紀錄（第幾次嘗試、卡片、進度、按了建立），配對碼不進紀錄
+W183CONNECT PASS W183 R12（.034 實機）代勾：CEF 快照認不到（整頁只有 1 個控制項、或空的）不再當成找不到——腳本在同一份文件再驗一次、量位置，點那一格的中心（57,529 16×16 → 65,537）；狀態不是 ok、畫面大小對不上、有縮放（zoomLevel 0＝100%）、位置出界＝不點
+W183CONNECT PASS W183 R12 代勾點完用 DOM 確認：勾上了而且 Create 能按才算；不然交回使用者（不點第二次）
+W183CONNECT PASS W183 R12（.035 實機）按了 Create 之後 ChatGPT 的對話框停在等待：一陣子之後卡片說「ChatGPT 在等它的授權視窗…」＋還剩多久（不判找不到、不放棄）；對話框不等了＝回到「點一下頁面上的「Connect」」
+W183CONNECT PASS W183 R12（.036 實機）TATWO 量不到、點不中 Create：不退回程式按（程式按沒有真人手勢、ChatGPT 的授權視窗出不來）——卡片「點一下右邊亮起來的「Create」」，使用者按了照常接手（到第 3 步）
+W183CONNECT PASS W208 missing namesake stops at manual card and never renames/recreates
+W183CONNECT PASS W183 R12（.036 實機）ChatGPT 在對話框裡說沒建成（不是撞名的錯）：馬上停下、白話講為什麼與要做什麼（不換名、不替你刪 ChatGPT 裡的東西），不再空等 10 分鐘
+W183CONNECT PASS W183 R12（.037 實機）建成之後的「Connect <名字>」對話框：TATWO 自己真的點擊按「Continue to <名字>」（卡片說它按了、等配對頁）；點不中＝亮起來、卡片寫「點一下右邊亮起來的「Continue to …」」
+W183CONNECT PASS W208 collision reconnects the exact original name without a second Create
+W183CONNECT PASS 獨占期間：語音、會換頁的指令不送；連接器指令要帶著目前的獨占才送
+W183CONNECT PASS 放掉獨占時 Pod 停在外站：原生載回 chatgpt.com、等網頁報到才送排隊的那一則（不會送進不執行指令的頁面）
+W183CONNECT PASS 語音開著時連接器拿不到獨占（不會被換頁切斷）；結束語音之後才拿得到
+W183CONNECT PASS 等獨占時流程取消：馬上回 false（不空轉到逾時）
+W183CONNECT SKIP 真 CEF 的 Pod／popup／配對頁檢查：這個建置沒有 Chromium（自測環境起不來）；主導實機驗
+W183CONNECT SUMMARY failures=0 passed=403 skipped=1

@@ -1,0 +1,20 @@
+# W264：每個路徑只准本房的 B 種沙盒改動；不改其他施工房。
+App/Sources/Tatwo2/Facade/HandsAuth.swift # scope 綁 grant／授權碼／refresh，沙盒配對窗口與撤銷同鎖發布
+App/Sources/Tatwo2/Facade/HandsService.swift # 現有三方法入口隔離沙盒工具與撤銷收尾
+App/Sources/Tatwo2/Facade/HandsSandboxLane.swift # 派工快照、領工 lease、心跳、外部交件與持久中止
+App/Sources/Tatwo2/Facade/ChangeProposalStore.swift # 報告提案只確認收件，不寫專案；補丁沿用原套用
+App/Sources/Tatwo2/Facade/DeviceFleetRevocation.swift # 設備移除撤 sandbox grants
+App/Sources/Tatwo2/Facade/HandsState.swift # 既有確認通知標明沙盒權限
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift # 主設備本機引擎派工入口；外部／SSH／job 拒絕
+App/Sources/Tatwo2/New/DeviceFleetPresentation.swift # 沙盒卡限制、心跳、工作、配對與失敗說明
+App/Sources/Tatwo2/New/DeviceFleetListView.swift # 設備清單沿用同一沙盒狀態卡
+App/Sources/Tatwo2/SelfTest.swift # 登記 w264sandboxlane
+App/Sources/Tatwo2/Facade/W264SandboxLaneAcceptance.swift # 隔離合成 OAuth／快照／審查／撤銷自測及卡片截圖
+Engines/chatgpt-hands/gateway.mjs # sandbox scope 通過既有 OAuth／MCP；非 OpenAI 來源只認 sandbox
+Engines/os-mcp/server.mjs # 既有本機 MCP 加主設備排工描述
+tests/w264-sandboxlane.test.mjs # 逐工具本機客戶端驗收及 Unix socket 關口測試
+tests/w183-gateway.test.mjs # 對齊新增 scope 清單與清楚拒絕文案，不降防線
+docs/specs/186-sandbox-device/converge.md # 逐條對回 spec，列待本人／主導邊界
+docs/specs/186-sandbox-device/threat-w264.md # 新攻擊面、防線與殘餘
+tests/fixtures/w264-room-allow.txt # 本房逐檔白名單與理由
+tests/fixtures/w264-tool-denials.md # 從實跑 log 逐項提取非沙盒工具拒絕證據

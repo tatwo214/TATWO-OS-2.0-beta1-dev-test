@@ -1,3 +1,4 @@
+import { keychainFixtureFiles } from './helpers/w255b-keychain-fixture.mjs';
 // W106：模型登入頁的 Claude 額度一直讀不到，還叫人重新登入，但聊天明明能用。
 // 根因：登入子程序沒有明寫 CLAUDE_SECURESTORAGE_CONFIG_DIR，Claude Code 就自己從
 // CLAUDE_CONFIG_DIR 推出一個獨立 Keychain namespace（"Claude Code-credentials-<sha8>"）；
@@ -189,7 +190,7 @@ struct Checks {
 }
 `);
   const compile = spawnSync('swiftc', ['-parse-as-library', '-swift-version', '5', '-num-threads', '2',
-    path.join(root, storeSource), path.join(root, pathsSource), path.join(root, facade + 'EngineRuntimeSelection.swift'), path.join(root, isolationSource),
+    ...keychainFixtureFiles(dir, [path.join(root, storeSource)]), path.join(root, pathsSource), path.join(root, facade + 'EngineRuntimeSelection.swift'), path.join(root, isolationSource),
     main, '-o', binary], { cwd: root, encoding: 'utf8', timeout: 180000 });
   assert.equal(compile.status, 0, `${compile.error ?? ''}\n${compile.stdout}\n${compile.stderr}`);
   const probe = spawnSync(binary, [dir], { cwd: root, encoding: 'utf8', timeout: 60000 });

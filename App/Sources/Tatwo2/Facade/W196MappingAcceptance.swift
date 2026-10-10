@@ -55,6 +55,8 @@ import Darwin
         tap.seedConversation("w196-conversation", in: destination.map.chatgpt_project_id)
         let mapFile = TapProjectMapStore.mapFile(at: projectFolder)
         let originalMap = try Data(contentsOf: mapFile)
+        check(HandsTapMap.name(workdir: projectFolder.path) == context.tapName,
+              "W299 F2-13 project card reads current TATWO map")
         let object = try JSONSerialization.jsonObject(with: originalMap) as? [String: Any]
         check(Set(object?.keys.map { $0 } ?? []) == Set(["chatgpt_project_id", "name", "threads", "updated_at"]),
               "C2 existing four-field storage format retained")
@@ -114,6 +116,14 @@ import Darwin
               "C4 legacy map display is read-only and preserves old bytes")
         let brokenCurrent = TapProjectMapStore.mapFile(at: legacyFolder)
         try FileManager.default.createDirectory(at: brokenCurrent.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var preferred = destination.map
+        preferred.name = "TATWO · Current"
+        let preferredBytes = try JSONEncoder().encode(preferred)
+        try HandsFiles.writeAtomically(preferredBytes, to: brokenCurrent)
+        let displayed = HandsTapMap.name(workdir: legacyFolder.path)
+        let currentAfter = try Data(contentsOf: brokenCurrent), oldAfter = try Data(contentsOf: legacyFile)
+        check(displayed == preferred.name && currentAfter == preferredBytes && oldAfter == originalMap,
+              "W299 F2-13 project card prefers current map without rewriting either path")
         try Data("invalid".utf8).write(to: brokenCurrent)
         check(TapProjectMapStore.displayMap(at: legacyFolder)?.threads[thread.uuidString] == "w196-conversation"
               && HandsTapMap.name(workdir: legacyFolder.path) == legacyMap?.name,

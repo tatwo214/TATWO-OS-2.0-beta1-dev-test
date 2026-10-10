@@ -2,6 +2,8 @@
 # Room-published OS image consumer. Git rebuild is not an update channel.
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON="${TATWO_OS_IMAGE_PYTHON:-/usr/bin/python3}"
@@ -33,14 +35,14 @@ die() {
 }
 
 ssh_ok() {
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" 'echo ok' >/dev/null
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" 'echo ok' >/dev/null
 }
 
 remote_publish() {
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "mkdir -p '$(dirname "$REMOTE_TOOL")' '$(dirname "$REMOTE_EXPORT")'"
-  scp -q -o BatchMode=yes -o ConnectTimeout=20 "$TOOL" "$SSH_HOST:/tmp/tatwo-os-image.py"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/scp -q -o BatchMode=yes -o ConnectTimeout=20 "$TOOL" "$SSH_HOST:/tmp/tatwo-os-image.py"
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "mv /tmp/tatwo-os-image.py '$REMOTE_TOOL' && $PYTHON '$REMOTE_TOOL' --export '$REMOTE_EXPORT' publish"
 }
 
@@ -48,7 +50,7 @@ pull_export() {
   local incoming="$STATE/incoming"
   rm -rf "$incoming"
   mkdir -p "$incoming"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "cd '$REMOTE_EXPORT' && tar cf - ." | tar xf - -C "$incoming"
   [[ -f "$incoming/manifest.json" ]] || die "pulled export missing manifest"
 }

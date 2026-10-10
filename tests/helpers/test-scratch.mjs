@@ -8,8 +8,8 @@ const checkout = fs.realpathSync(fileURLToPath(new URL('../../', import.meta.url
 // Writable fixture state must never depend on another test creating an ignored
 // checkout directory. Immutable compiled probes may be reused within one file.
 // Keep artifacts for inspection; this helper never permanently deletes data.
-export function testScratch(prefix) {
-  const base = fs.realpathSync(os.tmpdir());
+export function testScratch(prefix, { base: scratchBase = os.tmpdir() } = {}) {
+  const base = fs.realpathSync(scratchBase);
   if (base === checkout || base.startsWith(checkout + path.sep)) {
     throw new Error('test scratch must be outside the production checkout');
   }

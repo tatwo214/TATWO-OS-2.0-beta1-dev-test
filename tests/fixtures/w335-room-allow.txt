@@ -1,0 +1,17 @@
+# W335 scope: outbound sandbox client, sandbox device metadata/settings, focused acceptance.
+Engines/sandbox-agent/sandbox-agent.py
+Engines/sandbox-agent/install.sh
+Engines/sandbox-agent/README.md
+App/Sources/Tatwo2/Facade/DeviceFleetRoster.swift
+App/Sources/Tatwo2/Facade/W335SandboxAgentAcceptance.swift
+App/Sources/Tatwo2/New/SandboxDevicesSection.swift
+App/Sources/Tatwo2/New/DeviceFleetListView.swift
+App/Sources/Tatwo2/New/DeviceFleetPage.swift
+App/Sources/Tatwo2/New/DeviceFleetPresentation.swift
+App/Sources/Tatwo2/New/ChatGPTHandsSection.swift
+App/Sources/Tatwo2/New/W335SandboxUIAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w335-sandboxagent.test.mjs
+tests/w335-sandboxui.test.mjs
+tests/helpers/w335-client.mjs
+tests/fixtures/w335-room-allow.txt

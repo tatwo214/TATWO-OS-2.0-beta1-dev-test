@@ -90,6 +90,7 @@ mod tests {
         assert_eq!(playback.position_ms, 42000);
         assert!(resume_snapshot(false, Some(&playback)).is_none());
         playback.playing = false;
+        assert_eq!(playback.freeze().position_ms, playback.position_ms);
         assert!(resume_snapshot(true, Some(&playback)).is_none());
         assert!(resume_snapshot(true, None).is_none());
     }

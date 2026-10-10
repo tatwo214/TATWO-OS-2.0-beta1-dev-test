@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w331-expiredcard.test.mjs
+tests/w331b-expiredfirst.test.mjs
+tests/w318*.mjs
+tests/w302*.mjs
+tests/w177-chatgpt-space.test.mjs
+tests/public-privacy.test.mjs
+tests/fixtures/w331-expiredcard.mjs
+tests/fixtures/w331d-room-allow.txt

@@ -35,7 +35,7 @@ static NSString *const TatwoCEFErrorDomain = @"com.tatwo.ultrawork.cef";
 
 @implementation TatwoCEFBrowserView
 #pragma mark - W57c Unavailable bridge never fills
-- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g {}
+- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g userApproved:(BOOL)approved {}
 #pragma mark - W58
 - (BOOL)prepareAgentLogin { return NO; }
 - (void)cancelAgentLogin {}
@@ -140,10 +140,13 @@ static NSString *const TatwoCEFErrorDomain = @"com.tatwo.ultrawork.cef";
          characters:(NSString *)characters unmodified:(NSString *)unmodified
           modifiers:(NSUInteger)modifiers phase:(int)phase navigationGeneration:(uint64_t)generation { return NO; }
 - (void)releaseAgentKey {}
+- (NSString *)lastAgentKeyRefusal { return @"stale_generation"; }
 - (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation
     dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion {
   completion(NO, @"browser_unavailable");
 }
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion { completion(NO, @"browser_unavailable"); }
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect pairing:(BOOL)pairing dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion { completion(NO, @"browser_unavailable"); }
 - (void)selectValue:(NSString *)value elementID:(NSString *)elementID
     navigationGeneration:(uint64_t)generation dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
     completion:(TatwoCEFBrowserInputHandler)completion {
@@ -161,6 +164,10 @@ static NSString *const TatwoCEFErrorDomain = @"com.tatwo.ultrawork.cef";
     // Unavailable is not authority to invoke the supplied dispatch gate.
     completion(NO, @"browser_unavailable");
 }
+- (void)typeText:(NSString *)text elementID:(NSString *)elementID
+    navigationGeneration:(uint64_t)generation submit:(BOOL)submit pairing:(BOOL)pairing
+    dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
+    completion:(TatwoCEFBrowserInputHandler)completion { completion(NO, @"browser_unavailable"); }
 - (void)loadURLString:(NSString *)urlString {}
 - (void)loadURLString:(NSString *)urlString
         dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate {

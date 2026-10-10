@@ -1,0 +1,15 @@
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Chat/ChatPage+Composer.swift
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+App/Sources/Tatwo2/Pages/PluginConnectionCard.swift
+Engines/codex-sidecar/sidecar.mjs
+Engines/claude-sidecar/sidecar.mjs
+App/Sources/Tatwo2/Facade/W240MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W235MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W242MCPAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w242-mcp.test.mjs
+tests/w240-mcp.test.mjs
+tests/w235-mcp.test.mjs
+tests/fixtures/w242-room-allow.txt

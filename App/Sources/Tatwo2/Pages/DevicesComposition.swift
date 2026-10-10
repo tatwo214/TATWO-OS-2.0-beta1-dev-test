@@ -1212,7 +1212,7 @@ struct DeviceConsistencyRow: Identifiable, Sendable {
     @Published private(set) var rows: [DeviceConsistencyRow] = []
     @Published private(set) var refreshing = false
 
-    func refresh() async {
+    func refresh(records suppliedRecords: [DeviceRecord]? = nil) async {
         guard !refreshing else { return }
         refreshing = true
         defer { refreshing = false }
@@ -1220,7 +1220,9 @@ struct DeviceConsistencyRow: Identifiable, Sendable {
         guard !Task.isCancelled else { return }
         rows = [.init(id: "local", addressLabel: "本機", local: true,
                       probe: .init(connection: .local, snapshot: local, acquiredAt: Date(), reason: nil))]
-        let records = await Task.detached(priority: .utility) { DeviceStatusReader.registry() }.value
+        let records: [DeviceRecord]
+        if let suppliedRecords { records = suppliedRecords }
+        else { records = await Task.detached(priority: .utility) { DeviceStatusReader.registry() }.value }
         var seen = Set<String>()
         for record in records {
             guard !Task.isCancelled else { return }

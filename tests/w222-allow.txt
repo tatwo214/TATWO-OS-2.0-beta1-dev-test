@@ -1,0 +1,8 @@
+App/Sources/Tatwo2/Facade/TapProjectMap.swift
+App/Sources/Tatwo2/Facade/CoderProjectSpaces.swift
+App/Sources/Tatwo2/Facade/ProjectClassification.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/**/*Acceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/*

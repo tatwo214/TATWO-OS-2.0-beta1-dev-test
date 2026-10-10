@@ -1,0 +1,32 @@
+BUILD W294-plugins @ bb84a673 (lock wait 0s)
+free+inactive 42.0GB
+swift build exit=0 seconds=84
+== node tests/w294-plugins.test.mjs tests/w208-tap-stress.test.mjs tests/w185-tap-model.test.mjs tests/w185-tap-ui.test.mjs tests/w183-r12-connect-ui.test.mjs tests/public-privacy.test.mjs
+ℹ tests 69
+ℹ pass 69
+ℹ fail 0
+ℹ skipped 0
+== selftest w208tap
+PASS lines: 528
+W208 PASS W294 scan failure writes the exact blocked step in one connection-log line
+W208 SUMMARY failures=0 passed=528
+selftest w208tap exit=0
+== selftest w185tap
+PASS lines: 438
+W185TAP SUMMARY failures=0 passed=438
+selftest w185tap exit=0
+== selftest w183connect
+PASS lines: 402
+W183CONNECT SUMMARY failures=0 passed=402 skipped=1
+selftest w183connect exit=0
+== selftest w292
+PASS lines: 42
+W292 SUMMARY failures=0
+selftest w292 exit=0
+
+Final account-outline redaction build (offline):
+BUILD W294-plugins @ bb84a673 (lock wait 0s)
+free+inactive 41.5GB
+swift build exit=0 seconds=30
+== node tests/w294-plugins.test.mjs tests/w208-tap-stress.test.mjs tests/w185-tap-model.test.mjs tests/w185-tap-ui.test.mjs tests/w183-r12-connect-ui.test.mjs tests/public-privacy.test.mjs
+Final aggregate Node result: node.txt (rerun after evidence path sanitization).

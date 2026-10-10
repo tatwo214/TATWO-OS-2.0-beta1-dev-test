@@ -104,18 +104,18 @@ enum HandsGit {
         return hardening + result
     }
 
-    /// 給 ChatLiveEngine.gitSummary 用（手腳房間的工作區是沙盒寫的）：跟 TurnArtifactsGit.run 同樣的回傳（失敗＝nil），
+    /// 給 ChatLiveEngine.gitSummary 用（手腳房間的工作區是沙盒寫的）：失敗＝nil，
     /// 但走加固旗標、清掉 GIT_*、不讀使用者全域設定、不進子模組；5 秒、256 KiB 上限。
-    static func hostRead(_ args: [String], cwd: String) -> String? {
-        guard let result = try? run(args, cwd: cwd, timeout: 5, cap: 256 * 1024), result.status == 0, !result.truncated else { return nil }
+    static func hostRead(_ args: [String], cwd: String, hardened: Bool = true) -> String? {
+        guard let result = try? run(args, cwd: cwd, timeout: 5, cap: 256 * 1024, hardened: hardened, stdoutOnly: true), result.status == 0, !result.truncated else { return nil }
         return result.out
     }
 
-    static func environment(extra: [String: String] = [:]) -> [String: String] {
+    static func environment(extra: [String: String] = [:], hardened: Bool = true) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         for key in env.keys where key.hasPrefix("GIT_") { env[key] = nil }
         env["GIT_CONFIG_NOSYSTEM"] = "1"
-        env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        if hardened { env["GIT_CONFIG_GLOBAL"] = "/dev/null" }
         env["GIT_TERMINAL_PROMPT"] = "0"
         env["GIT_OPTIONAL_LOCKS"] = "0"
         env["LC_ALL"] = "C"
@@ -124,19 +124,25 @@ enum HandsGit {
     }
 
     static func run(_ args: [String], cwd: String, extraEnvironment: [String: String] = [:], stdin: Data? = nil,
-                    timeout: TimeInterval = 60, cap: Int = 4 * 1024 * 1024) throws -> (status: Int32, out: String, truncated: Bool) {
+                    timeout: TimeInterval = 60, cap: Int = 4 * 1024 * 1024, hardened: Bool = true, stdoutOnly: Bool = false) throws -> (status: Int32, out: String, truncated: Bool) {
         precondition(!Thread.isMainThread, "git must run off the main thread")
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments(args)
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-        process.environment = environment(extra: extraEnvironment)
+        process.environment = environment(extra: extraEnvironment, hardened: hardened)
         let pipe = Pipe()
+        let errors = stdoutOnly ? Pipe() : nil
         process.standardOutput = pipe
-        process.standardError = pipe
+        process.standardError = errors ?? pipe
         let input: Pipe? = stdin == nil ? nil : Pipe()
         if let input { process.standardInput = input } else { process.standardInput = FileHandle.nullDevice }
         try process.run()
+        if let errors {
+            DispatchQueue.global(qos: .utility).async {
+                while let chunk = try? errors.fileHandleForReading.read(upToCount: 65_536), !chunk.isEmpty {}
+            }
+        }
         if let input, let stdin {
             let writer = input.fileHandleForWriting
             DispatchQueue.global(qos: .utility).async {

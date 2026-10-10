@@ -1,0 +1,111 @@
+[
+  {
+    "filename" : "slow-w282-finder.bin",
+    "fractions" : [
+      0,
+      0.0625,
+      0.1171875,
+      0.171875,
+      0.234375,
+      0.2890625,
+      0.34375,
+      0.3984375,
+      0.4609375,
+      0.515625,
+      0.578125,
+      0.6328125,
+      0.6875,
+      0.7421875,
+      0.796875,
+      0.859375,
+      0.9140625,
+      0.96875,
+      1
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "completed"
+  },
+  {
+    "filename" : "slow-w282-collision (1).bin",
+    "fractions" : [
+      0,
+      0.0625,
+      0.1171875,
+      0.1796875,
+      0.234375,
+      0.2890625,
+      0.34375,
+      0.40625,
+      0.4609375,
+      0.515625,
+      0.5703125,
+      0.625,
+      0.6796875,
+      0.7421875,
+      0.796875,
+      0.8515625,
+      0.9140625,
+      0.96875,
+      1
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "completed"
+  },
+  {
+    "filename" : "slow-w282-cancel.bin",
+    "fractions" : [
+      0
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "cancelled"
+  },
+  {
+    "filename" : "unknown-w282.bin",
+    "fractions" : [
+      0,
+      1
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "completed"
+  },
+  {
+    "filename" : "broken-w282.bin",
+    "fractions" : [
+      0.0078125
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "failed"
+  },
+  {
+    "filename" : "slow-w282-changed.bin",
+    "fractions" : [
+      0,
+      0.0625,
+      0.1171875,
+      0.171875,
+      0.2265625,
+      0.28125,
+      0.34375,
+      0.3984375,
+      0.453125,
+      0.5078125,
+      0.5703125,
+      0.625,
+      0.6796875,
+      0.734375,
+      0.7890625,
+      0.8515625,
+      0.90625,
+      0.9609375,
+      1
+    ],
+    "published" : 1,
+    "removed" : 1,
+    "state" : "completed"
+  }
+]

@@ -9,6 +9,7 @@ protocol ChatGPTPodTransport: AnyObject {
     var onEvent: ((String) -> Void)? { get set }
     var isRunning: Bool { get }
     var isHosted: Bool { get }
+    var isSpacePageShared: Bool { get }
     var isClosing: Bool { get }
     func waitUntilClosed(timeout: Duration) async throws
     func start() throws
@@ -16,21 +17,20 @@ protocol ChatGPTPodTransport: AnyObject {
     func run(_ script: String)
     func setSpaceVisible(_ visible: Bool)
     func setBackgroundWorkActive(_ active: Bool)
-    var onDisplayFrame: ((String?, UInt64, Bool, Int) -> Void)? { get set }
-    func displayPage(_ javascript: String) throws
     func restoreDisplayedPage(_ url: URL)
-    var displayGeneration: UInt64 { get }
+    func beginConnectorViewport()
+    func endConnectorViewport()
 }
 
 extension ChatGPTPodTransport {
+    var isSpacePageShared: Bool { false }
     var isClosing: Bool { false }
     func waitUntilClosed(timeout: Duration) async throws {}
     func setSpaceVisible(_ visible: Bool) {}
     func setBackgroundWorkActive(_ active: Bool) {}
-    var onDisplayFrame: ((String?, UInt64, Bool, Int) -> Void)? { get { nil } set {} }
-    func displayPage(_ javascript: String) throws { throw TapPodError.profileUnavailable }
     func restoreDisplayedPage(_ url: URL) {}
-    var displayGeneration: UInt64 { 0 }
+    func beginConnectorViewport() {}
+    func endConnectorViewport() {}
 }
 
 extension TapWebPod: ChatGPTPodTransport {}
@@ -85,29 +85,21 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
     }
     private let transport: any ChatGPTPodTransport
     var webPod: TapWebPod? { transport as? TapWebPod }
-    @Published private(set) var dotsState: ChatGPTDotsState = .closed
     private enum PodHolder: Equatable {
-        case connector(UUID), menu(UUID), voice(VoiceClaim), dots(UUID)
+        case connector(UUID), menu(UUID), voice(VoiceClaim)
         var lease: UUID? {
-            switch self { case .connector(let id), .menu(let id), .dots(let id): id; case .voice: nil }
+            switch self { case .connector(let id), .menu(let id): id; case .voice: nil }
         }
         var voiceClaim: VoiceClaim? { if case .voice(let claim) = self { claim } else { nil } }
         var queuesSend: Bool { if case .connector = self { false } else { true } }
     }
     @Published private var podHolder: PodHolder?
-    private var dotsLease: UUID? { if case .dots(let id) = podHolder { id } else { nil } }
     var voiceClaims: AnyPublisher<VoiceClaim?, Never> { $podHolder.map { $0?.voiceClaim }.eraseToAnyPublisher() }
     private func releasePodHolder() {
         let lease = podHolder?.lease
         podHolder = nil
         if let lease { releaseLease(lease) }
     }
-    private var dotsReturning = false
-    private var dotsReturnWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
-    private var dotsReturnURL = ChatGPTTap.homeURL
-    private var dotsDeadline: Task<Void, Never>?
-    private var dotsGeneration: UInt64 = 0
-    private var dotsOpenEpoch = 0
     private let storesReadiness: Bool
     var voiceMicrophonePermission: @MainActor () async -> Bool
     /// 麥克風允許後、送出網頁啟動前；持有者核對 claim 與 session。
@@ -124,6 +116,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         let silence: Duration
         /// W184 G3 第三輪：送出內容本身（Pod 重開會換鑰匙，出隊時用現在的鑰匙重新組指令）。
         let payload: [String: Any]
+        let rejection: (() -> String?)?
     }
     private var sendQueue: [QueuedSend] = []
     private var activeRequestID: String?
@@ -173,95 +166,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         transport.onEvent = { [weak self] json in self?.receive(json) }
         transport.setSpaceVisible(false)
         transport.setBackgroundWorkActive(false)
-        transport.onDisplayFrame = { [weak self] url, generation, loading, status in
-            guard let self, self.dotsLease != nil, !self.dotsReturning, !loading,
-                  generation > self.dotsGeneration, self.dotsState != .unavailable,
-                  let url, url != "about:blank" else { return }
-            self.dotsState = ChatGPTDotsState.loaded(url: url, status: status)
-        }
-    }
-
-    /// W197：同一個 Pod 暫借給人看 Dots；所有 TAP 讀取與換頁暫停，送出照舊排隊。
-    func openDots(returnURL: URL) async {
-        guard dotsLease == nil || dotsReturning else { return }
-        dotsOpenEpoch += 1
-        let epoch = dotsOpenEpoch
-        dotsState = .loading
-        var ownsLease = false
-        do {
-            // 快速返回再打開也先等原頁恢復；不搶上一份還在交還的租約。
-            try await waitForDotsReturn()
-            guard epoch == dotsOpenEpoch else { return }
-            try await readyForSend()
-            try Task.checkCancellation()
-            guard epoch == dotsOpenEpoch else { return }
-            guard podHolder == nil, !voiceOpen,
-                  streams.isEmpty, results.isEmpty, pageRequests == 0, backgroundWorkLeases.isEmpty,
-                  readinessWaiters == 0, activeRequestID == nil, stoppingRequestID == nil else {
-                dotsState = .blocked("ChatGPT 正在忙，等它結束再開 Dots")
-                return
-            }
-            guard returnURL.scheme == "https", returnURL.host == "chatgpt.com" else { throw TapPodError.profileUnavailable }
-            dotsReturnURL = returnURL
-            dotsReturning = false
-            podHolder = .dots(acquireLease())
-            ownsLease = true
-            dotsGeneration = transport.displayGeneration
-            try transport.displayPage("if(location.host==='chatgpt.com'){window.name='__tatwoDotsDisplay';location.replace('https://chatgpt.com/dots');}")
-            dotsDeadline?.cancel()
-            dotsDeadline = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .seconds(60)) } catch { return }
-                guard let self, self.dotsLease != nil, !self.dotsReturning, self.dotsState == .loading else { return }
-                self.dotsState = .blocked("Dots 還沒打開，請稍後再試")
-            }
-        } catch {
-            guard epoch == dotsOpenEpoch else { return }
-            if ownsLease { releaseDotsLease() }
-            dotsState = Task.isCancelled ? .closed : .blocked("ChatGPT 還沒連上，請稍後再試")
-        }
-    }
-
-    func closeDots() {
-        dotsOpenEpoch += 1
-        dotsState = .closed
-        guard !dotsReturning else { return }
-        dotsDeadline?.cancel()
-        guard dotsLease != nil else { return }
-        dotsReturning = true
-        if let dotsLease { backgroundWorkLeases.insert(dotsLease); updateUsage() }
-        var target = URLComponents(url: dotsReturnURL, resolvingAgainstBaseURL: false)!
-        target.fragment = "tatwo-dots-return"
-        transport.restoreDisplayedPage(target.url!)
-        // 重新載入原頁、收到新文件 hello 才放行；舊頁沒有擷取器，也不能收送出。
-        dotsDeadline = Task { @MainActor [weak self, startupTimeout] in
-            do { try await Task.sleep(for: startupTimeout) } catch { return }
-            guard let self, self.dotsReturning else { return }
-            self.sleep()
-        }
-    }
-
-    private func waitForDotsReturn() async throws {
-        guard dotsReturning else { return }
-        let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
-                if Task.isCancelled { waiter.resume(throwing: CancellationError()) }
-                else if dotsReturning { dotsReturnWaiters[id] = waiter }
-                else { waiter.resume() }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in self?.dotsReturnWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError()) }
-        }
-        try Task.checkCancellation()
-    }
-
-    private func releaseDotsLease() {
-        dotsDeadline?.cancel()
-        dotsDeadline = nil
-        dotsReturning = false
-        let waiters = dotsReturnWaiters; dotsReturnWaiters.removeAll()
-        for waiter in waiters.values { waiter.resume() }
-        if dotsLease != nil { releasePodHolder() }
     }
 
     /// 登入過（連上過）一次：之後 App 一開就在背景先準備好（新裝的、從沒用過的不預熱）。
@@ -351,9 +255,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
 
     /// 收起 Pod 省記憶體；登入資料留著，下次開不用重登。
     func sleep() {
-        dotsOpenEpoch += 1
-        dotsState = .closed
-        releaseDotsLease()
         startGeneration += 1
         idleSleep?.cancel()
         idleSleep = nil
@@ -384,7 +285,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
     }
 
     func setSpaceVisible(_ visible: Bool) {
-        transport.setSpaceVisible(visible)
+        transport.setSpaceVisible(visible && !ChatGPTWebSpace.isEnabled)
     }
 
     // MARK: W183 R6b：ChatGPT 手腳的連接器（使用者在私訊框按「連線」才用）
@@ -523,11 +424,9 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         Task { @MainActor [weak self, voiceQueueLimit] in
             try? await Task.sleep(for: voiceQueueLimit)
             guard let self, self.sendQueue.contains(where: { $0.id == id }),
-                  self.voiceClaim != nil || self.dotsLease != nil || self.connection != .ready else { return }
+                  self.voiceClaim != nil || self.connection != .ready else { return }
             self.sendQueue.removeAll { $0.id == id }
-            if self.dotsLease != nil {
-                self.streams[id]?.yield(.notSubmitted("Dots 開著，這則沒有送出；返回後請手動送出"))
-            } else { self.streams[id]?.yield(.failed(Self.queueTimeoutReason)) }
+            self.streams[id]?.yield(.failed(Self.queueTimeoutReason))
             self.finishStream(id)
         }
     }
@@ -562,11 +461,14 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
                                                  "connectorGesture",   // W183 R12（主導 2）：要真人點的那一顆指給他看（只標、不按）
                                                  "connectorOutline",   // W183 R12（.033 實機）：對不上時的結構快照（只讀；DOM 文字，不是截圖）
                                                  "connectorTick",   // W183 R12（.034 實機）：代勾的 DOM 驗證（量位置、點完看勾上了沒；不按）
-                                                 "connectorInspect", "connectorDelete"]
+                                                 "connectorInspect", "connectorDelete", "connectorProbe"]
     /// 只讀、不換頁、不改表單的：不用拿獨占。其他的一定要帶著目前的獨占（hold）才送。
     static let connectorReads: Set<String> = ["connectorDevMode", "connectorAccount"]
 
+    var backgroundPageIsShared: Bool { transport.isSpacePageShared }
+
     func connectorRequest(_ command: String, _ arguments: [String: Any], hold: UUID?, timeout: Duration) async throws -> [String: Any] {
+        guard !backgroundPageIsShared || Self.connectorReads.contains(command) else { throw TapError.remote("ChatGPT Space 正在使用這一頁；請先收起 Space 再連線") }
         guard Self.connectorCommands.contains(command) else { throw TapError.remote("unknown connector command") }
         if !Self.connectorReads.contains(command) {
             guard let hold, hold == connectorHold else { throw TapError.remote("ChatGPT 的連接器指令要先拿到獨占") }
@@ -587,7 +489,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
 
     /// 現在拿不到租約的原因（一句話；nil＝拿得到）。
     var menuHoldBlocker: String? {
-        if dotsLease != nil { return "Dots 還開著，先返回 ChatGPT" }
         if connection != .ready { return "ChatGPT 的網頁還沒準備好；等一下再按" }
         if connectorHold != nil { return "ChatGPT 正在連接 TATWO（私訊框）；等它完成再按" }
         if menuHold != nil { return "上一個「新增」還開著（私訊框 Browser 的 ChatGPT Dev 分頁）；先關掉那個對話框再按" }
@@ -772,34 +673,54 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
                          isWork: (data["work"] as? Bool) ?? false, projectID: data["projectID"] as? String)
     }
 
+    private var modelReadDiagnostic = "尚未讀取"
+    nonisolated static func modelReadFailureReason(_ error: Error) -> String {
+        if let error = error as? TapError, error == .timeout || error == .notReady { return error.localizedDescription }
+        let reason = error.localizedDescription
+        if reason == "讀不到網頁目前模型" { return "ChatGPT 頁面沒有模型選單" }
+        let known = ["ChatGPT 正在操作這一頁；等操作結束再讀模型", "ChatGPT Space 正在使用這一頁；請先收起 Space 再試", "ChatGPT 背景頁還沒回到聊天首頁", "還沒連上", "等太久沒有回應", "ChatGPT 頁面沒有模型選單", "網頁沒有顯示目前模型名稱", "讀不到目前模型選單", "讀不到 Power 段數", "讀不到目前模型送出代號", "網頁模型選單已變更", "ChatGPT 模型目錄是空的", "還沒登入 ChatGPT"]
+        return known.contains(reason) || reason.range(of: "^HTTP [0-9]{3}$", options: .regularExpression) != nil ? reason : "ChatGPT 模型讀取失敗（回應無法辨識）"
+    }
     func models() async throws -> (items: [TapModel], defaultID: String?, currentEffortID: String?) {
-        let data = try await request("models") as? [String: Any] ?? [:]
-        // 新版選單的版本：代號前面加「version:」，選單上跟模型分開顯示；送出時只用檔位（代號|強度）。
-        let versions = (data["versions"] as? [[String: Any]] ?? []).compactMap { item -> TapModel? in
-            guard let id = item["id"] as? String, !id.isEmpty, let title = item["title"] as? String else { return nil }
-            let presets = (item["presets"] as? [[String: Any]] ?? []).compactMap { preset -> TapEffort? in
-                guard let pid = preset["id"] as? String, !pid.isEmpty else { return nil }
-                return TapEffort(id: pid, title: (preset["title"] as? String) ?? pid, detail: (preset["detail"] as? String) ?? "",
-                                 version: (preset["version"] as? String) ?? "", level: (preset["level"] as? String) ?? "",
-                                 isMax: (preset["max"] as? Bool) ?? false, showsVersion: (preset["showVersion"] as? Bool) ?? false)
+        transport.beginConnectorViewport()
+        defer { transport.endConnectorViewport() }
+        modelReadDiagnostic = "讀取中"
+        do {
+            let data = try await request("models") as? [String: Any] ?? [:]
+            // 新版選單的版本：代號前面加「version:」，選單上跟模型分開顯示；送出時只用檔位（代號|強度）。
+            let versions = (data["versions"] as? [[String: Any]] ?? []).compactMap { item -> TapModel? in
+                guard let id = item["id"] as? String, !id.isEmpty,
+                      let title = item["title"] as? String, !title.isEmpty else { return nil }
+                let presets = (item["presets"] as? [[String: Any]] ?? []).compactMap { preset -> TapEffort? in
+                    guard let pid = preset["id"] as? String, !pid.isEmpty else { return nil }
+                    return TapEffort(id: pid, title: (preset["title"] as? String) ?? pid, detail: (preset["detail"] as? String) ?? "",
+                                     version: (preset["version"] as? String) ?? "", level: (preset["level"] as? String) ?? "",
+                                     isMax: (preset["max"] as? Bool) ?? false, showsVersion: (preset["showVersion"] as? Bool) ?? false)
+                }
+                return presets.isEmpty ? nil : TapModel(id: "version:" + id, title: title, detail: "", efforts: presets)
             }
-            return presets.isEmpty ? nil : TapModel(id: "version:" + id, title: title, detail: "", efforts: presets)
-        }
-        let flat = (data["models"] as? [[String: Any]] ?? []).compactMap { item -> TapModel? in
-            guard let slug = item["slug"] as? String, !slug.isEmpty else { return nil }
-            let efforts = (item["efforts"] as? [[String: Any]] ?? []).compactMap { effort -> TapEffort? in
-                guard let id = effort["id"] as? String, !id.isEmpty else { return nil }
-                return TapEffort(id: id, title: (effort["title"] as? String) ?? id)
+            let flat = (data["models"] as? [[String: Any]] ?? []).compactMap { item -> TapModel? in
+                guard let slug = item["slug"] as? String, !slug.isEmpty,
+                      let title = item["title"] as? String, !title.isEmpty else { return nil }
+                let efforts = (item["efforts"] as? [[String: Any]] ?? []).compactMap { effort -> TapEffort? in
+                    guard let id = effort["id"] as? String, !id.isEmpty else { return nil }
+                    return TapEffort(id: id, title: (effort["title"] as? String) ?? id)
+                }
+                return TapModel(id: slug, title: title,
+                                detail: (item["description"] as? String) ?? "", efforts: efforts)
             }
-            return TapModel(id: slug, title: (item["title"] as? String) ?? slug,
-                            detail: (item["description"] as? String) ?? "", efforts: efforts)
+            // 目前的檔位＝ChatGPT 伺服器記的「上次使用」（網頁、桌面版、手機共用）；讀不到就用第一個版本。
+            let current = data["current"] as? [String: Any]
+            let currentVersion = (current?["version"] as? String).map { "version:" + $0 }
+            let defaultID = currentVersion.flatMap { id in versions.contains { $0.id == id } ? id : nil }
+                ?? versions.first?.id ?? (data["default"] as? String)
+            guard !(versions + flat).isEmpty else { throw TapError.remote("ChatGPT 模型目錄是空的") }
+            modelReadDiagnostic = "讀取完成"
+            return (versions + flat, defaultID, current?["preset"] as? String)
+        } catch {
+            modelReadDiagnostic = "讀取失敗：" + Self.modelReadFailureReason(error)
+            throw TapError.remote(Self.modelReadFailureReason(error))
         }
-        // 目前的檔位＝ChatGPT 伺服器記的「上次使用」（網頁、桌面版、手機共用）；讀不到就用第一個版本。
-        let current = data["current"] as? [String: Any]
-        let currentVersion = (current?["version"] as? String).map { "version:" + $0 }
-        let defaultID = currentVersion.flatMap { id in versions.contains { $0.id == id } ? id : nil }
-            ?? versions.first?.id ?? (data["default"] as? String)
-        return (versions + flat, defaultID, current?["preset"] as? String)
     }
 
     func tools() async throws -> [TapTool] {
@@ -1210,8 +1131,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
 
     /// Pod 腳本的診斷（只有欄位名稱與短代號，沒有內容）；設定 › Plugin › TAP 顯示。
     func diagnostics() async -> [(String, String)] {
-        guard let data = try? await request("diagnostics") as? [String: Any] else { return [] }
-        return data.compactMap { key, value in (value as? String).map { (key, $0) } }.sorted { $0.0 < $1.0 }
+        let data = (try? await request("diagnostics") as? [String: Any]) ?? [:]
+        let sources = ChatRouteChoice.all.map { choice in
+            let source = choice.runtimeAdapter == .chatgptTap ? (choice.isAvailable ? "TAP" : "TAP-unavailable")
+                : (choice.profile.notes.first?.hasPrefix("備援表") == true ? "builtin" : "engine") + ":" + EngineModelCatalog.engineID(choice.profile)
+            return choice.id + " → " + source
+        }.joined(separator: "; ")
+        return (data.compactMap { key, value in (value as? String).map { (key, $0) } } + [("模型目錄讀取", modelReadDiagnostic), ("選單項目 id → 來源", sources)]).sorted { $0.0 < $1.0 }
     }
 
     static func folders(_ value: Any?) -> [TapFolder] {
@@ -1308,12 +1234,29 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         let silence: Duration = (base["files"] as? [Any])?.isEmpty == false ? .seconds(150) : .seconds(60)
         recoveryNotice = nil
         if connection != .ready || activeRequestID != nil || podHolder?.queuesSend == true { continuation.yield(.queued) }   // W183 R9 審查：「新增 ▾」拿著 Pod 時也排隊；W184 G3：語音開著也排隊
-        sendQueue.append(QueuedSend(id: id, script: script, silence: silenceOverride ?? silence, payload: payload))
-        if voiceClaim != nil || dotsLease != nil { scheduleQueueDeadline(id) }   // W184 G3 第三輪：排在語音後面不能無限期「打字中」
+        sendQueue.append(QueuedSend(id: id, script: script, silence: silenceOverride ?? silence, payload: payload, rejection: Self.queuedSendRejection))
+        if voiceClaim != nil { scheduleQueueDeadline(id) }   // W184 G3 第三輪：排在語音後面不能無限期「打字中」
         updateUsage()
         if connection == .sleeping { start() }
         drainQueue()
         return stream
+    }
+
+    @TaskLocal private static var queuedSendRejection: (() -> String?)?
+    #if DEBUG
+    var queuedSendCount: Int { sendQueue.count }
+    #endif
+    func withQueuedSendRejection<Result>(_ rejection: @escaping () -> String?, _ send: () -> Result) -> Result {
+        // runner 建立的 Task 繼承重驗條件，喚醒與取消仍由 runner 管理。
+        Self.$queuedSendRejection.withValue(rejection, operation: send)
+    }
+    func cancelRejectedQueuedSends() {
+        for item in sendQueue {
+            if let reason = item.rejection?() {
+                sendQueue.removeAll { $0.id == item.id }
+                streams[item.id]?.yield(.notSubmitted(reason)); finishStream(item.id)
+            }
+        }
     }
 
     private func drainQueue() {
@@ -1322,8 +1265,12 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         guard podHolder == nil, activeRequestID == nil, connection == .ready, !sendQueue.isEmpty else { return }
         let next = sendQueue.removeFirst()
         let id = next.id
+        if let reason = next.rejection?() {
+            streams[id]?.yield(.notSubmitted(reason)); finishStream(id); return
+        }
         // W184 G3 第三輪：用現在這一份網頁的鑰匙重新組指令（語音那一頁重開過，舊鑰匙新網頁不收）。
-        let script = (try? keyedCommandScript(next.payload)) ?? next.script
+        var payload = next.payload; payload["preservePage"] = backgroundPageIsShared
+        let script = (try? keyedCommandScript(payload)) ?? next.script
         activeRequestID = id
         streams[id]?.yield(.accepted)
         // Both clocks start when the request owns the Pod; queued time does not consume them.
@@ -1436,8 +1383,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
 
     /// owner＝這個指令是拿著「新增 ▾」操作租約的那一次送的（W183 R9 審查）。
     private func request(_ command: String, _ arguments: [String: Any] = [:], timeout: Duration = .seconds(20), owner: UUID? = nil) async throws -> Any {
-        try await waitForDotsReturn()
-        guard dotsLease == nil else { throw TapError.remote("Dots 還開著，先返回 ChatGPT") }
         guard connection == .ready else { throw TapError.notReady }
         // W183 R6b 審查：會換頁的指令在連接器獨占時不做（不把正在填的外掛表單、配對頁換掉）；在跑的會換頁指令也擋住獨占。
         let paging = Self.pageCommands.contains(command) && !(command == "voice" && arguments["stop"] as? Bool == true)
@@ -1453,6 +1398,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         let id = UUID().uuidString
         var payload = arguments
         payload["cmd"] = command
+        payload["preservePage"] = backgroundPageIsShared
+        payload["pageBusy"] = command == "models" && (connectorHold != nil || menuHold != nil || voiceClaim != nil || activeRequestID != nil)
         payload["id"] = id
         let script = try keyedCommandScript(payload)
         return try await withCheckedThrowingContinuation { continuation in
@@ -1475,14 +1422,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         guard let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let type = object["type"] as? String else { return }
-        if dotsLease != nil {
-            if type == "dotsAvailability", !dotsReturning {
-                if object["unavailable"] as? Bool == true { dotsState = .unavailable }
-                return
-            }
-            guard dotsReturning, type == "hello" else { return }
-            releaseDotsLease()
-        }
         switch type {
         case "hello":
             helloCount &+= 1   // W183 R6b 審查：新的一份網頁報到了
@@ -1628,37 +1567,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
     static let podScript = #"""
     (function (report) {
       if (location.host !== 'chatgpt.com') return false;
-      // W197：整份 Dots 文件（含導回的頁面）只顯示；不裝 fetch、串流或對話擷取器。
-      // 返回一定整頁重載，先移除顯示旗標，再安裝原本的 ChatGPT TAP。
-      if (location.hash === '#tatwo-dots-return' && !/^\/dots(?:\/|$)/.test(location.pathname)) {
-        window.name = '';
-        history.replaceState(null, '', location.pathname + location.search);
-      }
-      const dotsDisplay = /^\/dots(?:\/|$)/.test(location.pathname) || window.name === '__tatwoDotsDisplay';
-      if (dotsDisplay) {
-        const stringify = JSON.stringify;
-        let reported = false;
-        const unavailable = () => {
-          if (reported) return;
-          // 只核對頁級不可用提示；不讀 body、訊息節點、輸入框或請求回應。
-          const marked = document.querySelector('[data-testid="dots-unavailable"], [data-testid="dots-access-denied"]');
-          const alerts = document.querySelectorAll('[role="alert"]');
-          let denied = !!marked;
-          for (const alert of alerts) {
-            if (alert.closest('[data-message-author-role], [data-testid*="message"], [data-testid*="conversation"], [contenteditable]')) continue;
-            if (/dots.{0,80}(?:not available|unavailable|not yet|no access|尚未|無法|不可用)|(?:no access|don't have access|do not have access|not available|unavailable|not eligible).{0,80}dots|(?:沒有|無法|不可用|尚未).{0,40}dots/i.test((alert.textContent || '').slice(0, 240))) denied = true;
-          }
-          if (denied) {
-            reported = true;
-            watch.disconnect();
-            try { report(stringify({type: 'dotsAvailability', unavailable: true})); } catch (_) {}
-          }
-        };
-        document.addEventListener('DOMContentLoaded', unavailable, {once: true});
-        const watch = new MutationObserver(unavailable);
-        watch.observe(document, {childList: true, subtree: true});
-        return true;
-      }
       // W183 R9 審查（GPT-6 #3）：每一個指令都要帶 App 的鑰匙（App 每次建立 Pod 換一把，只在這個閉包裡；網頁自己的程式讀不到、
       // 叫 __tatwoPod.command 帶不出它）。App 用 keyedPodScript 換掉下面這個佔位字；不符（或沒換掉）＝安靜丟掉，不回任何結果。
       const POD_KEY = '__TATWO_POD_KEY__';
@@ -1992,7 +1900,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const visibleOf = (root, selector) => aFilter(safeAll(root, selector), shown);
       // 動作：派送事件、點擊、聚焦（抓好的版本）。
       const dDispatch = (target, ev) => { try { R_apply(M_dispatch, target, [ev]); } catch (e) {} };
-      const kpress = (el) => {
+      const kpress = (el, deleting = false) => {
+        if (aSome([safeText(el), safeAttr(el, 'aria-label')], (text) => reTest(deleting ? /^(Uninstall|Edit)(?:\s|$)/i : /^(Delete app|Uninstall|Edit)(?:\s|$)/i, safeSquash(text)))) return;
         const opts = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
         if (C_Pointer) dDispatch(el, new C_Pointer('pointerdown', opts));
         dDispatch(el, new C_Mouse('mousedown', opts));
@@ -2185,7 +2094,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
 
       // 一次送出＝一個 turn（09-24 實機：串流解析全部落空，回答卻在網頁上；所以不只靠串流）：
       // ① 串流解析得到就用（保留 Markdown）；② 解析不到就讀網頁畫面上正在長出來的回答文字；
-      // ③ 等網頁的停止鍵消失才算完成（生圖這種慢的也等得到）；對話編號拿不到就看網址 /c/<id>。
+      // ③ 伺服器確認完成就用全文；否則等網頁完成訊號、停止鍵消失、正文穩定。
       // 串流格式只統計事件名稱與欄位名稱（shape），給設定頁診斷用；不含任何內容。
       const turns = {};
       // 按鈕標籤：只留短的字母／中文標籤，其他一律不回報（審查 #2）。
@@ -2222,8 +2131,56 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       } catch (e) {}
       const UUID_IN_PATH = /\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
       const conversationFromURL = () => { const m = UUID_IN_PATH.exec(location.pathname); return m ? m[1] : null; };
-      const assistantNodes = () => document.querySelectorAll('[data-message-author-role="assistant"]');
-      const stopVisible = () => !!document.querySelector('[data-testid="stop-button"]');
+      const assistantNodes = () => {
+        const regions = [...document.querySelectorAll('[role="region"], [class*="thread-scroll-container"]')];
+        const root = regions.find((n) => /^(?:Conversation|對話|对话)$/i.test(n.getAttribute('aria-label') || '') || /thread-scroll-container/.test(n.getAttribute('class') || ''));
+        const headings = root && [...root.querySelectorAll('h4')].filter((n) => n.matches('.sr-only') && /^(?:ChatGPT said|ChatGPT(?:\s*(?:說|说|表示|回答|回覆|回复))(?:了)?)[：:]$/i.test(String(n.textContent || '').trim()));
+        return headings && headings.length ? headings : document.querySelectorAll('[data-message-author-role="assistant"]');
+      };
+      const stopButton = () => {
+        const legacy = document.querySelector('[data-testid="stop-button"]');
+        if (legacy && chatVisible(legacy)) return legacy;
+        const box = composer(), root = chatForm(box) || (box && box.parentElement);
+        return root && [...root.querySelectorAll('button[aria-label], [role="button"]')]
+          .find((b) => chatVisible(b) && /^(?:Stop streaming|Stop|停止)$/i.test(b.getAttribute('aria-label') || ''));
+      };
+      const stopVisible = () => !!stopButton();
+      const completionRegions = () => [...document.querySelectorAll('[aria-live], [role="status"]')];
+      const completionText = (node) => String(node.textContent || '').trim();
+      const pageAnswer = (turn, nodes = assistantNodes()) => {
+        const node = nodes.length > turn.before ? nodes[nodes.length - 1] : null;
+        if (!node) return null;
+        let body = node;
+        if (node.matches?.('.sr-only')) {
+          body = null;
+          for (let next = node.nextElementSibling; next && next.tagName !== 'H4'; next = next.nextElementSibling) {
+            body = next.matches('[class*="Renderer-"]') ? next : next.querySelectorAll('[class*="Renderer-"]')[0];
+            if (body) break;
+          }
+        } else {
+          const bodies = node.querySelectorAll?.('.markdown, .prose') || [];
+          body = bodies.length ? bodies[bodies.length - 1] : node;
+        }
+        const text = String(body && body.innerText || '').trim();
+        return text && !thinkingPlaceholder(text) ? { node: body, region: node.matches?.('.sr-only') ? node.parentElement : null, text } : null;
+      };
+      const pageComplete = (turn, answer) => {
+        const region = answer && (answer.region || answer.node.closest?.('article, [data-testid*="conversation-turn"]') || answer.node.parentElement || answer.node);
+        const labels = region ? [...(region.querySelectorAll?.('button, [role="button"]') || [])].filter((b) => chatVisible(b) && !b.closest('pre, code, .markdown, .prose, [class*="Renderer-"]'))
+          .map((b) => String(b.getAttribute('aria-label') || b.innerText || '').trim()) : [];
+        const actions = labels.some((s) => /^(?:copy(?: response| answer)?|複製(?:回覆|回答)?|复制(?:回复|回答)?)$/i.test(s))
+          && (!answer.region || labels.some((s) => /^(?:Regenerate response|重新產生(?:回覆|回答)?|重新生成(?:回复|回答)?)$/i.test(s)));
+        const live = completionRegions().some((n) => {
+          const text = completionText(n);
+          if (turn.oldCompletion.get(n) !== text) {
+            turn.oldCompletion.set(n, text);
+            if (/^(?:response complete|response completed|回答完成|回覆完成|回應完成|回复完成|响应完成)[.!。！]?$/i.test(text)) turn.completedRegions.add(n);
+            else turn.completedRegions.delete(n);
+          }
+          return turn.completedRegions.has(n);
+        });
+        return actions || live;
+      };
       const newShape = () => ({ events: 0, json: 0, other: 0, names: {}, types: {}, ops: {}, paths: {}, keys: {}, headers: '',
         net: {}, ws: {}, handoff: {} });
       const bump = (bag, key, cap = 8) => {
@@ -2315,8 +2272,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       };
       const failProvider = (turn, error) => {
         if (!error || turn.finished) return false;
-        const reason = tooLong(error.code + ' ' + error.message) ? 'conversation_too_long' : 'provider_failed';
-        finishTurn(turn, 'ChatGPT：' + error.message, reason);
+        const reason = error.code === 'connector_expired' ? error.code : tooLong(error.code + ' ' + error.message) ? 'conversation_too_long' : 'provider_failed';
+        finishTurn(turn, (reason === 'connector_expired' ? '' : 'ChatGPT：') + error.message, reason);
         return true;
       };
       const progress = (turn, title = '', server = false) => {
@@ -2363,6 +2320,65 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         }
         return nodes;
       };
+      // Only connector-card UI labels, never answer/account text; safe during personalized first-turn read blocking.
+      const connectorButtons = () => [...document.querySelectorAll('button, [role="button"]')];
+      const connectorText = (s) => String(s || '').replace(/[\s\u00a0\u3000]+/g, ' ').trim();
+      const connectorLabels = (b) => [b.getAttribute('aria-label'), b.textContent].map(connectorText);
+      const NOT_NOW = /^(?:Not now|暫時不要|稍後再說|現在不要|现在不要|暂时不要|稍后再说)$/i, CARD_RECONNECT = /^(?:Reconnect|重新連線|重新连线)$/i;
+      const connectorCardDiagnostic = (turn, buttons, old) => {
+        if (turn.lastCardDiagnostic != null && Date.now() - turn.lastCardDiagnostic < 5000) return;
+        turn.lastCardDiagnostic = Date.now();
+        const candidates = buttons.filter((b) => connectorLabels(b).some((s) => NOT_NOW.test(s)));
+        if (!candidates.length) return;
+        const all = [...document.querySelectorAll('*')], chain = [];
+        const count = (fn) => candidates.filter(fn).length, safe = (s, re) => s == null ? '-' : re.test(s) ? s : 'other';
+        for (let n = candidates[0]; n; n = n.parentElement) {
+          const style = window.getComputedStyle(n), attr = (k) => n.getAttribute(k);
+          chain.push([safe(n.tagName.toLowerCase(), /^(?:html|body|main|section|article|div|span|p|button|a|form|pre|code|ul|li)$/),
+            safe(attr('role'), /^(?:alert|group|dialog|button|main|region|heading|presentation|none)$/),
+            safe(attr('data-message-author-role'), /^(?:user|assistant)$/), attr('data-testid') != null ? 'yes' : 'no',
+            [+!!n.inert, +(attr('aria-hidden') === 'true'), +!!n.hidden, +(style.display === 'none'),
+              safe(style.visibility, /^(?:visible|hidden|collapse)$/), +(style.opacity === '0'),
+              +/Renderer-/.test(attr('class') || ''), +/approval-card/.test(attr('class') || '')].join(',')].join('/'));
+          if (n.tagName === 'BODY') break;
+        }
+        const expired = all.some((n) => /connection has expired|已[過过]期/i.test(connectorText(
+          [...n.childNodes].filter((c) => c.nodeType === 3).map((c) => c.textContent).join(''))));
+        const shape = ('buttons=' + buttons.length + ';not_now=' + candidates.length + ';old=' + count((b) => turn.oldConnectorButtons.has(b))
+          + ';visible=' + count(chatVisible) + ';old_reply=' + count((b) => old.some((n) => n.contains(b))) + ';code=' + count((b) => b.closest('pre, code'))
+          + ';expired=' + expired + ';iframe=' + document.querySelectorAll('iframe').length + ';shadow=' + all.filter((n) => n.shadowRoot).length
+          + ';chain=tag/role/author/testid/inert,aria_hidden,hidden,display_none,visibility,opacity0,Renderer,approval_card:' + chain.join('>')).slice(0, 600);
+        if (diag['turn_card'] !== shape) diag['turn_card'] = shape;
+      };
+      const expiredFailure = (name, source) => {
+        diag['turn'] = 'connector_expired ' + (source ? 'source=' + source + ' ' : '') + 'name_len=' + Array.from(name).length;
+        return { code: 'connector_expired', message: 'ChatGPT 裡的「' + name + '」連線已過期：到 OS 的' + (/^TATWO/.test(name) ? '本機 ' : ' ') + 'ChatGPT 連線卡按［連線］接回後再送一次' };
+      };
+      const expiredConnector = (turn, nodes = assistantNodes()) => {
+        const replies = [...nodes], latest = replies.length > turn.before ? replies[replies.length - 1] : null;
+        const old = replies.filter((n) => n !== latest).map((n) => n.matches?.('.sr-only') ? n.parentElement : n);
+        let unmatched = ''; const buttons = connectorButtons();
+        connectorCardDiagnostic(turn, buttons, old);
+        for (const button of buttons) {
+          if (turn.oldConnectorButtons.has(button) || !chatVisible(button) || !connectorLabels(button).some((s) => NOT_NOW.test(s))) continue;
+          let reason = old.some((n) => n.contains(button)) ? 'old_reply' : button.closest('pre, code') ? 'quoted_code' : 'no_reconnect';
+          for (let box = reason === 'no_reconnect' && button.parentElement; box; box = box.parentElement) {
+            if (box.matches('main, [role="main"], body, [role="region"], [data-message-author-role="assistant"], [class*="Renderer-"]')) { if (reason === 'no_reconnect') reason = 'stopped_at:' + (box.matches('[data-message-author-role="assistant"]') ? 'assistant' : box.matches('[class*="Renderer-"]') ? 'renderer' : box.matches('[role="region"]') ? 'region' : box.matches('body') ? 'body' : 'main'); break; }
+            const reconnect = [...box.querySelectorAll('button, [role="button"]')].filter((b) => connectorLabels(b).some((s) => CARD_RECONNECT.test(s)));
+            if (reconnect.some((b) => !turn.oldConnectorButtons.has(b) && chatVisible(b))) {
+              const nodes = [...box.querySelectorAll('h1, h2, h3, h4, p, span, div, [role="heading"]')].filter((n) => chatVisible(n) && !n.matches('button, [role="button"]') && !n.querySelectorAll('button, [role="button"]').length);
+              const heading = (n) => connectorLabels(n).find((s) => /^(?:Reconnect\s+|重新[連连][線线]\s*)[^\r\n]+$/i.test(s) && !/connection has expired|已[過过]期/i.test(s)), title = nodes.find(heading);
+              const name = title && heading(title).replace(/^(?:Reconnect\s+|重新[連连][線线]\s*)/i, '');
+              if (name && nodes.some((n) => !n.contains(title) && !title.contains(n) && (connectorText(n.textContent).toLowerCase().includes(name.toLowerCase() + ' connection has expired') || /(?:連線|连线|連接|连接)\s*已[過过]期/.test(connectorText(n.textContent))))) return expiredFailure(name);
+              reason = name ? 'no_text' : 'no_title';
+            } else if (reconnect.length) reason = reconnect.some(chatVisible) ? 'old_reconnect' : 'reconnect_hidden';
+            if (box.matches('[role="group"], [role="dialog"], [class*="@container/approval-card"]')) break;
+          }
+          unmatched = reason;
+        }
+        if (unmatched && turn.connectorCardReason !== unmatched) { turn.connectorCardReason = unmatched; diag['turn'] = 'connector_card_unmatched:' + unmatched; }
+        return null;
+      };
       const pageError = (turn) => {
         for (const node of errorNodes()) {
           if (!chatVisible(node) || !(node.closest('main, [role="main"], [data-message-author-role="assistant"]'))) continue;
@@ -2376,9 +2392,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         }
         return null;
       };
-      const thinkingPlaceholder = (text) => /^(?:(?:chatgpt|pro|gpt[ -]?[\d.]+)\s*)?(?:thinking|思考中|正在思考|正在深度思考)[\s.…]*$/i.test(text);
-      const thinkingEvidence = (turn) => turn.hasThinkingProgress || turn.asyncThinking
-        || (!personalizedReadBlocked(turn) && (stopVisible() || assistantNodes().length > turn.before));
+      const thinkingPlaceholder = (text) => /^(?:(?:chatgpt|pro|gpt[ -]?[\d.]+)\s*)?(?:thinking|思考中|正在思考|正在深度思考|已思考(?:\s*\d+(?:\.\d+)?\s*(?:秒|分鐘))?)[\s.…]*$/i.test(text);
+      const thinkingEvidence = (turn, nodes = assistantNodes(), stopping = stopVisible()) => Date.now() - turn.lastActivity < 5000 || (!turn.pageCompleted
+        && (turn.asyncThinking || turn.serverInProgress || (!personalizedReadBlocked(turn) && (stopping
+          || [...nodes].slice(turn.before).some((n) => [n, ...(n.matches?.('.sr-only')
+            ? n.parentElement.querySelectorAll('[class*="Renderer-"]') : [])].some((b) => chatVisible(b) && thinkingPlaceholder(b.textContent)))
+          || [...document.querySelectorAll('[data-testid="reasoning-status"], [aria-live], [role="status"]')]
+            .some((n) => chatVisible(n) && thinkingPlaceholder(n.textContent))))));
       const NO_PROGRESS = '\#(noProgressMessage)';
       const inspectConversation = (turn, convo) => {
         if (failProvider(turn, extractError(convo))) return true;
@@ -2387,23 +2407,42 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         const fresh = !!m && convo.current_node !== turn.requestParentID && m.id !== turn.requestParentID
           && (!m.create_time || m.create_time * 1000 >= turn.started - 5000);
         if (fresh && failProvider(turn, extractError(m))) return true;
-        if (fresh) extractProgress(turn, { message: m });
-        if (fresh && /^(?:analysis|reasoning)$/.test(String(m.channel || ''))) progress(turn, '', true);
         const fingerprint = JSON.stringify([convo && convo.current_node, m && m.status, m && m.content, convo && convo.async_status]);
         if (fingerprint !== turn.pollFingerprint) {
           if (turn.pollFingerprint !== undefined || fresh) turn.lastActivity = Date.now();
           turn.pollFingerprint = fingerprint;
+          if (fresh) extractProgress(turn, { message: m });
+          if (fresh && (/^(?:analysis|reasoning)$/.test(String(m.channel || '')) || convo.async_status)) progress(turn, '', true);
         }
         const async = convo && convo.async_status;
         turn.asyncThinking = !!async && !/^(?:done|completed|finished|failed|idle|none)$/i.test(String(async));
-        if (turn.asyncThinking) progress(turn, '', true);
+        turn.serverInProgress = fresh && m.status === 'in_progress';
+        if (turn.pageCompleted && fresh && m.author?.role !== 'user') turn.completionReads = (turn.completionReads || 0) + 1;
+        const last = fresh && thread(convo).messages.at(-1);
+        if (last && last.id === m.id && last.role === 'assistant' && last.text && !thinkingPlaceholder(last.text)
+            && !/^(?:analysis|reasoning)$/.test(String(m.channel || '')) && !/thought|reasoning/i.test(String(m.content && m.content.content_type || '')) && m.status === 'finished_successfully'
+            && (m.end_turn === true || !!(m.metadata && m.metadata.finish_details))) {
+          finishTurn(turn, null, null, { id: last.text === turn.domText || last.text === turn.pageSample?.text ? 'page' : last.id, text: last.text }); return true;
+        }
         return false;
+      }
+      async function confirmCompletion(turn) {
+        turn.completionReading = true;
+        const id = turn.conversationID || conversationFromURL();
+        try {
+          const convo = id && await Promise.race([api(conversationPath(id)), sleep(3500).then(() => null)]);
+          if (turn.finished || turn.cancelled || personalizedReadBlocked(turn)) return;
+          if (convo && inspectConversation(turn, convo)) return;
+          turn.completionUnavailable = !convo || !convo.mapping || !convo.mapping[convo.current_node];
+          if (!turn.completionUnavailable) turn.handoff = true;
+        } catch (e) { turn.completionUnavailable = true; }
+        finally { turn.completionReading = false; }
       };
-      async function confirmSilence(turn) {
+      async function confirmSilence(turn, thinking) {
         turn.confirmingSilence = true;
         const since = turn.lastActivity;
-        const id = turn.conversationID || conversationFromURL();
-        if (id && !personalizedReadBlocked(turn)) {
+        const id = turn.conversationID || conversationFromURL(), readable = id && !personalizedReadBlocked(turn);
+        if (readable) {
           try {
             const convo = await Promise.race([api(conversationPath(id)), sleep(3500).then(() => null)]);
             if (turn.finished) return;
@@ -2411,7 +2450,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           } catch (e) { bump(turn.shape.types, 'silence-confirm-error'); }
         }
         turn.confirmingSilence = false;
-        if (!turn.finished && turn.lastActivity === since && !thinkingEvidence(turn)) finishTurn(turn, NO_PROGRESS, 'no_progress');
+        if (!turn.finished && turn.lastActivity === since && !(readable ? thinkingEvidence(turn) : thinking)) finishTurn(turn, NO_PROGRESS, 'no_progress');
       }
       async function responseError(response) {
         let reader;
@@ -2431,7 +2470,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           catch (e) { return null; }
         } catch (e) { return null; }
       }
-      function finishTurn(turn, failure, reason) {
+      function finishTurn(turn, failure, reason, serverAnswer) {
         if (turn.finished) return;
         // W184 G3c：臨時聊天的這一輪沒有經過確認帶了旗標的送出，卻在網頁上完成了（網頁走了別的路送出）＝失敗，說清楚可能存進了紀錄。
         if (!failure && turn.temporary && !turn.temporaryConfirmed) failure = TEMP_UNCONFIRMED;
@@ -2450,6 +2489,10 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             personalizedDiagnostic('completed');
           }
         }
+        if (!failure && !turn.cancelled && !personalizedReadBlocked(turn)) {
+          const answer = serverAnswer || pageAnswer(turn);
+          if (answer) post({ type: 'stream', id: turn.id, kind: 'text', messageID: answer.id || 'page', full: answer.text });
+        }
         turn.finished = true;
         clearInterval(turn.timer);
         delete turns[turn.id];
@@ -2464,19 +2507,39 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           parsed: turn.sseText, shape: shapeText(turn.shape) });
       }
       function tick(turn) {
-        if (turn.finished) return;
+        if (turn.finished || turn.cancelled) return;
+        const readBlocked = personalizedReadBlocked(turn), nodes = readBlocked ? [] : assistantNodes();
+        if (turn.lastExpiredScan == null || Date.now() - turn.lastExpiredScan >= 1000) {
+          turn.lastExpiredScan = Date.now();
+          if (failProvider(turn, expiredConnector(turn, nodes))) return;
+        }
         if (turn.personalizedProof) proofPageOK(turn.personalizedProof, location.pathname, 'tick');
-        if (Date.now() - turn.started >= 35 * 60 * 1000) { finishTurn(turn, 'ChatGPT 回答逾時', 'timeout'); return; }
-        const readBlocked = personalizedReadBlocked(turn);
-        if (!readBlocked && turn.accepted && thinkingEvidence(turn)) turn.lastActivity = Date.now();
-        if (turn.accepted && Date.now() - turn.lastActivity < 5000 && Date.now() - (turn.lastHeartbeat || 0) >= 2000) {
+        if (Date.now() - turn.started >= 35 * 60 * 1000) { finishTurn(turn, 'ChatGPT 回答逾時，這句未完成', 'timeout'); return; }
+        if (!readBlocked) {
+          const last = nodes[nodes.length - 1];
+          const fingerprint = nodes.length + ':' + String(last && (last.matches?.('.sr-only') ? last.parentElement.textContent : last.textContent) || '').length;
+          if (fingerprint !== turn.pageFingerprint) { turn.pageFingerprint = fingerprint; turn.pageChangedAt = turn.textChangedAt = turn.lastActivity = Date.now(); }
+        }
+        const stopping = !readBlocked && stopVisible();
+        if (!readBlocked && (turn.pageReadAt == null || Date.now() - turn.pageReadAt >= 1000)) {
+          const sample = pageAnswer(turn, nodes);
+          if (sample?.text !== turn.pageSample?.text && turn.pageChangedAt <= turn.pageReadAt) turn.pageChangedAt = Date.now();
+          turn.pageSample = sample; turn.pageReadAt = Date.now();
+        }
+        const answer = readBlocked || turn.pageSample?.node?.isConnected === false ? null : turn.pageSample;
+        const last = nodes.length > turn.before ? nodes[nodes.length - 1] : null;
+        const completed = !readBlocked && pageComplete(turn, answer || (last && { node: last, region: last.matches?.('.sr-only') ? last.parentElement : null }));
+        turn.pageCompleted = completed;
+        const thinking = turn.accepted && thinkingEvidence(turn, nodes, stopping);
+        if (turn.accepted && thinking && Date.now() - (turn.lastHeartbeat || 0) >= 2000) {
           turn.lastHeartbeat = Date.now();
           post({ type: 'stream', id: turn.id, kind: 'activity' });
         }
-        if (turn.accepted && Date.now() - turn.lastActivity >= 180000 && !turn.confirmingSilence) confirmSilence(turn);
+        if (turn.accepted && Date.now() - turn.lastActivity >= 180000 && !thinking && !turn.confirmingSilence) confirmSilence(turn, thinking);
+        if (turn.serverAnswer && (turn.sseEnded || !turn.personalizedProof)) { finishTurn(turn, null, null, turn.serverAnswer); return; }
         // A personalized first turn still reads only its original stream.
         if (readBlocked) {
-          if (turn.originalSSEEnded && turn.sseText) finishTurn(turn);
+          if (turn.originalSSEEnded && turn.serverAnswer) finishTurn(turn, null, null, turn.serverAnswer);
           return;
         }
         // Error boxes need a full DOM scan only once per second; stream errors remain immediate.
@@ -2484,14 +2547,16 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           turn.lastErrorScan = Date.now();
           if (failProvider(turn, pageError(turn))) return;
         }
-        const stopping = stopVisible();
         if (stopping) turn.sawStop = true;
+        if (answer && answer.text !== turn.finalText) { turn.finalText = answer.text; turn.textChangedAt = turn.pageChangedAt ?? Date.now(); }
+        if (completed && !stopping && !turn.completionReading && turn.completionUnavailable === undefined) confirmCompletion(turn);
+        if (stopping || !completed) turn.completeSince = null;
+        else if (turn.completeSince == null) turn.completeSince = Date.now();
         // During known reasoning, page bubbles can contain recap bodies; only the
         // answer stream or authoritative conversation read may publish answer text.
         if (!turn.sseText && !turn.hasThinkingProgress) {
-          const nodes = assistantNodes();
           if (nodes.length > turn.before) {
-            const text = String(nodes[nodes.length - 1].innerText || '').trim();
+            const text = answer && answer.text;
             if (text && !thinkingPlaceholder(text) && text !== turn.domText) {
               turn.domText = text;
               post({ type: 'stream', id: turn.id, kind: 'text', messageID: 'page', full: text });
@@ -2510,13 +2575,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           else if (turn.project && !turn.projectLookupEnded) { if (!turn.lookingUp) findProjectConversation(turn); return; }
           else if (turn.sseEnded && Date.now() - (turn.sseEndedAt || 0) < 1500) return;
         }
-        // 轉線的回答（stream_handoff）：續傳串流把答案送完（有文字、串流結束）就算完成；沒有續傳就交給 pollTurn 讀對話判斷。
-        // 串流還開著但一直沒有文字也照樣讀對話（伺服器說完成才算完成）。
-        const done = !stopping && (turn.handoff ? (turn.sseText && turn.sseEnded)
-          : (turn.sseEnded || (turn.sawStop && Date.now() - turn.started > 1500)));
-        if (turn.handoff && !turn.polling && (turn.sseEnded || !turn.sseText)) pollTurn(turn);
-        if (done && (turn.sseText || turn.domText) && !turn.handoff) finishTurn(turn);
-        else if (done && turn.handoff && turn.sseText) finishTurn(turn);
+        const done = !!answer && turn.completeSince != null && Date.now() - Math.max(turn.completeSince, turn.textChangedAt) >= 2000;
+        if (turn.handoff && !turn.polling && (completed || turn.sseEnded || !turn.sseText)) pollTurn(turn);
+        if (done && !turn.completionReading && turn.completionUnavailable) finishTurn(turn, null, null, answer);
+        else if (done && !turn.completionReading && turn.completionReads >= 2
+            && Date.now() - Math.max(turn.completeSince, turn.textChangedAt) >= 10000) {
+          diag['收尾來源'] = '頁面（伺服器未標完成）'; finishTurn(turn, null, null, answer);
+        }
       }
       // 專案裡送出後網頁不一定換網址：去專案清單找這一輪之後建立的那則，找到就改讀它（最多找 2 分鐘；09-25 實機）。
       async function findProjectConversation(turn) {
@@ -2536,11 +2601,11 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             if (newest) { setConversation(turn, newest.id); turn.handoff = true; bump(turn.shape.types, 'project-found'); return; }
           } catch (e) { bump(turn.shape.types, 'project-lookup-error'); }
         }
-        if (!turn.finished) finishTurn(turn);
+        if (!turn.finished) finishTurn(turn, 'ChatGPT 對話查找逾時，這句未完成', 'timeout');
       }
       // 轉線（stream_handoff，例如 Pro 在伺服器上慢慢想）：送出的串流很快就結束，回答要過一陣子才出來，
       // 背景網頁也不一定有停止鍵（09-25 實機：專案裡用 6 Pro，答案出來前就判定沒收到）。
-      // 改成每幾秒讀一次這則對話，最新一則回答完成才算結束；中途的文字也照樣顯示。
+      // 每幾秒讀這則對話；本輪正文 finished 才用伺服器全文完成。
       async function pollTurn(turn) {
         if (personalizedReadBlocked(turn)) return;
         turn.polling = true;
@@ -2562,8 +2627,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           if (turn.finished || personalizedReadBlocked(turn)) { turn.polling = false; return; }
           bump(turn.shape.types, 'poll');
           // Error envelopes are checked before requiring a conversation mapping.
-          if (inspectConversation(turn, convo)) return;
-          if (!convo || typeof convo.mapping !== 'object' || !convo.mapping) continue;
+          if (!convo || typeof convo.mapping !== 'object' || !convo.mapping) { inspectConversation(turn, convo); continue; }
           const head = convo.mapping[convo.current_node];
           const m = head && head.message;
           // 只認這一輪之後產生的回答：伺服器可能還回上一輪的節點（審查 #10）。
@@ -2573,7 +2637,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           const code = (v) => (v == null ? '-' : /^[a-z0-9_.-]{1,24}$/i.test(String(v)) ? String(v) : typeof v);
           bump(turn.shape.handoff, 'poll=' + code(role0) + '/' + code(m && m.status) + (fresh ? '' : '/old')
             + (convo.async_status != null ? '/async:' + code(convo.async_status) : ''));
-          // A thinking bubble is positive evidence; tick keeps the three-minute clock alive.
+          if (inspectConversation(turn, convo)) return;
+          // Reasoning bodies are never published as answer text.
           if (!fresh || /^(?:analysis|reasoning)$/.test(String(m.channel || ''))
               || /thought|reasoning/i.test(String(m.content && m.content.content_type || ''))) continue;
           const msgs = thread(convo).messages;
@@ -2582,15 +2647,14 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             turn.polledText = last.text;
             post({ type: 'stream', id: turn.id, kind: 'text', messageID: last.id || 'poll', full: last.text });
           }
-          const ended = !!m && m.author && m.author.role === 'assistant' && m.status === 'finished_successfully'
-            && (m.end_turn === true || !!(m.metadata && m.metadata.finish_details));
-          if (ended && !stopVisible()) { finishTurn(turn); return; }
         }
       }
       function startTurn(id) {
         const turn = { id, started: Date.now(), lastActivity: Date.now(), oldErrors: new Map(errorNodes().map((n) => [n, String(n.innerText || n.textContent || '').trim()])),
+          oldConnectorButtons: new Set(connectorButtons().filter((b) => connectorLabels(b).some((s) => NOT_NOW.test(s) || CARD_RECONNECT.test(s)))),
           requestParentID: pendingSend && pendingSend.parentID, conversationID: null, conversationPosted: false, sseText: false,
           sseEnded: false, domText: '', before: assistantNodes().length, sawStop: false, finished: false,
+          oldCompletion: new Map(completionRegions().map((n) => [n, completionText(n)])), completedRegions: new Set(),
           submitted: false, posted: 0, accepted: false, shape: newShape(), timer: null,
           // W184 G3c：這一輪是臨時聊天（送出、重答都在 startTurn 之前放好 pendingSend）；送出的內容確認帶了旗標才 temporaryConfirmed。
           temporary: !!(pendingSend && pendingSend.id === id && pendingSend.temporary), temporaryConfirmed: false,
@@ -2614,52 +2678,80 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         const reader = body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        const messages = {};
-        let current = null, lastPath = null, lastOp = null, lastSent = 0, dirty = false;
-        const isText = (m) => m && m.channel !== 'analysis' && m.channel !== 'reasoning' && m.role === 'assistant' && (m.type === 'text' || m.type === 'multimodal_text');
-        const emitText = (force) => {
+        // W337：照 ChatGPT 網頁自己的 v1 delta 解碼。省略的 c/p/o 只沿用上一個最外層事件，不沿用 patch 子操作；
+        // 每個頻道（c）是一份完整事件物件，套完再從它的 message 取文字（10-10 實機：用到工具的回答開頭被切掉）。
+        let prevDelta = { c: 0, p: '', o: 'add' }, roots = [], textEntry = null, lastSent = 0, dirty = false;
+        const isText = (m) => m && m.channel !== 'analysis' && m.channel !== 'reasoning' && m.role === 'assistant'
+          && (m.recipient == null || m.recipient === 'all') && (m.type === 'text' || m.type === 'multimodal_text');
+        const emitText = (entry, force) => {
           if (turn.finished || turn.cancelled || (!fromSendResponse && personalizedReadBlocked(turn))) return;
-          if (!isText(current) || !current.text) return;
+          if (!isText(entry)) return;
+          textEntry = entry;
+          if (!entry.text || thinkingPlaceholder(entry.text)) { turn.serverAnswer = null; return; }
           const now = Date.now();
           if (!force && now - lastSent < 60) { dirty = true; return; }
           lastSent = now; dirty = false;
           turn.sseText = true;
-          post({ type: 'stream', id, kind: 'text', messageID: current.id, full: stripMarkers(current.text) });
+          turn.serverAnswer = entry.status === 'finished_successfully' && (entry.endTurn === true || entry.finishDetails)
+            ? { id: entry.id, text: stripMarkers(entry.text) } : null;
+          post({ type: 'stream', id, kind: 'text', messageID: entry.id, full: stripMarkers(entry.text) });
         };
-        const addMessage = (v, c) => {
-          const m = v && v.message;
-          if (!m) return;
+        const useMessage = (m) => {
+          if (!m || typeof m !== 'object') return;
+          // 「連線已過期」卡片在串流裡是一則 tool 訊息：jit_plugin_data.from_server＝oauth_required＋reauthentication_required（網頁照這個畫卡）。
+          const auth = m.author && m.author.role === 'tool' && plain(m.metadata) && plain(m.metadata.jit_plugin_data) && m.metadata.jit_plugin_data.from_server;
+          if (plain(auth) && auth.type === 'oauth_required' && plain(auth.body) && auth.body.auth_reason === 'reauthentication_required'
+              && failProvider(turn, expiredFailure(String(auth.body.connector_name || auth.body.connector_id || 'App'), 'stream'))) return;
+          if (m.author && m.author.role === 'assistant') turn.serverInProgress = m.status === 'in_progress';   // W344：tool 等頻道不改進行中狀態
           const parts = (m.content && m.content.parts) || [];
-          const entry = { id: m.id, role: m.author && m.author.role, channel: m.channel, type: m.content && m.content.content_type,
-            text: typeof parts[0] === 'string' ? parts[0] : '' };
-          messages[c != null ? c : m.id] = entry;
-          current = entry;
-          emitText(true);
+          const entry = { id: m.id, role: m.author && m.author.role, channel: m.channel, recipient: m.recipient, type: m.content && m.content.content_type,
+            status: m.status, endTurn: m.end_turn, finishDetails: m.metadata && m.metadata.finish_details, text: parts.filter((p) => typeof p === 'string').join('\n\n') };
+          emitText(entry, entry.status === 'finished_successfully' || !textEntry || textEntry.id !== entry.id);
         };
-        const applyOne = (op) => {
-          if (!op || typeof op !== 'object') return;
-          if (failProvider(turn, extractError(op))) return;
-          let p = op.p, o = op.o;
+        // 結構記錄、錯誤與思考標題逐個操作看（含 patch 子操作）；true＝已判失敗。
+        const inspect = (op) => {
+          if (failProvider(turn, extractError(op))) return true;
+          const p = op.p == null ? '' : op.p, v = op.v;
+          bump(shape.ops, op.o); bump(shape.paths, p);
+          if (/error|detail/.test(String(p)) && failProvider(turn, extractError(v, true))) return true;
+          if (/thought|reasoning_recap/.test(String(p)) && /title$/.test(String(p)) && typeof v === 'string') progress(turn, v);
+          return op.o === 'patch' && Array.isArray(v) && v.some((sub) => sub && typeof sub === 'object' && inspect(sub));
+        };
+        const plain = (x) => typeof x === 'object' && x !== null && !Array.isArray(x);
+        const applyDelta = (holder, op) => {
+          const keys = ['__root'];
+          if (op.p) for (const s of (op.p[0] === '/' ? op.p.slice(1) : op.p).split('/'))
+            keys.push(/^(?:0|[1-9]\d*)$/.test(s) ? parseInt(s, 10) : s.replace(/~1/g, '/').replace(/~0/g, '~'));
+          if (keys.some((k) => k === '__proto__' || k === 'constructor' || k === 'prototype')) throw new Error('delta key');   // W344：不讓串流改到原型
+          const last = keys.pop();
+          let t = holder;
+          keys.forEach((k, i) => { if (t[k] === undefined) t[k] = typeof (i + 1 < keys.length ? keys[i + 1] : last) === 'number' ? [] : {}; t = t[k]; });
           const v = op.v;
-          if (p === undefined) p = lastPath;
-          if (o === undefined) o = lastOp;
-          // 第一個事件可能省略 p/o：v 裡直接是一則訊息就當新增。
-          if ((o == null) && v && typeof v === 'object' && v.message) o = 'add';
-          if (typeof op.c === 'number' && messages[op.c]) current = messages[op.c];
-          lastPath = p; lastOp = o;
-          bump(shape.ops, o); bump(shape.paths, p);
-          if (/error|detail/.test(String(p || '')) && failProvider(turn, extractError(v, true))) return;
-          if (/thought|reasoning_recap/.test(String(p || '')) && /title$/.test(String(p)) && typeof v === 'string') progress(turn, v);
-          if (o === 'patch' && Array.isArray(v)) { v.forEach(applyOne); return; }
-          if ((p === '' || p == null) && o === 'add') { addMessage(v, op.c); return; }
-          if (!current) return;
-          if (p === '/message/content/parts/0') {
-            if (o === 'append' && typeof v === 'string') current.text += v;
-            else if (o === 'replace' && typeof v === 'string') current.text = v;
-            emitText(false);
-          } else if (p === '/message/status' && v === 'finished_successfully') {
-            emitText(true);
+          switch (op.o) {
+            case 'patch': for (const sub of v) { const h = { __root: t[last] }; applyDelta(h, sub); t[last] = h.__root; } break;
+            case 'add': if (Array.isArray(t)) t.splice(last, 0, v); else t[last] = v; break;
+            case 'remove': if (Array.isArray(t)) t.splice(last, 1); else delete t[last]; break;
+            case 'replace': t[last] = v; break;
+            case 'append':
+              if (typeof t[last] === 'string') t[last] += v;
+              else if (Array.isArray(t[last])) t[last].push(...(Array.isArray(v) ? v : [v]));
+              else if (plain(t[last]) && plain(v)) Object.assign(t[last], v);
+              else t[last] = v;
+              break;
+            case 'truncate': if (typeof t[last] === 'string') t[last] = t[last].substring(0, v); else if (Array.isArray(t[last])) t[last].length = v; break;
+            default: throw new Error('delta op');
           }
+        };
+        const applyOne = (raw) => {
+          const channel = 'c' in raw ? raw.c : prevDelta.c;
+          if (!Number.isInteger(channel) || channel < 0 || channel > 1024) return;
+          const op = { ...raw };
+          for (const k of ['c', 'p', 'o']) if (!(k in raw)) op[k] = prevDelta[k];
+          prevDelta = op;
+          if (inspect(op)) return;
+          try { const holder = { __root: roots[op.c] }; applyDelta(holder, op); roots[op.c] = holder.__root; }
+          catch (e) { bump(shape.types, 'delta-error'); return; }
+          if (plain(roots[op.c]) && roots[op.c].message) useMessage(roots[op.c].message);
         };
         const handleData = (data, authoritative = false, eventName = '') => {
           if (data === '[DONE]') return;
@@ -2669,13 +2761,14 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           if (failProvider(turn, extractError(obj, /error/i.test(eventName)))) return;
           extractProgress(turn, obj, eventName);
           shape.json += 1;
+          if (eventName === 'delta_encoding') { prevDelta = { c: 0, p: '', o: 'add' }; roots = []; }   // 網頁每次宣告編碼就換一個新解碼器
           if (!obj || typeof obj !== 'object') return;
           bump(shape.keys, Object.keys(obj).sort().join('+'));
           if (typeof obj.conversation_id === 'string') setConversation(turn, obj.conversation_id, authoritative);
           if (obj.v && typeof obj.v === 'object' && typeof obj.v.conversation_id === 'string') setConversation(turn, obj.v.conversation_id, authoritative);
           if (turn.finished) return;
           if (obj.type) bump(shape.types, diagnosticCode(obj.type));
-          if (obj.type === 'stream_handoff') { turn.handoff = true; turn.sseText = false; progress(turn, '', true); }
+          if (obj.type === 'stream_handoff') { turn.handoff = true; turn.sseText = false; turn.serverAnswer = textEntry = null; progress(turn, '', true); }
           if (obj.type === 'stream_handoff' && obj.options && typeof obj.options === 'object') {
             // 交棒資訊只記欄位名稱與像代號的短值（例如傳輸方式），長字串一律只記型別。
             for (const k of Object.keys(obj.options)) {
@@ -2688,7 +2781,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             return;
           }
           if (obj.type) return;
-          if (obj.message && !('o' in obj) && !('p' in obj)) { addMessage(obj, null); return; }
+          if (obj.message && !('o' in obj) && !('p' in obj)) { useMessage(obj.message); return; }
           applyOne(obj);
         };
         if (!turn.feed) turn.feed = handleData;
@@ -2715,7 +2808,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             const data = buffer.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).replace(/^ /, '')).join('\n');
             if (data) handleData(data, fromSendResponse, name ? name.slice(6).trim() : '');
           }
-          if (dirty) emitText(true);
+          if (dirty && textEntry) emitText(textEntry, true);
         } catch (e) {
           bump(shape.types, 'read-error');
           if (fromSendResponse && personalizedReadBlocked(turn)) {
@@ -2728,9 +2821,11 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             && turn.personalizedProof && turn.personalizedProof === personalizedProof) revokePersonalizedProof('turn_failed');
         if (!fromSendResponse && personalizedReadBlocked(turn)) return;
         turn.sseEnded = true;
+        if (textEntry && textEntry.status === 'finished_successfully' && textEntry.text && !thinkingPlaceholder(textEntry.text))
+          turn.serverAnswer = { id: textEntry.id, text: stripMarkers(textEntry.text) };
         turn.sseEndedAt = Date.now();
         if (fromSendResponse && turn.personalizedProof && turn.personalizedProof.localPath
-            && personalizedReadBlocked(turn) && turn.sseText) finishTurn(turn);
+            && personalizedReadBlocked(turn) && turn.serverAnswer) finishTurn(turn, null, null, turn.serverAnswer);
       }
 
       window.fetch = async function (input, init) {
@@ -2987,6 +3082,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const conversationPath = (id) => '/backend-api/conversation/' + encodeURIComponent(String(id || ''));
       // 回答是哪個模型給的（ChatGPT 自己記在 metadata.model_slug）：顯示名稱，換模型才有證據。
       const modelTitles = {};
+      let lastModelSelection = null;
       // W184 G3b 第二輪（審查 #8）：Work 模式專用的模型代號（models 讀過才有）與已經看過的對話是不是 Work（對話代號 → true／false）。
       const workModels = new Set();
       const workConversations = new Map();
@@ -3170,8 +3266,54 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         }
         return null;
       };
-      const chatBusy = (box) => !!box.closest('[aria-busy="true"]')
-        || [...document.querySelectorAll('[data-testid="stop-button"]')].some(chatVisible);
+      const modelTrigger = () => {
+        const box = composer(), root = chatForm(box) || (box && box.parentElement);
+        const buttons = root ? [...root.querySelectorAll('button, [role="button"]')].filter((b) => chatVisible(b)
+          && /^(Select ChatGPT model|(?:選擇|選取|选择)\s*(?:ChatGPT\s*)?模型)$/i.test(String(b.getAttribute('aria-label') || '').trim())) : [];
+        return buttons.length === 1 ? buttons[0] : buttons.length ? null : document.querySelector('[data-testid="model-switcher-dropdown-button"]');
+      };
+      // W346b：新版面板淡入，背景頁的動畫可能停在 opacity 0；判斷面板只看有沒有掛上、有沒有大小、有沒有被藏起來。
+      const menuMounted = (el) => !!el && el.isConnected === true && el.getClientRects().length > 0
+        && !el.closest('[hidden], [inert], [aria-hidden="true"]');
+      const modelPanelShape = (trigger) => {
+        const control = trigger && trigger.getAttribute('aria-controls'), owned = control ? document.querySelector('[id="' + control + '"]') : null;
+        const items = [...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]')];
+        return 'expanded=' + (trigger && trigger.getAttribute('aria-expanded')) + ' controls=' + (control ? 'yes' : 'no')
+          + ' owned=' + (owned ? (owned.getAttribute('role') || '-') + (menuMounted(owned) ? ':mounted' : ':hidden') + (chatVisible(owned) ? ':visible' : '') : 'none')
+          + ' panels=' + document.querySelectorAll('[role="menu"], [role="dialog"]').length + ' items=' + items.length + '/' + items.filter(menuMounted).length;
+      };
+      const modelPanel = (trigger) => {
+        const panels = [...document.querySelectorAll('[role="menu"], [role="dialog"]')].filter(chatVisible);
+        const control = trigger && trigger.getAttribute('aria-controls');
+        if (control) {
+          const owned = panels.find((el) => el.getAttribute('id') === control) || document.querySelector('[id="' + control + '"]');
+          if (menuMounted(owned)) return owned;
+        } else if (panels.length === 1) return panels[0];
+        if (panels.length) return null;
+        // W346：10-10 起 ChatGPT 的模型面板外框不標 role（只剩 menuitem）：取看得見的選項的共同外框，再往上到只包它的那層。
+        const items = [...document.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]')]
+          .filter((el) => menuMounted(el) && !(trigger && trigger.contains(el)));
+        let box = items[0] || null;
+        while (box && !items.every((el) => box.contains(el))) box = box.parentElement;
+        while (box && box.parentElement && box.parentElement !== document.body && (box.parentElement.children || []).length === 1) box = box.parentElement;
+        return box && box !== document.body && !(trigger && box.contains(trigger)) ? box : null;
+      };
+      // W346b：只認 click 的選單會被 pointerdown＋click 開了又關；沒展開就只補一次 click。
+      const openModelMenu = async (trigger) => {
+        press(trigger);
+        let panel = await waitFor(() => modelPanel(trigger), 1500);
+        if (!panel && trigger.getAttribute('aria-expanded') !== 'true') { trigger.click(); panel = await waitFor(() => modelPanel(trigger), 1500); }
+        // W346c：面板先掛上、內容晚一點才畫出來；等到裡面有選項再讀（最多 0.8 秒），免得誤走沒有 Power 的路。
+        if (panel) await waitFor(() => [...panel.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="slider"], input[type="range"]')].some(menuMounted), 800);
+        return panel;
+      };
+      const closeModelMenu = async (trigger, opened = false, panel = null) => {
+        if (!trigger || !trigger.isConnected) return;
+        const shown = () => modelPanel(trigger) || (chatVisible(panel) ? panel : null);
+        if (trigger.getAttribute('aria-expanded') === 'true' || (opened && shown())) try { press(trigger); await waitFor(() => !shown(), 500); } catch (e) {}
+        if (shown()) try { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await waitFor(() => !shown(), 500); } catch (e) {}
+      };
+      const chatBusy = (box) => !!box.closest('[aria-busy="true"]') || stopVisible();
       // 網址只留形狀（不含對話代號與標題），給診斷用。
       const pathShape = (p) => {
         if (p === '/') return '/';
@@ -3247,7 +3389,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         const target = conversationID ? '/c/' + conversationID : '/';
         // 專案裡的對話網址是 /g/<專案>/c/<id>，網頁可能自己改成那樣：結尾對得上就算。
         const urlReady = () => (conversationID ? location.pathname.endsWith(target) : location.pathname === '/') && composer();
-        const arrived = () => urlReady() && (!conversationID || document.querySelector('[data-message-author-role]'));
+        const arrived = () => urlReady() && (!conversationID || document.querySelector('[data-message-author-role]') || assistantNodes().length > 0);
         let ready = arrived() || (await routeTo(target, arrived, command));
         // W180 A2（.013 實機）：專案裡只有大圖的對話，網址與輸入框都到了，訊息卻慢很久才畫出來（訊息 0）。
         // 網址對了就再等 8 秒；還沒出現也照這個網址送（網頁送出時用的是網址上的對話）。
@@ -3832,6 +3974,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       }
       async function regenerate(command) {
         const fail = (message) => postTerminal({ type: 'stream', id: command.id, kind: 'failed', message });
+        await ensureChatHome(command);
+        if (command.cancelled) return;
         if (nativeContinuationRequested(command)) personalizedDiagnostic('before_continuation', command);
         if (personalizedProof) proofPageOK(personalizedProof, location.pathname, 'regenerate');
         const nativeContinuation = nativeContinuationRequested(command);
@@ -3942,6 +4086,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       async function send(command) {
         let clickAttempted = false;
         const fail = (message) => postTerminal({ type: 'stream', id: command.id, kind: 'failed', submitted: false, message });
+        await ensureChatHome(command);
+        if (command.cancelled) return;
         try {
         if (nativeContinuationRequested(command)) personalizedDiagnostic('before_continuation', command);
         if (personalizedProof) proofPageOK(personalizedProof, location.pathname, 'send');
@@ -4015,6 +4161,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         let box = await waitFor(() => command.cancelled || readyComposer(), readyDeadline - Date.now());
         if (command.cancelled) return;
         // 強度選項的代號是「模型代號|強度」或單純「模型代號」（沒有強度的版本）。
+        const preset = command.effort || null;
         let model = command.model || null;
         let effort = null;
         if (command.effort) {
@@ -4024,6 +4171,18 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         }
         command.model = model;
         command.effort = effort;
+        if ((model || effort) && modelTrigger()) {
+          const trigger = modelTrigger();
+          try { if (!lastModelSelection || lastModelSelection.model !== model || (preset && lastModelSelection.preset !== preset)
+              || lastModelSelection.trigger !== trigger || lastModelSelection.title !== String(trigger.textContent || '').trim())
+            await handlers.models(Object.assign(command, { selectModel: model, selectPreset: preset })); }
+          catch (e) { try { await closeModelMenu(trigger); } catch (_) {} diag['送出選模型失敗'] = String(e.message || e).slice(0, 120);
+            if (model === 'web-power') { fail('Power 段數未能設定，這句未送出'); return; } }
+        }
+        if (command.cancelled) return;
+        if (model === 'web-power' && !modelTrigger()) { fail('Power 段數未能設定，這句未送出'); return; }
+        if (model === 'web-power') { model = command.model = null; effort = command.effort = null; }
+        box = readyComposer();
         pendingModel = model;
         pendingEffort = effort;
         pendingHint = typeof command.hint === 'string' && command.hint ? command.hint : null;
@@ -4461,13 +4620,16 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const AUTH_VALUE = /^(oauth|oauth\s*2(\.0)?|no auth|no authentication|none|mixed|api key|bearer token|免驗證|不驗證|無驗證|混合)$/i;
       const PLUS = /^(\+|＋|create|建立|create app|new app|建立應用程式|新增應用程式|create plugin|new plugin|create connector|new connector|建立外掛|新增外掛)$/i;
       // W183 R9：改版後的「新增 ▾」（字正好是這幾個，可帶 ▾ 之類的箭頭字）與它選單裡的三項（大小寫、空白寬鬆）。
-      const NEW_BUTTON = /^(新增|new|add)$/i;
       const CHEVRON_CODES = [0x25be, 0x25bc, 0x2304, 0x02c5, 0x23f7, 0xfe40];
       const noChevrons = (t) => sMapChars(t, (c, ch) => (listHas(CHEVRON_CODES, c) ? null : ch));
       const MENU_ITEMS = bag();
       MENU_ITEMS.plugin = /^(建立\s*外掛程式|建立\s*外掛|create\s*(a\s+)?plugin)$/i;
       MENU_ITEMS.archive = /^(上傳\s*外掛程式\s*封存檔|上傳\s*外掛\s*封存檔|upload\s*(a\s+)?plugin\s*archive)$/i;
-      MENU_ITEMS.mcp = /^(建立\s*mcp\s*應用程式|建立\s*mcp\s*應用|create\s*(an\s+)?mcp\s*app(lication)?)$/i;
+      MENU_ITEMS.mcp = /^(建立\s*mcp\s*應用程式|建立\s*mcp\s*應用|create\s*(an\s+)?mcp\s*app(lication)?|add\s+custom\s+mcp\s+server|(?:新增|加入|添加)\s*自[訂定]\s*mcp\s*(?:伺服器|服務器))$/i;
+      // W303：新舊外掛頁的選單鈕、選單項、送出鈕文案集中在同一張表；MENU_KEYS 只列選單項。
+      MENU_ITEMS.new = /^(新增|new|add)$/i;
+      MENU_ITEMS.create = /^(create|建立|save|儲存|create app|建立應用程式|create\s+as\s+a\s+plugin|建立\s*為\s*外掛(?:程式)?)$/i;
+      const NEW_BUTTON = MENU_ITEMS.new;
       const MENU_KEYS = ['plugin', 'archive', 'mcp'];
       // W183 R9：Connection 的分段（Server URL｜Tunnel）與「I understand and want to continue」那一格（中英兩種介面）。
       const SERVER_SEG = /^(server\s*url|伺服器\s*(url|網址|位址)|服務\s*(url|網址))$/i;
@@ -4475,7 +4637,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const TUNNEL_TEXT = /(tunnel|通道|隧道)/i;
       const SEG_SELECTOR = 'button, [role="button"], [role="radio"], [role="tab"], input[type="radio"]';
       const RISK_ACK = /(understand.{0,24}continue|了解.{0,12}繼續|瞭解.{0,12}繼續|理解.{0,12}繼續)/i;
-      const CREATE = /^(create|建立|save|儲存|create app|建立應用程式)$/i;
+      const CREATE = MENU_ITEMS.create;
       const RECONNECT = /^(connect|reconnect|連線|重新連線|連接|重新連接)$/i;
       const DEV = /(developer mode|開發者模式|開發人員模式)/i;
       const WARNING = /(high[- ]?risk|risk|warning|unverified|not verified|trust|高風險|風險|警告|未經驗證|未驗證|信任)/i;
@@ -4868,8 +5030,12 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         while (digits.length < 8) digits += '0';
         return 'f' + Str(markSeq) + 'x' + digits;
       };
-      // 看得到的勾選框。
-      const boxesIn = (root) => visibleOf(root, 'input[type="checkbox"], [role="checkbox"]');
+      // W303：已核對的 Server URL／Tunnel 分段可能呈現為 checkbox；它們不是同意框。
+      const boxesIn = (root) => {
+        const s = segments(root), server = connectionState(root, false) === 'server';
+        return aFilter(visibleOf(root, 'input[type="checkbox"], [role="checkbox"]'),
+          (b) => !server || (!listHas(s.server, b) && !listHas(s.tunnel, b)));
+      };
       const isChecked = (b) => safeChecked(b);
       const formAround = (el) => {
         for (let p = safeParent(el), i = 0; p && i < 200; p = safeParent(p), i += 1) if (safeTag(p) === 'FORM') return p;
@@ -5081,7 +5247,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       //（帶來的確認同時用掉：再帶一次＝ack_replayed）；App 先記下「送出按」的那一刻（主框架的導頁世代與網址＝來源證據的錨點），才送
       // connectorPress——再核一次（同一張表單、同一顆鈕、還能按、警語指紋與勾選證據照舊成立），用掉記號才按。之前任何時候出現的配對頁都不算。
       const armPress = (owned, button, kind, check) => {
-        const token = newMark();
+        const token = newMark(), accountEpoch = authEpoch;
         spentMarks[owned.mark] = 'used';
         delete ownForms[owned.mark];
         ownForms[token] = owned.rec;
@@ -5091,6 +5257,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         a.desc = describeEl(button);   // W183 R12：arm 那一刻那一顆長什麼樣（press_stale 時跟現在的按鈕清單一起進結構快照）
         a.check = () => {
           staleWhy = '';
+          if (authEpoch !== accountEpoch) return stale('account_changed');
           if (check()) return true;
           noteStale('check:' + (staleWhy || '?'), owned.rec, a);
           return false;
@@ -5126,7 +5293,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         const all = boxesIn(root);
         const unchecked = aFilter(all, (b) => !isChecked(b));
         const whole = safeSquash(safeText(root));
-        const flagged = reTest(WARNING, whole) || all.length > 0;
+        const flagged = (pluginSurface() === root ? aSome(safeAll(root, '*'), (el) => shown(el) && safeSquash(dOwnText(el)) !== 'Allow low-risk tools' && reTest(WARNING, dOwnText(el))) : reTest(WARNING, whole)) || all.length > 0;
         if (flagged && whole.length > WARNING_LIMIT) return { reason: 'warning_unbounded', digest: '' };
         const digest = flagged ? textDigest(whole) : '';
         // W183 R9：沒勾的全是「I understand and want to continue」那一格（中英兩種介面）＝risk_ack（卡片講清楚要勾哪一格）；腳本照樣不勾（R10：connectorCreate 再經 tickFor 決定能不能讓 App 原生代勾）。
@@ -5483,13 +5650,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const reconnectStillReady = (rec, url, button, seen, requireOAuth) => {
         const root = rec.root;
         if (!attached(root) || !ownersIntact(rec)) return stale(attached(root) ? 'owners_changed' : 'root_detached');
-        const here = aSome(leaves(root), (el) => hasURLToken(safeText(el), url) && shown(el)) || aSome(textInputs(root), (x) => dValue(x) === url);
+        const here = detailHasURL(root, url);
         const auth = authShown(root);
         if (!here || (requireOAuth ? auth !== 'oauth' : auth === 'other')) return stale(here ? 'auth_not_oauth' : 'url_missing');
         const present = boxesIn(root);
         if (!aEvery(rec.zones, (z) => listHas(present, z.box))) return stale('checkbox_replaced');
         if (warningsIn(root, seen, rec)) return stale('warning_changed');
-        const buttons = aFilter(visibleOf(root, 'button, [role="button"]'), (x) => reTest(RECONNECT, labelOf(x)));
+        const buttons = reconnectButtons(root);
         if (buttons.length !== 1) return stale('connect_buttons_' + Str(buttons.length));
         // W183 R12：同上（那一區裡剛好一顆、同樣的字、同一種元素＝重畫過的同一顆）。
         const now = buttons[0];
@@ -5515,7 +5682,11 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         return null;
       };
       // 放著這個完整 MCP 網址的詳情區：只算看得到、網址整個出現的；有對話框就只看對話框。
+      const detailHasURL = (root, url) => pluginSurface() === root ? aboutField(aboutAreas(root), 'URL') === url
+        : aSome(leaves(root), (el) => hasURLToken(safeText(el), url) && shown(el)) || aSome(textInputs(root), (x) => dValue(x) === url);
       const detailBoxes = (url) => {
+        const plugin = pluginSurface();
+        if (plugin && detailHasURL(plugin, url)) return [plugin];
         const hits = aFilter(leaves(document), (el) => hasURLToken(safeText(el), url) && shown(el));
         const inputs = aFilter(textInputs(document), (x) => dValue(x) === url);
         for (let i = 0; i < inputs.length; i += 1) listAdd(hits, inputs[i]);
@@ -5536,13 +5707,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const CONTINUE = /^(continue to |繼續前往|繼續到|繼續使用|前往)(.{1,80})$/i;
       const continueButton = (name) => {
         if (!name) return null;
-        const dialogs = visibleOf(document, '[role="dialog"], dialog');
+        const dialogs = aFilter(visibleOf(document, '[role="dialog"], dialog'), (d) => aSome(visibleOf(d, 'h1, h2, h3, [role="heading"]'), (h) => sIdx(safeSquash(safeText(h)), name, 0) >= 0));
         if (dialogs.length !== 1) return null;
         const d = dialogs[0];
         const heads = aFilter(visibleOf(d, 'h1, h2, h3, [role="heading"]'), (h) => sIdx(safeSquash(safeText(h)), name, 0) >= 0);
         if (!heads.length) return null;
         const hits = aFilter(visibleOf(d, 'button, [role="button"]'), (b) => {
-          const m = reExec(CONTINUE, labelOf(b));
+          const m = reExec(CONTINUE, safeSquash(sMapChars(labelOf(b), (c, ch) => c === 0x2197 ? null : ch)));
           return !!m && safeSquash(m[2]) === name;
         });
         if (hits.length !== 1 || dDisabled(hits[0]) || safeAttr(hits[0], 'aria-disabled') === 'true') return null;
@@ -5642,6 +5813,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       const TEXTY_ROLE = /^(button|link|checkbox|switch|tab|menuitem|radio|option|heading)$/;
       const FIELD_TAG = /^(INPUT|TEXTAREA|SELECT)$/;
       const describeEl = (el) => {
+        if (aSome(accountAreas(document), (area) => safeContains(area, el))) return '(account)';
+        const privateChildren = aSome(accountAreas(el), (area) => area !== el);
         const tag = safeTag(el);
         let line = sLower(tag);
         const role = safeAttr(el, 'role');
@@ -5656,18 +5829,20 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           line += ' checked=' + (safeChecked(el) ? '1' : '0');
         }
         if (dDisabled(el) || safeAttr(el, 'aria-disabled') === 'true') line += ' disabled';
-        const aria = safeAttr(el, 'aria-label');
+        const aria = privateChildren ? '(account)' : safeAttr(el, 'aria-label');
         if (aria) line += ' aria="' + clip80(aria) + '"';
         if (!reTest(FIELD_TAG, tag)) {
-          const words = reTest(TEXTY_TAG, tag) || reTest(TEXTY_ROLE, role) || dKids(el).length === 0 ? clip80(safeText(el)) : clip80(dOwnText(el));
+          const words = privateChildren ? clip80(dOwnText(el)) : reTest(TEXTY_TAG, tag) || reTest(TEXTY_ROLE, role) || dKids(el).length === 0 ? clip80(safeText(el)) : clip80(dOwnText(el));
           if (words) line += ' "' + words + '"';
         }
         if (!shown(el)) line += ' hidden';
         return line;
       };
       const outlineRootOf = (preferred) => {
-        if (sOf(location.pathname) !== '/plugins' && sIdx(location.pathname, '/plugins/', 0) !== 0) return null;
+        if (sOf(location.pathname) !== '/plugins' && sIdx(location.pathname, '/plugins/', 0) !== 0 && !pluginSurface() && !pluginList() && !settingsRoot()) return null;
         if (preferred && attached(preferred) && shown(preferred)) return preferred;
+        const plugin = pluginSurface() || pluginList() || settingsRoot();
+        if (plugin) return plugin;
         const forms = connectorForms();
         const connectorHeading = (root) => aSome(visibleOf(root, 'h1, h2, h3, [role="heading"]'), (h) =>
           reTest(/^(plugins|apps|外掛|應用程式|new plugin|create MCP app|建立 MCP 應用程式|(?:connect |連接 |連線 )?TATWO(?:（[^（）]{1,40}）[2-9]?)?)$/i, safeSquash(safeText(h))));
@@ -5681,11 +5856,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         if (!root) return '(no unambiguous visible connector surface)';
         let out = '';
         let full = false;
+        const accounts = accountAreas(document);
         const walk = (el, depth, mark) => {
           if (!el || full || !shown(el)) return;
+          if (listHas(accounts, el)) { out += '(account)\n'; return; }
           if (out.length >= OUTLINE_MAX) { full = true; return; }
           const tag = safeTag(el);
-          if (reTest(/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|PATH|META|LINK|ASIDE|NAV)$/, tag)
+          if ((el !== root && reTest(/^(ASIDE|NAV)$/, tag)) || reTest(/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|SVG|PATH|META|LINK)$/, tag)
               || safeAttr(el, 'data-message-author-role') || safeAttr(el, 'contenteditable') === 'true') return;
           let pad = '';
           for (let i = 0; i < depth && i < 30; i += 1) pad += ' ';
@@ -5747,7 +5924,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           let seg = '';
           for (let i = 0; i <= path.length; i += 1) {
             if (i === path.length || path[i] === '/') {
-              if (seg) { let d = null; try { d = R_apply(F_decode, null, [seg]); } catch (e) { d = null; } if (d === id) return true; }
+              if (seg) { let d = null; try { d = R_apply(F_decode, null, [seg]); } catch (e) { d = null; } if (d === id || (path === '/settings/plugins-settings/plugin_' + id && d === 'plugin_' + id)) return true; }
               seg = '';
             } else seg += path[i];
           }
@@ -5765,6 +5942,11 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       };
       // 詳情區寫的驗證方式：有控制項照控制項；沒有就看寫著驗證方式的那幾行（免驗證＝other）。
       const authShown = (root) => {
+        if (pluginSurface() === root) {
+          const about = aboutAreas(root);
+          const values = aMap(['Authorization supported', 'Authorization used'], (label) => aboutField(about, label, undefined, safeTag(root) === 'MAIN' || safeAttr(root, 'role') === 'main'));
+          return aEvery(values, (value) => value === 'OAuth') ? 'oauth' : aSome(values, (value) => reTest(NOT_OAUTH, value)) ? 'other' : 'unknown';
+        }
         const state = authState(root);
         if (state !== 'unknown') return state;
         const t = aJoin(aFilter(aMap(leaves(root), (el) => safeSquash(safeText(el))), (x) => reTest(AUTH_FIELD, x) || reTest(OAUTH_WORD, x)), ' ');
@@ -5784,6 +5966,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         || aSome(['cursor', 'next_cursor', 'nextCursor', 'next', 'next_page', 'nextPage'], (k) => { const v = own(j, k); return (typeof v === 'string' && v.length > 0) || typeof v === 'number'; })
         || (typeof own(j, 'total') === 'number' && R_apply(A_isArray, null, [list]) && own(j, 'total') > list.length));
       const devModeState = () => {
+        const root = pluginSurface();
+        if (root && aSome(leaves(root), (el) => safeSquash(safeText(el)) === 'dev mode')) return true;
         const switches = aFilter(visibleOf(document, '[role="switch"], input[type="checkbox"]'),
           (s) => reTest(DEV, fieldLabel(s) + ' ' + labelOf(s) + ' ' + (safeParent(s) ? labelOf(safeParent(s)) : '')));
         if (switches.length === 1) return safeChecked(switches[0]) || safeAttr(switches[0], 'aria-checked') === 'true';
@@ -5894,36 +6078,323 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           && !visibleOf(section, '[aria-busy="true"], [role="progressbar"], [aria-rowcount], [data-virtualized]').length
           && !aSome(visibleOf(section, 'button, [role="button"], a'), (el) => reTest(/^(load more|show more|next|載入更多|顯示更多|下一頁)$/i, labelOf(el))) ? links : null;
       };
-      const authorizationOf = (root) => {
-        const buttons = visibleOf(root, 'button, [role="button"]');
-        const connect = aFilter(buttons, (b) => reTest(RECONNECT, labelOf(b)) && !dDisabled(b));
-        const disconnect = aFilter(buttons, (b) => reTest(/^(disconnect|斷線|中斷連線|取消連接)$/i, labelOf(b)) && !dDisabled(b));
-        const connected = aSome(leaves(root), (el) => reTest(/^(connected|已連線|已連接)$/i, safeSquash(safeText(el))));
-        return connected && disconnect.length === 1 && !connect.length ? 'connected'
-          : connect.length === 1 && !disconnect.length && !connected ? 'needs_reconnect' : 'unknown';
+      // W294: settings rows have no href or ID. Read identity from About, never row permissions.
+      const pluginSurface = () => {
+        if (reTest(/^\/settings\/plugins-settings\/plugin_[A-Za-z0-9_-]+$/, sOf(location.pathname))
+          && !aSome(visibleOf(document, '[role="dialog"], dialog'), (d) => sectionTitles(d, /^About$/).length) && visibleOf(document, 'main, [role="main"]').length) {
+          const mains = visibleOf(document, 'main, [role="main"]'), root = mains.length === 1 ? mains[0] : null;
+          return root && visibleOf(root, 'h1').length === 1
+            && aSome(visibleOf(root, 'a[href]'), (a) => labelOf(a) === 'Plugin settings')
+            && aEvery(['Connected accounts', 'About', 'URL', 'App ID'], (label) => aSome(leaves(root), (el) => shown(el) && labelOf(el) === label)) ? root : null;
+        }
+        const links = aFilter(visibleOf(document, 'a[href]'), (el) => labelOf(el) === 'Plugin settings' && !containerRole(el, 'navigation') && !containerRole(el, 'complementary'));
+        const crumbs = links.length ? links : aFilter(leaves(document), (el) => shown(el) && safeSquash(safeText(el)) === 'Plugin settings');
+        const crumb = crumbs.length === 1 ? crumbs[0] : null;
+        for (let p = crumb && safeParent(crumb), i = 0; p && i < 30; p = safeParent(p), i += 1) {
+          if (visibleOf(p, 'nav, [role="navigation"], [role="complementary"]').length || containerRole(p, 'navigation') || containerRole(p, 'complementary')) continue;
+          if (aSome(visibleOf(p, 'h3, [role="heading"]'), (h) => safeSquash(safeText(h)) === 'About')) return p;
+        }
+        return null;
       };
+      let installedIssue = '';
+      const installedReject = (reason) => { installedIssue = reason; return null; };
+      const installedSidebar = () => {
+        installedIssue = '';
+        const headings = aFilter(visibleOf(document, 'h1, h2, h3, [role="heading"]'), (h) => labelOf(h) === 'Customize');
+        if (headings.length !== 1) return installedReject('no-customize-heading:' + Str(headings.length));
+        for (let p = safeParent(headings[0]); p && safeTag(p) !== 'BODY'; p = safeParent(p)) {
+          if (safeTag(p) === 'MAIN' || safeAttr(p, 'role') === 'main' || visibleOf(p, 'main, [role="main"]').length) return installedReject('main-inside');
+          if (aSome(leaves(p), (el) => shown(el) && labelOf(el) === 'Installed')
+            && aEvery(['Plugins', 'Skills'], (name) => aSome(visibleOf(p, 'a[href]'), (a) => labelOf(a) === name))) return p;
+        }
+        return installedReject('no-common-root');
+      };
+      const pluginList = () => {
+        if (installedSidebar()) return installedSidebar();
+        const fields = aFilter(visibleOf(document, 'input'), (el) => safeAttr(el, 'placeholder') === 'Search installed plugins' || safeAttr(el, 'aria-label') === 'Search installed plugins');
+        if (fields.length !== 1 || dValue(fields[0])) return null;
+        for (let p = safeParent(fields[0]), i = 0; p && i < 30; p = safeParent(p), i += 1) {
+          if (reTest(/Manage your plugins, connected accounts, and permissions/, safeText(p))) return p;
+        }
+        return null;
+      };
+      const settingsRoot = () => {
+        const roots = aMap(aFilter(visibleOf(document, 'button, [role="button"]'), (b) => safeSquash(safeText(b)) === 'General'), (b) => {
+          for (let p = safeParent(b); p && safeTag(p) !== 'BODY'; p = safeParent(p))
+            if (aSome(visibleOf(p, 'button, [role="button"]'), (x) => safeSquash(safeText(x)) === 'Plugins')) return p;
+          return null;
+        });
+        return roots.length === 1 ? roots[0] : null;
+      };
+      let listIssue = '';
+      const entryButtons = (pattern) => aFilter(visibleOf(document, 'button, [role="button"]'), (b) => reTest(pattern, labelOf(b)));
+      const pluginScene = () => {
+        let width = '?', height = '?';
+        try { width = Str(pget(G_innerWidth, window)); height = Str(pget(G_innerHeight, window)); } catch (e) {}
+        return ' path=' + sOf(location.pathname) + ' viewport=' + width + 'x' + height + ' buttons=' + Str(visibleOf(document, 'button, [role="button"]').length)
+          + ' openSidebar=' + Str(entryButtons(/^(Open sidebar|開啟側邊欄)$/).length) + ' profileMenu=' + Str(entryButtons(/^Open profile menu$/).length);
+      };
+      const openPluginList = async (live, installedOnly = false) => {
+        const legacy = () => !settingsRoot() && !pluginSurface() && sIdx(location.pathname, '/plugins', 0) === 0
+          && aSome(visibleOf(document, 'main, [role="main"]'), (root) => detailIdentity(root, '', '') !== null
+            || (aSome(visibleOf(root, 'h1, h2, h3, [role="heading"]'), (h) => reTest(/^(apps|plugins|應用程式|外掛)$/i, safeSquash(safeText(h))))
+              && aSome(visibleOf(root, 'button, [role="tab"], a[href]'), (b) => reTest(/^(\+|created by you|your apps|apps you created|自己建立的|自行建立的|你建立的|您建立的)$/i, labelOf(b)))));
+        if (installedOnly || installedSidebar() || aSome(visibleOf(document, 'h1, h2, h3, [role="heading"]'), (h) => labelOf(h) === 'Customize')
+          || (sOf(location.pathname) === '/plugins' && !legacy() && !visibleOf(document, 'input[placeholder="Search plugins"]').length && !pluginList() && !settingsRoot() && !createdSection() && !connectorForms().length)) {
+          if (sOf(location.pathname) !== '/plugins' && live()) await kroute(bag(), '/plugins', () => sOf(location.pathname) === '/plugins' || !live());
+          let count = -1, stableAt = nowMs(), ready = false, waitingIssue = '';
+          await kwait(() => {
+            const sidebar = installedSidebar(), rows = sidebar && pluginRows(sidebar);
+            const next = sidebar ? visibleOf(sidebar, 'button, [role="button"]').length : -1;
+            if (next !== count || !sidebar || rows === null) { waitingIssue = sidebar && rows !== null ? 'unstable:' + Str(count) + '→' + Str(next) : installedIssue; count = next; stableAt = nowMs(); }
+            ready = !!sidebar && rows !== null && nowMs() - stableAt >= 480;
+            return !live() || ready;
+          }, 8000);
+          if (!ready && live() && (count >= 0 || installedOnly || visibleOf(document, 'button, [role="button"]').length > 0 || aSome(visibleOf(document, 'h1, h2, h3, [role="heading"]'), (h) => labelOf(h) === 'Customize')
+            || aSome(leaves(document), (el) => shown(el) && labelOf(el) === 'Installed'))) { listIssue = 'Plugins 清單未完整載入（Installed 載入逾時）；' + waitingIssue; return null; }
+        }
+        if (installedOnly) return live() ? installedSidebar() : null;
+        listIssue = '';
+        if (pluginList()) return pluginList();
+        const back = aFilter(visibleOf(document, 'button, a[href]'), (b) => labelOf(b) === 'Plugin settings');
+        if (pluginSurface() && back.length === 1 && live()) {
+          kpress(back[0]); await kwait(() => pluginList() !== null || !live(), 3000);
+          if (!pluginList()) listIssue = 'Plugin settings 返回後找不到 Plugins 清單';
+        }
+        if (pluginList()) return pluginList();
+        if (pluginSurface() && live()) { await kroute(bag(), '/plugins', () => sOf(location.pathname) === '/plugins'); await kwait(() => pluginList() !== null || !live(), 1500); }
+        if (pluginList()) return pluginList();
+        if (createdSection() || connectorForms().length || legacy() || !live()) { listIssue = listIssue || '舊版清單／建立表單開啟中或掃描已中止'; return null; }
+        if (!settingsRoot() && sIdx(location.pathname, '/settings/', 0) === 0 && live()) {
+          await kroute(bag(), '/settings', () => sOf(location.pathname) === '/settings' || !live());
+          await kwait(() => settingsRoot() !== null || !live(), 1500);
+        }
+        if (!settingsRoot()) {
+          let profile = entryButtons(/^Open profile menu$/);
+          if (!profile.length && live()) {
+            const sidebar = entryButtons(/^(Open sidebar|開啟側邊欄)$/);
+            if (sidebar.length === 1) {
+              kpress(sidebar[0]); await kwait(() => entryButtons(/^Open profile menu$/).length > 0 || settingsRoot() !== null || !live(), 1500);
+              profile = entryButtons(/^Open profile menu$/);
+            }
+            if (!profile.length && !settingsRoot() && live()) {
+              await kroute(bag(), '/', () => sOf(location.pathname) === '/' || !live());
+              const until = nowMs() + 8000;
+              await kwait(() => entryButtons(/^Open profile menu$/).length > 0 || entryButtons(/^(Open sidebar|開啟側邊欄)$/).length === 1 || settingsRoot() !== null || !live(), 8000);
+              const homeSidebar = entryButtons(/^(Open sidebar|開啟側邊欄)$/);
+              if (!entryButtons(/^Open profile menu$/).length && !settingsRoot() && homeSidebar.length === 1 && live()) kpress(homeSidebar[0]);
+              await kwait(() => entryButtons(/^Open profile menu$/).length > 0 || settingsRoot() !== null || !live(), until - nowMs());
+              profile = entryButtons(/^Open profile menu$/);
+            }
+          }
+          listIssue = 'Open profile menu 按鈕數=' + Str(profile.length);
+          if (!settingsRoot() && profile.length === 1 && live()) {
+            kpress(profile[0]); await kwait(() => visibleOf(document, '[role="menuitem"]').length > 0 || !live(), 1500);
+            const settings = aFilter(visibleOf(document, '[role="menuitem"]'), (b) => labelOf(b) === 'Settings');
+            listIssue = 'Settings 選單項數=' + Str(settings.length);
+            if (settings.length === 1 && live()) { kpress(settings[0]); await kwait(() => settingsRoot() !== null || !live(), 1500); listIssue = 'Settings 選單按下後找不到 General／Plugins 設定容器'; }
+          }
+          if (!settingsRoot() && live()) { location.hash = 'settings'; await kwait(() => settingsRoot() !== null || !live(), 1500); }
+        }
+        const root = settingsRoot();
+        if (!root || !live()) { listIssue += '；hash 後找不到 General／Plugins 設定容器'; return null; }
+        const tabs = aFilter(visibleOf(root, 'button, [role="button"]'), (b) => safeSquash(safeText(b)) === 'Plugins');
+        listIssue = '設定容器內 Plugins 按鈕數=' + Str(tabs.length);
+        if (tabs.length !== 1) return null;
+        if (live()) kpress(tabs[0]);
+        await kwait(() => pluginList() !== null || !live(), 1500);
+        listIssue = pluginList() ? '' : 'Plugins 分頁按下後找不到未篩選的 Search installed plugins 清單';
+        return live() ? pluginList() : null;
+      };
+      const pluginRows = (root) => {
+        if (!root) return installedReject('no-root');
+        if (root === installedSidebar()) {
+          const markers = aFilter(leaves(root), (el) => shown(el) && labelOf(el) === 'Installed');
+          if (markers.length !== 1) return installedReject('marker-count:' + Str(markers.length));
+          if (aSome(visibleOf(root, 'input'), (el) => !!dValue(el))) return installedReject('input-has-value');
+          const rows = [], elements = safeAll(root, '*'); let started = false;
+          for (let i = 0; i < elements.length; i += 1) {
+            const el = elements[i];
+            if (el === markers[0]) started = true;
+            if (shown(el) && (started || safeContains(el, markers[0]) && !visibleOf(el, 'h1, h2, h3, [role="heading"]').length)) {
+              const busy = safeAttr(el, 'aria-busy') === 'true' ? '[aria-busy="true"]' : safeAttr(el, 'role') === 'progressbar' ? '[role="progressbar"]'
+                : hasAttr(el, 'aria-rowcount') ? '[aria-rowcount]' : hasAttr(el, 'data-virtualized') ? '[data-virtualized]' : '';
+              if (busy) return installedReject('busy:' + busy);
+              if (started && reTest(/^(load more|show more|next)$/i, labelOf(el))) return installedReject('load-more');
+            }
+            if (started && el !== markers[0] && shown(el) && !dKids(el).length && labelOf(el) && labelOf(el) !== 'More actions'
+              && safeTag(el) !== 'A' && !aSome(rows, (r) => safeContains(r.node, el) || r.manageNode && safeContains(r.manageNode, el))) return installedReject('stray-leaf:' + safeTag(el) + ':' + Str(labelOf(el).length));
+            if (!started || safeTag(el) !== 'A' || aSome(rows, (r) => r.manageNode === el)) continue;
+            const name = safeSquash(safeText(el)), href = safeAttr(el, 'href'); let path = '';
+            try { const u = new C_URL(href, location.origin); if (pget(G_urlOrigin, u) === location.origin) path = pget(G_urlPathname, u); } catch (e) {}
+            const rejectRow = (reason) => installedReject('invalid-row:' + Str(rows.length + 1) + ':' + reason);
+            if (!name) return rejectRow('no-name');
+            if (!reTest(/^\/plugins\/[A-Za-z0-9_~-]+$/, path)) return rejectRow('path-shape');
+            if (href !== path && href !== location.origin + path) return rejectRow('href-form:' + (reTest(/^https?:\/\//, href) ? 'absolute' : reTest(/^\/(?!\/)/, href) ? 'relative' : 'other'));
+            const anchors = safeAll(safeParent(el), 'a[href]'), manage = aFind(anchors, (a) => a !== el);
+            const managePath = '/settings/plugins-settings/' + sSlice(path, 9), manageLink = manage && safeAttr(manage, 'href');
+            if (anchors.length !== 1 && (anchors.length !== 2 || safeAttr(manage, 'aria-label') !== 'Manage ' + name)) return rejectRow('anchors:' + Str(anchors.length));
+            const manageSettings = manage && reTest(/^(?:https?:\/\/[^/]+|\/\/[^/]+)?\/settings\/plugins-settings\//, manageLink);
+            if (manageSettings && manageLink !== managePath && manageLink !== location.origin + managePath) return rejectRow('manage-mismatch');
+            if (!aSome(safeAll(safeParent(el), 'button, [role="button"]'), (b) => labelOf(b) === 'More actions')) return rejectRow('no-actions');
+            listAdd(rows, { name, href, node: el, manageNode: manage, manageHref: manageSettings ? managePath : '' });
+          }
+          if (aFilter(safeAll(root, 'button, [role="button"]'), (b) => labelOf(b) === 'More actions').length !== rows.length) return installedReject('action-count');
+          return rows.length <= 256 && !aSome(rows, (r) => aFilter(rows, (x) => x.name === r.name || x.href === r.href).length !== 1) ? rows : installedReject(rows.length > 256 ? 'row-limit' : 'duplicate-row');
+        }
+        if (visibleOf(root, '[aria-busy="true"], [role="progressbar"], [aria-rowcount], [data-virtualized]').length
+          || aSome(visibleOf(root, 'button, a'), (b) => reTest(/^(load more|show more|next)$/i, labelOf(b)))) return null;
+        const buttons = visibleOf(root, 'button, [role="button"]');
+        const rows = [];
+        for (let i = 0; i < buttons.length; i += 1) {
+          const m = reExec(/^(TATWO（[^（）]{1,40}）(?:[2-9]|[1-9][0-9]+)?)(?:\s|$)/, labelOf(buttons[i]));
+          if (m && connectorName(m[1]) === m[1]) listAdd(rows, { name: m[1], node: buttons[i] });
+        }
+        return rows.length <= 256 && !aSome(rows, (r) => aFilter(rows, (x) => x.name === r.name).length !== 1) ? rows : null;
+      };
+      const pluginOverview = (name) => {
+        const roots = aFilter(visibleOf(document, 'main, [role="main"]'), (root) =>
+          aSome(visibleOf(root, 'h1, h2, [role="heading"]'), (h) => safeSquash(safeText(h)) === name
+            || safeSquash(safeText(h)) === name + ' Your cloud plugin'));
+        return roots.length === 1 ? roots[0] : null;
+      };
+      let detailTrace = '';
+      const pluginTrace = (root, layer) => {
+        const fields = aFilter(['Connected accounts', 'Information', 'About', 'Developer', 'Category', 'Version', 'Website', 'URL',
+          'Authorization supported', 'Authorization used', 'Version ID', 'App ID', 'Review status'],
+          (label) => root && aSome(leaves(root), (el) => shown(el) && safeSquash(safeText(el)) === label));
+        return ' layer=' + layer + ' fields=' + aJoin(fields, ',');
+      };
+      const readPlugin = async (name, live, installedOnly = false) => {
+        detailIssue = ''; detailTrace = '';
+        const rows = pluginRows(await openPluginList(live, installedOnly));
+        const row = rows && aFind(rows, (r) => r.name === name);
+        if (!row || !live()) return null;
+        let settingsID = row.manageHref ? (reExec(/\/plugin_(asdk_app_(?!v_)[A-Za-z0-9_-]+)$/, row.manageHref) || [])[1] || '' : '';
+        if (row.manageHref) await kroute(bag(), row.manageHref, () => pluginSurface() !== null || !live());
+        else kpress(row.node);
+        await kwait(() => pluginSurface() !== null || pluginOverview(name) !== null || !live(), 3000);
+        const rowSettings = row.manageHref || (row.href ? '/settings/plugins-settings/' + (reExec(/\/plugins\/([^/]+)$/, row.href) || [])[1] : '');
+        const routeID = rowSettings === sOf(location.pathname) ? (reExec(/\/plugin_(asdk_app_(?!v_)[A-Za-z0-9_-]+)$/, rowSettings) || [])[1] || '' : '';
+        if (routeID) settingsID = settingsID || routeID;
+        const overview = !routeID && !pluginSurface() && pluginOverview(name);
+        if (overview && live()) {
+          detailTrace = pluginTrace(overview, 'plugin');
+          const manage = aFilter(visibleOf(overview, 'a[href]'), (a) => {
+            const m = reExec(/\/settings\/plugins-settings\/plugin_(asdk_app_(?!v_)[A-Za-z0-9_-]+)$/, safeAttr(a, 'href'));
+            return labelOf(a) === 'Manage' && m && detailPathOf(safeAttr(a, 'href'), m[1]);
+          });
+          if (manage.length !== 1) { detailIssue = 'Manage 連結不唯一或格式不對'; return null; }
+          if (!live()) return null;
+          settingsID = reExec(/plugin_(asdk_app_(?!v_)[A-Za-z0-9_-]+)$/, safeAttr(manage[0], 'href'))[1];
+          kpress(manage[0]);
+        }
+        await kwait(() => { const root = pluginSurface(), record = root && detailIdentity(root, settingsID, ''); return record && record.name === name || !live(); }, 3000);
+        const root = pluginSurface();
+        detailTrace += pluginTrace(root || document, root ? 'plugin_settings' : settingsID ? 'plugin_settings_unconfirmed' : 'unconfirmed');
+        const record = root && detailIdentity(root, settingsID, '');
+        if (record) record.detailPath = detailPathOf(location.href, record.id);
+        return live() && record && record.name === name ? { root, connector: record } : null;
+      };
+      let reconnectMenu = null;
+      const reconnectButtons = (root) => {
+        const direct = directReconnect(root);
+        if (direct.length === 1) return direct;
+        const ownButtons = aFilter(visibleOf(root, 'button, [role="button"], [role="menuitem"]'), (b) => reTest(RECONNECT, labelOf(b)) && !aSome(accountAreas(root), (area) => safeContains(area, b) && !containerRole(b, 'menu')));
+        if (ownButtons.length || !reTest(/Connected accounts/, safeText(root))) return ownButtons;
+        const menu = reconnectMenu && reconnectMenu.root === root && attached(reconnectMenu.menu) && shown(reconnectMenu.menu) ? reconnectMenu.menu : null;
+        return menu ? aFilter(visibleOf(menu, '[role="menuitem"], button'), (b) => labelOf(b) === 'Reconnect') : [];
+      };
+      const ACCOUNT_HEADING = /^(connected accounts|accounts|已連線帳號|已連接帳號|連線帳號|帳號)$/i;
+      const sectionTitles = (root, pattern) => aFilter(visibleOf(root, '*'), (h) => reTest(pattern, safeSquash(safeText(h)))
+        && (!dKids(h).length || reTest(/^H[1-4]$/, safeTag(h)) || safeAttr(h, 'role') === 'heading'));
+      const sectionArea = (root, title, accepts) => {
+        for (let area = safeParent(title), i = 0; area && area !== root && safeContains(root, area) && i < 4; area = safeParent(area), i += 1) if (accepts(area)) return area;
+        return null;
+      };
+      const aboutAreas = (root) => aFilter(aMap(sectionTitles(root, /^About$/), (h) => sectionArea(root, h, (area) => aEvery(['URL', 'App ID'], (label) =>
+        aSome(leaves(area), (el) => shown(el) && safeSquash(safeText(el)) === label)))), (area) => !!area);
+      const aboutField = (about, label, fail = () => '', paired = true) => {
+        if (about.length !== 1) return fail('about-count:' + about.length);
+        const area = about[0], hits = aFilter(leaves(area), (el) => shown(el) && safeSquash(safeText(el)) === label);
+        if (hits.length !== 1) return fail('label-hits:' + hits.length);
+        const row = safeParent(hits[0]), siblings = dKids(row);
+        if (paired && siblings.length !== 2) return fail('row-kids:' + siblings.length);
+        if ((paired && siblings[0] !== hits[0]) || !safeContains(area, row)) return fail('row-outside-about');
+        let value = paired ? siblings[1] : null;
+        if (!paired) for (let i = 0; i < siblings.length - 1; i += 1) if (siblings[i] === hits[0]) value = siblings[i + 1];
+        const kids = aFilter(dKids(value), (el) => !reTest(/^(BUTTON|INPUT)$/, safeTag(el)));
+        if (kids.length > 1 || aSome(kids, (el) => !reTest(/^(SPAN|CODE|A)$/, safeTag(el))
+          || aSome(dKids(el), (child) => !reTest(/^(BUTTON|INPUT)$/, safeTag(child))))) return fail('value-kids:' + dKids(value).length);
+        const text = shown(value) && !reTest(FIELD_TAG, safeTag(value)) ? safeSquash(dOwnText(value) + aJoin(aMap(kids, dOwnText), '')) : '';
+        return text || fail('value-empty');
+      };
+      const accountAreas = (root) => {
+        const ids = aFilter(visibleOf(root, '[id]'), (el) => sIdx(safeAttr(el, 'id'), 'plugin-connected-accounts-', 0) === 0);
+        return ids.length ? ids : aMap(sectionTitles(root, ACCOUNT_HEADING), (h) => sectionArea(root, h, (area) => visibleOf(area, 'button, [role="button"]').length > 0) || safeParent(h));
+      };
+      const directReconnect = (root) => aFilter(visibleOf(root, 'button, [role="button"]'), (b) => reTest(/^(Reconnect(?: .{1,200} account(?: Primary)?)?|重新連線(?: .{1,200})?)$/i, labelOf(b))
+        && !containerRole(b, 'menu') && safeAttr(b, 'role') !== 'menuitem' && aSome(accountAreas(root), (area) => safeContains(area, b)));
+      const authorizationOf = (root) => {
+        const areas = accountAreas(root), about = aboutAreas(root);
+        if (areas.length === 1 && directReconnect(root).length) return 'needs_reconnect';
+        if (reTest(/^\/settings\/plugins-settings\/plugin_asdk_app_(?!v_)[A-Za-z0-9_-]+$/, sOf(location.pathname))
+          && about.length === 1 && (!areas.length || (areas.length === 1 && !aSome(dKids(areas[0]), (row) => shown(row) && reTest(/^(P|DIV|LI|TR)$/, safeTag(row)))))) return 'not_connected';
+        if (areas.length) return areas.length === 1 && aSome(dKids(areas[0]), (row) => shown(row)
+          && reTest(/^(P|DIV|LI|TR)$/, safeTag(row)) && !safeAttr(row, 'role')) ? 'connected' : 'unknown';
+        const connect = aFilter(visibleOf(root, 'button, [role="button"]'), (b) => reTest(/^(Connect|連線)$/i, safeSquash(safeText(b)))
+          && !dDisabled(b) && safeAttr(b, 'aria-disabled') !== 'true' && !containerRole(b, 'menu') && !aSome(about, (area) => safeContains(area, b)));
+        return connect.length === 1 ? 'not_connected' : 'unknown';
+      };
+      const containerRole = (el, role) => { for (let p = safeParent(el); p; p = safeParent(p)) if (safeAttr(p, 'role') === role) return p; return null; };
+      let detailIssue = '';
       const detailIdentity = (root, id, path) => {
-        const headings = aFilter(visibleOf(root, 'h1, h2, h3, [role="heading"]'), (h) => connectorName(safeSquash(safeText(h))) === safeSquash(safeText(h)));
-        const urls = aFilter(aMap(leaves(root), (el) => safeSquash(safeText(el))), (t) => reTest(/^https:\/\/[a-z0-9.-]+\/mcp$/, t));
-        const fields = textInputs(root);
-        for (let i = 0; i < fields.length; i += 1) { const v = dValue(fields[i]); if (reTest(/^https:\/\/[a-z0-9.-]+\/mcp$/, v) && !listHas(urls, v)) listAdd(urls, v); }
-        if (headings.length !== 1 || urls.length !== 1) return null;
-        return { id, name: safeSquash(safeText(headings[0])), serverURL: urls[0], auth: authShown(root), detailPath: path, connected: authorizationOf(root) === 'connected' };
+        const children = dKids(root);
+        const titles = aSome(children, (el) => labelOf(el) === 'Plugin settings') ? children : visibleOf(root, 'h1, h2, [role="heading"], span');
+        const headings = aFilter(titles, (h) => shown(h) && (reTest(/^H[12]$/, safeTag(h)) || safeAttr(h, 'role') === 'heading'
+          || (h === children[1] && safeTag(h) === 'SPAN' && reTest(/^(BUTTON|A)$/, safeTag(children[0])) && labelOf(children[0]) === 'Plugin settings'))
+          && connectorName(safeSquash(safeText(h))) === safeSquash(safeText(h)));
+        const about = aboutAreas(root), issues = O_create(null);
+        const field = (label) => aboutField(about, label, (why) => { issues[label] = why; return ''; });
+        const url = field('URL'), appID = field('App ID');
+        detailIssue = headings.length !== 1 ? '名稱標題不唯一' : !reTest(/^https:\/\/[a-z0-9.-]+(?:\/[A-Za-z0-9._~%+-]+)+$/, url) ? 'About URL 不唯一或格式不對' + (issues.URL ? ' ' + issues.URL : '')
+          : !reTest(/^asdk_app_(?!v_)[A-Za-z0-9_-]+$/, appID) || (id && id !== appID) ? 'About App ID 不唯一或格式不對' + (issues['App ID'] ? ' ' + issues['App ID'] : '') : '';
+        if (detailIssue) return null;
+        const state = authorizationOf(root);
+        return { id: appID, name: safeSquash(safeText(headings[0])), serverURL: url, auth: authShown(root), detailPath: path,
+          connected: state === 'not_connected' ? false : state === 'connected' ? true : null, ...(state === 'needs_reconnect' ? { needsReconnect: true } : {}) };
       };
       const openKnownConnector = async (box, c, live, requireOAuth = true) => {
-        box.root = null;
+        box.root = null; detailIssue = '';
         const url = connectorURL(own(c, 'url'));
         const id = own(c, 'connectorID');
         if (typeof id !== 'string' || !reTest(/^[A-Za-z0-9_.:-]{2,200}$/, id)) return;
         const rawPath = own(c, 'detailPath');
         const path = detailPathOf(typeof rawPath === 'string' ? rawPath : '/plugins/' + id, id);
+        if (!live()) return;
+        const current = aFind(pluginSurface() ? [pluginSurface()] : visibleOf(document, '[role="dialog"], dialog, main, [role="main"]'), (root) => detailIdentity(root, id, path) !== null);
+        const identity = current && detailIdentity(current, id, path);
+        if (identity && identity.serverURL !== url) { detailIssue = 'About URL 與目標不同'; return; }
+        if (!own(c, 'detailPath') || pluginSurface() || pluginList()) {
+          const rows = pluginRows(await openPluginList(live));
+          for (let i = 0; rows && i < rows.length; i += 1) {
+            if (connectorName(rows[i].name) !== rows[i].name) continue;
+            const found = await readPlugin(rows[i].name, live);
+            if (found && found.connector.id === id) {
+              if (found.connector.serverURL === url && (!requireOAuth || found.connector.auth === 'oauth')) { box.root = found.root; box.connector = found.connector; }
+              else detailIssue = found.connector.serverURL !== url ? 'About URL 與目標不同' : 'OAuth 未確認';
+              return;
+            }
+          }
+          if (rows !== null) return;
+        }
         if (!path || !live()) return;
         if (sOf(location.pathname) !== path) {
           const routed = bag();
           await kroute(routed, path, () => sOf(location.pathname) === path);
           if (!routed.ok) return;
         }
-        await kwait(() => detailBoxes(url).length > 0 || !live(), 5000);
+        await kwait(() => aSome(visibleOf(document, '[role="dialog"], dialog, main, [role="main"]'), (root) => detailIdentity(root, id, path) !== null) || !live(), 5000);
         const boxes = detailBoxes(url);
         if (!live() || boxes.length !== 1 || !hrefHasID(location.href, id)) return;
         const record = detailIdentity(boxes[0], id, path);
@@ -5948,13 +6419,21 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           await kwait(arrived, 3000);
           if (arrived()) { diag['換頁'] = '按網頁連結'; out.ok = true; return; }
         }
-        if (sOf(location.pathname) !== target) {
+        if (sOf(location.pathname) !== target || (target === '/' && location.hash)) {
           R_apply(H_push, HIST, [{}, '', target]);
           dDispatch(window, new C_PopState('popstate', { state: {} }));
         }
         await kwait(arrived, link ? 5000 : 8000);
         out.ok = !!arrived();
         diag['換頁'] = out.ok ? '改網址' : '沒到';
+      };
+      const ensureChatHome = async (c) => {
+        if (reTest(/^\/(?:$|c\/|g\/)/, sOf(location.pathname)) && !location.hash) return;
+        if (own(c, 'preservePage') === true) throw new Error('ChatGPT Space 正在使用這一頁；請先收起 Space 再試');
+        if (own(c, 'pageBusy') === true) throw new Error('ChatGPT 正在操作這一頁；等操作結束再讀模型');
+        const out = bag(); await kroute(out, '/', () => sOf(location.pathname) === '/' && !location.hash);
+        if (!out.ok) throw new Error('ChatGPT 背景頁還沒回到聊天首頁');
+        await kwait(() => composer() !== null, 5000);
       };
       // 讀 ChatGPT 的 JSON（連接器指令用）：抓好的 fetch、then、Response.text、JSON.parse；結果放進呼叫端自己的容器
       // （不採用 await 帶回來的值）。
@@ -6016,8 +6495,27 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
       // 走安全回報的指令（連接器與「新增 ▾」）。
       const SAFE_COMMANDS = ['connectorScan', 'connectorDevMode', 'connectorAccount', 'connectorAbort', 'connectorNavigated', 'connectorSettings',
         'connectorCreate', 'connectorReconnect', 'connectorPress', 'connectorConsent', 'connectorHighlight', 'connectorHome', 'pluginNewMenu',
-        'pluginNewMenuWatch', 'pluginNewMenuAbort', 'connectorGesture', 'connectorOutline', 'connectorTick', 'connectorInspect', 'connectorDelete'];
+        'pluginNewMenuWatch', 'pluginNewMenuAbort', 'connectorGesture', 'connectorOutline', 'connectorTick', 'connectorInspect', 'connectorDelete', 'connectorProbe'];
       const handlers = {
+        connectorProbe: async (c) => {
+          const live = connectorStep(), text = String(c.text || ''), empty = () => nativeResetComposerShape(composer()).state === 'empty';
+          try {
+            await ensureChatHome(c);
+            if (!live() || !(await openConversation(null, c))) return { probe: 'failed:home' };
+            if (!live() || ((nativeNewChatRequired || document.querySelector('[data-message-author-role]')) && !(await resetNativeChat(c)))) return { probe: 'failed:new_chat' };
+            const project = (await handlers.projects()).items.find(p => p.title === 'TATWO · 收件匣');
+            if (!live() || (project && !(await openGizmo(project.id, c)))) return { probe: 'failed:project' };
+            if (!live() || (await ensureChatMode()) === 'work') return { probe: 'failed:work' };
+            if (!live() || !empty() || stopButton() || nativeResetDialogState().dialog_blocking_or_unknown) return { probe: 'failed:busy' };
+            const path = location.pathname, box = composer(); box.focus(); if (document.activeElement !== box && !box.contains(document.activeElement)) return { probe: 'failed:focus' };
+            document.execCommand('insertText', false, text);
+            if (!live() || composer() !== box || String(box.value != null ? box.value : box.innerText).trim() !== text) return { probe: 'failed:input' };
+            const button = await waitFor(() => sendButton(box), 5000);
+            if (!live() || location.pathname !== path || composer() !== box || !button || sendButton(box) !== button || String(box.value != null ? box.value : box.innerText).trim() !== text) return { probe: 'failed:send_button' };
+            button.click();
+            return { probe: await waitFor(() => stopButton() || empty(), 5000) ? 'sent' : 'failed:unconfirmed' };
+          } catch (_) { return { probe: 'failed:page' }; }
+        },
         list: async (c) => {
           const j = await api('/backend-api/conversations?offset=' + (c.offset || 0) + '&limit=' + (c.limit || 50) + '&order=updated');
           if (!j || !Array.isArray(j.items)) throw new Error('讀不到對話清單');
@@ -6032,13 +6530,12 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           return { messages: t.messages, parents: t.parents, leaf: t.leaf, current: t.current, work,
             projectID: conv.gizmo_id || (conv.conversation_mode && conv.conversation_mode.gizmo_id) || null };
         },
-        models: async () => {
-          // 要中文的檔位名稱與說明（使用者 09-25「調節應中文」）：跟網頁切成繁體中文時一樣帶語言標頭。
+        models: async (c = {}) => {
+          lastModelSelection = null;
+          await ensureChatHome(c);
           const j = await api('/backend-api/models', { 'oai-language': 'zh-TW', 'accept-language': 'zh-TW,zh;q=0.9' });
           const all = (j.models || []).filter((m) => m && typeof m.slug === 'string' && m.slug);
-          // 同名的不同版本（09-24 實機：gpt-5-6、-instant、-thinking 都叫 GPT-5.6 Sol）加上檔位名，回答下方才分得出是哪個回答的。
-          const sameTitle = {};
-          all.forEach((m) => { const t = m.title || m.slug; sameTitle[t] = (sameTitle[t] || 0) + 1; });
+          const sameTitle = {}; all.forEach((m) => { const t = m.title || m.slug; sameTitle[t] = (sameTitle[t] || 0) + 1; });
           for (const m of all) {
             const t = m.title || m.slug;
             const variant = VARIANT_LABELS[m.reasoning_type || 'none'];
@@ -6050,51 +6547,29 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           diag['模型欄位'] = [...keys].sort().join('+').slice(0, 300);
           const withEfforts = all.find((m) => effortsOf(m).length);
           diag['推理強度來源'] = withEfforts ? effortSource(withEfforts) : '模型清單沒有推理強度欄位';
-          // 模型表只有代號、名稱、旗標與強度標籤（網頁公開的選單資料），沒有使用者內容。
           diag['模型表'] = all.map((m) => [m.slug, m.title, m.is_work_mode_model ? 'W' : '-', m.configurable_thinking_effort ? 'E' : '-',
             m.reasoning_type || '-', (Array.isArray(effortList(m)) ? effortList(m) : []).map((e) => e && typeof e === 'object'
               ? (e.thinking_effort || e.effort || '?') + '=' + (e.short_label || '-') + '/' + (e.full_label || '-') : String(e)).join(',') || '-'].join('|')).join(' ; ').slice(0, 2400);
-          // 新版選單（model_picker_version／versions）：只記結構與短標籤，找網頁滑桿的顯示名稱（例如 Extra High）。
-          const short = (v) => (typeof v === 'string' ? (v.length <= 32 ? v : 'str') : Array.isArray(v) ? '[' + v.length + ']' : v && typeof v === 'object' ? '{}' : String(v));
-          const labelsOf = (arr) => (Array.isArray(arr) ? arr : []).map((x) => (x && typeof x === 'object'
-            ? (x.label || x.title || x.name || x.display_name || x.short_label || x.id || x.slug || '?') : String(x))).map((t) => String(t).slice(0, 24)).join('/');
-          const describe = (o) => Object.keys(o || {}).map((k) => { const v = o[k];
-            return k + '=' + (Array.isArray(v) && v.length && typeof v[0] === 'object' ? '[' + labelsOf(v) + ']' : short(v)); }).join(',');
-          diag['選單版本'] = String(j.model_picker_version == null ? '-' : j.model_picker_version);
-          diag['選單 versions'] = (Array.isArray(j.versions) ? j.versions.slice(0, 8).map((v) => '{' + describe(v) + '}').join(' ')
-            : j.versions && typeof j.versions === 'object' ? Object.keys(j.versions).slice(0, 8).map((k) => k + ':{' + describe(j.versions[k]) + '}').join(' ') : short(j.versions)).slice(0, 1600);
-          diag['選單 categories'] = (Array.isArray(j.categories) ? j.categories.slice(0, 8).map((c) => '{' + describe(c) + '}').join(' ') : short(j.categories)).slice(0, 1200);
-          // Space 只做 Chat（使用者 09-24）：Work 專用模型不列。
           const chat = all.filter((m) => m.is_work_mode_model !== true);
           const preferred = new Set([j.default_model_slug]);
           (j.categories || []).forEach((c) => { if (c && typeof c.default_model === 'string') preferred.add(c.default_model); });
-          // 同名的各版本合成一條強度選項（跟網頁版滑桿一樣）：沒強度的版本＝一個選項，有強度的版本＝每級一個選項。
-          const order = [];
-          const groups = new Map();
+          const order = [], groups = new Map();
           for (const m of chat) {
             const title = m.title || m.slug;
             if (!groups.has(title)) { groups.set(title, []); order.push(title); }
             groups.get(title).push(m);
           }
-          // 新版選單（model_picker_version ≥ 2）：網頁的選單＝版本（Latest／Legacy • 5.6…）× 強度檔位（Instant／Medium／High／Extra High／Pro）。
           const bySlug = new Map(all.map((m) => [m.slug, m]));
-          const presetKeys = new Set();
           const enabledVersions = (Array.isArray(j.versions) ? j.versions : []).filter((v) => v && v.enabled !== false);
-          // 「最新」那一版：網頁上的名字不帶版本號（High），只有 show_version_in_latest 的（6 Pro）才帶；舊版一律帶（5.6 High）。
           const latestID = (enabledVersions.find((v) => v.id === 'latest') || enabledVersions[0] || {}).id;
           const versions = enabledVersions.map((v) => {
             const variants = (Array.isArray(v.slugs) ? v.slugs : []).map((x) => bySlug.get(x)).filter((m) => m && m.is_work_mode_model !== true);
-            const find = (test) => variants.find(test);
-            const instant = find((m) => (m.reasoning_type || 'none') === 'none');
-            const thinking = find((m) => m.reasoning_type === 'reasoning');
-            const pro = find((m) => m.reasoning_type === 'pro');
+            const instant = variants.find((m) => (m.reasoning_type || 'none') === 'none'), thinking = variants.find((m) => m.reasoning_type === 'reasoning'), pro = variants.find((m) => m.reasoning_type === 'pro');
             const presets = (Array.isArray(v.intelligence_presets) ? v.intelligence_presets : []).map((p) => {
-              if (p && typeof p === 'object') Object.keys(p).forEach((k) => presetKeys.add(k));
               const label = String(typeof p === 'string' ? p : (p && (p.label || p.display_text || p.title || p.name || p.id)) || '');
               let slug = p && typeof p === 'object' ? (p.model_slug || p.slug || p.model || null) : null;
               let effort = p && typeof p === 'object' ? (p.thinking_effort || p.effort || p.reasoning_effort || null) : null;
               if (!slug) {
-                // 檔位沒寫對應的模型：照名稱對到這個版本的一般／Thinking／Pro 版。
                 const l = label.toLowerCase();
                 if (/instant/.test(l)) slug = instant && instant.slug;
                 else if (/pro/.test(l)) { slug = pro && pro.slug; effort = effort || null; }
@@ -6103,21 +6578,16 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
                   effort = effort || (/extra/.test(l) ? 'max' : /high/.test(l) ? 'extended' : /medium|standard/.test(l) ? 'standard' : /light|low/.test(l) ? 'min' : null);
                 }
               }
-              // 面板上方的「6 Pro」＝檔位自己的顯示版本＋顯示名稱；說明（subtitle）帶中文語言標頭時是中文。
               const str = (v) => (typeof v === 'string' ? v : '');
               return slug && label ? { id: slug + (effort ? '|' + effort : ''), title: label, slug, effort,
                 version: str(p && p.selected_display_version), level: str(p && p.selected_display_title) || label,
                 detail: str(p && (p.subtitle || p.description)),
-                // Pro（lane＝pro）是滑桿最高檔：網頁用紫色與星點；版本號要不要顯示照網頁的規則。
                 max: !!(p && p.lane === 'pro') || (!(p && p.lane) && !!pro && slug === pro.slug),
                 showVersion: v.id !== latestID || !!(p && p.show_version_in_latest === true) } : null;
             }).filter(Boolean);
             return { id: String(v.id || ''), title: String(v.display_text_full || v.display_text || v.id || ''), presets };
           }).filter((v) => v.id && v.presets.length);
-          diag['檔位欄位'] = [...presetKeys].sort().join('+') || '（檔位是純文字）';
-          diag['檔位對應'] = versions.map((v) => v.id + ':' + v.presets.map((p) => p.title + '=' + p.id).join('/')).join(' ; ').slice(0, 900);
-          pickerVersions.length = 0;
-          versions.forEach((v) => pickerVersions.push(v));
+          pickerVersions.splice(0, pickerVersions.length, ...versions);
           modelGroups.clear();
           const models = order.map((title) => {
             const variants = groups.get(title);
@@ -6134,18 +6604,10 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             return { slug: main.slug, title, description: main.description,
               efforts: unique.length > 1 ? unique.map((o) => ({ id: o.id, title: o.title })) : [] };
           });
-          // 已經出現在版本檔位裡的模型，不再重複列在「其他模型」。
-          const covered = new Set();
-          versions.forEach((v) => v.presets.forEach((p) => covered.add(p.slug)));
-          const others = models.filter((m) => !(groups.get(m.title) || []).some((x) => covered.has(x.slug)));
-          // 目前的檔位＝ChatGPT 伺服器記的「上次使用」（網頁、桌面版、手機共用；09-25 讀網頁程式：web 優先，沒有才用 default，
-          // 強度一樣 default 之上蓋 web）。Space 沒特別選時就用它，送出也用它，畫面上看到的就是實際用的。
           let current = null;
           try {
-            const st = await api('/backend-api/settings/user');
-            const set = (st && st.settings) || {};
-            const last = set.last_used_model_config || {};
-            const slugs = last.slugs || {};
+            const st = await api('/backend-api/settings/user'), set = (st && st.settings) || {};
+            const last = set.last_used_model_config || {}, slugs = last.slugs || {};
             const slug = slugs.web || slugs.default || null;
             const juices = Object.assign({}, (last.juices || {}).default || {}, (last.juices || {}).web || {});
             const juice = slug && typeof juices[slug] === 'string' ? juices[slug] : null;
@@ -6160,9 +6622,143 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           } catch (e) {
             diag['上次使用'] = '讀不到：' + e.message;
           }
-          return { default: j.default_model_slug || null, models: versions.length ? others : models, current,
-            versions: versions.map((v) => ({ id: v.id, title: v.title, presets: v.presets.map((p) => ({ id: p.id, title: p.title,
-              version: p.version || '', level: p.level || p.title, detail: p.detail || '', max: p.max === true, showVersion: p.showVersion === true })) })) };
+          const visible = (el) => el && el.getClientRects().length && !el.hidden
+            && !el.closest('[aria-hidden="true"], [hidden], [inert]') && getComputedStyle(el).visibility !== 'hidden';
+          const titleOf = (el) => String(el && el.textContent || '').trim();
+          const retired = (id, title) => /^version:5(?:[.:-]|$)/i.test(id) || /^(legacy|舊版)\s*[•·]/i.test(title);
+          const trigger = (c.cmd === 'models' || c.selectModel || c.selectPreset ? await waitFor(() => { const el = modelTrigger(); return visible(el) ? el : null; }, 1500) : null) || modelTrigger();
+          if (!visible(trigger)) throw new Error('讀不到網頁目前模型');
+          const triggerTitle = titleOf(trigger);
+          let title = /^(ChatGPT|Select (?:ChatGPT )?model|(?:選擇|選取|选择)\s*(?:ChatGPT\s*)?模型)$/i.test(triggerTitle) ? '' : triggerTitle;
+          let opened = false, panel = null;
+          try {
+            if (trigger.getAttribute('aria-expanded') !== 'true' && !modelPanel(trigger)) { opened = true; panel = await openModelMenu(trigger); }
+            else panel = await waitFor(() => modelPanel(trigger), 1500);
+            if (!panel) { diag['模型選單'] = modelPanelShape(trigger); throw new Error('讀不到目前模型選單'); }
+            let nodes = [...panel.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], button')].filter(visible);
+            const labelOf = (el) => String(el.getAttribute('aria-label') || '') + ' ' + titleOf(el);
+            const itemLocked = (el) => el.disabled || el.getAttribute('aria-disabled') === 'true' || el.getAttribute('data-disabled') !== null
+              || /locked|鎖定|锁定|access options/i.test(labelOf(el) + ' ' + (el.getAttribute('aria-description') || '')
+                + ' ' + String(el.getAttribute('aria-describedby') || '').split(/\s+/).map((id) => titleOf(document.querySelector('[id="' + id + '"]'))).join(' ')
+                + ' ' + [...(el.querySelectorAll?.('[aria-label]') || [])].map(labelOf).join(' ')
+                + ' ' + (el.getAttribute('data-highlighted') !== null || el === document.activeElement
+                  ? [...panel.querySelectorAll('[role="status"], [aria-live]')].filter(visible).map(titleOf).join(' ') : ''));
+            const select = nodes.find((el) => /^(Select model|選擇模型|選取模型|选择模型)$/i.test(el.getAttribute('aria-label') || titleOf(el)));
+            const locked = !!select && itemLocked(select);
+            let sub = null;
+            if (select && !locked && (trigger.getAttribute('aria-label') || select.getAttribute('aria-haspopup'))) {
+              press(select);
+              sub = await waitFor(() => {
+                if ((!select.isConnected || !visible(select)) && panel.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]').length) return panel;
+                const panels = [...document.querySelectorAll('[role="menu"], [role="dialog"]')].filter((el) => visible(el) && el !== panel
+                  && (!select.getAttribute('aria-controls') || el.getAttribute('id') === select.getAttribute('aria-controls')));
+                return panels.length === 1 ? panels[0] : null;
+              }, 1500);
+              if (!sub) throw new Error('讀不到目前模型選單');
+              nodes = [...sub.querySelectorAll('[role="menuitem"], [role="option"], [role="menuitemradio"], button')].filter(visible);
+            }
+            const nameOf = (el) => titleOf(el).split(/\n|Leaving on|Locked,/)[0].trim();
+            const selected = nodes.filter((el) => ['aria-checked', 'aria-selected'].some((key) => el.getAttribute(key) === 'true') || el.getAttribute('data-state') === 'checked');
+            if (sub) title = selected.length === 1 ? nameOf(selected[0]) : '';
+            if (!title) title = selected.length === 1 ? nameOf(selected[0]) : '';
+            if (!title) throw new Error('網頁沒有顯示目前模型名稱');
+            if (c.selectionTitle && title !== c.selectionTitle) throw new Error('網頁模型選單已變更');
+            const selectable = nodes.filter((el) => !itemLocked(el));
+            const idOf = (el) => el.getAttribute('data-model-slug') || (all.find((m) => m.title === nameOf(el)) || {}).slug;
+            if (c.selectModel && c.selectModel !== 'web-power' && sub) {
+              const target = nodes.find((el) => idOf(el) === c.selectModel || (j.versions || []).some((v) => (v.slugs || []).includes(c.selectModel) && (v.display_text_full || v.display_text) === nameOf(el)));
+              if (!target) throw new Error('讀不到目前模型送出代號');
+              if (nameOf(target) !== title) {
+                if (!selectable.includes(target) || c.cancelled) throw new Error('網頁模型選單已變更');
+                press(target); return await handlers.models(Object.assign(c, { selectModel: null, selectionTitle: nameOf(target) }));
+              }
+            }
+            if (sub === panel) {
+              await closeModelMenu(trigger, opened, panel); opened = true;
+              panel = await openModelMenu(trigger);
+              if (!panel) throw new Error('讀不到目前模型選單');
+            }
+            const powerItem = () => [...panel.querySelectorAll('[role="menuitem"]')].find((el) => visible(el) && el.getAttribute('aria-label') === 'Power');
+            const powerReading = () => {
+              const readings = [...panel.querySelectorAll('[role="status"], [aria-live]')].filter(visible)
+                .map((el) => titleOf(el).match(/^(.+),\s*(\d+)\s+of\s+(\d+)\.?$/)).filter(Boolean);
+              return readings.length === 1 ? readings[0] : [];
+            };
+            let slider = [...panel.querySelectorAll('[role="slider"], input[type="range"]')].find((el) => visible(el)
+              && /Power|強度/i.test(String(el.getAttribute('aria-label') || '') + ' ' + titleOf(el.parentElement)));
+            const power = !slider && powerItem(), reading = power ? powerReading() : [];
+            const number = (aria, attr) => Number(slider && (slider.getAttribute(aria) ?? (attr === 'value' ? slider.value : slider.getAttribute(attr))));
+            const value = power ? Number(reading[2]) : number('aria-valuenow', 'value'), min = power ? 1 : number('aria-valuemin', 'min'), max = power ? Number(reading[3]) : number('aria-valuemax', 'max');
+            const count = power || slider ? max - min + 1 : 0;
+            const version = (j.versions || []).find((v) => v && v.enabled !== false && ((v.display_text_full || v.display_text) === title || (!sub && v.id === 'latest')));
+            const versionID = version && version.id || 'latest';
+            const presets = version && Array.isArray(version.intelligence_presets) ? version.intelligence_presets : [];
+            const webVersions = [], webModels = [], seen = new Set(); let selectedPreset = null;
+            const add = (id, name, efforts, description) => {
+              if (!id || !name || retired(id, name) || seen.has(id) || !all.some((m) => m.slug === id && m.is_work_mode_model !== true)) return;
+              seen.add(id); modelTitles[id] = name;
+              const original = models.find((m) => m.slug === id);
+              webModels.push({ ...(original || {}), slug: id, title: name, efforts, description: description || (original || {}).description });
+              const group = [...modelGroups.values()].find((g) => g.main === id); if (group) modelGroups.set(name, group);
+            };
+            if (power || slider) {
+              let options = (version && pickerVersions.find((v) => v.id === versionID) || { presets: [] }).presets.slice();
+              const index = value - min, valueText = power ? reading[1] : String(slider.getAttribute('aria-valuetext') || '').split(',')[0].trim();
+              if (!Number.isInteger(count) || count < 1 || count > 20 || !Number.isInteger(index) || index < 0 || index >= count) throw new Error('讀不到 Power 段數');
+              const webPower = options.length !== count || options.some((p) => !p)
+                || (valueText && options[index].title !== valueText);
+              if (webPower) {
+                const labels = presets.map((p) => typeof p === 'string' ? p : p && (p.label || p.display_text || p.title || p.name));
+                const matchingLabels = labels.length === count && labels.every((p) => typeof p === 'string' && p) && labels[index] === valueText;
+                options = Array.from({ length: count }, (_, i) => ({ id: 'web-power|' + (min + i),
+                  title: matchingLabels ? labels[i] : String(i + 1), level: matchingLabels ? labels[i] : String(i + 1) }));
+              }
+              if (c.selectPreset) {
+                const wanted = options.findIndex((p) => p.id === c.selectPreset);
+                if (wanted < 0 || c.cancelled) throw new Error('讀不到 Power 段數');
+                if (power) {
+                  const item = powerItem(); if (!item || c.cancelled) throw new Error('網頁模型選單已變更');
+                  item.focus();
+                  for (let i = index; i !== wanted; i += wanted > index ? 1 : -1) {
+                    const before = powerReading()[0]; if (c.cancelled) throw new Error('網頁模型選單已變更');
+                    item.dispatchEvent(new KeyboardEvent('keydown', { key: wanted > index ? 'ArrowRight' : 'ArrowLeft', bubbles: true }));
+                    if (!await waitFor(() => powerReading()[0] !== before, 500)) throw new Error('網頁模型選單已變更');
+                  }
+                  const after = powerReading();
+                  if (Number(after[2]) !== min + wanted || Number(after[3]) !== count) throw new Error('網頁模型選單已變更');
+                } else {
+                  if (sub && sub !== panel) { sub.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); await waitFor(() => !visible(sub) || !visible(panel), 500); }
+                  if (!visible(panel) || !visible(slider)) { await closeModelMenu(trigger, opened, panel); opened = true; panel = await openModelMenu(trigger); }
+                  if (!panel) throw new Error('讀不到目前模型選單');
+                  slider = [...panel.querySelectorAll('[role="slider"], input[type="range"]')].find((el) => visible(el) && /Power|強度/i.test(String(el.getAttribute('aria-label') || '') + ' ' + titleOf(el.parentElement)));
+                  if (!visible(panel) || !slider || (sub && sub !== panel && visible(sub)) || c.cancelled) throw new Error('網頁模型選單已變更');
+                  slider.focus(); slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+                  for (let i = 0; i < wanted; i++) slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+                  if (number('aria-valuenow', 'value') !== min + wanted) throw new Error('網頁模型選單已變更');
+                }
+              }
+              if (valueText) options[index].title = options[index].level = valueText;
+              const mapped = pickerVersions.find((v) => v.id === versionID); if (mapped) mapped.title = title;
+              if (!retired('version:' + versionID, title)) webVersions.push({ id: versionID, title, presets: options.map(({ slug, effort, ...p }) => p) });
+              selectedPreset = c.selectPreset || options[index].id;
+              if (sub || c.selectPreset) current = { version: versionID, preset: selectedPreset };
+              options.forEach((p) => { if (p.slug) modelTitles[p.slug] = title; });
+            } else {
+              const active = all.find((m) => m.slug === trigger.getAttribute('data-model-slug')) || all.find((m) => m.title === title);
+              if (!active) throw new Error('讀不到目前模型送出代號');
+              add(active.slug, title, (models.find((m) => m.slug === active.slug) || {}).efforts || []);
+            }
+            if (!locked) for (const el of selectable) {
+              const name = nameOf(el), id = idOf(el);
+              if (id && !(version && (version.slugs || []).includes(id) && (power || slider))) add(id, name, (models.find((m) => m.slug === id) || {}).efforts || [], titleOf(el).slice(name.length).trim() || el.getAttribute('aria-description'));
+            }
+            if (!trigger.isConnected || (!sub && titleOf(trigger) !== triggerTitle) || !visible(panel)) throw new Error('網頁模型選單已變更');
+            diag['模型來源'] = locked ? '網頁選單鎖定；只列目前模型與 Power' : '網頁可選項目';
+            if (current && !webVersions.some((v) => v.id === current.version && v.presets.some((p) => p.id === current.preset))) current = null;
+            lastModelSelection = { trigger, title: titleOf(trigger), model: selectedPreset && selectedPreset.split('|')[0] || (webModels.find((m) => m.title === title) || {}).slug, preset: selectedPreset };
+            return { default: webModels.some((m) => m.slug === j.default_model_slug) ? j.default_model_slug : webModels[0] && webModels[0].slug,
+              models: webModels, versions: webVersions, current };
+          } finally { await closeModelMenu(trigger, opened, panel); }
         },
         pins: async () => {
           const j = await api('/backend-api/pins');
@@ -6801,18 +7397,48 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         // ==== SAFE-CHAIN BEGIN：連接器與「新增 ▾」的指令（只用工具箱與上面的安全判斷；參數只讀自己的屬性） ====
         // W183 R6b：連接器（見上面 connector 的說明）。
         connectorScan: async (c) => {
-          if (!KIT_OK) return { loggedIn: !!auth, listKnown: false, devMode: null, matches: [] };
-          const live = connectorStep();
+          if (!KIT_OK) return { loggedIn: !!auth, listKnown: false, devMode: null, matches: [], failure: 'Pod 安全工具箱不可用' };
+          const step = connectorStep(), epoch = authEpoch;
+          const live = () => step() && authEpoch === epoch;
           const url = connectorURL(own(c, 'url'));
           const loggedIn = !!auth || !safeAll(document, '[data-testid="login-button"]').length;
           if (!loggedIn) return { loggedIn: false, listKnown: false, devMode: null, matches: [] };
+          const previousPath = sOf(location.pathname);
+          if (!connectorForms().length && !createdSection() && live() && previousPath !== '/plugins') {
+            await kroute(bag(), '/plugins', () => sOf(location.pathname) === '/plugins' || !live());
+            if (!installedSidebar() && sIdx(previousPath, '/settings/', 0) === 0 && live() && visibleOf(document, 'input[placeholder="Search plugins"]').length === 1) await kroute(bag(), '/settings', () => settingsRoot() !== null || !live());
+          }
+          const installed = await openPluginList(live), openingIssue = listIssue, openingScene = installed ? '' : pluginScene();
+          if (!live()) return ABORTED;
+          if (sIdx(openingIssue, 'Installed 載入逾時', 0) >= 0) return { loggedIn, listKnown: false, devMode: null, matches: [], failure: openingIssue + openingScene };
+          if (installed) {
+            const modern = installed === installedSidebar(), rows = pluginRows(installed), matches = [], conflicts = [], candidates = rows ? aMap(rows, (r) => ({ name: reTest(/account|帳號|@|['’]s /i, r.name) ? '(account)' : r.name, verdict: '讀不到' })) : [];
+            let failure = rows === null ? 'Plugins 清單未完整載入或名稱重複' + (modern ? '；' + installedIssue : '') : null, devMode = devModeState();
+            if (rows && !rows.length && installed !== installedSidebar() && !reTest(/No plugins installed/, safeText(installed))) failure = 'Plugins 清單 0 列，未確認空清單';
+            for (let i = 0; rows && i < rows.length; i += 1) {
+              if (connectorName(rows[i].name) !== rows[i].name) continue;
+              const found = await readPlugin(rows[i].name, live, modern);
+              if (!live()) return ABORTED;
+              if (!found) { failure = sIdx(listIssue, 'Installed 載入逾時', 0) >= 0 ? listIssue : rows[i].name + '：' + (detailIssue || '名稱／URL／App ID 未確認') + detailTrace; break; }
+              candidates[i].verdict = found.connector.serverURL === url ? '相符' : '網址不同';
+              if (devModeState() === true) devMode = true;
+              if (authorizationOf(found.root) === 'unknown') { failure = found.connector.name + '：帳號區／Connect 按鈕未唯一確認' + detailTrace; break; }
+              if (found.connector.serverURL === url) listAdd(matches, found.connector); else listAdd(conflicts, found.connector.name);
+            }
+            const outline = failure ? outlineOf(pluginSurface() || pluginOverview(rows && rows.length ? rows[0].name : '') || settingsRoot()) : null;
+            const after = rows ? pluginRows(await openPluginList(live, modern)) : null;
+            if (!live()) return ABORTED;
+            if (!rows || !after || rows.length !== after.length || !aEvery(rows, (r) => aSome(after, (x) => x.name === r.name && x.href === r.href && x.manageHref === r.manageHref))) failure = failure || (modern && !after ? listIssue || 'Plugins 清單未完整載入；' + installedIssue : 'Plugins 清單在讀取時改變');
+            if (aSome(matches, (r) => aFilter(matches, (x) => x.id === r.id).length !== 1)) failure = '外掛詳細頁 App ID 重複';
+            return { loggedIn, listKnown: !failure, devMode, matches, candidates, conflictingNames: conflicts, failure: failure ? failure + (sIdx(failure, ' layer=', 0) >= 0 ? '' : detailTrace || pluginTrace(installed, 'plugins_list')) + pluginScene() : null, outline: failure ? outline || outlineOf(settingsRoot()) : null };
+          }
           // 已經在外掛頁（例如使用者剛看完警語、表單還開著）就不換頁，免得把表單關掉。
           if (!createdSection() && sIdx(location.pathname, '/plugins', 0) !== 0) {
             if (!live()) return ABORTED;
             await kroute(bag(), '/plugins', () => sIdx(location.pathname, '/plugins', 0) === 0);
             await ksleep(300);
           }
-          let listKnown = false;
+          let listKnown = false, detailFailure = null;
           const matches = [];
           const conflicts = [];
           const got = bag();
@@ -6841,7 +7467,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
               const boxes = visibleOf(document, '[role="dialog"], dialog, main, [role="main"]');
               const root = aFind(boxes, (box) => detailIdentity(box, link.id, link.detailPath) !== null);
               const record = routed.ok && root ? detailIdentity(root, link.id, link.detailPath) : null;
-              if (!record || record.name !== link.name) { listKnown = false; continue; }
+              if (!record || record.name !== link.name) { listKnown = false; detailFailure = link.name + '：' + (detailIssue || '名稱／URL／App ID 未確認'); break; }
+              if (authorizationOf(root) === 'unknown') { listKnown = false; detailFailure = link.name + '：帳號區／Connect 按鈕未確認'; break; }
               if (record.serverURL === url) listAdd(matches, record);
               else listAdd(conflicts, record.name);
             }
@@ -6856,8 +7483,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             if (found >= 0) unique[found] = m;
             else listAdd(unique, m);
           }
-          if (unique.length > 256) return { loggedIn: true, listKnown: false, devMode: null, matches: [] };
-          return { loggedIn: true, listKnown, devMode: devModeState(), matches: unique, conflictingNames: conflicts };
+          if (unique.length > 256) return { loggedIn: true, listKnown: false, devMode: null, matches: [], failure: '外掛清單超過 256 列' + pluginScene() };
+          return { loggedIn: true, listKnown, devMode: devModeState(), matches: unique, conflictingNames: conflicts, failure: listKnown ? null : (detailFailure || (!section ? openingIssue || '找不到 Plugins 分頁或舊版自己建立的清單' : !links ? '舊版清單未完整載入' : '舊版詳細頁或外掛清單讀取失敗')) + (detailFailure ? pluginScene() : openingScene) };
         },
         connectorDevMode: async () => (KIT_OK ? { devMode: devModeState() } : { devMode: null }),
         // 帳號身分（只給 App 比對：登入編號、工作區、信箱）。
@@ -6931,6 +7558,13 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           }
           if (!owned) {
             if (!live()) return ABORTED;
+            if ((pluginList() && pluginList() !== installedSidebar()) || pluginSurface()) {
+              const list = await openPluginList(live);
+              const browse = list && aFilter(visibleOf(list, 'button, a'), (b) => labelOf(b) === 'Browse directory');
+              if (!browse || browse.length !== 1 || !live()) return { status: 'not_found', step: 'browse_directory' };
+              kpress(browse[0]);
+              await kwait(() => !pluginList() && !pluginSurface() || !live(), 3000);
+            }
             await kroute(bag(), '/plugins', () => sIdx(location.pathname, '/plugins', 0) === 0);
             if (!live()) return ABORTED;
             if (newForms().length) return { status: 'ambiguous', step: 'form_open' };
@@ -7040,7 +7674,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         },
         connectorReconnect: async (c) => {
           if (!KIT_OK) return UNSAFE;
-          const live = connectorStep();
+          const step = connectorStep(), epoch = authEpoch;
+          const live = () => step() && authEpoch === epoch;
           const url = connectorURL(own(c, 'url'));
           const rawID = own(c, 'connectorID');
           const id = typeof rawID === 'string' && reTest(/^[A-Za-z0-9_.:-]{2,200}$/, rawID) ? rawID : '';
@@ -7057,7 +7692,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           if (spent === 'detached') return { status: 'refused', reason: 'form_replaced' };
           if (spent) return { status: 'refused', reason: 'ack_replayed' };
           let owned = null;
-          if (id && own(c, 'detailPath') && !ack) {
+          if (id && (own(c, 'detailPath') || reTest(/^asdk_app_/, id) || pluginSurface() || pluginList()) && !ack) {
             const direct = bag();
             await openKnownConnector(direct, c, live);
             if (!direct.root) return { status: 'not_found', step: 'verify' };
@@ -7113,12 +7748,24 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
             const known = recordOf(boxes[0]);
             owned = known && known.rec.reconnect ? known : register(boxes[0], false, '', true);
           }
+          const rootBefore = owned.rec.root;
+          if (!ack && pluginSurface() === rootBefore && accountAreas(rootBefore).length && directReconnect(rootBefore).length !== 1) {
+            const areas = accountAreas(rootBefore), area = areas.length === 1 ? areas[0] : null;
+            const more = area ? aFilter(visibleOf(area, 'button, [role="button"]'), (b) => reTest(/^(⋯|…|more|more actions|more options|account options)$/i, labelOf(b))) : [];
+            if (more.length !== 1 || !live()) return { status: 'not_found', step: 'connected_accounts_menu' };
+            const before = menusShown();
+            kpress(more[0]);
+            await kwait(() => openedMenus(more[0], before).length > 0 || !live(), 2000);
+            const opened = openedMenus(more[0], before);
+            if (opened.length !== 1 || !live()) return { status: 'not_found', step: 'reconnect_menu' };
+            reconnectMenu = { root: rootBefore, menu: opened[0] };
+          }
           const mark = owned.mark;
           const rec = owned.rec;
           const root = rec.root;
           rec.armed = null;   // W183 R10 第二輪：重新走一次核對＝之前 armed 的那一個不再算
           // 讀回（只在那一區）：網址整個出現、驗證方式不是免驗證、警語交給使用者、只有一顆連線鈕。
-          const here = aSome(leaves(root), (el) => hasURLToken(safeText(el), url) && shown(el)) || aSome(textInputs(root), (x) => dValue(x) === url);
+          const here = detailHasURL(root, url);
           if (!here) return { status: 'not_found', step: 'verify' };
           // 名稱只是查找線索，沒有清單的 OAuth 證據；這條路必須在詳情裡正面確認。
           // 按 id 重連仍沿用清單已確認 OAuth 的契約，但詳情明示其他驗證方式一律拒絕。
@@ -7130,7 +7777,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           const seen = ack && ack.form === mark ? ack.warning : null;
           const warning = warningsIn(root, seen, rec);
           if (warning) return handBack(owned, warning.reason, warning.digest);
-          const buttons = aFilter(visibleOf(root, 'button, [role="button"]'), (x) => reTest(RECONNECT, labelOf(x)));
+          const buttons = reconnectButtons(root);
           if (!buttons.length) return { status: 'not_found', step: 'connect' };
           if (buttons.length !== 1) return { status: 'ambiguous', step: 'connect' };
           if (dDisabled(buttons[0]) || safeAttr(buttons[0], 'aria-disabled') === 'true') return handBack(owned, 'create_disabled', seen || '');
@@ -7358,11 +8005,12 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         // 只收：畫面上剛好一張連接器表單、網址欄是這個網址、對話框裡的錯是撞名。
         connectorInspect: async (c) => {
           if (!KIT_OK) return UNSAFE;
-          const live = connectorStep();
+          const step = connectorStep(), epoch = authEpoch;
+          const live = () => step() && authEpoch === epoch;
           const box = bag();
           await openKnownConnector(box, c, live);
-          if (!box.root || !live()) return { authorization: 'unknown' };
-          return { authorization: authorizationOf(box.root), connector: box.connector };
+          if (!box.root || !live()) return { authorization: 'unknown', reason: detailIssue || '名稱／URL／App ID 未確認' };
+          return { authorization: authorizationOf(box.root), connector: box.connector, reason: box.connector.name + '：帳號區／Connect 按鈕' };
         },
         connectorDelete: async (c) => {
           if (!KIT_OK) return UNSAFE;
@@ -7372,24 +8020,28 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           if (typeof keep !== 'string' || !keep || id === keep || typeof name !== 'string' || connectorName(name) !== name) return UNSAFE;
           const box = bag();
           await openKnownConnector(box, c, live, false);
-          if (!box.root || box.connector.name !== name || !live()) return { deleted: false };
+          if (!box.root || box.connector.name !== name || authorizationOf(box.root) !== 'not_connected' || !live()) return { deleted: false, reason: detailIssue || '名稱／帳號區／Connect 按鈕未確認' };
           const buttons = aFilter(visibleOf(box.root, 'button, [role="button"]'), (b) => reTest(/^(delete|delete app|delete connector|刪除|刪除應用程式|刪除連接器)$/i, labelOf(b)) && !dDisabled(b));
           if (buttons.length !== 1 || !live()) return { deleted: false };
-          kpress(buttons[0]);
-          await kwait(() => visibleOf(document, '[role="alertdialog"], [role="dialog"], dialog').length > 0 || !live(), 3000);
+          const before = visibleOf(document, '[role="alertdialog"], [role="dialog"], dialog');
+          kpress(buttons[0], true);
+          await kwait(() => aSome(visibleOf(document, '[role="alertdialog"], [role="dialog"], dialog'), (d) => !listHas(before, d)) || !live(), 3000);
           const dialogs = aFilter(visibleOf(document, '[role="alertdialog"], [role="dialog"], dialog'),
-            (root) => root !== box.root && hasURLToken(safeText(root), box.connector.serverURL)
-              && aSome(leaves(root), (el) => safeSquash(safeText(el)) === name));
+            (root) => root !== box.root && !safeContains(root, box.root) && ((hasURLToken(safeText(root), box.connector.serverURL)
+              && aSome(leaves(root), (el) => safeSquash(safeText(el)) === name))
+              || (pluginSurface() === box.root && sIdx(safeSquash(safeText(root)), 'Permanently delete ' + name + ' and its connections?', 0) >= 0)));
           if (dialogs.length !== 1 || !live()) return { deleted: false };
           const confirms = aFilter(visibleOf(dialogs[0], 'button, [role="button"]'), (b) => reTest(/^(delete|delete app|delete connector|刪除|刪除應用程式|刪除連接器)$/i, labelOf(b)) && !dDisabled(b));
-          if (confirms.length !== 1 || !live()) return { deleted: false };
-          kpress(confirms[0]);
+          const again = detailIdentity(box.root, id, box.connector.detailPath);
+          if (confirms.length !== 1 || !live() || !attached(box.root) || !shown(box.root) || !again || again.name !== name || again.serverURL !== box.connector.serverURL || authorizationOf(box.root) !== 'not_connected') return { deleted: false };
+          kpress(confirms[0], true);
           await kwait(() => !attached(dialogs[0]) || !shown(dialogs[0]) || !live(), 5000);
           if (!live() || (attached(dialogs[0]) && shown(dialogs[0]))) return { deleted: false };
           const routed = bag();
           await kroute(routed, '/plugins', () => sOf(location.pathname) === '/plugins');
-          const remaining = routed.ok ? completeCreatedList(await openCreatedSection(live)) : null;
-          return { deleted: live() && remaining !== null && !aSome(remaining, (entry) => entry.id === id) };
+          const plugins = await openPluginList(live);
+          const remaining = plugins ? pluginRows(plugins) : routed.ok ? completeCreatedList(await openCreatedSection(live)) : null;
+          return { deleted: live() && remaining !== null && !aSome(remaining, (entry) => plugins ? entry.name === name : entry.id === id) };
         },
         // W183 R12（.034 實機：CEF 的畫面快照整頁只有 1 個控制項＝節點驗證永遠過不了、永遠不代勾）：代勾改走 DOM 驗證。
         // aim＝按之前在同一份文件再驗一次（TATWO 自己讀回的這張表單、同意內容一字不差、剛好一格、字對得上核准的版本、看得見、沒停用、
@@ -7424,8 +8076,8 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
           const live = connectorStep();
           removeHighlights();
           if (!live()) return ABORTED;
-          await kroute(bag(), '/', () => sOf(location.pathname) === '/');
-          return { ok: true };
+          const out = bag(); await kroute(out, '/', () => sOf(location.pathname) === '/' && !location.hash);
+          return { ok: out.ok };
         },
         // W183 R9：原生外掛頁的「新增 ▾」（使用者在 TATWO 的 ChatGPT Space 自己按的）：到 /plugins、按「新增」、選那一項，
         // 只做到對話框打開為止——不填、不勾、不按 Create；表單由使用者在私訊框 Browser 的 ChatGPT Dev 分頁自己填。
@@ -7513,7 +8165,6 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
         // ==== SAFE-CHAIN END ====
         stop: async (command) => {
           const id = command.requestID;
-          const stopButton = () => document.querySelector('[data-testid="stop-button"]');
           if (!id) {
             // 舊的全域停止（App 已改用指定代號）：照舊按網頁的停止鍵。
             const b = stopButton();
@@ -7567,6 +8218,7 @@ final class ChatGPTTap: ObservableObject, ConversationTap {
               return !turn.posted || pressedAt > 0 || turn.accepted || Date.now() - turn.posted > 1500;
             }, 6000);
           }
+          if (stopButton()) throw new Error('ChatGPT 停止鍵仍在，停止未確認');
           if (turns[id]) finishTurn(turns[id]);
           return { stopped, submitted: !!(turn && turn.submitted) };
         },

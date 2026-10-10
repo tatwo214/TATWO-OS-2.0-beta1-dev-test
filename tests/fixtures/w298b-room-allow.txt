@@ -1,0 +1,14 @@
+App/Sources/Tatwo2/Facade/EngineInstall.swift # 官方 tarball 校驗、簽章、SDK、原子採用與退回
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift # 勾選後安裝、取消與預設重算、退回及每日只查版本
+App/Sources/Tatwo2/Facade/EngineRuntimeSelection.swift # managed current 優先、退回不被新版覆蓋、exit code 驗證
+App/Sources/Tatwo2/Chat/EngineModelCatalogProbe.swift # 對指定已驗證 CLI 做 SDK 模型查詢
+App/Sources/Tatwo2/Engine/ClaudeSidecar.swift # 查詢用 runtime override、停用自動更新
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift # 已存在的 sidecar 不因版本改變重開
+App/Sources/Tatwo2/New/EngineLoginCard.swift # 勾選 logo、所選數、刷新額度與主題提案底框
+App/Sources/Tatwo2/Tatwo2App.swift # 正式啟動後每日背景檢查
+App/Sources/Tatwo2/SelfTest.swift # 註冊 W298b 自測
+App/Sources/Tatwo2/Facade/W298bAcceptance.swift # 假來源整合與原生淺深截圖
+tests/fixtures/w298b-* # 快照、假 SDK、調查與驗證證據
+tests/w298b-ai-install.test.mjs # 新安裝驗證測試
+docs/specs/298-ai-version-update/install.md # 三家來源與驗證退回文件
+App/Sources/Tatwo2/Facade/W298aAcceptance.swift # 原有版本查詢測試在下一次查詢前取消勾選

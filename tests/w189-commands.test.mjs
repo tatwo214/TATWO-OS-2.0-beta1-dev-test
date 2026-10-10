@@ -12,7 +12,7 @@ test('F3/send-03 completed canvases do not block running local commands or hide 
   const model = read('Facade/ChatPageModel.swift');
   assert.doesNotMatch(model, /if activePlanArtifact != nil, let id = selectedThreadID, localLive\?\.isRunning\(id\) == true/);
   assert.match(model, /if isActivePlanTurnWriting/);
-  assert.match(read('Chat/ChatPage+Composer.swift'), /model\.isRunning[\s\S]*model\.activePlanArtifact != nil[\s\S]*composerStopButton/);
+  assert.match(read('Chat/ChatPage+Composer.swift'), /if model\.isRunning \{[\s\S]*composerStopButton/);
   assert.match(read('Chat/ChatPage+Plan.swift'), /if isExecuting[\s\S]*Button\("實作中…"\)[\s\S]*Text\("實作已結束"\)/);
 });
 
@@ -38,8 +38,9 @@ test('S4 production goal branch captures native intent before clearing the compo
   const { join } = await import('node:path');
   const { testScratch } = await import('./helpers/test-scratch.mjs');
   const source = read('Facade/ChatPageModel.swift').split('    func send() {')[1];
-  const branch = source.slice(source.indexOf('        if prompt.split(maxSplits: 1'), source.indexOf('        if activeLive.isRunning(id)'));
+  const branch = source.slice(source.indexOf('        if prompt.split(maxSplits: 1'), source.indexOf('        let wasGroupBusy = canQueueCurrentGroup'));
   assert.ok(branch.includes('setNativeGoal'));
+  const goalListUI = read('Facade/ChatPageModel.swift').match(/    private func openGoalList\(\) \{[\s\S]*?\n    \}/)[0];
   const scratch = testScratch('w189-goal-');
   const fixture = join(scratch, 'main.swift');
   writeFileSync(fixture, String.raw`import Foundation
@@ -71,6 +72,7 @@ final class Model {
  var isLocalNativeGoalCommand: Bool { native && prompt.split(whereSeparator: \.isWhitespace).first == "/goal" }
  func rejectRemoteWrite(_ text: String) -> Bool { false }
  func flashComposerHint(_ text: String) {}
+ ` + goalListUI + String.raw`
  func send() {
  let id = UUID(), trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
  ` + branch + String.raw`

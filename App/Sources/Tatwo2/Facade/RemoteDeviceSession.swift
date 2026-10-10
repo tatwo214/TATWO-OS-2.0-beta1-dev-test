@@ -422,6 +422,7 @@ final class RemoteDeviceSession: ObservableObject {
     static let maxRetryDelay: TimeInterval = 60
     private var retryTask: Task<Void, Never>?
     private var connectTask: Task<Void, Never>?
+    private var offlineRevocation: (scope: String, token: UUID)?
     /// W100：連線一定在這條佇列上跑，主執行緒不自己呼叫 `RemoteHostLink`。
     private static let connectQueue = DispatchQueue(
         label: "ai.tatwo.tatwo2.remote-session-connect", qos: .userInitiated)
@@ -440,6 +441,27 @@ final class RemoteDeviceSession: ObservableObject {
                                                  cache: RemoteOfflineCache(root: RemoteOfflineCache.defaultRoot(environment: environment)))
         offlineMirror.onChange = { [weak self] in self?.offlineMirrorChanged() }
         offlineMirror.loadFromDisk()
+        let scope = DeviceRegistry(environment: environment).root.path
+        // 只有真的撤銷才清離線副本；close／closeAll（換群組、重新加入、撤銷前先斷線）不清也不拆掉這個監聽。
+        offlineRevocation = (scope, DeviceFleetConnections.onRevoke(device.id, scope: scope) { [weak self] in
+            Task { @MainActor in
+                self?.retireRevokedOfflineCache()
+            }
+        })
+        if DeviceFleetConnections.isRevoked(device.id, scope: scope) { retireRevokedOfflineCache() }
+    }
+
+    private func retireRevokedOfflineCache() {
+        offlineMirror.retire { [weak self] result in
+            if case .failure = result { self?.onHint?("離線副本移到垃圾桶未完成。") }
+        }
+        shutdown()
+    }
+
+    deinit {
+        if let registration = offlineRevocation {
+            DeviceFleetConnections.unregister(device.id, scope: registration.scope, token: registration.token)
+        }
     }
 
     /// W182 R4：離線副本讀好、讀到一條內容或清掉時：沒連上就用它當側欄的文件（清掉就回到空白），重畫。

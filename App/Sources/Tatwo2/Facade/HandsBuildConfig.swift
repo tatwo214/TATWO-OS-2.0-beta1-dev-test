@@ -199,7 +199,9 @@ struct HandsBuildConfig: Codable, Equatable, Sendable {
     static func raiseCheck(_ report: HandsBuildDeviceReport?, config: HandsBuildConfig, now: Date) -> HandsBuildRaise {
         guard let report else { return .unknown }
         guard report.levelGuard else { return .needsUpdate }
-        guard let received = report.receivedAt, abs(now.timeIntervalSince(received)) <= raiseReportWindow,
+        guard let received = report.receivedAt else { return .unknown }
+        let age = now.timeIntervalSince(received)
+        guard age >= 0 && age <= raiseReportWindow,
               report.appliedConfigRevision >= config.configRevision else { return .unknown }
         return .allowed
     }

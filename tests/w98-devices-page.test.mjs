@@ -19,17 +19,14 @@ const sidebar = 'Chat/ChatPage+Sidebar.swift';
 const legacySections = 'New/RemoteDevicesSidebarSections.swift';
 const uiFiles = [devicesCard, sidebar, legacySections];
 
-test('W98 設備頁：「遙控它」換成「遠端設備專案」，只負責把人帶去側欄項目', () => {
-  const card = source(devicesCard);
-  assert.doesNotMatch(card, /遙控它/);
-  // W180 D1：設定頁的按鈕是玻璃 chip。
-  assert.match(card, /OSChipButton\(title: "遠端設備專案"\)/);
-  // W98d：只帶路（展開＋捲到那台的區塊），不自己進遠端模式。
-  assert.match(card, /model\.requestSidebarDeviceSection\(device\.id\)/);
-  assert.doesNotMatch(card, /enterRemoteMode/);
-  // 展開狀態只在畫面裡，不落地。
-  assert.match(card, /@State private var expandedDevices: Set<String> = \[\]/);
-  assert.doesNotMatch(card, /UserDefaults|AppStorage/);
+test('W187 設備頁只顯示群組；私訊框處理變更，側欄仍保留遠端專案入口', () => {
+  const card = source(devicesCard).split('enum RemoteDevicePresentation')[0];
+  assert.match(card, /DeviceFleetPage\(snapshot: fleet\.snapshot/);
+  assert.match(card, /openDirect\(\.assistant\)/);
+  assert.doesNotMatch(card, /enterRemoteMode|requestSidebarDeviceSection|removeDevice|TextField/);
+  const list = source('New/DeviceFleetListView.swift');
+  assert.match(list, /@State private var expanded: Set<String> = \[\]/);
+  assert.doesNotMatch(list, /UserDefaults|AppStorage/);
 });
 
 test('W98d 側欄：每台設備一個跟「專案」「聊天」同層的區塊，標題照專案區那顆', () => {
@@ -104,27 +101,31 @@ test('W98c 專案是自己的可展開列，討論串只在專案展開後才列
   assert.ok(content.includes('離線・\\(RemoteDeviceSidebarSection.seen(section.lastSeenAt))'));
 });
 
-test('W98 設備列照 Computer Use 的收納列：收合只露名稱、狀態、user@host', () => {
-  const card = source(devicesCard);
-  const computerUse = source('New/ComputerUseSettingsView.swift');
-  for (const shape of [
-    /rotationEffect\(\.degrees\(.*expanded.*\? 90 : 0\)\)/i,
-    /\.font\(\.system\(size: 13, weight: \.semibold\)\)/,
-    /\.font\(\.system\(size: 11\.5\)\)/,
-    /accessibilityHint\(/,
-  ]) {
-    assert.match(computerUse, shape);
-    assert.match(card, shape);
+test('W187 設備列收合顯示名字、角色與狀態；展開只看版本、路徑與簽章', () => {
+  const list = source('New/DeviceFleetListView.swift');
+  const expandedBlock = list.slice(list.indexOf('if isExpanded {'));
+  for (const detail of ['版本：', '連線路徑：', '簽章狀態：', '設備簽章識別：']) {
+    assert.ok(expandedBlock.includes(detail), detail);
   }
+  assert.match(list, /Text\(device\.name\)/);
+  assert.match(list, /snapshot\.role\(device\)/);
+  assert.match(list, /snapshot\.online\(device\)/);
+  assert.match(list, /accessibilityHint\(/);
+  assert.doesNotMatch(list, /DeviceEndpointsRow|移除|遠端設備專案|updateEndpoint/);
   // 展開後才出現的東西，全在 isExpanded 之後。
-  const expandedBlock = card.slice(card.indexOf('if isExpanded {'), card.indexOf('private func badge('));
-  for (const detail of ['device.fingerprintSummary', 'DeviceEndpointsRow(device: device)',
-                        '加入 \\(Self.stamp(device.addedAt))', 'OSChipButton(title: "移除")', 'OSChipButton(title: "遠端設備專案")']) {
-    assert.ok(expandedBlock.includes(detail), `展開區缺少 ${detail}`);
+  const card = source(devicesCard).split('enum RemoteDevicePresentation')[0];
+  const expandedRow = card.slice(card.indexOf('if isExpanded {'), card.indexOf('private func badge('));
+  for (const detail of ['device.fingerprintSummary', 'device.orderedEndpoints.map',
+                        '加入 \\(Self.stamp(device.addedAt))', 'PrimaryOfflineOutboxList(model: model, outbox: outbox']) {
+    assert.ok(expandedRow.includes(detail), `展開區缺少 ${detail}`);
   }
   assert.match(card, /badge\(\(isOnline \? "在線" : "離線"/);
   // 沒有可提供的更新就不顯示徽章。
   assert.match(card, /if !update\.hasSuffix\("無"\)/);
+  // 配對移除交 W187 助理；底層路徑更新與側欄入口仍保留。
+  assert.match(source('Assistant/AssistantFleetTools.swift'), /case "revoke_device"/);
+  assert.match(source('Facade/DeviceRegistry.swift'), /func updateEndpoint/);
+  assert.match(source('Facade/ChatPageModel.swift'), /requestSidebarDeviceSection/);
 });
 
 test('W98 文案：端點三種路白話、順序說明一行、指紋改隧道／簽章識別', () => {

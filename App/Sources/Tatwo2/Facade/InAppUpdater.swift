@@ -388,6 +388,7 @@ final class InAppUpdater: ObservableObject {
     }
 
     func update(to tag: String, repository: String? = nil) {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         guard phase == .ready, let prepared, prepared.tag == tag,
               prepared.repository == (repository ?? GitHubReleaseUpdateChecker.shared.repository) else { return }
         do { try checkSpace() } catch { self.prepared = nil; phase = .failed(error.localizedDescription); return }
@@ -525,6 +526,7 @@ final class InAppUpdater: ObservableObject {
     var logURL: URL { directory.appendingPathComponent("logs/\(runID).log") }
 
     static func reconcileOnLaunch(destination: String = destinationApp) {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         let fm = FileManager.default, dest = URL(fileURLWithPath: destination)
         var backupDirectory: ObjCBool = false
         guard fm.fileExists(atPath: destination + ".old", isDirectory: &backupDirectory), backupDirectory.boolValue else { return }
@@ -671,6 +673,7 @@ final class InAppUpdater: ObservableObject {
 
     /// 由更新卡呼叫。tag 必須是檢查器剛回報的 Release tag；不接受任意輸入。
     private func beginPrefetch(to tag: String, repository: String? = nil) {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         let checker = GitHubReleaseUpdateChecker.shared
         let repository = repository ?? checker.repository
         guard phase == .idle || { if case .failed = phase { return true }; return false }() else { return }
@@ -1354,6 +1357,7 @@ final class InAppUpdater: ObservableObject {
 
     /// Read immutable per-run receipts; acknowledge by run ID, never delete a result.
     func consumeResultOnLaunch() {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         Task { await PeerUpdateSource.publishInstalled(directory) }
         let active = helperIsActive()
         defer { if active { Task { try? await Task.sleep(for: .seconds(2)); consumeResultOnLaunch() } } }

@@ -16,7 +16,7 @@ final class ChatGPTTapTurnRunner {
 
     func start(threadID: UUID, project: TapProjectContext?, title: String, text: String,
                routeID: String, effort: String?, attachmentPaths: [String], history: [ChatMessage],
-               notice: @escaping (String) -> Void, event: @escaping (TapStreamEvent) -> Void) {
+               group: Bool = false, groupOpening: (() -> String)? = nil, resolved: @escaping (String, String?) -> Void = { _, _ in }, notice: @escaping (String) -> Void, event: @escaping (TapStreamEvent) -> Void) {
         task = Task { @MainActor [self] in
             let chatGPT = tap as? ChatGPTTap
             let lease = chatGPT?.acquireLease(backgroundWork: true)
@@ -28,22 +28,31 @@ final class ChatGPTTapTurnRunner {
                 }
                 guard tap.connection == .ready else { throw TapError.notReady }
                 try await ChatGPTTapModelCatalog.refreshForSend(tap: tap)
-                guard ChatGPTTapModelCatalog.isFresh,
-                      ChatGPTTapModelCatalog.snapshot.contains(where: { ChatGPTTapModelCatalog.routeID($0.id) == routeID }) else {
-                    throw TapError.remote("ChatGPT 模型清單尚未準備好；請登入 ChatGPT Space 後再送")
-                }
+                let fast = group ? GroupFastModel.choose(ChatGPTTapModelCatalog.snapshot) : nil
+                if group && fast == nil { throw TapError.remote("這個 TAP 沒有可用的快速模型，這句未送出") }
+                var route = (fast?.model ?? ChatGPTTapModelCatalog.effectiveModel(routeID)).map { ChatGPTTapModelCatalog.routeID($0.id) } ?? routeID
                 let destination = try await mapper.destination(project: project, threadID: threadID)
                 if let reason = destination.notice { notice(ChatGPTLocalText.clean(reason, limit: 160)) }
                 let attachments = try await Self.loadAttachments(attachmentPaths)
                 try Task.checkCancellation()
                 guard !stopping else { throw CancellationError() }
-                let model = ChatGPTTapModelCatalog.modelID(routeID)
+                if !group, let current = ChatGPTTapModelCatalog.effectiveModel(routeID) { route = ChatGPTTapModelCatalog.routeID(current.id) }
+                guard ChatGPTTapModelCatalog.isFresh,
+                      ChatGPTTapModelCatalog.snapshot.contains(where: { ChatGPTTapModelCatalog.routeID($0.id) == route }) else {
+                    throw TapError.remote("ChatGPT 模型清單尚未準備好；請登入 ChatGPT Space 後再送")
+                }
+                let model = ChatGPTTapModelCatalog.modelID(route)
                 guard !model.isEmpty, model != "unavailable", destination.map.chatgpt_project_id.hasPrefix("g-p-") else {
                     throw TapError.remote("ChatGPT 模型或專案尚未就緒")
                 }
-                let outgoing = Self.outgoing(text: text, project: project, first: destination.conversationID == nil, history: history)
-                if let summary = Self.collaborationNotice(history) { notice(summary) }
-                let stream = tap.send(text: outgoing, conversationID: destination.conversationID, model: model, effort: effort,
+                let outgoing = group ? (destination.conversationID == nil ? groupOpening?() ?? text : text) : Self.outgoing(text: text, project: project, first: destination.conversationID == nil, history: history)
+                if !group {
+                    if let summary = Self.collaborationNotice(history) { notice(summary) }
+                }
+                let selected = ChatGPTTapModelCatalog.effectiveModel(route)
+                let actualEffort = group ? fast?.effort : selected.flatMap { model in model.efforts.first { $0.id == effort }?.id ?? ChatGPTTapModelCatalog.defaultEffort(for: model) }
+                resolved(route, actualEffort)
+                let stream = tap.send(text: outgoing, conversationID: destination.conversationID, model: model, effort: actualEffort,
                                       attachments: attachments, tool: nil, gizmoID: destination.map.chatgpt_project_id,
                                       temporary: false, parentID: nil)
                 for await item in stream {

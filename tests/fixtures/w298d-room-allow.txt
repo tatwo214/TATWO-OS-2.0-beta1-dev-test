@@ -1,0 +1,11 @@
+App/Sources/Tatwo2/Assistant/AssistantPrimaryRouting.swift
+App/Sources/Tatwo2/Chat/ChatPageModels.swift
+App/Sources/Tatwo2/Chat/EngineModelCatalog.swift
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift
+App/Sources/Tatwo2/Facade/LocalModelSource.swift
+App/Sources/Tatwo2/Facade/W298cAcceptance.swift
+App/Sources/Tatwo2/New/EngineLoginCard.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w298c-local-models.test.mjs
+tests/fixtures/w298c-native.mjs
+tests/fixtures/w298d-*

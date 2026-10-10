@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
+import { fleetDispatchCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 import { testScratch } from './helpers/test-scratch.mjs';
 
 const app = resolve('App/Sources/Tatwo2');
@@ -22,10 +23,14 @@ test('W91c: 三處 ssh／rsync 只吃主機金鑰 pin，沒有放寬旋鈕', () 
     assert.ok(text.includes('SSHHostPin'), `${name} 沒接上共用 pin helper`);
   }
   // 真的會執行的三條路徑都先要到 pin，缺指紋就 throw（不是回退成不 pin）。
-  assert.match(source('Facade/DispatchEngine.swift'), /let pin = try SSHHostPin\.make\(deviceID: ref\.id, name: ref\.name\)/);
-  assert.match(source('Facade/RemoteEngineSync.swift'), /let pin = try SSHHostPin\.make\(deviceID: ref\.id, name: ref\.name\)/);
-  assert.match(source('Facade/PeerUpdateSource.swift'), /guard let pin = try\? SSHHostPin\.make\(device\)/);
-  assert.match(source('Facade/PeerUpdateSource.swift'), /let pin = try SSHHostPin\.make\(offer\.device\)/);
+  assert.match(source('Facade/DispatchEngine.swift'), /try SSHHostPin\.make\(deviceID: ref\.id, name: ref\.name, environment: \$0\)/);
+  assert.match(source('Facade/RemoteEngineSync.swift'), /try SSHHostPin\.make\(deviceID: ref\.id, name: ref\.name, environment: \$0\)/);
+  assert.match(source('Facade/PeerUpdateSource.swift'), /try SSHHostPin\.make\(device, environment: \$0\)/);
+  assert.match(source('Facade/PeerUpdateSource.swift'), /try SSHHostPin\.make\(offer\.device, environment: \$0\)/);
+  for (const name of pinned.slice(0, 3)) {
+    assert.match(source(name), /DeviceFleetSSHPins\.withEnvironment/);
+  }
+  assert.match(source('Facade/PeerUpdateSource.swift'), /guard let pin = try\? DeviceFleetSSHPins\.withEnvironment/);
   // rsync 的 -e 也要帶同一份 pin（不能只有 ssh 那條被收緊）。
   assert.match(source('Facade/RemoteEngineSync.swift'), /"-e", \(\["ssh"\] \+ SSHHostPin\.options\(pin\)/);
   assert.match(source('Facade/PeerUpdateSource.swift'), /"-e", \(\["\/usr\/bin\/ssh"\] \+ options\(offer\.device, pin: pin\)\)/);
@@ -41,14 +46,28 @@ test('W91c: 三處 ssh／rsync 只吃主機金鑰 pin，沒有放寬旋鈕', () 
   assert.equal(source('Facade/RemoteHostLink.swift').split('dispatchPrecondition(condition: .notOnQueue(.main))').length - 1, 3);
 });
 
-test('W91c: 信任檔相對 beta1/integration 零 diff', () => {
+test('W91c: immutable pin helpers unchanged; W187 authorized trust extension keeps strict checks', () => {
   const base = spawnSync('git', ['merge-base', 'beta1/integration', 'HEAD'], { encoding: 'utf8' });
   assert.equal(base.status, 0, base.stderr);
-  const trusted = ['DevicePairingClient', 'DevicePairingCode', 'DevicePairingHost', 'DevicePairingStubs',
-    'DeviceDispatch', 'DeviceRegistry', 'RemoteHostLink'].map(n => `App/Sources/Tatwo2/Facade/${n}.swift`);
+  // W187 明確授權擴充配對與名單；不再把所有未來信任施工都當成 W91c 回歸。
+  const trusted = ['DevicePairingStubs', 'SSHHostPin']
+    .map(n => `App/Sources/Tatwo2/Facade/${n}.swift`);
   const diff = spawnSync('git', ['diff', '--name-only', base.stdout.trim(), '--', ...trusted], { encoding: 'utf8' });
   assert.equal(diff.status, 0, diff.stderr);
   assert.equal(diff.stdout.trim(), '');
+  // W187a3 explicitly modifies persistent transport for revocation, not its pin policy.
+  const remote = source('Facade/RemoteHostLink.swift');
+  for (const option of ['StrictHostKeyChecking=yes', 'UpdateHostKeys=no', 'ControlPath=none',
+    'KnownHostsCommand=none', 'VerifyHostKeyDNS=no', 'HostKeyAlias=tatwo-paired-host']) assert.ok(remote.includes(option), option);
+  assert.ok(!remote.includes(relaxed) && !remote.includes(disabled));
+  assert.match(remote, /try prepareHostPin\(device\)/);
+  assert.match(remote, /paired_host_key_not_found/);
+
+  const code = source('Facade/DevicePairingCode.swift');
+  for (const guard of ['record.isConsumed', 'record.isExpired(at: now)', 'record.authorityPrimary == want',
+    'record.authorityEpoch != expectedEpoch', 'record.createdBy == issuer']) assert.ok(code.includes(guard), guard);
+  assert.match(source('Facade/DevicePairingHost.swift'), /expectedCreator: fleetOffer\?\.member\.id/);
+  assert.match(source('Facade/DeviceFleetRoster.swift','Facade/DeviceFleetGraph.swift'), /roster\.kind\(of: trust\.localID\) == \.owner/);
 });
 
 test('W91c 編譯：缺指紋的紀錄被拒，有指紋的產生 StrictHostKeyChecking=yes ＋ pin 檔', { timeout: 300_000 }, () => {
@@ -57,7 +76,6 @@ test('W91c 編譯：缺指紋的紀錄被拒，有指紋的產生 StrictHostKeyC
 import Darwin
 import Foundation
 
-enum DeviceRole: String, Codable, Sendable { case primary, secondary }
 enum DeviceStatusReader {
     static var rows: [DeviceRecord] = []
     static func registry(environment: [String: String]) -> [DeviceRecord] { rows }
@@ -139,9 +157,11 @@ func rejects(_ label: String, _ action: () throws -> Void) throws {
     }
 }
 `);
+  writeFileSync(join(root, 'FleetStubs.swift'), fleetDispatchCompileStubs());
   const binary = join(root, 'checks');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
-    join(app, 'Facade/DeviceRegistry.swift'), join(app, 'Facade/SSHHostPin.swift'), join(root, 'Driver.swift'),
+    join(app, 'Facade/DeviceRegistry.swift'),
+    ...['TatwoEntry', 'DeviceIdentity', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate'].map(name => join(app, 'Facade', name + '.swift')), join(app, 'Facade/SSHHostPin.swift'), join(root, 'Driver.swift'), join(root, 'FleetStubs.swift'),
     '-o', binary], { encoding: 'utf8', timeout: 240_000 });
   assert.ok(existsSync(binary));
   const output = execFileSync(binary, [root], { encoding: 'utf8', timeout: 60_000 });

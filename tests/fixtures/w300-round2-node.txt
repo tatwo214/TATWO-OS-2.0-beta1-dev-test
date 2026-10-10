@@ -1,0 +1,21 @@
+Formal 027 snapshot: 31 Node files; CEF environment from p027.sh pass B.
+ℹ tests 316
+ℹ pass 303
+ℹ fail 13
+ℹ cancelled 0
+ℹ skipped 0
+xsmooth: tests=6 pass=6 fail=0; all native child SUMMARY failures=0.
+Failure labels equal baseline 8e948a5b W177: true; new labels=0.
+FAIL (baseline): pod script: a handed-off answer is polled from the conversation until it finishes
+FAIL (baseline): pod script: a new chat switches the page to Chat
+FAIL (baseline): pod script: a placeholder on the page
+FAIL (baseline): pod script: list, get and models go through the page's own headers and return only what the App needs
+FAIL (baseline): pod script: model variants merge into one effort slider, Work-only models are hidden, and the page choice is reported
+FAIL (baseline): pod script: picker v2 turns versions × intelligence presets into the web's menu and maps the page choice back
+FAIL (baseline): pod script: regenerating with another preset swaps the model on the page's own request
+FAIL (baseline): pod script: retrying with a model that has no reasoning effort drops the page's effort
+FAIL (baseline): pod script: send types into the page, swaps the model and streams v1 deltas
+FAIL (baseline): pod script: the current preset comes from the server's last-used model config, the way the web reads it
+FAIL (baseline): pod script: the old /backend-api/conversation send path is intercepted too, and project sends carry conversation_mode
+FAIL (baseline): pod script: the stop button vanishing while the send stream is still open and silent does not end the turn
+FAIL (baseline): review fixes: a send that stays in Work is not sent; a Request-object send is still rewritten

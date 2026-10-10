@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w322-installed-managelink.test.mjs
+tests/w323-installed-codexmanage.test.mjs
+tests/fixtures/w323-installed-codexmanage.mjs
+tests/fixtures/w323-room-allow.txt

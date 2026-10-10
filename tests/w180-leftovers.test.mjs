@@ -316,7 +316,7 @@ test('D1 inventory: system dialogs still on settings cards are exactly the liste
   const expected = {
     'New/EngineLoginCard.swift': ['.alert("確定要用掉一張重置券？"'],
     'New/GitHubAccountsCard.swift': ['.alert("移除帳號 \\(pendingRemoval ?? "")？"'],
-    'New/DevicesCard.swift': ['.confirmationDialog("改成加入你已經有的那台？"'],
+    'New/DevicesCard.swift': [], // W187 moves role changes into the DM's physical confirmation card.
     'New/IPadUseSettingsView.swift': ['.confirmationDialog("連接並授權這台 iPad？"', '.confirmationDialog("授權目前討論串？"', '.confirmationDialog("建立 TATWO iPad use？"'],
     'Browser/BrowserManagementView.swift': ['.confirmationDialog(', '.confirmationDialog('],
     'New/ComputerUseSettingsView.swift': [], 'New/UpdateAvailableCard.swift': [], 'New/TatwoIslandSettingsView.swift': [],
@@ -331,6 +331,10 @@ test('D1 inventory: system dialogs still on settings cards are exactly the liste
     assert.equal(found.length, dialogs.length, `${file}: ${found.join(' | ')}`);
     dialogs.forEach((start, index) => assert.ok(found[index].startsWith(start), `${file}: ${found[index]}`));
   }
+  const flow = read('New/DeviceFlowCards.swift');
+  assert.match(flow, /action\("加入", primary: true, enabled: session\.code\.count == 6\) \{ await session\.joinFromCard\(\$0\) \}/);
+  assert.match(flow, /OSChipButton\(title: "取消"\) \{ session\.close\(\) \}\.disabled\(session\.busy\)/);
+  assert.match(read('DM/DeviceFlowSession.swift'), /func joinFromCard\(_ authority: DeviceFlowUserAction\) async \{\s*guard authority\.consume\(for: self\) else \{ return \}/);
 });
 
 // MARK: B3

@@ -15,6 +15,7 @@ test('W80b production Swift: secondary cannot access provider credentials; no ke
     fs.writeFileSync(path.join(root, 'Resources.swift'), `
 import Foundation
 enum NativeStagingIsolation { static func isEnabled(_ e: [String: String]) -> Bool { true } }
+enum DeviceDispatch { static let optionalFiles = ["agents.md", "user.md", "todo.md", "issue.md"] }
 struct EnginePaths {
     init(environment: [String: String] = [:]) {}
     var runtimeBinDirectory: URL { URL(fileURLWithPath: "/fixture-missing") }

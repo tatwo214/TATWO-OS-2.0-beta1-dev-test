@@ -211,7 +211,6 @@ struct TatwoPluginRegistryStore {
         guard PluginsSource.mcpEngine(from: id) != nil else { throw PluginsSource.RemovalError.unsupported }
         return try PluginsSource.removeRegistration(id: id)
     }
-    func syncClaudeMCPConfig() throws -> TatwoClaudeMCPSyncReceiptV1 { .init() }
 }
 enum TatwoIdentityCatalog { static let scenarioProfiles = ModesFixture.scenarioProfiles }
 enum TeamRoutingCatalog {
@@ -476,7 +475,6 @@ public struct TatwoNativeCLISessionBook {
     struct Session: Identifiable { var id = UUID(); var engine = Engine.codex; var title = "CLI"; var workdir: String?; var createdAt = Date(); var updatedAt = Date(); var isRunning = false }
     var sessions: [Session] = []; var activeSessionID: UUID?; var activeSession: Session? { sessions.first { $0.id == activeSessionID } }
 }
-struct TatwoClaudeMCPSyncReceiptV1: Sendable { let backupPath: String? = nil; let serverNames: [String] = []; let wrotePath = "fixture" }
 
 // TatwoWorkOSContractV1 取 chat 房間版（ChatPageModels 依賴其 loopGovernorDecision 形狀）
 // TatwoWorkOSContractV1：已由照搬檔提供，stub 移除

@@ -250,11 +250,11 @@ finish()
   assert.equal((source.match(/matching: Self\.chordEvents/g) ?? []).length, 2, 'local and global watch the same pointer events');
 });
 
-test('DM-06: closing docked, floating or tent DM protects the next main Escape and held repeats', () => {
+test('DM-06: closing docked, floating or tent DM keeps main visible and next Escape available', () => {
   const escape = block(read('DM/GlobalDMPanelController.swift'), 'static func routeEscape');
-  const guardBody = block(read('New/CoderProjectSpaceSwitcher.swift'), 'enum CoderSheetEscapeGuard');
+  const mainEscape = block(read('Shell/AppShell.swift'), 'override func cancelOperation');
   swiftProbe('DM-06', cocoa + `
-class TatwoWorkOSWindow: KeyWindow {}
+class TatwoWorkOSWindow: KeyWindow { override func cancelOperation(_ sender: Any?) { ${mainEscape} } }
 enum GlobalDMForm { case fixture, tent }
 class GlobalDMStore {
  var isOpen = true, isFloatingOpen = true, isBrowsing = false, isBrowsingBeside = false
@@ -264,7 +264,6 @@ class GlobalDMStore {
 class GlobalDMDuo { static let shared = GlobalDMDuo(); var existing: GlobalDMStore? }
 enum DMBrowserPanelEscape { static func closePanel(in window: NSWindow) -> Bool { false } }
 enum GlobalDMNativePageMask { static func isInsideNativePage(_ view: NSView) -> Bool { false } }
-@MainActor enum CoderSheetEscapeGuard { ${guardBody} }
 @MainActor class Router {
  static func isComposing(in window: NSWindow) -> Bool { (window.firstResponder as? NSTextInputClient)?.hasMarkedText() == true }
  static func routeEscape(_ event: NSEvent, window: NSWindow, floating: NSWindow?, store: GlobalDMStore, form: GlobalDMForm) -> NSEvent? { ${escape} }
@@ -273,23 +272,18 @@ MainActor.assumeIsolated {
  let main = TatwoWorkOSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
  let dm = KeyWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
  for style in 0..<3 {
-  CoderSheetEscapeGuard.disarm()
   let store = GlobalDMStore()
   let result = Router.routeEscape(key(dm), window: dm, floating: style == 1 ? dm : nil, store: store, form: style == 2 ? .tent : .fixture)
   check(result == nil && (style == 1 ? !store.isFloatingOpen : !store.isOpen), "DM style \\(style) closes")
-  check(CoderSheetEscapeGuard.isArmed, "closing DM arms protection")
-  check(!CoderSheetEscapeGuard.swallows(key(dm, time: 10.1)), "protection never steals another window's Escape")
-  let closingRelease = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: 10.8,
-    windowNumber: main.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 53)!
-  _ = CoderSheetEscapeGuard.swallows(closingRelease)
-  check(CoderSheetEscapeGuard.swallows(key(main, time: 11)), "next main Escape after the short timeout cannot close it")
-  check(CoderSheetEscapeGuard.swallows(key(main, time: 12, repeatKey: true)), "held Escape never closes main")
-  let release = NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: [], timestamp: 12.1,
-    windowNumber: main.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 53)!
-  _ = CoderSheetEscapeGuard.swallows(release)
-  check(!CoderSheetEscapeGuard.swallows(key(main, time: 13)), "a later fresh Escape returns to normal main-window routing")
+  main.makeKeyAndOrderFront(nil)
+  main.cancelOperation(nil)
+  check(main.isVisible, "fresh Escape never closes main")
+  let card = GlobalDMStore(); card.isModeCardOpen = true
+  check(Router.routeEscape(key(main, time: 10.1), window: main, floating: nil, store: card, form: .fixture) == nil && !card.isModeCardOpen,
+        "immediate Escape after DM closes the next card")
+
  }
- CoderSheetEscapeGuard.disarm(); finish()
+ finish()
 }
 `);
 });
@@ -351,29 +345,11 @@ board.releaseGlobally(); finish()
 `);
 });
 
-test('DM-06 layers: main input and popup Escape run before the window-close protection', () => {
-  const body = block(read('New/CoderProjectSpaceSwitcher.swift'), 'enum CoderSheetEscapeGuard');
-  const closure = block(body, 'monitor = NSEvent.addLocalMonitorForEvents');
-  swiftProbe('DM-06-layers', cocoa + `
-class TatwoWorkOSWindow: KeyWindow {}
-@MainActor enum CoderSheetEscapeGuard {
- ${body}
- static func monitorRoute(_ event: NSEvent) -> NSEvent? { let handler: (NSEvent) -> NSEvent? = { ${closure} }; return handler(event) }
-}
-MainActor.assumeIsolated {
- let main = TatwoWorkOSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
- let dm = KeyWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
- let text = NSTextView(frame: .zero); main.contentView = text; main.makeFirstResponder(text)
- CoderSheetEscapeGuard.armForDM(after: key(dm))
- text.setMarkedText("fixture", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
- check(CoderSheetEscapeGuard.monitorRoute(key(main, time: 10.1)) != nil && text.hasMarkedText(), "composing Escape reaches the input method")
- CoderSheetEscapeGuard.armForDM(after: key(dm)); text.unmarkText()
- check(CoderSheetEscapeGuard.monitorRoute(key(main, time: 10.1)) != nil, "input/popup first gets its own Escape")
- ${body.includes('func preventsDMWindowClose') ? 'check(CoderSheetEscapeGuard.preventsDMWindowClose(key(main, time: 11)), "unhandled Escape is stopped at the window close boundary")' : ''}
- CoderSheetEscapeGuard.disarm(); finish()
-}
-`);
-  assert.match(block(read('Shell/AppShell.swift'), 'override func cancelOperation'), /preventsDMWindowClose\(NSApp\.currentEvent\)/);
+test('DM-06 layers: main window has an empty cancelOperation and no sheet Escape monitor', () => {
+  const mainEscape = block(read('Shell/AppShell.swift'), 'override func cancelOperation');
+  assert.equal(mainEscape.trim(), '');
+  assert.doesNotMatch(read('New/CoderProjectSpaceSwitcher.swift'), /CoderSheetEscapeGuard|addLocalMonitorForEvents/);
+  assert.doesNotMatch(read('DM/GlobalDMPanelController.swift'), /CoderSheetEscapeGuard/);
 });
 
 test('DM-08: key capture cancels the chord in either monitor order and keeps errors visible', () => {

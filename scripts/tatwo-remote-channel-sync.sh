@@ -47,6 +47,8 @@
 #
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 SCRIPT_NAME="$(basename "$0")"
 MODE=""
 LOCAL_CHANNEL=""
@@ -144,7 +146,9 @@ run_rsync() {
 
   local -a cmd=(rsync "${flags[@]}")
   if [[ -n "$REMOTE_HOST" ]]; then
-    cmd+=(-e "ssh -o ConnectTimeout=${SSH_CONNECT_TIMEOUT} -o BatchMode=yes -o StrictHostKeyChecking=accept-new")
+    local transport
+    transport="$(tatwo_ssh_transport "$REMOTE_HOST")" || return 1
+    cmd+=(-e "$transport -o ConnectTimeout=${SSH_CONNECT_TIMEOUT}")
   fi
   cmd+=("${extras[@]+"${extras[@]}"}" "$src" "$dst")
 
@@ -184,7 +188,7 @@ sync_subdir_push() {
   if [[ -z "$REMOTE_HOST" ]]; then
     mkdir -p "${remote_root%/}/${rel}"
   else
-    ssh -o ConnectTimeout="${SSH_CONNECT_TIMEOUT}" -o BatchMode=yes "$REMOTE_HOST" \
+    tatwo_pinned_run "$REMOTE_HOST" /usr/bin/ssh -o ConnectTimeout="${SSH_CONNECT_TIMEOUT}" -o BatchMode=yes "$REMOTE_HOST" \
       "mkdir -p $(printf '%q' "${remote_root%/}/${rel}")" </dev/null
   fi
   run_rsync "$(dir_slash "$src")" "$(remote_dest "${remote_root%/}/${rel}/")"
@@ -199,7 +203,7 @@ sync_subdir_pull() {
   if [[ -z "$REMOTE_HOST" ]]; then
     [[ -d "${remote_root%/}/${rel}" ]] || return 0
   else
-    if ! ssh -o ConnectTimeout="${SSH_CONNECT_TIMEOUT}" -o BatchMode=yes "$REMOTE_HOST" \
+    if ! tatwo_pinned_run "$REMOTE_HOST" /usr/bin/ssh -o ConnectTimeout="${SSH_CONNECT_TIMEOUT}" -o BatchMode=yes "$REMOTE_HOST" \
       "test -d $(printf '%q' "${remote_root%/}/${rel}")" </dev/null; then
       return 0
     fi

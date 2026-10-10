@@ -1,0 +1,17 @@
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+App/Sources/Tatwo2/Pages/PluginConnectionCard.swift
+Engines/codex-sidecar/sidecar.mjs
+Engines/claude-sidecar/sidecar.mjs
+App/Sources/Tatwo2/Facade/W242MCPAcceptance.swift
+# W245 補充：W240 僅更新 B2 env 同意規則；Claude 欄位過濾預期保留
+App/Sources/Tatwo2/Facade/W240MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W235MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W245MCPAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w245-mcp.test.mjs
+tests/w242-mcp.test.mjs
+tests/w240-mcp.test.mjs
+tests/w235-mcp.test.mjs
+tests/fixtures/w245-room-allow.txt

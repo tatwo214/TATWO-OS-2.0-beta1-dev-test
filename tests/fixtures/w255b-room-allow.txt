@@ -1,0 +1,25 @@
+# W255b F1 comparison evidence, F3 Keychain refusal shims and related fixtures.
+App/Sources/Tatwo2/SelfTest.swift
+App/Sources/Tatwo2/Facade/CloudflareAccounts.swift
+Packages/TatwoUltraworkCore/Tests/TatwoUltraworkCoreTests/TatwoFleetSchedulerTests.swift
+tests/browser-ai-vault.test.mjs
+tests/agent-accounts.test.mjs
+tests/browser-password-vault.test.mjs
+tests/browser-password-fill.test.mjs
+tests/browser-import.test.mjs
+tests/w106-claude-quota.test.mjs
+tests/runtime-determinism.test.mjs
+tests/update-channels.test.mjs
+tests/tatwo-staging-reuse-in-place-contract.test.mjs
+tests/w255-hardening.test.mjs
+tests/fixtures/browser-ai-vault-checks.swift
+tests/fixtures/w255-swift-plugin.mjs
+tests/fixtures/w255b-keychain-trap.swift
+tests/helpers/w255b-keychain-fixture.mjs
+tests/w255b-keychain-boundary.test.mjs
+tests/fixtures/w255b-f1-original22.md
+tests/fixtures/w255b-f1-all.md
+tests/fixtures/w255b-keychain-audit.md
+tests/fixtures/w255b-boundary.sb
+tests/fixtures/w255b-room-allow.txt
+tests/fixtures/w255b-room-report.md

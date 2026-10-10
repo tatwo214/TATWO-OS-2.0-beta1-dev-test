@@ -1,0 +1,21 @@
+/Applications/TATWO OS.app/Contents/Resources/codex-vendor/aarch64-apple-darwin/bin/codex
+env: /Applications/TATWO OS.app/Contents/Resources/codex-vendor/aarch64-apple-darwin/bin/codex: No such file or directory
+/Applications/TATWO OS.app/Contents/Resources/codex-vendor/aarch64-apple-darwin/bin/codex: No such file or directory
+/Applications/TATWO OS.app/Contents/Resources/claude-sidecar/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude
+2.1.280 (Claude Code)
+TeamIdentifier=Q6L2SF6YDW
+/Applications/TATWO OS.app/Contents/Resources/runtime/bin/grok
+grok 0.2.11 (3247ce8f833)
+TeamIdentifier=5Y6N3AJ54S
+~/.local/bin/codex
+WARNING: proceeding, even though we could not create PATH aliases: CODEX_HOME points to "/tmp/w298a-research.yS6ckI/home/codex", but that path does not exist
+codex-cli 0.159.2
+TeamIdentifier=2DC432GLL2
+~/.local/bin/claude
+2.1.288 (Claude Code)
+TeamIdentifier=Q6L2SF6YDW
+You are not authenticated.
+
+Default model: grok-build
+
+Available models:

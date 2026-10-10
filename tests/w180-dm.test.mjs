@@ -161,7 +161,7 @@ test('A4 model chip sits in the composer toolbar, next to send (W181: the DM\'s 
   // 送出／停止是私訊框自己的 36pt 圓鈕（Coder 的 ChatComposerToolbarRow／送出／停止不改）。
   // W184 H4：記憶、模型收進同一個位置的一顆「模式選擇」chip（GlobalDMModeChip：模型那段識別碼 tatwo.dm.model、記憶那段 tatwo-memory-strength），
   // 所以守的順序變成：＋附件…（彈性空白）…模式選擇（記憶、模型）、送出／停止；模型、記憶各自的路徑見下面與 tests/w184-mode.test.mjs。
-  assert.match(composer, /HStack\(spacing: GlobalDMChatLayout\.composerItemSpacing\) \{\s*GlobalDMAttachButton\(store: store\)\s*\.padding\(\.leading, GlobalDMChatLayout\.plusOutset\)\s*Spacer\(minLength: 4\)\s*(?:\/\/[^\n]*\n\s*)*GlobalDMModeChip\(store: store, isOpen: \$modeOpen, anchor: modeAnchor\)\s*if isRunning \{\s*GlobalDMStopButton \{ store\.stop\(\) \}/);
+  assert.match(composer, /HStack\(spacing: GlobalDMChatLayout\.composerItemSpacing\) \{\s*GlobalDMAttachButton\(store: store\)\s*\.padding\(\.leading, GlobalDMChatLayout\.plusOutset\)\s*if target == \.assistant \{ DeviceFlowChip\(session: \.shared\) \}\s*Spacer\(minLength: 4\)\s*(?:\/\/[^\n]*\n\s*)*GlobalDMModeChip\(store: store, isOpen: \$modeOpen, anchor: modeAnchor\)\s*if isRunning \{\s*GlobalDMStopButton \{ store\.stop\(\) \}/);
   // 守：模式選擇的模型那段走的還是同一條路（store 的模型選單內容、store.chooseModel、不能選時 store.canChooseModel／modelChipHelp）。
   for (const piece of ['store.modelOptions(for: target)', 'store?.chooseModel(id, for: target)', 'store.canChooseModel',
     'store.modelChipHelp', 'store.modelHeadline(for: target)', 'identifier: "tatwo.dm.model"']) {

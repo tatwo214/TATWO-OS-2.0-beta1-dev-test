@@ -321,6 +321,8 @@ struct DevicePressureMetricChip: View {
 // MARK: - W77 consistency table (read-only)
 
 struct DeviceConsistencyPanel: View {
+    private let readOnly = true
+    @Environment(\.colorScheme) private var scheme
     static func dispatchMessage(_ receipt: DeviceDispatch.Receipt?) -> String? {
         guard let reason = receipt?.detail else { return nil }
         switch reason {
@@ -346,24 +348,17 @@ struct DeviceConsistencyPanel: View {
     ]
 
     var body: some View {
-        GlassCard {
+        VStack(alignment: .leading) {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
                     Text("一致性面板").font(.headline)
                     Spacer()
                     if model.refreshing { ProgressView().controlSize(.small) }
-                    Button("重新檢查") { Task { await model.refresh() } }
+                    Button("重新檢查") { Task { await model.refresh(records: endpointDevices) } }
                         .disabled(model.refreshing)
                 }
                 TimelineView(.periodic(from: .now, by: 5)) { context in
                     table(now: context.date)
-                }
-                ForEach(model.rows) { row in
-                    if let transfer = row.probe.snapshot?.identity.value?.transfer {
-                        DisclosureGroup("\(row.probe.snapshot?.identity.value?.name ?? row.addressLabel) · \(transfer.summary)") {
-                            PrimaryTransferStatusView(record: transfer)
-                        }
-                    }
                 }
                 ForEach(dispatchReceipts.keys.sorted(), id: \.self) { id in
                     if let receipt = dispatchReceipts[id] {
@@ -402,7 +397,7 @@ struct DeviceConsistencyPanel: View {
                             Text("來源 \(item.sender) · \(item.commit.prefix(12))").font(.caption)
                         }.textSelection(.enabled)
                     }
-                } else {
+                } else if !readOnly {
                     HStack {
                         TextField("提交說明（只送已提交的目前分支，不送 GitHub）", text: $submissionMessage)
                         Button("提交給主設備") {
@@ -421,17 +416,19 @@ struct DeviceConsistencyPanel: View {
                 if !submissionStatus.isEmpty { Text(submissionStatus).font(.caption).textSelection(.enabled) }
             }
         }
+        .padding(16)
+        .background(DeviceFleetStyle.surface(scheme), in: RoundedRectangle(cornerRadius: 12))
         .task {
             while !Task.isCancelled {
-                await model.refresh()
                 let dispatchState = await Task.detached {
-                    (DeviceDispatch.shared.receipts(), DeviceInbox.shared.branches(), DeviceRegistry().list(),
+                    (DeviceDispatch.shared.receipts(), DeviceInbox.shared.branches(), DeviceFleetStore(registry: DeviceRegistry(), environment: ProcessInfo.processInfo.environment).visibleRegistryRecords(),
                      JobQueue.shared.rows())
                 }.value
                 dispatchReceipts = dispatchState.0
                 inbox = dispatchState.1
                 endpointDevices = dispatchState.2
                 jobs = dispatchState.3
+                await model.refresh(records: endpointDevices)
                 try? await Task.sleep(nanoseconds: 10_000_000_000)
             }
         }
@@ -488,7 +485,7 @@ struct DeviceConsistencyPanel: View {
                                         .buttonStyle(.link)
                                         .disabled(!canDiff(column: column.0, local: local, primary: primary, now: now))
                                 }
-                                if cell.light == .yellow {
+                                if !readOnly && cell.light == .yellow {
                                     Button("對齊") {
                                         DeviceDispatch.shared.align(
                                             targetDeviceID: row.local ? nil : row.probe.snapshot?.identity.value?.deviceID,
@@ -504,7 +501,7 @@ struct DeviceConsistencyPanel: View {
                     if !row.local, let device = endpointDevices.first(where: {
                         "\($0.user)@\($0.host):\($0.sshPort)" == row.id
                     }) {
-                        DeviceEndpointsRow(device: device)
+                        if !readOnly { DeviceEndpointsRow(device: device) }
                         // 兩把指紋與來源；缺一把就代表對應的路徑（隧道／RPC）會被擋。
                         Text(device.fingerprintSummary)
                             .font(.footnote)

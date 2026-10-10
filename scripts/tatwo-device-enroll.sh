@@ -40,6 +40,8 @@
 #         --no-app（跳過裝 App）  --no-helper（不裝常駐 helper）  --dry-run（只印不動）
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 ROLE="secondary"
 NAME="$(hostname -s 2>/dev/null || echo device)"
 PRIMARY_HOST="${TATWO_PRIMARY_SSH_HOST:-}"
@@ -1204,7 +1206,7 @@ fi
 #      db-pull 若沿用本機路徑去檢查主設備會誤判「遠端不存在」）。
 if [ "$ROLE" = "secondary" ] && [ -z "$REMOTE_APP_SUPPORT" ] && [ "$DRY" != "1" ]; then
   step "偵測主設備 app-support 路徑"
-  remote_home="$(ssh -o BatchMode=yes -o ConnectTimeout=8 "$PRIMARY_HOST" 'echo $HOME' 2>/dev/null || true)"
+  remote_home="$(tatwo_pinned_run "$PRIMARY_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=8 "$PRIMARY_HOST" 'echo $HOME' 2>/dev/null || true)"
   if [ -n "$remote_home" ]; then
     REMOTE_APP_SUPPORT="$remote_home/Library/Application Support/Tatwo Ultrawork"
     echo "  偵測到：$REMOTE_APP_SUPPORT"

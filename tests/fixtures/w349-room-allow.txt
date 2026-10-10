@@ -1,0 +1,10 @@
+App/Sources/Tatwo2/Facade/HandsSandboxLane.swift
+App/Sources/Tatwo2/Facade/W264SandboxLaneAcceptance.swift
+App/Sources/Tatwo2/Facade/W335SandboxAgentAcceptance.swift
+Engines/sandbox-agent/sandbox-agent.py
+Engines/sandbox-agent/vm/linux.sh
+Engines/sandbox-agent/vm/macos.sh
+tests/w264-sandboxlane.test.mjs
+tests/w335-sandboxagent.test.mjs
+tests/w336-vmdevice.test.mjs
+tests/fixtures/w349-room-allow.txt

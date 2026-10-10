@@ -1,0 +1,419 @@
+✔ native reservation cleanup preserves partial files, replacements and symlinks (454.44ms)
+✔ real Swift download lifecycle, origin-only history and retryable native consent (1091.904041ms)
+✔ stage the real CEF download fixture and raw selftest loader (1445.107ms)
+W281b non-human PDF failure replied synchronously before Cancel, under 1 second
+L1 non-human PDF failure leaves no unfinished human download record, so the tab can sleep
+W281 PDF final published path and failed-publication rejection passed
+W57d PDF failure fixture passed: early failure/destination failure/duplicates/reentrancy/exact item
+W57d UA and dialog fixture passed: agent/hidden/missing/revoked/duplicate/multiple/folder/save
+W57d AppKit coordinator fixture passed: filters/fullscreen/focus/restore/agent/revocation
+✔ W57d four native handler surfaces, reduced Chrome 154 UA and unavailable ABI (1.305625ms)
+✔ W57d file dialogs fail closed for agents and stale replies, native panels are per-window (0.649084ms)
+✔ W57d fullscreen restores owner geometry/focus and handles Escape even outside renderer focus (0.379292ms)
+✔ host shortcuts are claimed synchronously, menu actions do not depend on bindings (0.311292ms)
+✔ W57d Print/PDF fallback remains human, document-bound and signature-checked; DRM is explicit (0.747583ms)
+✔ W57d production UA pure function and file dialog callback fixture (761.466625ms)
+✔ W57d actual AppKit coordinator: filters, fullscreen owner/focus/restore and silent PDF revocation (744.292958ms)
+✔ workspace design projects registry data; W47 transport is confined to its surface (0.924375ms)
+✔ browser visibility is opt-in and the default controller fallback stays three modes (0.140167ms)
+✔ mainPane gates design, fails closed on forced selection and excludes composer (0.183792ms)
+✔ browser rejoins the shared chat sidebar shell and footer with no private shell (0.504125ms)
+✔ v6 sidebar has five ordered sections, white selection and no chat or search pane (0.694333ms)
+✔ W54 compact downloads retain search, grouping, selection, clear and native file actions (0.322959ms)
+✔ Search keeps its centered geometry without fake installed extension icons (0.615ms)
+✔ v6 import is a seven-source, five-choice local sheet with profile and Arc restrictions (0.759167ms)
+✔ swiftc fixture projects isolated registry tabs and import state with network and file writes denied (2151.067084ms)
+✔ swiftc typechecks complete design and real wrapping picker against isolated signatures (8060.827208ms)
+✔ W39 Browser-only shortcut, bookmark drops, blank-area menu and add-space control (0.898458ms)
+✔ space name next to the traffic lights is bold text without a chevron (0.132583ms)
+✔ W56-fix: space visibleTabs honours the shipped Info.plist browser flag, not only the env flag (0.111416ms)
+✔ Claude attachment-only request contains an image, not an empty text block (30.431083ms)
+✔ readOnly mounts only native read tools despite supplied writable MCP and bridge endpoints (41.289416ms)
+✔ readOnly resume keeps the same closed tool/settings surface (38.384875ms)
+✔ readOnly without mcp-config remains strict and bridge-free (39.029625ms)
+✔ default preserves its existing SDK options, MCP wiring and host approval callback (40.172875ms)
+✔ acceptEdits preserves its existing SDK options, MCP wiring and host approval callback (40.667209ms)
+✔ bypassPermissions preserves its existing SDK options, MCP wiring and host approval callback (40.75775ms)
+✔ implicit default without mcp-config preserves normal bridges and denied host reply (40.424959ms)
+✔ unknown permission mode is rejected before SDK query (39.168458ms)
+✔ Claude confirms native receipt, preserves intermediate replies, and coalesces insertions (125.485958ms)
+✔ Claude failure terminates waiting insertions and retains the vendor error (46.131833ms)
+✔ Claude one result may answer the original and every insertion together (48.741292ms)
+✔ Claude attachment insertion and stop close queued work without claiming delivery (132.993ms)
+✔ Claude missing batch identifiers fails visibly instead of losing or replaying insertions (39.850458ms)
+✔ Stop discards inputs still in the sidecar inbox and ignores sends during interrupt (81.24075ms)
+✔ Singular UUID fallback confirms receipt and pending results keep the turn active (49.951792ms)
+✔ preboot stop cancels old activation without RPC before init and preserves explicit later Goal (365.423542ms)
+✔ unknown boot Goal waits for one read then pauses before interrupting autonomous work (170.328166ms)
+✔ explicit second Stop interrupts a turn even while Goal query is hanging (173.866375ms)
+✔ Stop after terminal completion still pauses an active native Goal (170.8735ms)
+✔ Goal activation applies native model medium Fast settings before native goal/set (170.972333ms)
+✔ rejected native settings cannot activate a Goal using silent defaults (163.975375ms)
+✔ Stop during settings cancels old Goal before any activation and preserves explicit later request (172.020916ms)
+✔ read started during a Goal mutation cannot suppress the successful mutation snapshot (176.999834ms)
+✔ malformed Goal mutation replies never acknowledge successful activation (201.636875ms)
+✔ native Goal query is once per boot and cannot overwrite a newer notification (159.303708ms)
+✔ unsupported Goal API is unavailable rather than silently treated as no Goal (155.488083ms)
+✔ Goal command before boot submits once; active acknowledgement does not invent a turn (159.301541ms)
+✔ autonomous turn before Goal notification and late old start reply retains native identity (168.478625ms)
+✔ blocked Goal is not resumed by ordinary chat or turn completion (169.392875ms)
+✔ stop pauses active Goal before interrupt and catches a continuation during pause (181.900125ms)
+✔ Goal pause failure remains visible while its original turn is still interrupted (169.446458ms)
+✔ stop before boot drops prior sends, but accepts an explicit later send (145.007875ms)
+✔ native steering waits for acknowledgement and does not start another turn (175.021333ms)
+✔ steering before native ID waits for start event and is sent exactly once (178.984166ms)
+✔ stop before start cancels pending steering without replay (169.227334ms)
+✔ submitted steering survives stop with ack before terminal (182.326167ms)
+✔ submitted steering survives stop with ack after terminal (201.398125ms)
+✔ rejected steering preserves the active native turn and permits explicit retry (178.884666ms)
+✔ late steering acknowledgement is bound to the old turn, not its successor (181.703291ms)
+✔ stale steering target is rejected and a mismatched reply is reported as unknown (173.900709ms)
+✔ stop during turn/start waits for ID and sends exactly one interrupt (174.087625ms)
+✔ active stop clears queue; late old events cannot terminate the next turn (172.767375ms)
+✔ completion before start response cannot resurrect a turn or block the queue (171.077125ms)
+✔ rejected stopped start releases only its turn; explicit new work survives (157.293916ms)
+✔ interrupt RPC failure is visible and does not silently run queued work (183.9405ms)
+✔ pending stop also works when the ID arrives only in the RPC reply (174.808083ms)
+✔ already completed turn is not interrupted or revived by its late start reply (181.286584ms)
+✔ stop declines pending and late approvals rather than authorizing more work (188.795667ms)
+✔ extra permission requests ask the App unless the thread has full access (186.961084ms)
+✔ full access grants extra permissions without asking (163.944958ms)
+✔ W61 exported tree passes safety scan and the exact personal-data grep (13410.7795ms)
+✔ W61 does not widen or rewrite any pre-existing allowlist entry (0.371375ms)
+✔ macOS account paths and user/name fields reject non-generic names (174.315208ms)
+✔ generic accounts and documentation/loopback addresses and example hosts pass (25.771084ms)
+✔ private IPv4 ranges include boundaries and mapped IPv6, but not adjacent public ranges (351.555791ms)
+✔ named personal domains and SSH aliases are rejected (475.639917ms)
+✔ all four new categories enforce exact file + regex and every value on a line (538.089083ms)
+✔ personal identifiers come only from the private list, also when split into fragments; the list never ships (182.529666ms)
+✔ legacy email, token and key detection remains enforced (82.452ms)
+✔ SSH wrappers fail before any command or state write when host is unset or empty (82.74625ms)
+✔ gateway label discovery uses product default, explicit override, or unique legacy registration (read-only) (89.138125ms)
+✔ public blocklist serialization preserves the original non-personal ad domain (6.035209ms)
+✔ legacy V3 import directory discovery is local, unambiguous and prefers the new default (459.987209ms)
+✔ four layers: OS core and browser core know nothing about ChatGPT (1.452833ms)
+✔ Space gets a ChatGPT tab wired like Browser, with its own sidebar and no Coder composer (0.808416ms)
+✔ native conversation reuses OS components; Dots remains in the web Space (2.279917ms)
+✔ Settings › Plugin lists Skillet, MCP, TAP, Pocket in that order with glass chips only (0.611042ms)
+✔ TAP code never logs or writes conversation content or tokens (2.76525ms)
+✔ pod script: only on chatgpt.com, captures auth once, hello says logged in, never reports tokens (334.979167ms)
+✔ pod script: list, get and models go through the page's own headers and return only what the App needs (54.419708ms)
+✔ pod script: send types into the page, swaps the model and streams v1 deltas (416.944958ms)
+✔ pod script: legacy full-message stream still shows the growing answer (409.795417ms)
+✔ pod script: when the stream cannot be parsed, the answer comes from the page and the id from the URL (1764.118584ms)
+✔ pod script: image replies come back as images (pointer + size) on the answer, tool text stays out (27.416291ms)
+✔ pod script: after a stream_handoff, a follow-up event stream from the page is parsed for the same turn (715.4585ms)
+✔ pod script: pins and projects come back as folders; project conversations are listed (39.174041ms)
+✔ pod script: a new chat switches the page to Chat (not Work) and the chosen effort is applied (774.817041ms)
+✔ pod script: model variants merge into one effort slider, Work-only models are hidden, and the page choice is reported (428.299458ms)
+✔ pod script: regenerate goes through "Switch model" and presses "Try again" in its menu (871.191083ms)
+✔ pod script: rename, archive and delete PATCH the conversation; search uses the server search (52.607958ms)
+✔ pod script: attachments are handed to the page's own file input before sending (426.099667ms)
+✔ pod script: tools, home suggestions and GPTs are read; a tool rides along as system_hints; a GPT chat opens /g/<id> first (579.892458ms)
+✔ pod script: feedback posts thumbs up/down for a message (14.338834ms)
+✔ pod script: picker v2 turns versions × intelligence presets into the web's menu and maps the page choice back (417.394ms)
+✔ pod script: every message of a temporary chat carries history_and_training_disabled; normal chats do not (2115.485125ms)
+✔ pod script W184 G3c: a temporary send with a non-string body is read as text, flagged, confirmed, and only then sent (819.6695ms)
+✔ pod script W184 G3c: a temporary send with a body it cannot read (a plain object) is blocked — never sent, reported as a failure, no conversation (261.798125ms)
+✔ pod script W184 G3c: a temporary send with a body that is not JSON (the rewrite throws) is blocked — never sent, reported as a failure, no conversation (256.91025ms)
+✔ pod script W184 G3c: a temporary send with a JSON array (the flag cannot stick) is blocked — never sent, reported as a failure, no conversation (255.984208ms)
+✔ pod script W184 G3c: a temporary turn the page completes without our send path is a failure, never a conversation (2968.365917ms)
+✔ pod script: probe never presses Pin/Delete; pin toggles press the page's own Pin/Unpin button (2671.359625ms)
+✔ pod script: + menu ranks tools like the web and marks connected apps (26.550625ms)
+✔ pod tools: a subsequent fetch sees newly connected apps without reloading the Pod (26.045875ms)
+✔ pod tools: malformed or unavailable catalogs fail instead of replacing the last list with empty (49.996209ms)
+✔ pod script: images load by file id from any pointer form, with or without a conversation (36.858916ms)
+✔ pod script: library lists files like the web (suggested / images / all) and fetches thumbnails (61.340791ms)
+✔ pod script: answers carry their web sources; image refs and non-http links are left out (14.227125ms)
+✔ pod script: new-chat headline comes from the page when ChatGPT has no greeting (12.887292ms)
+✔ pod script: regenerating with another preset swaps the model on the page's own request (871.60325ms)
+✔ ChatGPT Space mirrors the web: layered + menu, Library, sources, switch-model retry, temporary chats stay out of the list (4.956375ms)
+✔ pod script: versions (‹ 1/2 ›) come with each turn; a branch shows that version down to its newest reply (36.429708ms)
+✔ pod script: sending after switching versions (or editing) continues from the chosen node (1260.157958ms)
+✔ pod script: a new chat in a project is sent from the project page (555.7415ms)
+✔ ChatGPT Space: edit/copy own messages, version switch, new chat inside a project (2.439417ms)
+✔ pod script: + menu ranks Deep research third like the web and keeps OpenAI's own apps off the first level (13.825458ms)
+✔ ChatGPT Space: temporary chats flag every message; library zoom starts from the thumbnail; markdown files render as markdown (1.354209ms)
+✔ pod script: citation markers become the markdown links ChatGPT provides; widget markers are dropped (13.114583ms)
+✔ pod script: retrying with a model that has no reasoning effort drops the page's effort (877.912917ms)
+✔ pod script: share presses the page's own Share chat and captures the link without touching the clipboard (705.80025ms)
+✔ pod script: scheduled tasks, plugins, sites, memories, instructions and account map only what the App shows (180.993ms)
+✔ pod script: voice mode presses the page's Start Voice and ends with End voice mode (729.603708ms)
+✔ pod script: the web sheet can open settings and ChatGPT pages (26.53475ms)
+✔ ChatGPT Space 09-25: no title top-left, Chinese composer, web-exact effort card, temporary chat top-right, photos drop and paste, ChatGPT typography (3.296417ms)
+✔ TAP requests never pass an item id as "id" (the request id would overwrite it) (1.024416ms)
+✔ pod script: account falls back to the sign-in name when the ChatGPT profile is unavailable (13.815542ms)
+✔ pod script: the current preset comes from the server's last-used model config, the way the web reads it (68.752458ms)
+✔ pod script: stop sharing deletes a conversation share like the web's Shared links trash and checks the public page (38.884625ms)
+✔ pod script: plugin detail maps the web's plugin page and splits connector tools into read and write like the web (24.222083ms)
+✔ ChatGPT Space 09-25: clickable plugins, native detail page, zh-Hant via the global translation index, ChatGPT attachment tiles (4.542208ms)
+✔ ChatGPT Space 09-25 #125: top-right controls live in the traffic-light row, no extra header band in the window (2.161042ms)
+✔ pod script: a sources footnote whose matched text is a space does not delete every space in the answer (13.516375ms)
+✔ ChatGPT Space 09-25 #126: image zoom reuses Coder's image preview (tap blank or Esc closes, fit ratio, download, gallery) (2.795791ms)
+✔ ChatGPT Space 09-25: translation keeps brand and tech terms, uses Taiwan wording, tool names stay English, detail opens at top (0.764041ms)
+✔ ChatGPT Space 09-25 #127: conversation images follow the web width rule and a 400pt height cap (0.723916ms)
+✔ ChatGPT Space 09-25: faster loading — parallel refresh, in-memory conversation cache, hover prefetch, launch prewarm (3.413625ms)
+✔ pod script: the old /backend-api/conversation send path is intercepted too, and project sends carry conversation_mode (980.062958ms)
+✔ pod script: voice clears leftover text in the page composer before looking for the speech button (268.014167ms)
+✔ Space notices: shared SpaceNotice via Island, per-Space switch, ChatGPT posts when you are not on that conversation (1.552208ms)
+✔ pod privacy: backend-api reads are no-store, and the Pod HTTP cache is purged before the first start each launch (16.077917ms)
+✔ pod script: a handed-off answer is polled from the conversation until it finishes (3511.582916ms)
+✔ ChatGPT Space: you can browse other conversations while a long answer runs; an old send cannot pull the view back (1.732083ms)
+✔ pod script: an empty send stream with a known conversation falls back to polling the conversation (1613.475917ms)
+✔ pod script: a placeholder on the page ("Pro thinking") does not end an empty-stream turn; the server answer does (3520.577584ms)
+✔ pod script: the stop button vanishing while the send stream is still open and silent does not end the turn (4877.236375ms)
+✔ pod script: while the page already shows this turn's answer bubble, polling does not give up after two minutes (1.150667ms)
+✔ voice: stopping while connecting voids the late start and ends the page session; the Pod auto-ends voice that starts after a stop (2.768417ms)
+✔ review fixes: Pod commands only run on chatgpt.com; same-origin downloads are no-store; diag routes are categories only (12.219791ms)
+✔ review fixes: a send that stays in Work is not sent; a Request-object send is still rewritten (1014.76975ms)
+✔ review fixes: text before a handoff is not completion; polling ignores the previous turn's finished answer (6120.739875ms)
+✔ review fixes: turn results follow the turn, not the current view; photo promises always clean up; cache purge refuses symlinks (5.775125ms)
+✔ send: replaces a restored draft inside the composer; fails loudly when it cannot type or has no composer (6013.417583ms)
+✔ project send: when the page stays on the project page, the new conversation is found in the project list and polled (3888.516333ms)
+✔ Tap: a send the page never answers fails after a silence watchdog instead of spinning forever (1.416917ms)
+✔ W178 pairing: code never crosses the network, MITM key swaps and injected ssh options are refused (8710.757375ms)
+✔ W178 os.sock: other local programs only reach status and proposal methods; a silent peer cannot block the bridge (2333.205792ms)
+✔ W180 E1b memory sync RPCs: signed-device group only (0.628ms)
+✔ W182 R5 assistant_append_offline: paired devices only (0.247917ms)
+✔ W183 R1 external AI: exact three-method allowlist, never in the existing lists (0.583958ms)
+✔ W183 R3 hands setup tools and secondary RPC: trust lists (0.596833ms)
+✔ TAP route is a separate model brand after OpenAI, with unavailable placeholder and native TAP efforts (0.549042ms)
+✔ live send dispatches prefixed TAP models before login gates or sidecar creation (0.346959ms)
+✔ project map has only metadata, atomic private writes and symlink refusal (0.067583ms)
+✔ no general-chat fallback, and old project conversation cannot be used in inbox (0.134583ms)
+✔ hidden preamble and intervening-engine summary are in-memory only and bounded (0.146709ms)
+✔ Pod createProject uses public first-party projects API then confirms display.description via upsert (0.925667ms)
+✔ Pod createProject rejects server error, missing project ID or unconfirmed description without a send (1.92975ms)
+✔ Pod project list follows cursors and exposes descriptions needed for stable ID matching (0.471083ms)
+✔ F2-7 real TAP stop may close without terminal event; runner must complete cancellation (0.151792ms)
+✔ F2-8 TAP attachment admission uses secure Space reader, per-file deadline and aggregate limit (0.310333ms)
+✔ F2-9 collaboration context is masked before truncation and visible to the user (0.078541ms)
+✔ F2-10 only proven missing mappings reroute; temporary failures cannot fork a conversation (0.063542ms)
+✔ F2-11 send automatically refreshes stale catalog once before validating or dispatching model (0.2645ms)
+✔ F2-13 TAP map lives in TATWO storage outside user git; no user ignore-file edits (0.051083ms)
+✔ unfinished self-created connector is included alongside installed entries without pressing Create (189.571875ms)
+✔ missing, paginated, or unreadable self-created section stays unknown even when installed is empty (10396.388833ms)
+✔ 20 reconnect cycles use one connector; transient failures never press Connect and expired authorization reuses its ID (536.150458ms)
+✖ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (12150.057166ms)
+✔ cleanup deletes a same-URL numbered duplicate, never the active connector or another URL (40.229709ms)
+✔ production browser script completes 200 turns in one conversation and releases each round (203.857375ms)
+✔ minute-scale thinking reports progress instead of prematurely completing the turn (49.403708ms)
+✔ manual namesake card can point to the existing self-created entry without pressing it (19.928042ms)
+✔ scan follows the visible Apps self-created tab and includes unfinished entries (10021.527834ms)
+✔ installed namesake on another server stops creation even with an empty self-created list (136.225ms)
+✔ closing the delete dialog is not success while the connector still appears in the complete list (21.335625ms)
+✔ scan exposes the actual connected detail state for migration instead of assuming installed means connected (134.987333ms)
+✔ W210-1 account A to B while connectorDelete waits never presses final Delete (21.682834ms)
+✔ account A to B and back to A while connectorDelete waits still voids the deletion (21.9115ms)
+✔ W212 actual callback judgement stays immediate with main blocked and defers one adjustment (11671.35775ms)
+✔ W212 supported pass reasons append; undecodable events are silent and periodic trimming retains 200 (1297.740667ms)
+✔ W224-1 targeted Login entries expand and scroll; ordinary Login stays collapsed (0.901542ms)
+✔ W224-5 every HandsBuild copy member has a production consumer, not just retired UI selftests (101.476125ms)
+✔ W224-4 Coder uses the same memory content, actions and retryable detailed errors (0.273541ms)
+✔ W224-3 cached project catalogs refresh silently and only first-load failures show errors (0.199709ms)
+✔ W224-2 unrelated or undecodable events are silent; diagnostics append and trim periodically (0.089625ms)
+✔ W227-2 each fresh process trims an oversized diagnostic log on its first event (845.569667ms)
+✔ W267 web window shares Browser top chrome; native opt-out and DM keep their existing routes (1.273416ms)
+✔ web Space defaults on with native opt-out, keeps GPT selection, and uses a normal sibling under the Pod lease (1.491542ms)
+✔ stage a real CEF fixture App for the raw verify.sh selftest binary (1280.851125ms)
+✔ CEF acceptance isolates storage and pins the existing staging loopback before startup (0.306292ms)
+✔ DM reuses web Space with glass segments and keeps native opt-out (1.129167ms)
+✔ both human pages keep the Pod context, documents and profile lifetime (0.283666ms)
+✔ first visible surface owns both pages; waiting panes never steal views (0.170792ms)
+✔ Space retries on Pod notifications, including CEF readiness and page detachment, with a single deadline (0.334458ms)
+✔ CEF regression proves release-before-dismantle and bounds the single-notification handoff (0.423583ms)
+✔ launcher isolates before dlopen initializers and preserves its executable identity (725.966375ms)
+✔ launcher refuses a data root symlink (8.067ms)
+✔ LaunchServices knows the staging host before payload initializers execute (190.40025ms)
+✔ fixed staging bundle fails closed when launched without isolation markers (1466.93925ms)
+✔ staging alone defaults Browser on; missing runtime fails closed without exec fallback (81.646125ms)
+✔ staging blocks updater and global shortcut entry points; sync refuses unverified artifacts (348.630125ms)
+✔ sign-only signs real nested code without rebuilding or changing build/resource mtimes (10495.037084ms)
+✔ sign-only stops on Keychain UI and leaves receipt blocked; formal bundle is refused (307.74225ms)
+✔ 64 KB rotation uses byte counts, overwrites only .1, and preserves complete lines (564.231917ms)
+✔ startup rotates an oversized existing file before any new line; other logs stay intact (9.258208ms)
+✔ concurrent synchronous and asynchronous calls open and rotate only on the serial queue (10.141625ms)
+✔ short writes and EINTR preserve complete lines and count actual bytes (9.707292ms)
+✔ a failed rename preserves both files and does not append beyond the cap (3.42575ms)
+✔ six identical inputs preserve baseline playing / audible / video, including detached media and streams (3.330167ms)
+ℹ empty: false/false/false = false/false/false
+ℹ audible audio: true/true/false = true/true/false
+ℹ muted visible video: true/false/true = true/false/true
+ℹ hidden video: true/true/false = true/true/false
+ℹ detached Spotify audio: true/true/false = true/true/false
+ℹ detached paused live srcObject: true/false/false = true/false/false
+✔ living detached media remain tracked; collected refs leave the set and listeners stay unique (0.832041ms)
+✔ empty-document ticks skip DOM queries; inserting and removing media updates all flags and codec errors still publish (0.760333ms)
+✔ 2000 recorded media, 1500 detached: median tick < 2 ms with all living records retained (549.4155ms)
+ℹ 2000 records (1500 detached), median of 101 ticks: baseline 0.388 ms; current 0.137 ms
+✔ both PLAN export entrances only operate on their own paths (1.438709ms)
+✔ Save As writes the selected URL atomically and reports failures without TatwoPlanExport (0.286875ms)
+✔ native PLAN export: collisions, UTF-8 names, short writes and failed I/O cleanup (595.181375ms)
+✔ real Swift PLAN policy links the exporter and surfaces readable errors (790.152167ms)
+✔ existing resources: only staging value changes, all other bytes survive (299.224125ms)
+✔ legacy identity: insert entry, resolved physicalEntry and staging; preserve other bytes (31.851583ms)
+✔ partial resources: retain entry and physicalEntry verbatim, add staging (21.204667ms)
+✔ legacy linked entrance records logical entry and resolved physicalEntry (21.77925ms)
+✔ escaped field names and strings, empty resources and nested staging are handled (40.494458ms)
+✔ unwritable folder: refused with reason, identity and folder unchanged (4.742334ms)
+✔ reset clears custom value, computes default from entrance, and keeps other bytes (39.350542ms)
+✔ atomic write interrupted by file size limit leaves original intact and no partial file (23.168958ms)
+✔ malformed resources and duplicate staging keys fail without changing the file (81.381583ms)
+✔ real settings pages: light/dark screenshots, order, status, conditional reset and validation messages (13578.027042ms)
+claude CHATSTEERING RESULT passed=40 failed=0 skipped=0
+claude TURNLIFECYCLE RESULT passed=40 failed=0 skipped=0
+codex CHATSTEERING RESULT passed=40 failed=0 skipped=0
+codex TURNLIFECYCLE RESULT passed=40 failed=0 skipped=0
+APP_ACCEPTANCE_EVIDENCE ~/tatwo-build/tmp/W298b-aiinstall/w286-app-5c9Alo
+✔ tests/w286-steering-app-acceptance.mjs (2468.89525ms)
+W288 STDERR checks=8 failures=0
+✔ 1 native regression types /go using window keyDown events (0.383208ms)
+✔ 2 running toolbar keeps Stop at the right edge after the draft action (0.220334ms)
+✔ 3 Coder reuses the DM voice components and bounds their lifetime (0.222959ms)
+✔ 4 both panel directions dismiss the previous floating panel (0.182417ms)
+✔ 5 plan empty state and accessibility labels are Chinese (0.165708ms)
+✔ 6 archived canvases reuse the neighbouring glass chip styling (0.126792ms)
+✔ 7 actual Swift stderr classifier suppresses memory worker errors and preserves user errors (437.752417ms)
+✔ 8 /pr explicitly describes contribution to the public repository (2.220666ms)
+✔ W289 opt-in observers measure numeric 5-second deltas and drain without reading private content (1.992125ms)
+✔ W289 disabled activity has no diagnostic observers; native sampler allocation and all CDP calls are opt-in (0.673041ms)
+✔ W289 per-minute summary keeps document baselines distinct, sums counters and preserves nulls (27.357458ms)
+W291 PASS BASELINE reproduced: translated DOM detected as target language
+W291 PASS BASELINE reproduced: rapid off/on leaves original text, auto enabled, no translation task
+W291 PASS BASELINE reproduced: same-language restart configuration is equal
+W291 PASS BASELINE reproduced: stale restore overwrites next page phase
+W291 BASELINE SUMMARY 4 reproduced 0 unexpected failures
+
+W291 evidence ~/tatwo-build/tmp/W298b-aiinstall/w291-translate-ipKQtu/baseline.log
+✔ W291 baseline: second press, source detection, equal configuration and stale restore reproduced on local long page (27582.53225ms)
+W291 PASS continuous translation 1: all 260 nodes
+W291 PASS translated DOM still samples original source language
+W291 PASS repeat 2 invalidates same-language session
+W291 PASS continuous translation 2: all 260 nodes
+W291 PASS repeat 3 invalidates same-language session
+W291 PASS continuous translation 3: all 260 nodes
+W291 PASS rapid off/on retranslation completes
+W291 PASS restore 1 original text
+W291 PASS translate-original-translate 1
+W291 PASS restore 2 original text
+W291 PASS translate-original-translate 2
+W291 PASS restore 3 original text
+W291 PASS translate-original-translate 3
+W291 PASS dynamic content background translation
+W291 PASS dynamic content manual retranslation
+W291 PASS translate after navigation
+W291 PASS retry after provider failure recollects all nodes
+W291 PASS manual press during translation ignored
+W291 PASS toggle during translation cancels and shows original
+W291 PASS same URL reload cancels old batch
+W291 PASS change provider target then retranslate
+W291 PASS Apple configuration follows changed target language
+W291 PASS restart uses current target language
+W291 PASS stale restore cannot overwrite navigation phase
+W291 PASS stale manual sample cannot change next page
+W291 PASS APPLE installed-language smoke
+W291 SUMMARY 26 pass 0 fail
+
+W291 evidence ~/tatwo-build/tmp/W298b-aiinstall/w291-translate-ipKQtu/fixed.log
+✔ W291 production Swift + renderer: repeats, restore, navigation, cancellation, dynamic content and installed Apple smoke (11384.955417ms)
+w292 evidence: ~/tatwo-build/tmp/W298b-aiinstall/w292-w292-w02qkU
+w208tap evidence: ~/tatwo-build/tmp/W298b-aiinstall/w292-w208tap-VVTSHP
+w185tap evidence: ~/tatwo-build/tmp/W298b-aiinstall/w292-w185tap-nP0Fw9
+w183connect evidence: ~/tatwo-build/tmp/W298b-aiinstall/w292-w183connect-s5RbqV
+w199quiet evidence: ~/tatwo-build/tmp/W298b-aiinstall/w292-w199quiet-d4oB5s
+✔ w292 isolated native acceptance (9596.805ms)
+✔ w208tap isolated native acceptance (7697.325458ms)
+✔ w185tap isolated native acceptance (133488.8055ms)
+✔ w183connect isolated native acceptance (58899.649375ms)
+✔ w199quiet isolated native acceptance (7740.765458ms)
+✔ owned CEF switches follow deny filtering and cover all child launches; formal callbacks equal 2f34610e (12.503959ms)
+✔ compiled CEF predicate uses only the exact staging bundle id under polluted environments (981.128959ms)
+✔ Swift six-entry boundary rejects staging and selftests; polluted formal bundle calls only fake Security APIs (1507.859583ms)
+✔ launcher makes owned argv visible to ps once and loads its interposer before dlopen (754.221166ms)
+dyld staging=4x8 denials; formal=4x8 fake originals; framework initializer covered
+✔ real dyld: staging launcher -> dlopen App -> linked framework; main, framework initializer and child deny eight APIs (1900.307458ms)
+✔ EngineLogin allows only the selected executable inside an explicit test root; empty/missing/outside/symlink markers reject (1218.675375ms)
+✔ staging git helper exits before reading stdin or running security; staging install returns before resources/config (486.829333ms)
+✔ staging launcher suppresses an already configured Git credential helper, including SIP git children (811.696167ms)
+✔ W294e nested Settings without its container routes to /settings and finds Plugins again (33.031584ms)
+✔ W294e account change during Settings recovery aborts before pressing Plugins (20.097708ms)
+✔ Plugins button rows read URL/App ID/dev mode and distinguish connected 4 from unfinished 2/3 (76.502ms)
+✔ cleanup deletes only unfinished 2/3 through both Delete app buttons and checks disappearance (54.273917ms)
+✔ disconnected grant reuses connected 4 through account menu Reconnect and Continue; no Create (74.005458ms)
+✔ unfinished plugin uses detail Connect and preserves its App ID (58.60175ms)
+✔ missing tab, zero rows, filtered/paged lists, missing URL/ID report precise failure (11189.117542ms)
+✔ explicit empty list is known and Add remains the new creation entry (258.734875ms)
+✔ connected duplicate and foreign URL cannot be deleted; no confirmation click on account change (130.256959ms)
+✔ closing delete confirmation without deleting does not report success (35.508208ms)
+✔ account changes during scanning or between arm and press stop without clicking (73.980333ms)
+✔ identity/connection changes while confirming deletion prevent the final Delete app (70.030166ms)
+✔ duplicate App IDs or a list changing during detail reads stay unknown (37.805375ms)
+✔ delayed detail/confirmation rendering waits for the new surface, despite whole-page Settings already being open (650.537542ms)
+✔ old creation form stays open during scan; opening Settings must not replace its warning/consent surface (143.796334ms)
+✔ W294b renamed Accounts with an inline Reconnect menu remains connected and cannot be deleted (42.003083ms)
+✔ W294b About /api/mcp identity ignores a description containing the target /mcp (38.20275ms)
+✔ W294b custom account text and aria/title/alt stay out of all Pod reports and snapshots (56.978917ms)
+✔ W294b normal not_connected duplicates delete and keeping App ID never receives Delete (94.9125ms)
+✔ W294b missing/duplicate/invalid fixed fields and empty account area remain unknown with the blocked item (48956.156916ms)
+✔ W294b Reconnect-only, disabled Connect never prove not_connected (112.400208ms)
+✔ W294b malformed About URL/App ID cannot be replaced by a valid description value (6136.184792ms)
+✔ W294b description headings never replace a missing detail title (3071.470083ms)
+✔ W294c whole-page Settings scopes both Plugins buttons and recognizes direct account Reconnect (294.925875ms)
+✔ W294c Chinese direct reconnect is recognized and multiple direct buttons never get pressed (101.64275ms)
+✔ W294c profile failures use hash only as fallback and report each blocked step (30071.618291ms)
+✔ W294c scan failure returns the failing settings structure with the entire account area redacted (3072.867375ms)
+✔ W294d store/home/project pages read Settings Plugins through the sidebar profile (79.607125ms)
+✔ W294d narrow pages reveal profile only after pressing the unique Open sidebar (112.511709ms)
+✔ W294d skeleton store routes home and waits for a delayed profile, including the next scan (758.2525ms)
+✔ W294d narrow skeleton store opens the sidebar after returning home (383.862959ms)
+✔ W294d ambiguous sidebar is not pressed and failure reports only path/viewport/button counts (10019.003958ms)
+✔ W294d failed sidebar retries home; account changes on the home route abort before Settings (1590.025583ms)
+✔ W294d detail failures carry the same scene fields without account or page text (3062.930334ms)
+w295 evidence: ~/tatwo-build/tmp/W298b-aiinstall/w295-w295-rgm9st
+w292 evidence: ~/tatwo-build/tmp/W298b-aiinstall/w295-w292-5N3jpd
+w288 evidence: ~/tatwo-build/tmp/W298b-aiinstall/w295-w288-syvZT7
+w258download evidence: ~/tatwo-build/tmp/W298b-aiinstall/w295-w258download-Y5lJ1V
+w248webspace evidence: ~/tatwo-build/tmp/W298b-aiinstall/w295-w248webspace-n9mTNC
+✔ w295 native isolated acceptance (12470.447042ms)
+✔ w292 native isolated acceptance (9508.177375ms)
+✔ w288 native isolated acceptance (18425.132292ms)
+✔ w258download native isolated acceptance (302430.799625ms)
+✔ w248webspace native isolated acceptance (13516.700208ms)
+✔ document comparison and JSON run outside the main snapshot closure (1.34675ms)
+✔ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (5574.942083ms)
+✔ native Codex catalog preserves new official ID and excludes hidden models without guessing capabilities (0.657334ms)
+✔ Claude native resolvedModel is authoritative and duplicate effort levels normalize once (0.109625ms)
+✔ W298b real installer gates fake registry and binary adoption, rollback, SDK and daily UI (17587.483458ms)
+✔ W298b selection, cancellation, renamed quota action and theme matrix (0.15675ms)
+✔ W298b changed Swift adds no hardcoded RGB or hexadecimal colors (22.265375ms)
+✔ W298b R1 failed Claude update restores full version tree and exact launcher (0.066167ms)
+✔ W298b R2 verification uses private snapshot despite source mutation (0.039875ms)
+✔ W298b R3 rollback validation waits for in-flight update (0.03125ms)
+✔ W298b R4 only user rollback records explicit version pin (0.31625ms)
+✔ W298b R5 failed current publication preserves exact previous pointer (0.033833ms)
+ℹ tests 327
+ℹ suites 0
+ℹ pass 326
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 951916.018333
+
+✖ failing tests:
+
+test at tests/w208-tap-stress.test.mjs:90:1
+✖ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (12150.057166ms)
+  AssertionError [ERR_ASSERTION]: timed out connectorDelete
+      at Object.send (file://~/tatwo-build/rooms/W298b-aiinstall/tests/w185-pod-fixture.mjs:665:14)
+      at async Object.command (file://~/tatwo-build/rooms/W298b-aiinstall/tests/w185-pod-fixture.mjs:646:19)
+      at async TestContext.<anonymous> (file://~/tatwo-build/rooms/W298b-aiinstall/tests/w208-tap-stress.test.mjs:95:18)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: undefined,
+    operator: 'fail',
+    diff: 'simple'
+  }

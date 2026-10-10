@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+App/Sources/Tatwo2/Facade/HandsConnect.swift
+App/Sources/Tatwo2/Facade/HandsConnectR12Acceptance.swift
+App/Sources/Tatwo2/Facade/W304bInstalledAcceptance.swift
+tests/w183-one-press.test.mjs
+tests/w304b-installed.test.mjs
+tests/fixtures/w304b-*.mjs
+tests/fixtures/w304b-room-allow.txt

@@ -1237,6 +1237,7 @@ final class HandsRemoteClient: ObservableObject, @unchecked Sendable {
 
     static func plain(_ error: Error) -> String {
         let text = String(describing: error)
+        if ["Connection reset", "Connection closed", "ssh_remote_login_unresponsive"].contains(where: text.contains) { return "主設備的遠端登入沒有回應" }
         if text.contains("untrusted_rpc_sender") || text.contains("revoked_rpc_key") { return "這台還沒跟主設備配對好" }
         if text.contains("caller_not_trusted") || text.contains("unknown") { return "主設備的 TATWO OS 版本太舊" }
         if text.contains("primary_not_paired") || text.contains("authority_unknown") { return "還沒設定主設備" }

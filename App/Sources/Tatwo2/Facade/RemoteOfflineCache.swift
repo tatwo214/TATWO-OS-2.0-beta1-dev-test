@@ -316,7 +316,7 @@ final class RemoteOfflineCache: @unchecked Sendable {   // 不可變設定＋靜
         return rows
     }
 
-    /// 設定 › 設備「清除這台的離線副本」：整個資料夾移到垃圾桶（可以放回），不直接刪。沒有副本回 false。
+    /// 移除設備時：整個資料夾移到垃圾桶（可以放回），不直接刪。沒有副本回 false。
     @discardableResult
     func clear(deviceID: String) throws -> Bool {
         noteIO()
@@ -373,7 +373,7 @@ final class RemoteOfflineMirror {
     let deviceName: String
     let cache: RemoteOfflineCache
     /// 最後同步到的文件（已瘦身）；nil＝從沒同步過、檔案壞了或清掉了。
-    private(set) var snapshot: RemoteOfflineSnapshot?
+    private(set) var snapshot: RemoteOfflineSnapshot? { didSet { activityCache = nil } }
     /// 最後一次同步成功的時間（連線時每次輪詢都更新；寫檔最多每分鐘一次，除非換版）。
     private(set) var syncedAt: Date?
     /// 有存內容的那幾條。
@@ -560,11 +560,27 @@ final class RemoteOfflineMirror {
         }
     }
 
+    private var activityCache: (stamp: PolicyFileStamp, until: Date, lines: [UUID: String])?
+
     /// 側欄離線時每條的一行：最後活動多久前（快照裡的更新時間）。
     func activityLines() -> [UUID: String] {
         guard let threads = snapshot?.document.threads else { return [:] }
-        return Dictionary(threads.map { ($0.id, "最後活動 " + RemoteDeviceSidebarSection.seen($0.updatedAt)) },
-                          uniquingKeysWith: { first, _ in first })
+        let stamp = PolicyFileStamp(cache.documentURL(deviceID)), now = Date()
+        if let cached = activityCache, cached.stamp == stamp, now < cached.until { return cached.lines }
+        #if DEBUG
+        ChatRenderProbe.record("RemoteOfflineMirror.activityLines")
+        #endif
+        let lines = Dictionary(threads.map { ($0.id, "最後活動 " + RemoteDeviceSidebarSection.seen($0.updatedAt)) },
+                               uniquingKeysWith: { first, _ in first })
+        // 相對時間在原來的分鐘／小時邊界到期，避免快取把側欄時間凍住。
+        let until = threads.reduce(Date.distantFuture) { deadline, thread in
+            let age = Int(now.timeIntervalSince(thread.updatedAt))
+            guard age < 86_400 else { return deadline }
+            let next = age < 3_600 ? max(120, (age / 60 + 1) * 60) : (age / 3_600 + 1) * 3_600
+            return min(deadline, thread.updatedAt.addingTimeInterval(Double(next)))
+        }
+        activityCache = (stamp, until, lines)
+        return lines
     }
 
     /// 設定 › 設備 那一行：存了幾條內容、多大。

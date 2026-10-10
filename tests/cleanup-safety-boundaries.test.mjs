@@ -9,12 +9,12 @@ const section = (source, start, end) => {
   assert.ok(from >= 0 && to > from, `${start} … ${end}`);
   return source.slice(from, to);
 };
-test('Dots reuses the isolated Pod and restricts return navigation to ChatGPT HTTPS', () => {
+test('Web Dots shares the isolated Pod context without TAP scripting', () => {
   assert.doesNotMatch(read('TAP/ChatGPTDots.swift'), /TapWebPod\(|\.persistent\(|profileID|URLSession|FileManager|UserDefaults/);
-  assert.match(read('TAP/ChatGPTTap.swift'), /returnURL\.scheme == "https", returnURL\.host == "chatgpt.com"/);
-  const native = read('Facade/W197DotsAcceptance.swift');
-  assert.match(native, /NativeStagingIsolation\.validationError\(env\)/);
-  assert.doesNotMatch(native, /ChatGPTTap\.shared|TapWebPod\(|UserDefaults|NSWorkspace\.shared\.open/);
+  const dots = section(read('TAP/TapWebPod.swift'), 'func openDotsSpacePage()', 'func start(script:');
+  assert.match(dots, /sharingContextWith: browser,[\s\S]*actor: \.human/);
+  assert.match(dots, /var url = ChatGPTDotsState.url/);
+  assert.doesNotMatch(dots, /\.configurePod\(|\.runPodCommand\(|profileID/);
   assert.doesNotMatch(read('Facade/W199QuietAcceptance.swift'), /ChatGPTTap\.shared|TapWebPod\(|https?:/);
 });
 test('Background notice refresh cannot connect, enable, modify settings or revoke credentials', () => {

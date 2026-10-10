@@ -479,14 +479,15 @@ extension HandsConnectAcceptance {
                                                                  "publicKey": strangerKey])
         // 配對過的金鑰、但簽的是別的方法（remote_hands_status）：拿來當 remote_hands_action 用。
         let otherMethod = await send(engine, "remote_hands_action", try secondary.signed(method: "remote_hands_status", payload: beginPayload()))
-        // 重放：舊的（序號小的）begin_connect 在新的請求之後才送到。
-        let stale = try secondary.signed(method: "remote_hands_action", payload: beginPayload())
+        // 重放已處理的簽章；第一次因範圍不合法而拒絕，仍必須消耗序號。
+        let stale = try secondary.signed(method: "remote_hands_action", payload: beginPayload(scope: true))
+        let firstUse = await send(engine, "remote_hands_action", stale)
         let newer = await send(engine, "remote_hands_action", try secondary.signed(method: "remote_hands_action",
                                                                                     payload: ["op": "connect_offer", "expires_at": expires()]))
         let replayed = await send(engine, "remote_hands_action", stale)
         let untouched = settingsText(service) == before && service.auth.windowExpiresAt == nil && world.host.currentAttemptID == nil
         check(made == 0 && signedOK == 0 && unsigned.contains("untrusted_rpc_sender") && foreign.contains("untrusted_rpc_sender")
-              && otherMethod.contains("untrusted_rpc_sender") && newer.contains("\"ok\":true") && replayed.contains("stale_epoch_or_replayed_sequence") && untouched,
+              && otherMethod.contains("untrusted_rpc_sender") && firstUse.contains("connect_scope_invalid") && newer.contains("\"ok\":true") && replayed.contains("stale_epoch_or_replayed_sequence") && untouched,
               "W183 R7a 反例：沒有設備簽章的 begin_connect（引擎身分真的走 os.sock 的處理路徑）、沒配對的金鑰、別的方法的簽章、重放舊序號一律拒；設定、窗口都沒動",
               "unsigned=\(unsigned.prefix(120)) foreign=\(foreign.prefix(120)) other=\(otherMethod.prefix(120)) newer=\(newer.prefix(80)) replayed=\(replayed.prefix(120)) \(settingsText(service))")
         // 外部 AI（關口）的身分：連 remote_hands_action、hands_setup_step 都叫不到（真的走處理路徑）。

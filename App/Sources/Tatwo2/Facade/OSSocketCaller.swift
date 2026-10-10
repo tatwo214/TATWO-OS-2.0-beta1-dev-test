@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Security
 
 /// W178：本機 socket（os.sock、browser.sock）是誰在連。
 ///
@@ -115,10 +116,22 @@ enum OSSocketCaller: Equatable {
     /// 一路找到 App 本身都沒遇到，就是 App 開的其他程式，不算。
     static func classify(pid: pid_t, appPID: pid_t = getpid(), roots: [pid_t: RootEntry]) -> OSSocketCaller {
         if pid == appPID { return .app }
+        let registry = DeviceRegistry()
+        if executablePath(pid) == DeviceFleetGate.path(registry: registry).path
+            || DeviceFleetRevocation.processArguments(pid)?.args.contains(DeviceFleetGate.path(registry: registry).path) == true {
+            return DeviceFleetGate.identity(pid: pid, registry: registry) == nil ? .other(pid: pid) : .ssh
+        }
         if let path = executablePath(pid), sshExecutables.contains(path),
+           systemSSHSignature(pid: pid, path: path),
            let parent = parentPID(of: pid), parent > 1,
            let parentPath = executablePath(parent), sshExecutables.contains(parentPath),
+           systemSSHSignature(pid: parent, path: parentPath),
            processUIDs(parent).map({ $0.real == 0 && $0.effective == 0 }) == true {
+            // ExposeAuthInfo=yes 時 sshd 提供 SSH_USER_AUTH；不採信 RPC 的自報指紋。
+            // macOS 對 sshd 的環境可能不可讀，純 -L 也可能沒有該檔；nil 時主防線仍是名單收斂 authorized_keys。
+            if let fingerprint = sshAuthenticatedFingerprint(pid: pid)
+                ?? DeviceFleetRevocation.childAuthenticatedFingerprint(sshPID: pid),
+               !sshFingerprintAllowed(fingerprint) { return .other(pid: pid) }
             return .ssh
         }
         var current = pid
@@ -138,6 +151,96 @@ enum OSSocketCaller: Equatable {
             current = parent
         }
         return .other(pid: pid)
+    }
+
+    /// Kernel PID plus Apple's exact system sshd identity; no request-supplied identity.
+    static func systemSSHSignature(pid: pid_t, path: String) -> Bool {
+        guard sshExecutables.contains(path) else { return false }
+        var code: SecCode?, requirement: SecRequirement?
+        let identity = path == "/usr/sbin/sshd" ? "com.apple.sshd" : "com.apple.sshd-session"
+        guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary,
+            [], &code) == errSecSuccess, let code,
+            SecRequirementCreateWithString("anchor apple and identifier \"\(identity)\"" as CFString,
+            [], &requirement) == errSecSuccess, let requirement else { return false }
+        return SecCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), requirement) == errSecSuccess
+    }
+
+    static func sshFingerprintAllowed(_ fingerprint: String, registry: DeviceRegistry = DeviceRegistry()) -> Bool {
+        let fleet = DeviceFleetStore(registry: registry, environment: registry.fleetEnvironment)
+        do {
+            guard let trust = try fleet.trust() else { return true } // 未升級設備維持 W178 原檢查。
+            _ = trust
+            let allowed = try fleet.capabilities(for: fingerprint) != nil
+                && registry.fleetHasAuthorizedFingerprint(fingerprint)
+            if !allowed { fleet.audit("fleet_ssh_untrusted_controller_refused") }
+            return allowed
+        } catch { fleet.audit("fleet_ssh_roster_unreadable"); return false }
+    }
+
+    /// Capture after system-sshd classification, before reading untrusted request bytes.
+    static func sshFingerprint(fd: Int32, caller: OSSocketCaller) -> String? {
+        guard caller == .ssh, let pid = peerPID(fd) else { return nil }
+        if let gate = DeviceFleetGate.identity(pid: pid, registry: DeviceRegistry()) { return gate.fingerprint }
+        return sshAuthenticatedFingerprint(pid: pid)
+            ?? DeviceFleetRevocation.childAuthenticatedFingerprint(sshPID: pid)
+    }
+
+    /// Every SSH request needs an authenticated key, including unrestricted MAIN owners.
+    /// Gate callers supply a kernel-verified identity; missing sshd authinfo fails closed.
+    static func sshMethodAllowed(fingerprint: String?, method: String,
+                                 registry: DeviceRegistry = DeviceRegistry()) -> Bool {
+        guard let fingerprint else { return false }
+        let fleet = DeviceFleetStore(registry: registry, environment: registry.fleetEnvironment)
+        do {
+            guard try fleet.trust() != nil else { return true }
+            guard registry.fleetHasAuthorizedFingerprint(fingerprint),
+                  try fleet.methodAllowed(fingerprint: fingerprint, method: method) else {
+                fleet.audit("fleet_ssh_capability_refused"); return false
+            }
+            return true
+        } catch { fleet.audit("fleet_ssh_roster_unreadable"); return false }
+    }
+
+    /// 只從已驗證的 sshd PID 讀這一個環境欄位；不把其他環境（可能含秘密）寫入任何日誌。
+    static func sshAuthenticatedFingerprint(pid: pid_t) -> String? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 4, size <= 1024 * 1024 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        // 跳過 argc、executable 及 argc 個 argv，再讀 environ；argv 自報不算 ExposeAuthInfo。
+        let argc = buffer.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 4096 else { return nil }
+        var position = 4
+        while position < size, buffer[position] != 0 { position += 1 }
+        while position < size, buffer[position] == 0 { position += 1 }
+        for _ in 0..<argc {
+            while position < size, buffer[position] != 0 { position += 1 }; position += 1
+        }
+        while position < size {
+            let start = position
+            while position < size, buffer[position] != 0 { position += 1 }
+            let value = String(decoding: buffer[start..<min(position, size)], as: UTF8.self)
+            position += 1
+            guard value.hasPrefix("SSH_USER_AUTH=") else { continue }
+            let path = String(value.dropFirst("SSH_USER_AUTH=".count))
+            guard path.hasPrefix("/"), path.utf8.count <= 4096 else { return nil }
+            let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+            guard fd >= 0 else { return nil }
+            defer { close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= 8192,
+                  info.st_uid == geteuid() || info.st_uid == 0, info.st_mode & 0o022 == 0 else { return nil }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+            guard let data = try? handle.readToEnd(), let text = String(data: data, encoding: .utf8) else { return nil }
+            let keys = text.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+                let fields = line.split(whereSeparator: \.isWhitespace)
+                guard fields.count == 3, fields[0] == "publickey" else { return nil }
+                return try? DeviceRegistry.fingerprint(publicKey: "\(fields[1]) \(fields[2])")
+            }
+            return keys.count == 1 ? keys.first : nil
+        }
+        return nil
     }
 
     /// <sys/un.h>：SOL_LOCAL = 0、LOCAL_PEERPID = 0x002（連線當下對方的 pid）。

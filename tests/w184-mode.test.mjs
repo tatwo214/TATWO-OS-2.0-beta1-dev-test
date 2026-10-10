@@ -479,7 +479,7 @@ test('W184 H4 fix (review #1, #2, #3, #5): each turn carries the card — model 
   // #1 守：同一家換模型，重用前比對啟動時的模型；不一樣就走原本的啟動路徑重開（--resume 接回）。Codex 每一輪自己帶模型，不用重開。
   const ensure = slice(engine, 'private func ensureSidecar(', 'guard let idx = doc.threads.firstIndex');
   assert.match(ensure, /let modelMatches = engine == \.codex \|\| sidecarModels\[threadID\] == \(model \?\? ""\) \|\| runningThreads\.contains\(threadID\)/);
-  assert.match(ensure, /&& modelMatches && apiKeyOptOutMatches && runtimeMatches \{ return s \}/);   // W189 B：換了引擎版本或路徑不重用舊程序
+  assert.match(ensure, /&& modelMatches && apiKeyOptOutMatches && runtimeMatches && s\.startedWithoutMemory == \(memoryPolicy != nil\) \{ return s \}/);   // W187 also isolates memory capability; all previous reuse guards remain.
   assert.match(engine, /sidecarPermissionModes\[threadID\] = permissionMode \?\? "configured-default"\s*sidecarModels\[threadID\] = model \?\? ""/);
   // #2 守：ultrawork 每一輪接在送進 sidecar 的那一句後面（不是只在啟動時讀一次 systemPrompt）；關掉的那一輪說一聲。
   const send = slice(engine, 'ultrawork: UltraworkTurnSettings?, delivery: (@MainActor (LiveSendDelivery) -> Void)?) -> Bool {', 'func savePastedAttachment');
@@ -580,7 +580,7 @@ test('W184 H4 fix round 2 (review H4b): delivered only when the engine or primar
   assert.match(sidecar, /func write\(_ data: Data\) -> Bool \{\s*do \{ try stdin\.write\(contentsOf: data\); return true \} catch \{ return false \}/);
   assert.match(sidecar, /func send\(text: String, uuid: String,[^)]*\) -> Bool \{/);
   const send = slice(engine, 'ultrawork: UltraworkTurnSettings?, delivery: (@MainActor (LiveSendDelivery) -> Void)?) -> Bool {', 'func savePastedAttachment');
-  assert.match(send, /guard sidecar\.send\(text: outgoing, uuid: turn,[\s\S]*?\) else \{\s*runningThreads\.remove\(threadID\)[\s\S]*?return false\s*\}\s*pendingTurnDeliveries\[threadID\] = PendingTurnDelivery\(/);
+  assert.match(send, /guard sidecar\.send\(text: outgoing, uuid: turn,[\s\S]*?\) else \{\s*runningThreads\.remove\(threadID\)[\s\S]*?return false\s*\}\s*if let groupText = groupBridge\.outgoing\[threadID\] \{ groupBridge\.sessions\[threadID\]\?\.adjustPrimarySent\(outgoing\.count - groupText\.count\) \}\s*pendingTurnDeliveries\[threadID\] = PendingTurnDelivery\(/);
   const confirm = slice(engine, 'private func confirmTurnDelivery(', '\n    }\n');
   assert.match(confirm, /doc\.threads\[index\]\.ultraworkSent = pending\.ultraworkSent[\s\S]*pending\.callback\?\(\.delivered\)/);
   // 確認＝這一輪的第一個原生事件（Codex 的 turn_accepted、串流、工具、成功的結果）；還沒確認就失敗或停＝沒送到；system init／model 不算。
@@ -604,11 +604,12 @@ test('W184 H4 fix round 2 (review H4b): delivered only when the engine or primar
   assert.match(coderSend, /let isTap = routeChoice\.runtimeAdapter == \.chatgptTap/, 'only TAP is exempt; all other engines retain per-turn ultrawork');
   assert.doesNotMatch(coderSend, /if let inFlight = coderDeliveries\[id\]/, 'no "still sending" guard: the composer is already empty');
   assert.match(coderSend, /coderDeliveries\[id\] = CoderDelivery\(token: token, text: text, attachments: atts, names: droppedPathDisplayNames\)/);
-  assert.match(coderSend, /ultrawork: isTap \? nil : ultraworkSettings\(for: id\)\) \{ \[weak self\] outcome in\s*self\?\.finishCoderDelivery\(id, token: token, outcome\)\s*\}\s*if accepted \{\s*prompt = ""\s*droppedPaths = \[\]\s*droppedPathDisplayNames = \[:\]/);
+  assert.match(coderSend, /let accepted = OSEventSources\.scope\(source\) \{ activeLive\.send\(/);
+  assert.match(coderSend, /ultrawork: isTap \? nil : ultraworkSettings\(for: id\)\) \{ \[weak self\] outcome in\s*self\?\.finishCoderDelivery\(id, token: token, outcome\)\s*\} \}\s*if accepted \{\s*prompt = ""\s*droppedPaths = \[\]\s*droppedPathDisplayNames = \[:\]/);
   const putBack = slice(model, 'private func putBackUndelivered(', 'var coderUndeliveredNotice');
   assert.match(putBack, /let sentContext = CoderDraftIdentity\(deviceID: sent\.deviceID, threadID: id\)/);
   assert.match(putBack, /if currentCoderDraftIdentity == sentContext, composerEmpty \{\s*prompt = sent\.text\s*droppedPaths = sent\.attachments/);
-  assert.match(putBack, /\} else \{\s*coderUndelivered = CoderUndelivered\(threadID: id, text: sent\.text/);
+  assert.match(putBack, /\} else \{\s*let previous = localLive\?\.groupBridge\.sessions\[id\] != nil && coderUndelivered\?\.threadID == id && coderUndelivered\?\.deviceID == sent\.deviceID \? coderUndelivered : nil\s*coderUndelivered = CoderUndelivered\(threadID: id, text: \(previous\.map \{ \$0\.text \+ "\\n" \} \?\? ""\) \+ sent\.text/);
   assert.match(model, /return flat\.count > 20 \? String\(flat\.prefix\(20\)\) \+ "…" : flat/);
   assert.match(slice(model, 'func restoreUndeliveredDraft()', '\n    }\n'), /undelivered\.text \+ "\\n" \+ current/);
   assert.doesNotMatch(slice(model, 'var canSend: Bool {', 'var canSteerCurrentTurn'), /coderDeliveries/);

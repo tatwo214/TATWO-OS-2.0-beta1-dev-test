@@ -1,12 +1,15 @@
 #import "TatwoCEFBridge.h"
 #import "TatwoBrowserStagingLoopback.h"
 #include "TatwoDownloadReservation.h"
+#include "TatwoAutofillSource.h"
 
 #include <arpa/inet.h>
 #include <crt_externs.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
+#include <libproc.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -88,12 +91,35 @@ namespace { void W57dInvalidate(TatwoCEFBrowserView *view); }
                                        popupID:(int)popupID NS_DESIGNATED_INITIALIZER;
 @end
 
+namespace { void ApplyRequestedAccessibility(); }
+
 @implementation TatwoCEFApplication
 
 + (void)load {
   @autoreleasepool {
     (void)TatwoBrowserStagingLoopbackRuntimePort();
   }
+}
+
+// CEF embeds NSApplication, not Chromium's BrowserCrApplication. Forward the
+// macOS AX demand attributes at this host boundary; never poll for AX clients.
+- (BOOL)accessibilityIsAttributeSettable:(NSString *)attribute {
+  return [attribute isEqualToString:@"AXManualAccessibility"] ||
+         [super accessibilityIsAttributeSettable:attribute];
+}
+
+- (id)accessibilityAttributeValue:(NSString *)attribute {
+  return [super accessibilityAttributeValue:
+      [attribute isEqualToString:@"AXManualAccessibility"]
+          ? @"AXEnhancedUserInterface" : attribute];
+}
+
+- (void)accessibilitySetValue:(id)value forAttribute:(NSString *)attribute {
+  const BOOL requested = [attribute isEqualToString:@"AXManualAccessibility"] ||
+      [attribute isEqualToString:@"AXEnhancedUserInterface"];
+  [super accessibilitySetValue:value forAttribute:requested
+      ? @"AXEnhancedUserInterface" : attribute];
+  if (requested) ApplyRequestedAccessibility();
 }
 
 - (BOOL)isHandlingSendEvent {
@@ -331,6 +357,10 @@ const char *const kDeniedHostSwitches[] = {
     "disable-site-isolation-trials",
     "disable-features",
 };
+
+bool StagingUsesMockKeychain() {
+  return [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"ai.tatwo.tatwo2.staging"];
+}
 
 NSError *MakeError(NSInteger code, NSString *message) {
   return [NSError errorWithDomain:kTatwoCEFErrorDomain
@@ -2202,6 +2232,7 @@ void StopLoadingActiveMessagePump(TatwoCEFBrowserView *view,
                                   NSString *reason);
 
 constexpr NSUInteger kCEFEmbeddingTelemetryMaximumLineLength = 4096;
+constexpr uint64_t kCEFEmbeddingTelemetryMaximumFileBytes = 16 * 1024 * 1024;
 constexpr int64_t kCEFMessagePumpSummaryMinimumIntervalMilliseconds = 5000;
 constexpr uint64_t kCEFMessagePumpSummaryMinimumEventDelta = 128;
 constexpr int64_t kCEFLoadingActivePumpIntervalMilliseconds = 1000 / 30;
@@ -2260,8 +2291,10 @@ NSString *TelemetryRect(NSRect rect) {
                                     rect.size.height];
 }
 
+void WriteCEFEmbeddingTelemetryPayload(NSString *path, NSData *payload);
+
 void ConfigureCEFEmbeddingTelemetry(NSString *cef_log_file_path) {
-  // The dedicated append-only file must remain beside CEF's configured log.
+  // The dedicated telemetry file must remain beside CEF's configured log.
   // Never infer a user home, profile path, or staging root independently.
   if (cef_log_file_path.length == 0 ||
       !cef_log_file_path.isAbsolutePath) {
@@ -2282,9 +2315,12 @@ void ConfigureCEFEmbeddingTelemetry(NSString *cef_log_file_path) {
   setenv("TATWO_CEF_EMBEDDING_TELEMETRY_PATH",
          g_embedding_telemetry_path.fileSystemRepresentation,
          1);
+  dispatch_sync(CEFEmbeddingTelemetryQueue(), ^{
+    WriteCEFEmbeddingTelemetryPayload(g_embedding_telemetry_path, nil);
+  });
 }
 
-int OpenCEFEmbeddingTelemetryDescriptor(NSString *path) {
+int OpenCEFEmbeddingTelemetryDescriptor(NSString *path, uint64_t *size = nullptr) {
   if (path.length == 0) {
     return -1;
   }
@@ -2301,14 +2337,15 @@ int OpenCEFEmbeddingTelemetryDescriptor(NSString *path) {
     close(descriptor);
     return -1;
   }
+  if (size != nullptr) *size = static_cast<uint64_t>(file_status.st_size);
   return descriptor;
 }
 
-void WriteCEFEmbeddingTelemetryPayloadToDescriptor(
+size_t WriteCEFEmbeddingTelemetryPayloadToDescriptor(
     int descriptor,
     NSData *payload) {
   if (descriptor < 0 || payload.length == 0) {
-    return;
+    return 0;
   }
   const uint8_t *bytes =
       static_cast<const uint8_t *>(payload.bytes);
@@ -2325,20 +2362,41 @@ void WriteCEFEmbeddingTelemetryPayloadToDescriptor(
     }
     break;
   }
+  return payload.length - remaining;
 }
 
 void WriteCEFEmbeddingTelemetryPayload(NSString *path, NSData *payload) {
-  if (payload.length == 0) {
-    return;
+  // State and rotation belong exclusively to CEFEmbeddingTelemetryQueue().
+  static NSString *opened_path;
+  static int descriptor = -1;
+  static uint64_t written_bytes = 0;
+  if (path.length == 0) return;
+  if (![opened_path isEqualToString:path]) {
+    if (descriptor >= 0) close(descriptor);
+    descriptor = -1;
+    opened_path = [path copy];
   }
   // O_APPEND gives each bounded single-line record one append position.
   // O_NOFOLLOW and the regular-file check prevent following a replaced leaf.
-  const int descriptor = OpenCEFEmbeddingTelemetryDescriptor(path);
+  if (descriptor < 0) {
+    descriptor = OpenCEFEmbeddingTelemetryDescriptor(path, &written_bytes);
+  }
   if (descriptor < 0) {
     return;
   }
-  WriteCEFEmbeddingTelemetryPayloadToDescriptor(descriptor, payload);
-  close(descriptor);
+  // Rotate before writing so a whole record always stays in one file.
+  if (written_bytes > kCEFEmbeddingTelemetryMaximumFileBytes ||
+      (payload.length > 0 &&
+       written_bytes + payload.length >= kCEFEmbeddingTelemetryMaximumFileBytes)) {
+    NSString *previous_path = [path stringByAppendingString:@".1"];
+    if (rename(path.fileSystemRepresentation,
+               previous_path.fileSystemRepresentation) != 0) return;
+    close(descriptor);
+    descriptor = OpenCEFEmbeddingTelemetryDescriptor(path, &written_bytes);
+    if (descriptor < 0) return;
+  }
+  written_bytes +=
+      WriteCEFEmbeddingTelemetryPayloadToDescriptor(descriptor, payload);
 }
 
 NSData *CEFEmbeddingTelemetryPayload(NSString *line) {
@@ -2358,9 +2416,11 @@ NSData *CEFEmbeddingTelemetryPayload(NSString *line) {
 }
 
 void AppendCEFEmbeddingTelemetryLineSynchronously(NSString *line) {
-  WriteCEFEmbeddingTelemetryPayload(
-      [g_embedding_telemetry_path copy],
-      CEFEmbeddingTelemetryPayload(line));
+  NSString *path = [g_embedding_telemetry_path copy];
+  NSData *payload = CEFEmbeddingTelemetryPayload(line);
+  dispatch_sync(CEFEmbeddingTelemetryQueue(), ^{
+    WriteCEFEmbeddingTelemetryPayload(path, payload);
+  });
 }
 
 void AppendCEFEmbeddingTelemetryLine(NSString *line) {
@@ -2410,6 +2470,23 @@ void LogBrowserLifecycle(NSString *event, NSInteger code = 0) {
                                  (long)code];
   AppendCEFEmbeddingTelemetryLine(line);
   NSLog(@"[TatwoCEF] %@", line);
+}
+
+// W258 download trace: callback names and hosts only (never full URLs).
+// The fixture prints it; on a real install it is opt-in for diagnosis:
+// defaults write ai.tatwo.tatwo2 tatwo.browser.downloadTrace -bool true
+void TraceDownloadCallback(NSString *event, NSString *url) {
+#if DEBUG
+  const bool fixture =
+      [TatwoBrowserStagingEnvironmentValue("TATWO2_SELFTEST") isEqualToString:@"w258download"] &&
+      [NSBundle.mainBundle.bundleIdentifier isEqualToString:@"ai.tatwo.tatwo2.staging.w258"];
+#else
+  const bool fixture = false;
+#endif
+  if (!fixture && ![NSUserDefaults.standardUserDefaults boolForKey:@"tatwo.browser.downloadTrace"]) return;
+  NSString *line = [NSString stringWithFormat:@"W258 CALLBACK %@ host=%@", event, CanonicalHost(url)];
+  AppendCEFEmbeddingTelemetryLine(line);
+  if (fixture) fprintf(stdout, "%s\n", line.UTF8String);
 }
 
 void LogBrowserNavigationTrace(NSString *event,
@@ -3657,6 +3734,16 @@ class W58AgentLoginRenderer {
   }
 };
 #pragma mark - W58 End
+// W289: environment only; no timers, observers or CDP commands when disabled.
+bool XDiagEnabled() { static bool on = [NSProcessInfo.processInfo.environment[@"TATWO_X_DIAG"] isEqual:@"1"]; return on; }
+bool XDiagNoInject() { static bool on = [NSProcessInfo.processInfo.environment[@"TATWO_X_DIAG_NO_INJECT"] isEqual:@"1"]; return on; }
+bool XDiagHost(CefRefPtr<CefFrame> frame) {
+  CefURLParts parts;
+  if (!frame || !CefParseURL(frame->GetURL(), parts)) return false;
+  auto h = CefString(&parts.host).ToString();
+  return h == "x.com" || h == "twitter.com" ||
+      (h.size() > 6 && h.ends_with(".x.com")) || (h.size() > 12 && h.ends_with(".twitter.com"));
+}
 constexpr const char *kBrowserActivityMessage = "tatwo.browser.activity";
 
 // W184 E：video＝這個 frame 有 <video> 正在播（倒放＝影片子畫面挑分頁用）；新參數給預設值，舊的呼叫照舊。
@@ -3691,6 +3778,28 @@ class TatwoBrowserActivityBinding final : public CefV8Handler {
         auto message = CefProcessMessage::Create("tatwo.media.codec_unsupported");
         auto out = message->GetArgumentList();
         out->SetString(0, token_); out->SetString(1, host->GetStringValue()); out->SetBool(2, true);
+        frame_->SendProcessMessage(PID_BROWSER, message);
+      }
+      if (XDiagEnabled() && kind && kind->IsString() && kind->GetStringValue() == "tatwo.xdiag") {
+        auto message = CefProcessMessage::Create("tatwo.xdiag.page"); auto out = message->GetArgumentList();
+        out->SetString(0, token_); int index = 1;
+        for (const char *name : {"loafCount", "loafMs", "imageCount", "imageMedianMs", "imageMaxMs", "adImageCount", "adImageMedianMs", "adImageMaxMs", "postImageCount", "postImageMedianMs", "postImageMaxMs", "videoWaiting", "videoStalled", "sampleID"}) {
+          auto v = args[0]->GetValue(name);
+          if (v && (v->IsInt() || v->IsUInt() || v->IsDouble()) && std::isfinite(v->GetDoubleValue())) out->SetDouble(index, v->GetDoubleValue());
+          else out->SetNull(index);
+          ++index;
+        }
+        frame_->SendProcessMessage(PID_BROWSER, message);
+      }
+      // W275a: X memory counts only (numbers), forwarded to the embedding telemetry.
+      if (kind && kind->IsString() && kind->GetStringValue() == "tatwo.xmem") {
+        auto message = CefProcessMessage::Create("tatwo.xmem.sample");
+        auto out = message->GetArgumentList();
+        int index = 0;
+        for (const char *name : {"articles", "images", "videos", "bufferedSeconds", "knownMedia", "detachedMedia", "nodes", "heapMB"}) {
+          auto value = args[0]->GetValue(name);
+          out->SetInt(index++, value && (value->IsInt() || value->IsUInt() || value->IsDouble()) ? static_cast<int>(value->GetDoubleValue()) : -1);
+        }
         frame_->SendProcessMessage(PID_BROWSER, message);
       }
     }
@@ -3730,24 +3839,28 @@ class TatwoTapPodBinding final : public CefV8Handler {
 // Only activity booleans and the codec signal's host cross the process boundary.
 // No input values, full URLs, selectors or text. Dirty lasts until a new document.
 // W184 E: the fourth boolean says a visible <video> is playing (never its source or the page).
-const char kBrowserActivityScript[] = R"JS((function(report) {
+const char kBrowserActivityScript[] = R"JS((function(report, diagnostic = false) {
   let dirty = false, playing = false, audible = false;   // audible（W112）：真的有聲音在放，側欄才畫音符
   let video = false;   // video（W184 E）：有 <video> 正在播、看得到（倒放＝影片子畫面挑分頁用）
   let codecReported = false;
   let h264Supported;
   let lastDirty, lastPlaying, lastAudible, lastVideo;
-  const watchedTracks = new WeakSet();
+  const watchedTracks = new WeakSet(), capturedMediaEvents = new WeakSet();
   const publish = () => {
     if (dirty === lastDirty && playing === lastPlaying && audible === lastAudible && video === lastVideo) return;
     lastDirty = dirty; lastPlaying = playing; lastAudible = audible; lastVideo = video; report(dirty, playing, audible, video);
   };
-  // W184 E：這一格算「在播影片」：<video>、正在播、有畫面尺寸、有版面位置（靜音也算）。只算一個是非值，不讀網址或內容。
-  const showsVideo = item => {
-    if (!item || item.tagName !== 'VIDEO' || item.paused || item.ended || !(item.videoWidth > 0) || !(item.videoHeight > 0) ||
-        typeof item.getBoundingClientRect !== 'function') return false;
-    const box = item.getBoundingClientRect();
-    return box.width > 0 && box.height > 0;
-  };
+  // W308: observer geometry is asynchronous; media events never flush layout.
+  const visibleMedia = new WeakSet();
+  const visibility = typeof IntersectionObserver === 'function' ? new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (e.isIntersecting && e.boundingClientRect.width > 0 && e.boundingClientRect.height > 0) visibleMedia.add(e.target);
+      else visibleMedia.delete(e.target);
+      media({target: e.target});
+    }
+  }) : null;
+  const showsVideo = item => item.tagName === 'VIDEO' && !item.paused && !item.ended &&
+    item.videoWidth > 0 && item.videoHeight > 0 && visibleMedia.has(item);
   const edit = event => {
     const target = event.target;
     if (target && target.closest && target.closest('input,textarea,select,[contenteditable]')) {
@@ -3757,21 +3870,32 @@ const char kBrowserActivityScript[] = R"JS((function(report) {
   // Spotify 等播放器的 audio/video 元素不掛在文件上（querySelectorAll 找不到，事件也不會冒泡到 document）。
   // 2026-09-23 使用者：「播到一半就沒聲音」＝這種分頁被判成沒在播、被睡眠釋放。攔 play() 把元素記下來。
   const knownMedia = new Set();
-  const watchedMedia = new WeakSet();
+  const watchedMedia = new WeakMap();
+  const audioNodes = document.getElementsByTagName?.('audio'), videoNodes = document.getElementsByTagName?.('video');
   const trackMedia = element => {
-    if (!element || watchedMedia.has(element)) return;
-    watchedMedia.add(element);
-    knownMedia.add(new WeakRef(element));
-    for (const name of ['play','playing','pause','ended','emptied','volumechange']) element.addEventListener(name, media, true);
-  };
-  const mediaElements = () => {
-    const list = Array.from(document.querySelectorAll('audio,video'));
-    for (const ref of Array.from(knownMedia)) {
-      const element = ref.deref();
-      if (!element) { knownMedia.delete(ref); continue; }
-      if (!list.includes(element)) list.push(element);
+    if (!element) return;
+    if (element.tagName === 'VIDEO') {
+      if (element.isConnected) visibility?.observe(element);
+      else { visibility?.unobserve(element); visibleMedia.delete(element); }
     }
-    return list;
+    const previous = watchedMedia.get(element);
+    if (previous) { knownMedia.add(previous); return; }
+    const ref = new WeakRef(element);
+    watchedMedia.set(element, ref); knownMedia.add(ref);
+    ref.flags = [false, false, false];
+    for (const name of ['play','playing','pause','ended','emptied','loadstart','loadedmetadata','error','volumechange'])
+      element.addEventListener?.(name, event => { if (!capturedMediaEvents.delete(event)) media(event); }, true);
+  };
+  const counts = [0, 0, 0];
+  const mediaElements = () => {
+    if (audioNodes && videoNodes && !audioNodes.length && !videoNodes.length && !knownMedia.size) return [];
+    const list = new Set(audioNodes && videoNodes ? [...audioNodes, ...videoNodes] : document.querySelectorAll('audio,video'));
+    for (const ref of knownMedia) {
+      const element = ref.deref();
+      if (!element) { ref.flags.forEach((flag, i) => { counts[i] -= +flag; }); knownMedia.delete(ref); continue; }
+      list.add(element);
+    }
+    return Array.from(list);
   };
   // 沒有 HTMLMediaElement 的環境（例如測試用的假頁面）就不攔，其餘照常。
   const hasMediaElement = typeof HTMLMediaElement === 'function';
@@ -3780,13 +3904,14 @@ const char kBrowserActivityScript[] = R"JS((function(report) {
     HTMLMediaElement.prototype.play = function play(...args) {
       trackMedia(this);
       const result = nativePlay.apply(this, args);
-      media();
       return result;
     };
   }
   const media = event => {
-    if (hasMediaElement && event && event.target instanceof HTMLMediaElement) trackMedia(event.target);
-    const elements = mediaElements();
+    const target = event && event.target;
+    const elements = target && event.type !== 'DOMContentLoaded' ?
+      (target.tagName === 'AUDIO' || target.tagName === 'VIDEO' ? [target] : []) :
+      event?.type === 'trackended' ? Array.from(knownMedia, ref => ref.deref()).filter(Boolean) : mediaElements();
     if (!codecReported) {
       const unsupportedError = event && event.type === 'error' &&
         event.target && event.target.tagName === 'VIDEO' &&
@@ -3800,30 +3925,87 @@ const char kBrowserActivityScript[] = R"JS((function(report) {
         report({kind: 'tatwo.media.codec_unsupported', host: location.host});
       }
     }
-    playing = elements.some(item => {
-      if (!item.paused && !item.ended) return true;
-      // A paused preview can still own a live camera, call or capture stream.
+    for (const item of elements) {
+      trackMedia(item);
       const stream = item.srcObject;
-      if (!stream || typeof stream.getTracks !== 'function') return false;
-      return stream.getTracks().some(track => {
+      const live = stream && typeof stream.getTracks === 'function' && stream.getTracks().some(track => {
         if (!watchedTracks.has(track)) {
-          watchedTracks.add(track);
-          track.addEventListener('ended', media);
+          watchedTracks.add(track); track.addEventListener('ended', () => media({type: 'trackended'}));
         }
         return track.readyState === 'live';
       });
-    });
-    audible = elements.some(item => !item.paused && !item.ended && !item.muted && item.volume > 0);
-    video = elements.some(showsVideo);
+      const active = !item.paused && !item.ended;
+      const flags = [active || !!live, active && !item.muted && item.volume > 0, showsVideo(item)];
+      const ref = watchedMedia.get(item);
+      flags.forEach((flag, i) => { counts[i] += +flag - +ref.flags[i]; }); ref.flags = flags;
+    }
+    [playing, audible, video] = counts.map(count => count > 0);
     publish();
   };
   document.addEventListener('input', edit, true);
   document.addEventListener('change', edit, true);
-  for (const name of ['play','playing','pause','ended','emptied','loadstart','loadedmetadata','error','volumechange']) document.addEventListener(name, media, true);
+  for (const name of ['play','playing','pause','ended','emptied','loadstart','loadedmetadata','error','volumechange']) document.addEventListener(name, event => { capturedMediaEvents.add(event); media(event); }, true);
   document.addEventListener('DOMContentLoaded', media, {once:true});
   // srcObject assignment and stream track changes are not DOM mutations.
   // Report only changes; the context owns and cancels this timer on release.
   setInterval(media, 1000);
+  // W289: numeric observations only, enabled by the native caller on a main X frame.
+  if (diagnostic) {
+    let loafCount = 0, loafMs = 0, waiting = 0, stalled = 0, delays = [], adDelays = [], postDelays = [];
+    const supported = typeof PerformanceObserver === 'function' && PerformanceObserver.supportedEntryTypes.includes('long-animation-frame');
+    if (supported) new PerformanceObserver(list => {
+      for (const e of list.getEntries()) { loafCount++; loafMs += e.duration; }
+    }).observe({type: 'long-animation-frame'});
+    const entered = new WeakMap();
+    const io = new IntersectionObserver(entries => {
+      for (const e of entries) if (e.isIntersecting && !entered.has(e.target)) {
+        const img = e.target, start = e.time; entered.set(img, start);
+        const article = img.closest?.('article');
+        // Compare only the exact ad badge; no article text or image URL leaves the page.
+        const ad = article && document.evaluate('.//span[not(ancestor::*[@data-testid="tweetText" or @data-testid="User-Name"])][text()="Ad" or text()="推廣" or text()="Promoted"]', article, null, 9, null).singleNodeValue;
+        const done = () => { if (!img.isConnected || !img.naturalWidth || entered.get(img) !== start) return;
+          const ms = Math.max(0, performance.now() - start);
+          delays.push(ms); (ad ? adDelays : postDelays).push(ms); };
+        if (img.complete && img.naturalWidth) done(); else img.decode().then(done, () => {});
+      }
+    });
+    const scan = node => { if (!node || node.nodeType !== 1) return;
+      if (node.tagName === 'IMG') io.observe(node); for (const img of node.querySelectorAll('img')) io.observe(img); };
+    const forget = node => { if (!node || node.nodeType !== 1) return;
+      if (node.tagName === 'IMG') io.unobserve(node); for (const img of node.querySelectorAll('img')) io.unobserve(img); };
+    new MutationObserver(records => { for (const r of records) {
+      for (const n of r.removedNodes) forget(n); for (const n of r.addedNodes) scan(n);
+      if (r.type === 'attributes' && r.target.tagName === 'IMG') { entered.delete(r.target); io.unobserve(r.target); io.observe(r.target); }
+    }}).observe(document, {childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'srcset']});
+    scan(document.documentElement);
+    document.addEventListener('waiting', e => { if (e.target.tagName === 'VIDEO') waiting++; }, true);
+    document.addEventListener('stalled', e => { if (e.target.tagName === 'VIDEO') stalled++; }, true);
+    report.diag = (sampleID = 0) => {
+      const stats = values => { values.sort((a,b) => a-b); const n = values.length;
+        return [n, n ? (values[(n-1)>>1]+values[n>>1])/2 : null, n ? values[n-1] : null]; };
+      const [imageCount, median, max] = stats(delays), [adCount, adMedian, adMax] = stats(adDelays), [postCount, postMedian, postMax] = stats(postDelays);
+      report({kind: 'tatwo.xdiag', loafCount: supported ? loafCount : null, loafMs: supported ? loafMs : null,
+        imageCount, imageMedianMs: median, imageMaxMs: max,
+        adImageCount: adCount, adImageMedianMs: adMedian, adImageMaxMs: adMax,
+        postImageCount: postCount, postImageMedianMs: postMedian, postImageMaxMs: postMax,
+        videoWaiting: waiting, videoStalled: stalled, sampleID});
+      loafCount = loafMs = waiting = stalled = 0; delays = []; adDelays = []; postDelays = [];
+    };
+  }
+  // W275a (10-08 diagnosis): X only, top frame, every 10 s — counts and heap size, never URLs or content.
+  if (typeof location === 'object' && /(^|\.)(x|twitter)\.com(:\d+)?$/.test(location.host || '') &&
+      typeof window === 'object' && window === window.top) {
+    setInterval(() => {
+      let live = 0, detached = 0, bufferedSeconds = 0;
+      for (const ref of knownMedia) { const element = ref.deref(); if (!element) continue; live++; if (!element.isConnected) detached++; }
+      const videos = document.getElementsByTagName('video');
+      for (const item of videos) { const ranges = item.buffered; if (ranges && ranges.length) bufferedSeconds += ranges.end(ranges.length - 1) - ranges.start(0); }
+      const memory = performance.memory || {};
+      report({kind: 'tatwo.xmem', articles: document.getElementsByTagName('article').length, images: document.images.length,
+              videos: videos.length, bufferedSeconds: Math.round(bufferedSeconds), knownMedia: live, detachedMedia: detached,
+              nodes: document.getElementsByTagName('*').length, heapMB: Math.round((memory.usedJSHeapSize || 0) / 1048576)});
+    }, 10000);
+  }
   return true;
 }))JS";
 
@@ -3835,6 +4017,7 @@ constexpr const char *kTranslateReplyMessage = "tatwo.translate.reply";       //
 const char kBrowserTranslateScript[] = R"JS((function() {
   const SKIP = new Set(['SCRIPT','STYLE','NOSCRIPT','CODE','PRE','TEXTAREA','INPUT','SELECT','OPTION','SVG','MATH','KBD','SAMP','IFRAME','CANVAS','VIDEO','AUDIO']);
   const nodes = new Map(), originals = new Map();
+  let sourceText = new WeakMap();
   let seen = new WeakSet(), seq = 0;
   const eligible = node => {
     const text = node.nodeValue;
@@ -3856,7 +4039,7 @@ const char kBrowserTranslateScript[] = R"JS((function() {
   return {
     sample() {
       let text = '';
-      walk(node => { if (eligible(node)) text += node.nodeValue.trim() + '\n'; return text.length < 1500; });
+      walk(node => { if (eligible(node)) text += (sourceText.get(node) || node.nodeValue).trim() + '\n'; return text.length < 1500; });
       return JSON.stringify({lang: document.documentElement.lang || '', text: text.slice(0, 1500)});
     },
     collect(limit) {
@@ -3865,6 +4048,7 @@ const char kBrowserTranslateScript[] = R"JS((function() {
         if (seen.has(node) || !eligible(node)) return true;
         if (items.length >= limit || chars > 40000) { more = true; return false; }
         const id = ++seq; nodes.set(id, node); seen.add(node);
+        sourceText.set(node, node.nodeValue);
         const text = node.nodeValue.trim(); items.push([id, text]); chars += text.length;
         return true;
       });
@@ -3882,7 +4066,7 @@ const char kBrowserTranslateScript[] = R"JS((function() {
     },
     restore() {
       for (const [id, raw] of originals) { const node = nodes.get(id); if (node) node.nodeValue = raw; }
-      nodes.clear(); originals.clear(); seen = new WeakSet();
+      nodes.clear(); originals.clear(); seen = new WeakSet(); sourceText = new WeakMap();
       return '{}';
     }
   };
@@ -3996,10 +4180,17 @@ class TatwoWebMCPRenderProcessHandler final
           }
         }
       }
-      if (context->Eval(kBrowserActivityScript, "tatwo-browser-activity", 1, factory, exception) &&
+      const bool xdiag = XDiagEnabled() && frame->IsMain() && XDiagHost(frame);
+      if (xdiag) {
+        auto msg = CefProcessMessage::Create("tatwo.xdiag.pid");
+        msg->GetArgumentList()->SetInt(0, getpid()); msg->GetArgumentList()->SetString(1, token);
+        frame->SendProcessMessage(PID_BROWSER, msg);
+      }
+      if (!(XDiagNoInject() && XDiagHost(frame)) && context->Eval(kBrowserActivityScript, "tatwo-browser-activity", 1, factory, exception) &&
           factory && factory->IsFunction()) {
         auto callback = CefV8Value::CreateFunction("activity", new TatwoBrowserActivityBinding(frame, token));
-        auto installed = factory->ExecuteFunctionWithContext(context, nullptr, {callback});
+        auto installed = factory->ExecuteFunctionWithContext(context, nullptr, {callback, CefV8Value::CreateBool(xdiag)});
+        if (xdiag) x_diag_polls_[key] = callback->GetValue("diag");
         if (installed && installed->IsBool() && installed->GetBoolValue()) {
           activity_contexts_[key] = {context, token};
           SendBrowserActivity(frame, token, "ready", false, false);
@@ -4082,6 +4273,7 @@ class TatwoWebMCPRenderProcessHandler final
       if (found != activity_contexts_.end() && found->second.first->IsSame(context)) {
         SendBrowserActivity(frame, found->second.second, "released", false, false);
         activity_contexts_.erase(found);
+        x_diag_polls_.erase(key);
       }
     }
 #pragma mark - W57c Release password references with their document
@@ -4125,6 +4317,15 @@ class TatwoWebMCPRenderProcessHandler final
     if (ai_login_renderer_.Receive(browser, frame, source_process, message)) return true;
 #pragma mark - W58 End
     if (translate_renderer_.Receive(browser, frame, source_process, message)) return true;   // W112
+    if (XDiagEnabled() && source_process == PID_BROWSER && frame && frame->IsMain() && message && message->GetName() == "tatwo.xdiag.poll") {
+      auto key = std::to_string(browser->GetIdentifier()) + ":" + frame->GetIdentifier().ToString();
+      auto found = x_diag_polls_.find(key); auto context = frame->GetV8Context();
+      if (found != x_diag_polls_.end() && found->second && context && context->Enter()) {
+        auto args = message->GetArgumentList();
+        found->second->ExecuteFunctionWithContext(context, nullptr, {CefV8Value::CreateDouble(args->GetSize() ? args->GetDouble(0) : 0)}); context->Exit();
+      }
+      return true;
+    }
     if (source_process != PID_BROWSER || !browser || !frame ||
         !frame->IsMain() || !message ||
         message->GetName() != kWebMCPInvokeMessage) {
@@ -4349,6 +4550,7 @@ class TatwoWebMCPRenderProcessHandler final
 #pragma mark - W57c Renderer-owned, never process-global credential state
   W57cPasswordRenderer password_renderer_;
   std::map<std::string, std::pair<CefRefPtr<CefV8Context>, CefString>> activity_contexts_;
+  std::map<std::string, CefRefPtr<CefV8Value>> x_diag_polls_;
 #pragma mark - W57c End
 #pragma mark - W58
   W58AgentLoginRenderer ai_login_renderer_;
@@ -4401,6 +4603,7 @@ enum class AccessibilityTreeReason {
   kEnvironmentForced,
   kEnvironmentDisabled,
   kVoiceOver,
+  kAssistiveClient,
   kNoAssistiveClient,
 };
 
@@ -4420,13 +4623,20 @@ AccessibilityTreeReason CEFAccessibilityTreeReason() {
   if ([[NSWorkspace sharedWorkspace] isVoiceOverEnabled]) {
     return AccessibilityTreeReason::kVoiceOver;
   }
+  if ([[NSApp accessibilityAttributeValue:@"AXEnhancedUserInterface"] boolValue]) {
+    return AccessibilityTreeReason::kAssistiveClient;
+  }
   return AccessibilityTreeReason::kNoAssistiveClient;
 }
 
 bool CEFAccessibilityTreeEnabled() {
   const AccessibilityTreeReason reason = CEFAccessibilityTreeReason();
   return reason == AccessibilityTreeReason::kEnvironmentForced ||
-         reason == AccessibilityTreeReason::kVoiceOver;
+         reason == AccessibilityTreeReason::kVoiceOver ||
+         reason == AccessibilityTreeReason::kAssistiveClient;
+}
+bool CEFAccessibilityTreeForced() {
+  return CEFAccessibilityTreeReason() == AccessibilityTreeReason::kEnvironmentForced;
 }
 #pragma mark - W97 end
 
@@ -4457,6 +4667,9 @@ class TatwoBrowserProcessApp final : public CefApp,
     for (const char *switch_name : kDeniedHostSwitches) {
       command_line->RemoveSwitch(switch_name);
     }
+    if (StagingUsesMockKeychain()) {
+      command_line->AppendSwitch("use-mock-keychain");
+    }
     // W60b: Chromium treats this as a soft process-reuse hint; site isolation
     // can exceed it. The actual hard browser budget lives above the bridge.
     command_line->RemoveSwitch("renderer-process-limit");
@@ -4467,14 +4680,9 @@ class TatwoBrowserProcessApp final : public CefApp,
     }
     // Do not enable process-per-site: it broadens same-site failure/contention
     // sharing with unmeasured benefit here. Never disable site isolation.
-    // Chromium 151 recomputes AX mode from persistent scopes when a hidden tab
-    // is revealed. CEF SetAccessibilityState alone sets a transient mode that
-    // this recomputation replaces. "complete" installs a process scope without
-    // pretending that a screen reader is active; tab DOM/focus are untouched.
-    // W97: that scope is only worth its per-load cost when a reader is present.
-    // The browser process is created once, so VoiceOver turned on later reaches
-    // renderers through SetAccessibilityState, not through this switch.
-    if (CEFAccessibilityTreeEnabled()) {
+    // Persistent complete mode is a measurement/debug override only. Native
+    // macOS readers request existing and future browsers through AX attributes.
+    if (CEFAccessibilityTreeForced()) {
       command_line->AppendSwitchWithValue("force-renderer-accessibility", "complete");
     }
     // 受保護的音樂／影片（Spotify、Netflix）要 Widevine，Chromium 只在執行時由元件下載器向 Google 取得。
@@ -4550,6 +4758,9 @@ class TatwoBrowserProcessApp final : public CefApp,
 
   void OnBeforeChildProcessLaunch(
       CefRefPtr<CefCommandLine> command_line) override {
+    if (StagingUsesMockKeychain()) {
+      command_line->AppendSwitch("use-mock-keychain");
+    }
     const CEFHelperRoleTelemetry helper =
         CEFHelperRoleFromCommandLine(command_line);
     const uint64_t launch_count =
@@ -4865,6 +5076,7 @@ class TatwoResourceRequestHandler final : public CefResourceRequestHandler {
                           CefRefPtr<CefResponse> response,
                           CefString &new_url) override {
     NSString *redirect_url = FromCefString(new_url);
+    TraceDownloadCallback(@"OnResourceRedirect", redirect_url);
     const bool local_deny =
         IsDeniedByLocalHostList(policy_, redirect_url);
     if (URLHasCredentials(redirect_url) ||
@@ -4960,6 +5172,7 @@ class TatwoClient final : public CefClient,
     NSString *identifier = nil;
     NSString *filename = nil;
     NSString *path = nil;
+    NSString *staging = nil;
     NSString *source_url = nil;
     NSString *terminal_state = nil;
     NSString *failure_message = nil;
@@ -5196,10 +5409,9 @@ class TatwoClient final : public CefClient,
       NSSize viewport_size,
       TatwoCEFBrowserSnapshotHandler completion);
   void CancelPendingBrowserOperations();
-  void CheckAgentFocus(CefRefPtr<CefBrowser> browser, uint64_t generation,
+  void CheckAgentFocus(CefRefPtr<CefBrowser> browser, uint64_t generation, NSRect rect, bool pairing,
                       TatwoCEFBrowserInputDispatchGate gate, TatwoCEFBrowserInputHandler completion) {
-    BeginNodeInput(browser, 1, NodeInputKind::focus, nil, false, NSZeroPoint, NSZeroRect,
-                   NSZeroSize, generation, gate, completion);
+    BeginNodeInput(browser, 1, pairing ? NodeInputKind::pairingFocus : NodeInputKind::focus, nil, false, NSZeroPoint, rect, NSZeroSize, generation, gate, completion);
   }
   void SelectValue(CefRefPtr<CefBrowser> browser, int node, NSString *value, uint64_t generation,
                    TatwoCEFBrowserInputDispatchGate gate, TatwoCEFBrowserInputHandler completion) {
@@ -5207,7 +5419,7 @@ class TatwoClient final : public CefClient,
                    NSZeroSize, generation, gate, completion);
   }
   void TypeText(CefRefPtr<CefBrowser> browser, int backend_node_id,
-                NSString *text, uint64_t generation, bool submit,
+                NSString *text, uint64_t generation, bool submit, bool pairing,
                 TatwoCEFBrowserInputDispatchGate dispatch_gate,
                 TatwoCEFBrowserInputHandler completion);
   void ClickElement(CefRefPtr<CefBrowser> browser, int backend_node_id,
@@ -5251,6 +5463,7 @@ class TatwoClient final : public CefClient,
   bool CanDownload(CefRefPtr<CefBrowser> browser,
                    const CefString &url,
                    const CefString &request_method) override {
+    TraceDownloadCallback(@"CanDownload", FromCefString(url));
     if (ActorRequestPolicy(owner_).human) return true;
     PublishVisibleError(owner_,
                         kDownloadBlockedError,
@@ -5264,29 +5477,39 @@ class TatwoClient final : public CefClient,
       CefRefPtr<CefDownloadItem> item, const CefString &suggested_name,
       CefRefPtr<CefBeforeDownloadCallback> callback) override {
     CEF_REQUIRE_UI_THREAD();
+    TraceDownloadCallback(@"OnBeforeDownload", FromCefString(item->GetURL()));
     if (!item->IsValid() || !ActorRequestPolicy(owner_).human) return true;
     auto &entry = HumanDownloadFor(item);
     if (entry.terminal_state) return true;
     // CEF can revisit its destination callback; reserve once for this item.
-    if (entry.path) { callback->Continue(ToCefString(entry.path), false); return true; }
+    if (entry.path) { callback->Continue(ToCefString(entry.staging ?: entry.path), false); return true; }
     NSString *name = FromCefString(suggested_name).lastPathComponent;
     if (!name.length || [name isEqualToString:@"."] || [name isEqualToString:@".."]) name = @"download";
     const bool requested_pdf = pdf_download_completion_ && !pdf_download_path_ &&
         [pdf_download_url_ isEqualToString:FromCefString(item->GetOriginalUrl())];
     if (requested_pdf && ![name.pathExtension.lowercaseString isEqualToString:@"pdf"])
       name = [name stringByAppendingPathExtension:@"pdf"];
-    // Exclusive reservation prevents overwriting existing files or following a
-    // pre-existing symlink. CEF may write only this newly reserved destination.
+    // Reserve exclusively; prefer private staging for Chromium.
     NSString *root = NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES).firstObject;
     NSString *path = [root stringByAppendingPathComponent:name];
     int fd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
-    if (fd < 0) {
-      name = [NSString stringWithFormat:@"%@-%@", NSUUID.UUID.UUIDString, name];
+    NSString *original = name;
+    for (int i = 1; fd < 0 && i <= 99; ++i) {
+      name = FromCefString(tatwo::DownloadCandidateName(original.fileSystemRepresentation, i));
+      if (!name.length) break;
       path = [root stringByAppendingPathComponent:name];
       fd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
     }
     if (fd < 0) {
-      entry.filename = name;
+      name = FromCefString(tatwo::DownloadCandidateName(original.fileSystemRepresentation, 0,
+          std::string(NSUUID.UUID.UUIDString.UTF8String) + "-"));
+      if (name.length) {
+        path = [root stringByAppendingPathComponent:name];
+        fd = open(path.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+      }
+    }
+    if (fd < 0) {
+      entry.filename = name.length ? name : original;
       entry.terminal_state = @"failed";
       entry.failure_message = @"無法在下載資料夾建立檔案，請檢查可用空間與權限後重試。";
       PublishDownloadEvent(item, entry, entry.terminal_state);
@@ -5301,6 +5524,27 @@ class TatwoClient final : public CefClient,
     close(fd);
     entry.path = path;
     entry.filename = name;
+    // Chromium creates this hidden file; precreating it would add a second name.
+    const auto stageName = tatwo::DownloadUTF8Prefix(name.fileSystemRepresentation, 100);
+    NSString *staging = [root stringByAppendingPathComponent:[NSString stringWithFormat:@".%@.%@.tatwo-download", FromCefString(stageName), NSUUID.UUID.UUIDString]];
+    NSString *probe = [root stringByAppendingPathComponent:[@".tatwo-probe-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    const char *stageStep = "";
+    int stageError = tatwo::StagedDownloadSupportError(probe.fileSystemRepresentation,
+#if DEBUG
+        getenv("TATWO_W281_PROBE_FAIL") ? +[](const char *, const char *, unsigned) { errno = EPERM; return -1; } : renamex_np,
+#else
+        renamex_np,
+#endif
+        &stageStep);
+#if DEBUG
+    if (getenv("TATWO_W281_NO_STAGE")) { stageError = ENOTSUP; stageStep = "disabled"; }
+#endif
+    if (stageError) AppendCEFEmbeddingTelemetryLine([NSString stringWithFormat:@"phase=download_stage errno=%d step=%s name=%@", stageError, stageStep, SanitizeTelemetryToken(name, @"download")]);
+    else entry.staging = staging;
+#if DEBUG
+    const char *record = getenv("TATWO_W281_STAGE_RECORD");
+    if (record && entry.staging) [entry.staging writeToFile:[NSString stringWithUTF8String:record] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+#endif
     PublishDownloadEvent(item, entry, @"starting");
 #pragma mark - W57d
     if (requested_pdf) {
@@ -5308,7 +5552,7 @@ class TatwoClient final : public CefClient,
       pdf_download_path_ = path;
     }
 #pragma mark - W57d End
-    callback->Continue(ToCefString(path), false);
+    callback->Continue(ToCefString(entry.staging ?: path), false);
     return true;
   }
 
@@ -5318,9 +5562,6 @@ class TatwoClient final : public CefClient,
       CefRefPtr<CefDownloadItemCallback> callback) override {
     CEF_REQUIRE_UI_THREAD();
     if (!download_item->IsValid()) return;
-#pragma mark - W57d
-    W57dDownloadUpdate(download_item);
-#pragma mark - W57d End
     if (ActorRequestPolicy(owner_).human) {
       auto &entry = HumanDownloadFor(download_item);
       entry.callback = callback;
@@ -5330,7 +5571,27 @@ class TatwoClient final : public CefClient,
         status = @"failed";
         entry.failure_message = [NSString stringWithFormat:@"下載中斷（錯誤 %d），請重試。", (int)download_item->GetInterruptReason()];
       } else if (download_item->IsCanceled()) status = @"cancelled";
-      else if (download_item->IsComplete()) status = @"completed";
+      else if (download_item->IsComplete()) {
+        status = @"completed";
+        if (entry.staging) {
+          std::string published, recovered;
+          NSString *root = entry.path.stringByDeletingLastPathComponent;
+          auto move = renamex_np;
+#if DEBUG
+          move = +[](const char *a, const char *b, unsigned flags) { if (getenv("TATWO_W281_PUBLISH_FAIL") || (flags == RENAME_SWAP && getenv("TATWO_W281_SWAP_FAIL"))) { errno = EPERM; return -1; } return renamex_np(a, b, flags); };
+#endif
+          auto result = tatwo::PublishStagedDownload(entry.staging.fileSystemRepresentation, root.fileSystemRepresentation,
+              entry.filename.fileSystemRepresentation, entry.reserved_device, entry.reserved_inode, published, move, &recovered);
+          if (result.complete && ![entry.filename isEqualToString:FromCefString(published)]) RemoveEmptyDownloadReservation(entry);
+          entry.path = published.empty() ? FromCefString(download_item->GetFullPath()) : [root stringByAppendingPathComponent:FromCefString(published)];
+          entry.filename = entry.path.lastPathComponent;
+          if (result.error) {
+            entry.failure_message = [NSString stringWithFormat:@"%@（步驟 %s，errno=%d %s）。檔名：%@。%@", result.complete ? @"下載已另存" : @"無法將下載放入下載資料夾", result.step, result.error, tatwo::DownloadErrnoName(result.error), entry.filename, recovered.empty() ? @"" : [@"原有項目：" stringByAppendingString:FromCefString(recovered).lastPathComponent]];
+            AppendCEFEmbeddingTelemetryLine([NSString stringWithFormat:@"phase=download_publish step=%s errno=%d name=%@", result.step, result.error, [[entry.filename stringByReplacingOccurrencesOfString:@"\n" withString:@"_"] stringByReplacingOccurrencesOfString:@"\r" withString:@"_"]]);
+          }
+          if (!result.complete) status = @"failed";
+        }
+      }
       else if (download_item->IsPaused()) status = @"paused";
       else if (!download_item->IsInProgress()) {
         // Before destination selection CEF may report a pending item.
@@ -5340,20 +5601,23 @@ class TatwoClient final : public CefClient,
       const bool terminal = [status isEqualToString:@"completed"] || [status isEqualToString:@"failed"] || [status isEqualToString:@"cancelled"];
       if (terminal) {
         entry.terminal_state = status;
-        if (![status isEqualToString:@"completed"]) RemoveEmptyDownloadReservation(entry);
+        if (![status isEqualToString:@"completed"] && !download_item->IsComplete()) RemoveEmptyDownloadReservation(entry);
       }
+#pragma mark - W57d
+      W57dDownloadUpdate(download_item);
+#pragma mark - W57d End
       PublishDownloadEvent(download_item, entry, status);
       // An interrupted transfer is a visible failure. Do not silently restart
       // it and allocate more empty files; the human can explicitly retry.
       if (download_item->IsInterrupted()) callback->Cancel();
       if (terminal) entry.callback = nullptr;
-      NSString *filename = FromCefString(download_item->GetFullPath()).lastPathComponent;
-      if (!filename.length) filename = FromCefString(download_item->GetSuggestedFileName()).lastPathComponent;
+      NSString *filename = entry.filename ?: FromCefString(download_item->GetSuggestedFileName()).lastPathComponent;
       NSString *identifier = [NSString stringWithFormat:@"%d-%u", browser->GetIdentifier(), download_item->GetId()];
       if (owner_.onDownloadProgress) owner_.onDownloadProgress(identifier, filename,
-          download_item->GetReceivedBytes(), download_item->GetTotalBytes(), download_item->IsComplete());
+          download_item->GetReceivedBytes(), download_item->GetTotalBytes(), [status isEqualToString:@"completed"]);
       return;
     }
+    W57dDownloadUpdate(download_item);
     callback->Cancel();
     PublishVisibleError(owner_,
                         kDownloadBlockedError,
@@ -5372,6 +5636,7 @@ class TatwoClient final : public CefClient,
       return true;
     }
     NSString *request_url = FromCefString(request->GetURL());
+    TraceDownloadCallback(@"OnBeforeBrowse", request_url);
     // OAuth may create an empty, same-origin popup before assigning its HTTPS
     // destination. about:blank is inert, not permission to fetch a private URL.
     if (browser && browser->IsPopup() &&
@@ -5424,6 +5689,7 @@ class TatwoClient final : public CefClient,
                         WindowOpenDisposition target_disposition,
                         bool user_gesture) override {
     NSString *url = FromCefString(target_url);
+    TraceDownloadCallback(@"OnOpenURLFromTab", url);
     BrowserRequestPolicySnapshot policy = ActorRequestPolicy(owner_);
     const bool allow = user_gesture && !URLHasCredentials(url) &&
         IsActorURLAllowed(policy, url) && !IsDeniedByLocalHostList(policy, url);
@@ -5751,7 +6017,7 @@ class TatwoClient final : public CefClient,
   }
 
  private:
-  enum class NodeInputKind { text, click, select, focus };
+  enum class NodeInputKind { text, pairingText, click, select, focus, pairingFocus };
   enum class TypeStage {
     idle, readingFrame, creatingWorld, resolvingNode, applyingText,
     readingClickMetrics, locatingHit, resolvingHit, checkingClick, dispatchingClick
@@ -5824,6 +6090,7 @@ struct BrowserState {
   CefMouseEvent agent_pointer_event;
   CefRefPtr<CefBrowserHost> agent_key_host;
   CefKeyEvent agent_key_event;
+  NSString *last_agent_key_refusal = @"";
   CefRefPtr<TatwoClient> client;
   CefRefPtr<CefBrowser> browser;
   CefRefPtr<CefRequestContext> request_context;
@@ -5838,6 +6105,7 @@ struct BrowserState {
   bool document_is_pdf = false;
   NSMutableArray *close_handlers;
   NSTimer *loading_active_pump_timer;
+  CefRefPtr<CefDevToolsMessageObserver> x_diag;
   NSString *last_embedding_signature;
   NSString *last_screen_info_signature;
   NSInteger http_status_code = 0;
@@ -5923,6 +6191,19 @@ BrowserState *State(TatwoCEFBrowserView *view) {
       : static_cast<BrowserState *>(view->_cefState);
 }
 
+void ApplyRequestedAccessibility() {
+  if (!NSThread.isMainThread) {
+    dispatch_async(dispatch_get_main_queue(), ^{ ApplyRequestedAccessibility(); });
+    return;
+  }
+  const cef_state_t mode = CEFAccessibilityTreeEnabled() ? STATE_ENABLED : STATE_DISABLED;
+  for (TatwoCEFBrowserView *view in g_live_browser_views.allObjects) {
+    BrowserState *state = State(view);
+    if (state && state->browser && !state->close_requested)
+      state->browser->GetHost()->SetAccessibilityState(mode);
+  }
+}
+
 #pragma mark - W57c Browser-side credential gates
 bool W57cHumanPage(TatwoCEFBrowserView *view, BrowserState *state) {
   return NSThread.isMainThread && view && state && state->browser && !state->close_requested &&
@@ -5985,9 +6266,11 @@ bool W57cBrowserMessage(TatwoCEFBrowserView *view, CefRefPtr<CefFrame> frame,
       args->GetSize() < 5 || state->navigation_in_flight || !state->password_assist_token.length ||
       args->GetString(0).ToString() != std::to_string(state->navigation_generation) ||
       args->GetString(1) != ToCefString(state->password_assist_token)) return true;
-  NSString *origin = FromCefString(args->GetString(2));
-  if (![origin isEqualToString:OriginForURLString(state->committed_url)] ||
-      ![origin isEqualToString:OriginForURLString(FromCefString(frame->GetURL()))]) return true;
+  // Ignore the renderer's origin field. CEF owns the committed frame URL.
+  NSString *origin = OriginForURLString(FromCefString(frame->GetURL()));
+  if (![origin isEqualToString:OriginForURLString(state->committed_url)]) {
+    fputs("autofill_refused=origin\n", stderr); return true;
+  }
   const auto kind = args->GetString(3);
   if (kind == "scanned" && args->GetSize() == 5) {
     if (!state->password_assist_scan_pending) return true;
@@ -6140,6 +6423,7 @@ bool TatwoClient::OnBeforePopup(
   TatwoCEFBrowserView *opener = owner_;
   BrowserState *parent = State(opener);
   NSString *url = FromCefString(target_url);
+  TraceDownloadCallback(@"OnBeforePopup", url);
   const bool blank = url.length == 0 || [url isEqualToString:@"about:blank"];
   const BrowserRequestPolicySnapshot policy = ActorRequestPolicy(opener);
   if (!parent || !parent->browser || !browser ||
@@ -6372,15 +6656,21 @@ void InvalidateWebMCPForRendererTermination(
 // Fixed function in the host's isolated world, never in the page world.
 // The caller supplies only structured data. Resolve the node into that same
 // world so page-owned JS properties/prototypes are not our validation runtime.
-static const char kTatwoSafeFocus[] = R"TATWOJS((()=>{
+static const char kTatwoSafeFocus[] = R"TATWOJS(((rect,pairing=false)=>{
+  if (!document.hasFocus()) return false;
   let el=document.activeElement;
   while (el && el.shadowRoot) el=el.shadowRoot.activeElement;
   if (!el || !el.isConnected || el.matches('iframe,frame,object,embed')
       || !['input','textarea','select','button','a','body'].includes(el.localName)
       || (el.localName==='body' && el.matches(':focus'))) return false;
+  if (rect[2]>0) { const r=el.getBoundingClientRect();
+    if (el.localName!=='input' || el.type!=='text' || el.disabled || el.readOnly || document.elementFromPoint(rect[0]+rect[2]/2,rect[1]+rect[3]/2)!==el
+        || [r.x,r.y,r.width,r.height].some((n,i)=>Math.abs(n-rect[i])>=1)) return false;
+  }
+  if (pairing) return rect.every(Number.isFinite) && rect[2]>0 && rect[3]>0 && el.id==='code' && el.name==='code' && el.autocomplete==='one-time-code' && !!el.form;
   const hints=[el.type,el.autocomplete,el.name,el.id,el.getAttribute('aria-label'),el.getAttribute('placeholder')].join(' ').toLowerCase();
   return !/password|one-time|otp|cc-|credit|card.number|security.code|token/.test(hints);
-})())TATWOJS";
+}))TATWOJS";
 
 static const char kTatwoSelectNode[] = R"TATWOJS(function(value, unused, expectedURL) {
   const el=this;
@@ -6400,7 +6690,7 @@ static const char kTatwoSelectNode[] = R"TATWOJS(function(value, unused, expecte
   return true;
 })TATWOJS";
 
-static const char kTatwoTypeIntoNode[] = R"TATWOJS(function(text, submit, expectedURL) {
+static const char kTatwoTypeIntoNode[] = R"TATWOJS(function(text, submit, expectedURL, pairing=false) {
   const el = this;
   const allowed = () => {
     if (window.top !== window || location.href !== expectedURL) return false;
@@ -6409,6 +6699,7 @@ static const char kTatwoTypeIntoNode[] = R"TATWOJS(function(text, submit, expect
     const type = String(el.type || 'text').toLowerCase();
     if (tag !== 'TEXTAREA' && (tag !== 'INPUT' || !['text','search','email','url','tel','number'].includes(type))) return false;
     if (el.disabled || el.readOnly) return false;
+    if (pairing) return tag==='INPUT' && type==='text' && el.id==='code' && el.name==='code' && el.autocomplete==='one-time-code' && !!el.form && el.maxLength===16;
     const probe = [type, el.autocomplete, el.name, el.id, el.placeholder,
       el.getAttribute('aria-label'), el.title].join(' ').toLowerCase();
     return !/password|one-time|otp|cc-|credit|card number|security code|token/.test(probe);
@@ -6437,8 +6728,10 @@ static const char kTatwoTypeIntoNode[] = R"TATWOJS(function(text, submit, expect
   if (!unchanged()) return false;
   EventTarget.prototype.dispatchEvent.call(el, new Event('change', {bubbles:true}));
   if (!unchanged()) return false;
+  const length = () => Object.getOwnPropertyDescriptor(proto, 'value').get.call(el).length;
+  if (pairing && length()!==8) return false;
   if (submit) HTMLFormElement.prototype.requestSubmit.call(form);
-  return true;
+  return !pairing || length()===8;
 })TATWOJS";
 
 // Read-only probe on the observed node, with the native hit node resolved into
@@ -6610,10 +6903,10 @@ int TatwoClient::DispatchTypeCommand(
 }
 
 void TatwoClient::TypeText(CefRefPtr<CefBrowser> browser, int backend_node_id,
-                           NSString *text, uint64_t generation, bool submit,
+                           NSString *text, uint64_t generation, bool submit, bool pairing,
                            TatwoCEFBrowserInputDispatchGate dispatch_gate,
                            TatwoCEFBrowserInputHandler completion) {
-  BeginNodeInput(browser, backend_node_id, NodeInputKind::text, text, submit,
+  BeginNodeInput(browser, backend_node_id, pairing ? NodeInputKind::pairingText : NodeInputKind::text, text, submit,
                  NSZeroPoint, NSZeroRect, NSZeroSize, generation,
                  dispatch_gate, completion);
 }
@@ -6794,8 +7087,8 @@ void TatwoClient::OnTypeTextResult(CefRefPtr<CefBrowser> browser, bool success,
     }
     auto params = CefDictionaryValue::Create();
     type_context_id_ = static_cast<int>(context_id);
-    if (type_kind_ == NodeInputKind::focus) {
-      params->SetString("expression", kTatwoSafeFocus);
+    if (type_kind_ == NodeInputKind::focus || type_kind_ == NodeInputKind::pairingFocus) {
+      params->SetString("expression", ToCefString([NSString stringWithFormat:@"%s([%.17g,%.17g,%.17g,%.17g],%s)", kTatwoSafeFocus, type_click_rect_.origin.x, type_click_rect_.origin.y, type_click_rect_.size.width, type_click_rect_.size.height, type_kind_ == NodeInputKind::pairingFocus ? "true" : "false"]));
       params->SetInt("contextId", type_context_id_);
       params->SetBool("returnByValue", true);
       params->SetBool("silent", true);
@@ -6847,6 +7140,9 @@ void TatwoClient::OnTypeTextResult(CefRefPtr<CefBrowser> browser, bool success,
     auto url = CefDictionaryValue::Create();
     url->SetString("value", ToCefString(type_committed_url_));
     arguments->SetDictionary(2, url);
+    auto pairing = CefDictionaryValue::Create();
+    pairing->SetBool("value", type_kind_ == NodeInputKind::pairingText);
+    arguments->SetDictionary(3, pairing);
     params->SetList("arguments", arguments);
     type_stage_ = TypeStage::applyingText;
     type_message_id_ = DispatchTypeCommand(browser, "Runtime.callFunctionOn", params);
@@ -7157,12 +7453,138 @@ void TatwoClient::CancelPendingBrowserOperations() {
   }
 }
 
+// W289: one observer per diagnosed browser; responses are reduced to an explicit numeric allowlist.
+class W289Diag final : public CefDevToolsMessageObserver {
+ public:
+  __weak TatwoCEFBrowserView *view; NSTimer *timer; CefRefPtr<CefRegistration> registration;
+  int renderer = 0; std::string token; uint64_t generation = 0; bool enabled = false, pageDone = false;
+  int64_t lastTick = 0; NSMutableDictionary *row = nil; std::map<int, std::string> pending; std::map<std::string, double> previous;
+  std::map<std::string, std::pair<int, uint64_t>> cpu;
+  static bool Eligible(TatwoCEFBrowserView *v) {
+    auto s = State(v);
+    return v && v.window.visible && !v.window.miniaturized && !v.isHiddenOrHasHiddenAncestor &&
+      !NSIsEmptyRect(v.visibleRect) && s && s->browser && !s->close_requested && s->pod_script.empty() &&
+      ActorRequestPolicy(v).human && !v.agentControlled && XDiagHost(s->browser->GetMainFrame());
+  }
+  void Process(const char *role, int pid) {
+    NSString *prefix = @(role); row[[prefix stringByAppendingString:@"PID"]] = @(pid);
+    rusage_info_v4 info{};
+    if (pid <= 0 || proc_pid_rusage(pid, RUSAGE_INFO_V4, (rusage_info_t *)&info) != 0) return;
+    row[[prefix stringByAppendingString:@"FootprintBytes"]] = @(info.ri_phys_footprint);
+    auto total = info.ri_user_time + info.ri_system_time; auto last = cpu.find(role);
+    if (last != cpu.end() && last->second.first == pid && total >= last->second.second)
+      row[[prefix stringByAppendingString:@"CPUSeconds"]] = @((total - last->second.second) / 1e9);
+    cpu[role] = {pid, total};
+  }
+  void Finish() {
+    if (!row) return;
+    if (Eligible(view) && State(view)->navigation_generation == generation) {
+      NSMutableString *line = [NSMutableString stringWithString:@"phase=x_diag"];
+      for (NSString *key in [[row allKeys] sortedArrayUsingSelector:@selector(compare:)])
+        [line appendFormat:@" %@=%@", key, row[key]];
+      AppendCEFEmbeddingTelemetryLine(line);
+    }
+    if ([row[@"JSHeapUsedSize"] isEqual:@"null"]) previous.clear();
+    row = nil; pending.clear();
+  }
+  void Stop() { [timer invalidate]; timer = nil; registration = nullptr; row = nil; pending.clear(); }
+  void Complete() { if (row && pending.empty() && pageDone) Finish(); }
+  void Tick() {
+    auto s = State(view);
+    if (!s || s->close_requested || !s->browser) { [timer invalidate]; timer = nil; registration = nullptr; return; }
+    Finish();
+    if (!Eligible(view)) { previous.clear(); cpu.clear(); lastTick = 0;
+      if (!XDiagNoInject() && XDiagHost(s->browser->GetMainFrame())) s->browser->GetMainFrame()->SendProcessMessage(PID_RENDERER, CefProcessMessage::Create("tatwo.xdiag.poll")); return; }
+    if (generation != s->navigation_generation) { previous.clear(); cpu.clear(); generation = s->navigation_generation; }
+    row = [NSMutableDictionary dictionary];
+    for (NSString *key in @[@"JSHeapUsedSize", @"JSHeapTotalSize", @"Nodes", @"JSHeapUsedSizeDelta", @"JSHeapTotalSizeDelta", @"NodesDelta", @"LayoutCount", @"LayoutDuration", @"RecalcStyleCount", @"RecalcStyleDuration", @"ScriptDuration", @"TaskDuration", @"documents", @"nodes", @"jsEventListeners", @"loafCount", @"loafMs", @"imageCount", @"imageMedianMs", @"imageMaxMs", @"adImageCount", @"adImageMedianMs", @"adImageMaxMs", @"postImageCount", @"postImageMedianMs", @"postImageMaxMs", @"videoWaiting", @"videoStalled", @"rendererFootprintBytes", @"rendererCPUSeconds", @"gpuFootprintBytes", @"gpuCPUSeconds", @"swapBytes", @"memoryPressure"])
+      row[key] = @"null";
+    const auto now = MonotonicMilliseconds(); row[@"sampleSeconds"] = lastTick ? @((now-lastTick)/1000.0) : @"null"; lastTick = now;
+    row[@"monoMs"] = @(now); row[@"browserID"] = @(s->browser->GetIdentifier()); row[@"generation"] = @(generation);
+    Process("renderer", renderer); int gpu = 0; int children[256];
+    int count = proc_listchildpids(getpid(), children, sizeof(children)) / sizeof(int);
+    for (int i = 0; i < count && i < 256; ++i) { char label[64]{};
+      proc_name(children[i], label, sizeof(label)); if (strstr(label, "GPU")) { gpu = children[i]; break; } }
+    Process("gpu", gpu);
+    xsw_usage swap{}; size_t size = sizeof(swap);
+    if (sysctlbyname("vm.swapusage", &swap, &size, nullptr, 0) == 0) row[@"swapBytes"] = @(swap.xsu_used);
+    int pressure = 0; size = sizeof(pressure);
+    if (sysctlbyname("kern.memorystatus_vm_pressure_level", &pressure, &size, nullptr, 0) == 0) row[@"memoryPressure"] = @(pressure);
+    auto host = s->browser->GetHost();
+    if (!registration) registration = host->AddDevToolsMessageObserver(this);
+    if (!enabled) { pending[host->ExecuteDevToolsMethod(0, "Performance.enable", nullptr)] = "enable"; }
+    else Request();
+    ScheduleImmediateCEFMessagePumpWork(@"x_diag");
+  }
+  void Request() {
+    auto s = State(view); auto host = s->browser->GetHost(); pageDone = XDiagNoInject();
+    for (const char *method : {"Performance.getMetrics", "Memory.getDOMCounters"})
+      pending[host->ExecuteDevToolsMethod(0, method, nullptr)] = method;
+    if (!pageDone) { auto poll = CefProcessMessage::Create("tatwo.xdiag.poll"); poll->GetArgumentList()->SetDouble(0, [row[@"monoMs"] doubleValue]);
+      s->browser->GetMainFrame()->SendProcessMessage(PID_RENDERER, poll); }
+  }
+  void Page(CefRefPtr<CefListValue> args) {
+    if (!row || args->GetSize() != 15 || args->GetString(0).ToString() != token || args->GetDouble(14) != [row[@"monoMs"] doubleValue]) return;
+    int i = 1;
+    for (NSString *key in @[@"loafCount", @"loafMs", @"imageCount", @"imageMedianMs", @"imageMaxMs", @"adImageCount", @"adImageMedianMs", @"adImageMaxMs", @"postImageCount", @"postImageMedianMs", @"postImageMaxMs", @"videoWaiting", @"videoStalled"]) {
+      if (args->GetType(i) == VTYPE_DOUBLE && std::isfinite(args->GetDouble(i)) && args->GetDouble(i) >= 0) row[key] = @(args->GetDouble(i)); ++i;
+    }
+    pageDone = true; Complete();
+  }
+  void OnDevToolsMethodResult(CefRefPtr<CefBrowser>, int id, bool success, const void *data, size_t length) override {
+    auto found = pending.find(id); if (found == pending.end() || !row) return;
+    auto method = found->second; pending.erase(found);
+    if (method == "enable") { enabled = success; if (success) Request(); else pageDone = true; Complete(); return; }
+    NSDictionary *result = success && data ? [NSJSONSerialization JSONObjectWithData:[NSData dataWithBytes:data length:length] options:0 error:nil] : nil;
+    if (method == "Performance.getMetrics" && ![result isKindOfClass:NSDictionary.class]) previous.clear();
+    if ([result isKindOfClass:NSDictionary.class]) {
+      if (method == "Performance.getMetrics") for (NSDictionary *m in result[@"metrics"]) {
+        NSString *key = m[@"name"]; NSNumber *value = m[@"value"];
+        if (!row[key] || ![value isKindOfClass:NSNumber.class] || !std::isfinite(value.doubleValue)) continue;
+        auto k = key.UTF8String; double n = value.doubleValue; bool gauge = [@[@"JSHeapUsedSize", @"JSHeapTotalSize", @"Nodes"] containsObject:key];
+        if (gauge) { row[key] = value; if (previous.count(k)) row[[key stringByAppendingString:@"Delta"]] = @(n - previous[k]); } else if (previous.count(k) && n >= previous[k]) row[key] = @(n - previous[k]); previous[k] = n;
+      } else for (NSString *key in @[@"documents", @"nodes", @"jsEventListeners"]) {
+        NSNumber *n = result[key]; if ([n isKindOfClass:NSNumber.class] && std::isfinite(n.doubleValue)) row[key] = n;
+      }
+    }
+    Complete();
+  }
+  IMPLEMENT_REFCOUNTING(W289Diag);
+};
+
 bool TatwoClient::OnProcessMessageReceived(
     CefRefPtr<CefBrowser> browser,
     CefRefPtr<CefFrame> frame,
     CefProcessId source_process,
     CefRefPtr<CefProcessMessage> message) {
   CEF_REQUIRE_UI_THREAD();
+  if (XDiagEnabled() && source_process == PID_RENDERER && message && frame && frame->IsMain() &&
+      (message->GetName() == "tatwo.xdiag.pid" || message->GetName() == "tatwo.xdiag.page")) {
+    auto s = State(owner_); auto args = message->GetArgumentList();
+    if (!s || !s->browser || !s->browser->IsSame(browser) || s->close_requested || !XDiagHost(frame) || !args) return true;
+    if (message->GetName() == "tatwo.xdiag.pid" && args->GetSize() == 2) {
+      if (!s->x_diag) {
+        auto diag = new W289Diag; diag->view = owner_; s->x_diag = diag;
+        __weak TatwoCEFBrowserView *weak = owner_;
+        diag->timer = [NSTimer scheduledTimerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) {
+          auto state = State(weak); if (!state || !state->x_diag) { [t invalidate]; return; }
+          static_cast<W289Diag *>(state->x_diag.get())->Tick();
+        }];
+        [NSRunLoop.mainRunLoop addTimer:diag->timer forMode:NSRunLoopCommonModes];
+      }
+      auto diag = static_cast<W289Diag *>(s->x_diag.get());
+      diag->lastTick = 0; diag->renderer = args->GetInt(0); diag->token = args->GetString(1).ToString(); diag->previous.clear(); diag->cpu.clear(); diag->row = nil; diag->pending.clear();
+    } else if (s->x_diag) static_cast<W289Diag *>(s->x_diag.get())->Page(args);
+    return true;
+  }
+  if (source_process == PID_RENDERER && message && message->GetName() == "tatwo.xmem.sample") {
+    auto args = message->GetArgumentList();
+    if (args && args->GetSize() == 8)
+      AppendCEFEmbeddingTelemetryLine([NSString stringWithFormat:
+          @"phase=x_memory articles=%d images=%d videos=%d bufferedSeconds=%d knownMedia=%d detachedMedia=%d nodes=%d heapMB=%d",
+          args->GetInt(0), args->GetInt(1), args->GetInt(2), args->GetInt(3), args->GetInt(4), args->GetInt(5), args->GetInt(6), args->GetInt(7)]);
+    return true;
+  }
   if (source_process == PID_RENDERER && message &&
       message->GetName() == "tatwo.media.codec_unsupported") {
     TatwoCEFBrowserView *owner = owner_;
@@ -8331,6 +8753,7 @@ void CompleteBrowserClose(TatwoCEFBrowserView *view, BrowserState *state) {
   if (g_active_committed_browser_view == view) {
     g_active_committed_browser_view = nil;
   }
+  if (state->x_diag) { static_cast<W289Diag *>(state->x_diag.get())->Stop(); state->x_diag = nullptr; }
   state->browser = nullptr;
   state->request_context = nullptr;
   state->client = nullptr;
@@ -8376,11 +8799,8 @@ void TatwoClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
     if (state) {
       state->browser = browser;
       state->creation_pending = false;
-      // Windowed CEF supplies the native AX tree only when accessibility is
-      // enabled. This exposes real web roles/text to VoiceOver and macOS tools.
-      // W97: re-read per browser, so VoiceOver switched on mid-session reaches
-      // every browser created afterwards. Left unset otherwise: STATE_DEFAULT
-      // is what CEF already holds, and setting it again would be a no-op write.
+      // Leave CEF's default mode intact unless a native reader or debug override
+      // has requested accessibility; AX requests also reach existing browsers.
       if (CEFAccessibilityTreeEnabled()) {
         browser->GetHost()->SetAccessibilityState(STATE_ENABLED);
       }
@@ -8569,7 +8989,7 @@ bool TatwoClient::OnFileDialog(CefRefPtr<CefBrowser> browser, FileDialogMode mod
   return true;
 }
 
-// Only a completed regular .pdf reserved by this browser can be offered to Preview.
+// Only a completed regular .pdf published by this browser can be offered to Preview.
 bool W57dIsPDF(NSString *path) {
   if (![path.pathExtension.lowercaseString isEqualToString:@"pdf"]) return false;
   int fd = open(path.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW);
@@ -8597,10 +9017,12 @@ void TatwoClient::W57dDownloadUpdate(CefRefPtr<CefDownloadItem> item) {
   const bool matches = pdf_download_path_ ? item->GetId() == pdf_download_id_ :
       [pdf_download_url_ isEqualToString:FromCefString(item->GetOriginalUrl())];
   if (!matches || (!item->IsComplete() && !item->IsCanceled() && !item->IsInterrupted())) return;
-  NSString *path = pdf_download_path_;
+  // Look up only: creating an entry here would leave a never-terminal record for non-human tabs.
+  const auto found = human_downloads_.find(item->GetId());
+  NSString *path = found == human_downloads_.end() ? nil : found->second.path;
   const bool current = W57dCurrent(owner_, owner_.navigationGeneration);
   W57dFinishPDFDownload(current && path && item->IsComplete() &&
-      [path isEqualToString:FromCefString(item->GetFullPath())] && W57dIsPDF(path) ? path : nil);
+      [found->second.terminal_state isEqualToString:@"completed"] && W57dIsPDF(path) ? path : nil);
 }
 
 // CefPrintHandler is Linux-only in the pinned SDK; macOS uses the native Print().
@@ -9291,7 +9713,7 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
     W57cLoadEnd(self, state->browser->GetMainFrame(), (int)state->http_status_code);
 }
 
-- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g {
+- (void)fillCredentialUsername:(NSString *)u password:(NSString *)p formID:(NSString *)f navigationGeneration:(uint64_t)g userApproved:(BOOL)approved {
   BrowserState *state = State(self);
   if (!W57cHumanPage(self, state) || self.browserActor != TatwoCEFBrowserActorHuman ||
       self.agentControlled || state->navigation_in_flight || g == 0 ||
@@ -9301,8 +9723,11 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
       [p lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 16384 || f.length > 128) return;
   auto frame = state->browser->GetMainFrame();
   NSString *origin = OriginForURLString(state->committed_url);
-  if (!frame || !frame->IsValid() || ![origin hasPrefix:@"https://"] ||
-      ![origin isEqualToString:OriginForURLString(FromCefString(frame->GetURL()))]) return;
+  NSString *frameOrigin = frame ? OriginForURLString(FromCefString(frame->GetURL())) : nil;
+  if (!frame || !frame->IsValid() || !TatwoAutofillAllowed(
+      frameOrigin.UTF8String ?: "", origin.UTF8String ?: "", frame->IsMain(), approved)) {
+    fputs("autofill_refused=source_or_gesture\n", stderr); return;
+  }
   auto message = CefProcessMessage::Create(kPasswordFillMessage);
   auto args = message->GetArgumentList();
   args->SetString(0, std::to_string(g));
@@ -9722,6 +10147,14 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
   NSCAssert(_cefState == nullptr, @"Browser must finish native close before deallocation");
 }
 
+- (void)viewDidUnhide {
+  [super viewDidUnhide];
+  // Chromium recomputes transient AX modes when revealing a tab. Reapply a
+  // held reader request after the native child finishes its visibility event.
+  if (CEFAccessibilityTreeEnabled())
+    dispatch_async(dispatch_get_main_queue(), ^{ ApplyRequestedAccessibility(); });
+}
+
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
   NSNotificationCenter *notifications =
@@ -9972,6 +10405,7 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
   // The host already selected a representable point inside the observed target.
   // Never silently truncate a different fractional point at this final boundary.
   auto host = State(self)->browser->GetHost();
+  host->SetFocus(true);
   CefMouseEvent event;
   event.x = static_cast<int>(point.x);
   event.y = static_cast<int>(point.y);
@@ -10042,16 +10476,23 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
   ScheduleImmediateCEFMessagePumpWork(@"browser_pointer_release");
 }
 
+- (NSString *)lastAgentKeyRefusal { return State(self) ? State(self)->last_agent_key_refusal : @"stale_generation"; }
 - (BOOL)sendAgentKey:(unsigned short)code windowsCode:(int)windowsCode
          characters:(NSString *)characters unmodified:(NSString *)unmodified
           modifiers:(NSUInteger)modifiers phase:(int)phase navigationGeneration:(uint64_t)generation {
-  if (!BrowserInputIsCurrent(self, generation) || phase < 0 || phase > 2 ||
+  BrowserState *state = State(self);
+  if (state) state->last_agent_key_refusal = state->navigation_generation != generation ? @"stale_generation" : @"input_not_current";
+  if (!BrowserInputIsCurrent(self, generation)) return NO;
+  state->last_agent_key_refusal = @"bad_args";
+  if (phase < 0 || phase > 2 ||
       characters.length != 1 || unmodified.length != 1 ||
       (modifiers & NSEventModifierFlagFunction)) return NO;
-  BrowserState *state = State(self);
   auto host = state->browser->GetHost();
+  state->last_agent_key_refusal = @"key_host_busy";
+  // GetHost() can return a new CEF wrapper; compare the retained browser identity.
   if ((phase == 0 && state->agent_key_host) ||
-      (phase != 0 && (!state->agent_key_host || state->agent_key_host != host))) return NO;
+      (phase != 0 && (!state->agent_key_host || !state->browser->IsSame(state->agent_key_host->GetBrowser())))) return NO;
+  state->last_agent_key_refusal = @"";
   CefKeyEvent event;
   event.type = phase == 0 ? KEYEVENT_RAWKEYDOWN : phase == 1 ? KEYEVENT_CHAR : KEYEVENT_KEYUP;
   event.native_key_code = code;
@@ -10086,11 +10527,15 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
 }
 
 - (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation
+    dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion { [self checkAgentFocusWithNavigationGeneration:generation expectedRect:NSZeroRect dispatchGate:dispatchGate completion:completion]; }
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect
+    dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion { [self checkAgentFocusWithNavigationGeneration:generation expectedRect:rect pairing:NO dispatchGate:dispatchGate completion:completion]; }
+- (void)checkAgentFocusWithNavigationGeneration:(uint64_t)generation expectedRect:(NSRect)rect pairing:(BOOL)pairing
     dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate completion:(TatwoCEFBrowserInputHandler)completion {
   if (!BrowserInputIsCurrent(self, generation) || !State(self)->client || !dispatchGate) {
     completion(NO, @"browser_focus_unavailable"); return;
   }
-  State(self)->client->CheckAgentFocus(State(self)->browser, generation, dispatchGate, completion);
+  State(self)->client->CheckAgentFocus(State(self)->browser, generation, rect, pairing, dispatchGate, completion);
 }
 
 - (void)selectValue:(NSString *)value elementID:(NSString *)elementID
@@ -10140,6 +10585,13 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
     navigationGeneration:(uint64_t)generation submit:(BOOL)submit
     dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
     completion:(TatwoCEFBrowserInputHandler)completion {
+  [self typeText:text elementID:elementID navigationGeneration:generation submit:submit pairing:NO dispatchGate:dispatchGate completion:completion];
+}
+
+- (void)typeText:(NSString *)text elementID:(NSString *)elementID
+    navigationGeneration:(uint64_t)generation submit:(BOOL)submit pairing:(BOOL)pairing
+    dispatchGate:(TatwoCEFBrowserInputDispatchGate)dispatchGate
+    completion:(TatwoCEFBrowserInputHandler)completion {
   if (!BrowserInputIsCurrent(self, generation) || ![elementID hasPrefix:@"cef-"]) {
     completion(NO, @"browser_field_target_unavailable"); return;
   }
@@ -10154,7 +10606,7 @@ extern "C" uint64_t TatwoCEFMessagePumpLoadingActiveLifecycleProbe(void) {
   BrowserState *state = State(self);
   if (!state->client) { completion(NO, @"browser_unavailable"); return; }
   state->client->TypeText(state->browser, static_cast<int>(backend_id), text,
-                          generation, submit, dispatchGate, completion);
+                          generation, submit, pairing, dispatchGate, completion);
 }
 
 #pragma mark - W177 TAP pod

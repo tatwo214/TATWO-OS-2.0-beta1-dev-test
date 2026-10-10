@@ -89,7 +89,7 @@ final class EngineLogin: @unchecked Sendable {
             // Keychain 有主 CLI 的登入不代表獨立資料夾有登入（Claude 依 CLAUDE_CONFIG_DIR 分開存）；
             // 以 `claude auth status` 在獨立資料夾下的回答為準（2026-09-05 真機抓到）。
             let cliStatus = Self.claudeCLIStatus(
-                executable: paths.claudeExecutable.path,
+                executable: (fakeExecutable ?? paths.claudeExecutable).path,
                 configDir: paths.claudeConfigDirectory.path,
                 environment: environment)
             // A failed staging CLI query means unverified login, not permission
@@ -172,9 +172,21 @@ final class EngineLogin: @unchecked Sendable {
     }
 
     private var fakeExecutable: URL? {
-        environment["TATWO2_LOGIN_FAKE_BIN"].flatMap {
-            $0.isEmpty ? nil : URL(fileURLWithPath: $0)
+        Self.validFakeExecutable(environment["TATWO2_LOGIN_FAKE_BIN"] ?? "", environment: environment)
+    }
+
+    private static func validFakeExecutable(_ executable: String, environment: [String: String]) -> URL? {
+        guard environment["TATWO2_LOGINTEST"] == "1", !executable.isEmpty,
+              executable == environment["TATWO2_LOGIN_FAKE_BIN"],
+              let root = environment["TATWO2_LOGIN_TEST_ROOT"] ?? environment["TATWO_STAGING_ROOT"],
+              FileManager.default.isExecutableFile(atPath: executable),
+              (try? URL(fileURLWithPath: executable).resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+              NativeStagingIsolation.allowsRead(URL(fileURLWithPath: executable), within: URL(fileURLWithPath: root)) else { return nil }
+        if NativeStagingIsolation.isW276Bundle {
+            guard let staging = environment["TATWO_STAGING_ROOT"],
+                  NativeStagingIsolation.allowsRead(URL(fileURLWithPath: root), within: URL(fileURLWithPath: staging)) else { return nil }
         }
+        return URL(fileURLWithPath: executable)
     }
 
     private func loginLaunch(
@@ -291,6 +303,7 @@ final class EngineLogin: @unchecked Sendable {
         environment: [String: String],
         onEvent: @escaping @Sendable (String) -> Void
     ) {
+        if NativeStagingIsolation.isW276Bundle, executable == paths.claudeExecutable, Self.validFakeExecutable(executable.path, environment: environment) == nil { onEvent("Staging 停用 Claude 系統鑰匙圈登入。"); return }
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -472,6 +485,7 @@ extension EngineLogin {
         executable: String, configDir: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> ClaudeCLIStatus? {
+        guard !NativeStagingIsolation.isW276Bundle || validFakeExecutable(executable, environment: environment) != nil else { return nil }
         let effectiveEnvironment = NativeStagingIsolation.isolateClaude(environment, configDirectory: configDir)
         guard NativeStagingIsolation.validationError(environment) == nil,
               NativeStagingIsolation.validationError(effectiveEnvironment) == nil else { return nil }

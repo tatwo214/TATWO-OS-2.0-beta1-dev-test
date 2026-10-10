@@ -255,7 +255,7 @@ test('shell renders shared content and every interrupt caller preserves the Bool
   const terminate = app.slice(app.indexOf('func applicationShouldTerminate('), app.indexOf('private func showDefaultSurfaceForUserOpen()'));
   assert.match(terminate, /terminationCoordinator\.request\(requiresConfirmation: requiresConfirmation, window: visibleWindow\) \{ approved in\s*guard approved else \{ sender\.reply\(toApplicationShouldTerminate: false\); return \}\s*ChromeStyleSpike\.drainForTermination \{ sender\.reply\(toApplicationShouldTerminate: true\) \}/);
   assert.match(terminate, /if decision == \.terminateNow, ChromeStyleSpike\.needsTerminationDrain \{\s*ChromeStyleSpike\.drainForTermination \{ sender\.reply\(toApplicationShouldTerminate: true\) \}\s*return \.terminateLater/);
-  assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .escapeClose/);
+  assert.doesNotMatch(app, /TatwoInterruptConfirmationPresenter.confirm\(kind: .escapeClose/);
   assert.match(app, /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .windowClose/);
   assert.match(read('App/Sources/Tatwo2/CLI/CLILoopDetailPane.swift'), /guard TatwoInterruptConfirmationPresenter.confirm\(kind: .composerStop\)/);
 });

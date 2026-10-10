@@ -1,0 +1,11 @@
+# W336 built-in virtual devices, bundled isolation/provision and acceptance.
+Package.swift
+App/Sources/Tatwo2/New/SandboxDevicesSection.swift
+App/Sources/Tatwo2/New/SandboxVirtualDevices.swift
+App/Sources/Tatwo2/New/W336VMDeviceAcceptance.swift
+App/Sources/Tatwo2/New/W335SandboxUIAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+Engines/sandbox-agent/vm/*
+tests/w336-vmdevice.test.mjs
+tests/fixtures/w336-room-allow.txt
+scripts/public-safety-allow.txt

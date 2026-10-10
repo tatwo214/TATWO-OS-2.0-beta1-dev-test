@@ -1,0 +1,378 @@
+[
+  {
+    "captureMs": 402.0025000208989,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "prototype-A2-400"
+  },
+  {
+    "captureMs": 1.4448333531618118,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "light-expanded-0"
+  },
+  {
+    "captureMs": 156.63987502921373,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 150,
+    "shot": "light-expanded-150"
+  },
+  {
+    "captureMs": 405.3858333500102,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "light-expanded-400"
+  },
+  {
+    "download": "light-expanded",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 549,
+    "originY": 658,
+    "targetX": 32,
+    "targetY": 26
+  },
+  {
+    "captureMs": 803.2363333622925,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 800,
+    "shot": "light-expanded-800"
+  },
+  {
+    "captureMs": 1208.9150417014025,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "light-expanded-1200"
+  },
+  {
+    "captureMs": 182.13245831429958,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "light-expanded-complete"
+  },
+  {
+    "approximateAfterCompletionMs": 5012.198041697033,
+    "captureMs": 1003.1980416970327,
+    "clockReference": "feedbackDismissalObserved (completion + approximately 4 seconds)",
+    "requestedMs": 1000,
+    "shot": "light-expanded-complete-plus-5s"
+  },
+  {
+    "captureMs": 1.2624166556634009,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "light-collapsed-0"
+  },
+  {
+    "captureMs": 156.29095828626305,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 150,
+    "shot": "light-collapsed-150"
+  },
+  {
+    "captureMs": 410.89858330087736,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "light-collapsed-400"
+  },
+  {
+    "download": "light-collapsed",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 299,
+    "originY": 658,
+    "targetX": 31,
+    "targetY": 31
+  },
+  {
+    "captureMs": 810.3762083337642,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 800,
+    "shot": "light-collapsed-800"
+  },
+  {
+    "captureMs": 1211.3498749677092,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "light-collapsed-1200"
+  },
+  {
+    "captureMs": 191.08595832949504,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "light-collapsed-complete"
+  },
+  {
+    "approximateAfterCompletionMs": 5012.731958303135,
+    "captureMs": 1006.7319583031349,
+    "clockReference": "feedbackDismissalObserved (completion + approximately 4 seconds)",
+    "requestedMs": 1000,
+    "shot": "light-collapsed-complete-plus-5s"
+  },
+  {
+    "captureMs": 1.3079583295620978,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "dark-expanded-0"
+  },
+  {
+    "captureMs": 156.31650004070252,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 150,
+    "shot": "dark-expanded-150"
+  },
+  {
+    "captureMs": 401.4745833701454,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "dark-expanded-400"
+  },
+  {
+    "download": "dark-expanded",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 549,
+    "originY": 658,
+    "targetX": 32,
+    "targetY": 26
+  },
+  {
+    "captureMs": 812.0548750157468,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 800,
+    "shot": "dark-expanded-800"
+  },
+  {
+    "captureMs": 1206.6334999981336,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "dark-expanded-1200"
+  },
+  {
+    "captureMs": 182.26887501077726,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "dark-expanded-complete"
+  },
+  {
+    "approximateAfterCompletionMs": 5020.881541667506,
+    "captureMs": 1008.8815416675061,
+    "clockReference": "feedbackDismissalObserved (completion + approximately 4 seconds)",
+    "requestedMs": 1000,
+    "shot": "dark-expanded-complete-plus-5s"
+  },
+  {
+    "captureMs": 1.7597083351574838,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "dark-collapsed-0"
+  },
+  {
+    "captureMs": 153.54470832971856,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 150,
+    "shot": "dark-collapsed-150"
+  },
+  {
+    "captureMs": 412.2430416755378,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "dark-collapsed-400"
+  },
+  {
+    "download": "dark-collapsed",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 299,
+    "originY": 658,
+    "targetX": 31,
+    "targetY": 31
+  },
+  {
+    "captureMs": 805.5780000286177,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 800,
+    "shot": "dark-collapsed-800"
+  },
+  {
+    "captureMs": 1204.8007916891947,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "dark-collapsed-1200"
+  },
+  {
+    "captureMs": 182.72916664136574,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "dark-collapsed-complete"
+  },
+  {
+    "approximateAfterCompletionMs": 5010.4596666703,
+    "captureMs": 1004.4596666703001,
+    "clockReference": "feedbackDismissalObserved (completion + approximately 4 seconds)",
+    "requestedMs": 1000,
+    "shot": "dark-collapsed-complete-plus-5s"
+  },
+  {
+    "captureMs": 1.1805416434071958,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "reduced-0"
+  },
+  {
+    "captureMs": 402.31741667957976,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "reduced-400"
+  },
+  {
+    "captureMs": 1202.3395833093673,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "reduced-1200"
+  },
+  {
+    "captureMs": 182.60804167948663,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "reduced-complete"
+  },
+  {
+    "captureMs": 0.1322916941717267,
+    "clockReference": "fallbackCardLayoutSettled",
+    "requestedMs": 0,
+    "shot": "fallback-card"
+  },
+  {
+    "captureMs": 1.6060416819527745,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "gpt-0"
+  },
+  {
+    "captureMs": 405.8884166297503,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "gpt-400"
+  },
+  {
+    "download": "gpt",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 549,
+    "originY": 618,
+    "targetX": 281,
+    "targetY": 31
+  },
+  {
+    "captureMs": 1214.75041663507,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "gpt-1200"
+  },
+  {
+    "captureMs": 189.11254167323932,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "gpt-complete"
+  },
+  {
+    "captureMs": 1.7384583479724824,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "dm-0"
+  },
+  {
+    "captureMs": 401.4220417011529,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "dm-400"
+  },
+  {
+    "download": "dm",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 299,
+    "originY": 488,
+    "targetX": 31,
+    "targetY": 31
+  },
+  {
+    "captureMs": 1213.4164166636765,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "dm-1200"
+  },
+  {
+    "captureMs": 186.7462916416116,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "dm-complete"
+  },
+  {
+    "captureMs": 1.0049166739918292,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "dots-0"
+  },
+  {
+    "captureMs": 401.5961667173542,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "dots-400"
+  },
+  {
+    "download": "dots",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 299,
+    "originY": 488,
+    "targetX": 31,
+    "targetY": 31
+  },
+  {
+    "captureMs": 1214.4293750170618,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "dots-1200"
+  },
+  {
+    "captureMs": 182.7257500262931,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "dots-complete"
+  },
+  {
+    "captureMs": 13.252166681922972,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 0,
+    "shot": "coder-0"
+  },
+  {
+    "captureMs": 409.5070833573118,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 400,
+    "shot": "coder-400"
+  },
+  {
+    "download": "coder",
+    "fileCount": 1,
+    "originErrorPt": 0,
+    "originX": 299,
+    "originY": 483,
+    "targetX": 571,
+    "targetY": 681
+  },
+  {
+    "captureMs": 1202.2476250422187,
+    "clockReference": "nativeMouseDown",
+    "requestedMs": 1200,
+    "shot": "coder-1200"
+  },
+  {
+    "captureMs": 182.14862496824935,
+    "clockReference": "completionObserved",
+    "requestedMs": 180,
+    "shot": "coder-complete"
+  }
+]

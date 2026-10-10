@@ -279,7 +279,11 @@ struct GlobalDMBox: View {
             } else {
             switch store.target {
             case .chatGPT:
-                GlobalDMChatGPTPane(store: store, session: store.chatGPT, isAvailable: store.chatGPTAvailable)
+                if ChatGPTWebSpace.isEnabled, store.chatGPTAvailable, let pod = store.chatGPT.tap.webPod {
+                    ChatGPTWebSpacePane(tap: store.chatGPT.tap, pod: pod, showsTabs: true)
+                } else {
+                    GlobalDMChatGPTPane(store: store, session: store.chatGPT, isAvailable: store.chatGPTAvailable)
+                }
             case .assistant:
                 // W179 F：副設備連得到主設備時這裡是主設備那條；接不到時只顯示一行說明、草稿留著。
                 GlobalDMThreadPane(store: store, bubbles: GlobalDMBubble.rows(model.assistantMessages,
@@ -403,6 +407,7 @@ struct GlobalDMAvatar: View {
 /// 討論串（含助理；本機或主設備上的）的訊息區＋輸入框。
 struct GlobalDMThreadPane: View {
     @ObservedObject var store: GlobalDMStore
+    @ObservedObject private var fleet = DeviceFlowSession.shared
     @Environment(\.globalDMBoxRole) private var role
     let bubbles: [GlobalDMBubble]
     let emptyText: String
@@ -422,7 +427,9 @@ struct GlobalDMThreadPane: View {
         VStack(spacing: 0) {
             GlobalDMBodyRegion(store: store) {
                 GlobalDMMessageList(bubbles: bubbles, emptyText: emptyText, avatarRoute: avatarRoute,
-                                    fallbackAvatar: fallbackAvatar)
+                                    fallbackAvatar: fallbackAvatar,
+                                    fleet: store.target == .assistant ? fleet : nil,
+                                    fleetRevision: store.target == .assistant ? fleet.revision : 0)
                     .equatable()
                 // 提示列一律在訊息下面、輸入列上面，同一種樣式。
                 if let note {
@@ -680,6 +687,8 @@ struct GlobalDMMessageList: View, @MainActor Equatable {
     var fallbackAvatar: GlobalDMTarget = .assistant
     /// W184 G3b：對象是 ChatGPT（照 ChatGPT iPhone App）：自己的泡泡反白（淺色黑底白字、深色淺底黑字）、回答中左邊一個灰字「思考」。
     var chatGPTLook = false
+    var fleet: DeviceFlowSession? = nil
+    var fleetRevision = 0
     var recoverChatGPT: ((ChatGPTTurnFailure) -> Void)? = nil
     var recoveryAvailable = true
     @Environment(\.globalDMBoxRole) private var role
@@ -704,7 +713,9 @@ struct GlobalDMMessageList: View, @MainActor Equatable {
 
     static func == (lhs: GlobalDMMessageList, rhs: GlobalDMMessageList) -> Bool {
         lhs.bubbles == rhs.bubbles && lhs.emptyText == rhs.emptyText
-            && lhs.avatarRoute?.id == rhs.avatarRoute?.id && lhs.fallbackAvatar == rhs.fallbackAvatar && lhs.chatGPTLook == rhs.chatGPTLook && lhs.recoveryAvailable == rhs.recoveryAvailable
+            && lhs.avatarRoute?.id == rhs.avatarRoute?.id && lhs.fallbackAvatar == rhs.fallbackAvatar && lhs.chatGPTLook == rhs.chatGPTLook
+            && lhs.fleet === rhs.fleet && lhs.fleetRevision == rhs.fleetRevision
+            && lhs.recoveryAvailable == rhs.recoveryAvailable
     }
 
     /// 一則在捲動區裡的位置 → 它自己由上到下的遮罩（純計算，好測）：捲動區最上面 0→24 從透明到不透明、最下面 24 反過來，
@@ -747,7 +758,7 @@ struct GlobalDMMessageList: View, @MainActor Equatable {
             let viewportHeight = max(0, geometry.size.height - headerAvoidanceInset)
             let topInset = GlobalDMChatLayout.listTop
             let rowWidth = max(120, geometry.size.width - side * 2)
-            if bubbles.isEmpty {
+            if bubbles.isEmpty && fleet?.active == nil {
                 Text(emptyText)
                     .font(.system(size: GlobalDMChatLayout.noticeSize))
                     .foregroundStyle(.secondary)
@@ -769,6 +780,11 @@ struct GlobalDMMessageList: View, @MainActor Equatable {
                                     .padding(.top, gaps[index])
                                     .id(bubble.id)
                                     .onDisappear { rows.forget(bubble.id) }
+                            }
+                            if let fleet, fleet.active != nil {
+                                DeviceFlowCard(session: fleet)
+                                    .padding(.top, bubbles.isEmpty ? 0 : GlobalDMChatLayout.messageSpacing)
+                                    .id("tatwo.dm.fleet.card")
                             }
                             // 底部內距放在尾巴裡：捲到最後時最後一則離輸入框 16。
                             Color.clear.frame(height: GlobalDMChatLayout.listBottom).id("tatwo.dm.tail")
@@ -795,6 +811,7 @@ struct GlobalDMMessageList: View, @MainActor Equatable {
                     .onAppear { scrollToTail(proxy) }
                     .onChange(of: bubbles.count) { _, _ in scrollToTail(proxy) }
                     .onChange(of: bubbles.last?.text) { _, _ in scrollToTail(proxy) }
+                    .onChange(of: fleetRevision) { _, _ in scrollToTail(proxy) }
                 }
             }
         }
@@ -985,6 +1002,7 @@ struct GlobalDMComposer: View {
                     HStack(spacing: GlobalDMChatLayout.composerItemSpacing) {
                         GlobalDMAttachButton(store: store)
                             .padding(.leading, GlobalDMChatLayout.plusOutset)
+                        if target == .assistant { DeviceFlowChip(session: .shared) }
                         Spacer(minLength: 4)
                         // W184 H4：記憶、模型收進一顆「模式選擇」（按了在輸入框上方開模式卡）；舊識別碼 tatwo.dm.model、tatwo-memory-strength
                         // 在 chip 的兩段上；記憶照舊只在助理與 Coder 對話（ChatGPT、Bot 串不顯示）。

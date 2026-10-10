@@ -25,6 +25,9 @@ struct PeerUpdateEntry: Codable, Sendable {
 }
 
 enum PeerUpdateSource {
+    #if DEBUG
+    nonisolated(unsafe) static var fixtureCommandSink: (@Sendable ([String]) -> Void)?
+    #endif
     struct Offer: Sendable {
         let device: DeviceRecord
         let host: String
@@ -62,6 +65,7 @@ enum PeerUpdateSource {
     static func run(_ argv: [String], seconds: Double) async throws -> Data {
         let environment = ProcessInfo.processInfo.environment
         #if DEBUG
+        if let sink = fixtureCommandSink { sink(argv); throw RemoteEngineSyncError.fixtureCaptureOnly("peer") }
         if let fixture = try RemoteSyncFixture.validate(environment: environment) {
             try JSONSerialization.data(withJSONObject: ["commands": [argv]], options: .sortedKeys)
                 .write(to: fixture.root.appendingPathComponent("peer-command-\(UUID()).json"), options: .atomic)
@@ -100,12 +104,15 @@ enum PeerUpdateSource {
         guard process.terminationStatus == 0 else { throw URLError(.cannotConnectToHost) }
         return output
     }
-    static func discover(_ devices: [DeviceRecord]) async -> [Offer] {
+    static func discover(_ devices: [DeviceRecord], environment: [String: String] = ProcessInfo.processInfo.environment) async -> [Offer] {
         await withTaskGroup(of: Offer?.self) { group in
             for device in devices {
+                guard DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment).allowsPeerConnection(device.id) else { continue }
                 group.addTask {
                     // 缺主機金鑰指紋的設備不參與對機更新（等重新配對）；探索沒有提示通道，等同這台沒有可提供的更新。
-                    guard let pin = try? SSHHostPin.make(device) else { return nil }
+                    guard let pin = try? DeviceFleetSSHPins.withEnvironment(for: device, registry: DeviceRegistry(environment: environment), {
+                        try SSHHostPin.make(device, environment: $0)
+                    }) else { return nil }
                     let candidates = hosts(device), deadline = ProcessInfo.processInfo.systemUptime + 5
                     for (index, host) in candidates.enumerated() {
                         let budget = (deadline - ProcessInfo.processInfo.systemUptime) / Double(candidates.count - index)
@@ -133,7 +140,8 @@ enum PeerUpdateSource {
         }
     }
     // Candidate bytes are never authoritative: the caller must hash before publishing or handing off.
-    static func pull(_ offer: Offer, tag: String, name: String, folder: URL) async throws -> URL? {
+    static func pull(_ offer: Offer, tag: String, name: String, folder: URL, environment: [String: String] = ProcessInfo.processInfo.environment) async throws -> URL? {
+        guard DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment).allowsPeerConnection(offer.device.id) else { return nil }
         guard validTag(tag), let entry = offer.entries[tag] else { return nil }
         let runtime = safe(name, pattern: "^TATWO-OS-runtime-[0-9a-f]{12}[.]zip$")
         let delta = safe(name, pattern: #"^TATWO-OS-delta-v[0-9]+([.][0-9]+){1,3}-v[0-9]+([.][0-9]+){1,3}[.]zip$"#)
@@ -144,7 +152,9 @@ enum PeerUpdateSource {
         let output = stage.appendingPathComponent(name)
         if let path = entry.files[name] ?? (runtime ? entry.runtime : entry.app), cachePath(path, tag: tag, name: name) {
             // 缺主機金鑰指紋就在拉檔之前擋掉（訊息：請重新配對），不會退回 TOFU。
-            let pin = try SSHHostPin.make(offer.device)
+            let pin = try DeviceFleetSSHPins.withEnvironment(for: offer.device, registry: DeviceRegistry(environment: environment)) {
+                try SSHHostPin.make(offer.device, environment: $0)
+            }
             _ = try await run(rsync(offer, path: path, destination: output, pin: pin), seconds: 86_400)
         } else { return nil }
         let attributes = try FileManager.default.attributesOfItem(atPath: output.path)

@@ -78,6 +78,7 @@ ROOT="$(cd "$ROOT" && pwd -P)"
 case "$ROOT" in
   "$HOME"/Library/Application*) echo "拒絕在真實資料夾下執行" >&2; exit 2 ;;
 esac
+export TATWO2_CLEANINSTALLTEST=1
 export TATWO_STAGING_ROOT="$ROOT"
 export TATWO_STAGING_SCRATCH_HOME="$ROOT/home"
 export HOME="$TATWO_STAGING_SCRATCH_HOME"

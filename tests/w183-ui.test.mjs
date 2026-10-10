@@ -1376,10 +1376,15 @@ test('W183 R8a interface: HandsBuild.swift unchanged; HandsBuildModel is the ada
     'func connect(deviceID: String?)']) assert.ok(iface.includes(name), name);
   assert.match(buildModel, /final class HandsBuildModel: ObservableObject, HandsBuildModeling, HandsBuildSeenApplying, HandsBuildLocalApplying \{/);
   // 畫面不直接碰現有流程：只經 HandsBuildModel（按鈕一律 HandsBuildUIIntent.…send(to: model)）。
-  assert.doesNotMatch(code(build), /HandsSetup\.shared|HandsRemoteClient\.shared|HandsConnectFlow\.shared|HandsState\.shared|CloudflareAccountsStore\.shared|remote\.act\(|setup\.(runAll|login|chooseHost|confirmAuthorization)/);
-  // W183 R12（使用者 09-30 裁決：拿掉等級選擇）：面板沒有選等級的按鈕了（level( 不再送）；其他照舊。
+  assert.doesNotMatch(code(build), /HandsSetup\.shared|HandsRemoteClient\.shared|HandsState\.shared|CloudflareAccountsStore\.shared|remote\.act\(|setup\.(runAll|login|chooseHost|confirmAuthorization)/);
+  // W292：連線入口改為在設定呈現共用卡；卡片動作仍由原有 Context／Actions 提供。
+  assert.match(build, /HandsConnectSheetView\(card: card, context: \.live\(connectFlow/);
+  assert.match(build, /actions: \.live\(connectFlow\)/);
+  assert.match(build, /HandsConnectEntry\.shared\.tap\(valid:/);
+  assert.doesNotMatch(code(build), /connectFlow\.(connect|disconnect|reconnect|prepareConnectorCleanup)\(/);
+  // W183 R12：面板沒有選等級的按鈕（level( 不再送）；其他照舊。
   for (const intent of ['toggle(true)', 'toggle(false)', 'pickDevice(', 'loginCloudflare', 'loginCloudflareFor(', 'chooseZone(', 'subdomain(', 'apply',
-    'connect(nil)', 'connect(device.id)', 'unlockSafety(']) {
+    'connect(device.id)', 'unlockSafety(']) {
     assert.ok(build.includes(`HandsBuildUIIntent.${intent}`), intent);
   }
   assert.ok(!build.includes('HandsBuildUIIntent.level('), 'no level buttons on the panel (W183 R12)');
@@ -1543,7 +1548,9 @@ test('W183 R8a self-test w183ui covers node states, panel switching, one vs many
 test('W183 R8a review: the build card is a sensitive surface for Computer Use; secondary can reject a pending authorization; provisional grants are not connected', () => {
   // 1. Computer Use：卡片在畫面上＝以 TATWO 自己為目標一律拒絕（跟私訊框授權頁同一道閘門）。
   const body = between(build, '    var body: some View {', '    // MARK: 那一列');
-  assert.match(body, /\.onAppear \{ HandsBuildScreenGate\.appeared\(screenToken\) \}\n\s*\.onDisappear \{ HandsBuildScreenGate\.disappeared\(screenToken\) \}/);
+  assert.match(body, /\.onAppear \{ HandsBuildScreenGate\.appeared\(screenToken\) \}/);
+  assert.match(body, /\.onDisappear \{\s*HandsBuildScreenGate\.disappeared\(screenToken\)/);
+  assert.match(body, /\.onChange\(of: workspaceVisible\)[\s\S]*HandsBuildScreenGate\.disappeared\(screenToken\)/);
   const gate = between(buildModel, 'enum HandsBuildScreenGate {', undefined);
   assert.match(gate, /shown\.insert\(token\)\n\s*BrowserSensitivePageGate\.pageAppeared\(\)/);
   assert.match(swift('New/HandsConnectDMView.swift'), /\|\| HandsBuildScreenGate\.isShown/);

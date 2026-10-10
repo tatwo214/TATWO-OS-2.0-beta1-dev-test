@@ -1,0 +1,14 @@
+W294c validation (isolated synthetic DOM; no live services)
+Baseline c03c1908; branch w294c/plugins.
+Frozen Node launcher SHA256 c71964b3be20df20bcdcf4781b1ac0f26232b76018f38213118f6bd8e97fb44b.
+Three frozen rounds: tests=81 pass=81 fail=0 skipped=0 each.
+w294-plugins=25; w208-tap-stress=14; w185-tap-model=14; w185-tap-ui=5; w183-r12-connect-ui=10; public-privacy=13.
+Swift frontend parse: 3 changed product files, exit=0.
+Swift build attempt 1: swiftbuild backend, missing metal executable.
+Swift build attempt 2: native backend, missing SwiftUIMacros.StateMacro; stopped retries.
+Both builds used cached dependencies with --skip-update --disable-automatic-resolution.
+Native w208tap/w185tap/w183connect/w292: NOT RUN, no new valid binary; copied baseline binary was never launched.
+Native launcher is provided for later validation with all HOME/LIVE_ROOT/staging paths isolated.
+No real ChatGPT, account, Keychain, live root, network, push or release.
+Full build output stays in the room's external verify artifacts.
+Final evidence privacy verification: public-privacy=13 pass=13 fail=0 skipped=0.

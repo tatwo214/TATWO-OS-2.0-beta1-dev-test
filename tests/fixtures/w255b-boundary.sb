@@ -1,0 +1,7 @@
+(version 1)
+(allow default)
+(deny process-exec (literal "/usr/bin/security"))
+(deny file-read* file-write* (regex #".*/Library/Keychains(/|$)"))
+(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc") (global-name "com.apple.securityd.system"))
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*") (remote unix-socket))

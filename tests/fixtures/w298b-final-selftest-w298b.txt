@@ -1,0 +1,59 @@
+W298B PASS production rejects unsigned fake without execution
+W298B PASS Codex signature-wrong result
+W298B PASS Codex signature-wrong adoption gate
+W298B PASS Codex signature-wrong rejected before execution
+W298B PASS Codex team-wrong result
+W298B PASS Codex team-wrong adoption gate
+W298B PASS Codex team-wrong rejected before execution
+W298B PASS Codex main-integrity result
+W298B PASS Codex main-integrity adoption gate
+W298B PASS Codex main-integrity rejected before execution
+W298B PASS Codex native-integrity result
+W298B PASS Codex native-integrity adoption gate
+W298B PASS Codex native-integrity rejected before execution
+W298B PASS Codex version-fail result
+W298B PASS Codex version-fail adoption gate
+W298B PASS Codex first-run-fail result
+W298B PASS Codex first-run-fail adoption gate
+W298B PASS post-adoption version failure restores previous
+W298B PASS Codex correct result
+W298B PASS Codex correct adoption gate
+W298B PASS original and bundled files remain immutable
+W298B PASS previous version retained
+W298B PASS atomic rollback points to old binary
+W298B PASS running conversation binary survives rollback
+W298B PASS rollback pin beats newer bundled or PATH runtime
+W298B PASS rollback pin still enforces signature identity
+W298B PASS Claude sdk-fail result
+W298B PASS Claude sdk-fail restores user launcher
+W298B PASS Claude sdk-fail records reason
+W298B PASS Claude signature-fail result
+W298B PASS Claude signature-fail restores user launcher
+W298B PASS Claude signature-fail records reason
+W298B PASS Claude post-sdk-fail result
+W298B PASS Claude post-sdk-fail restores user launcher
+W298B PASS Claude post-sdk-fail records reason
+W298B PASS Claude correct result
+W298B PASS Claude validated SDK adopts immutable managed binary
+W298B PASS Claude uses official update command
+W298B PASS Grok missing checksum stops without download or script
+W298B PASS daily check lights dot only and never installs
+W298B PASS daily check persists cadence and dot across restart
+W298B PASS no new versions clears dot without message
+W298B PASS real update button installs validated fake tarball
+W298B PASS updated row exposes retained rollback version
+W298B PASS proposal uses model names false updated
+W298B PASS rollback button visible false updated
+W298B PASS dot visibility false updated
+W298B PASS proposal uses model names false dot
+W298B PASS rollback button visible false dot
+W298B PASS dot visibility false dot
+W298B PASS proposal uses model names true updated
+W298B PASS rollback button visible true updated
+W298B PASS dot visibility true updated
+W298B PASS proposal uses model names true dot
+W298B PASS rollback button visible true dot
+W298B PASS dot visibility true dot
+W298B PASS real rollback button
+W298B PASS real rollback button restores previous version
+W298B SUMMARY failures=0 passed=58

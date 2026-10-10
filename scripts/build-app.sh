@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 # Read-only source completeness gate; no downloads, compiler, output or signing.
 if [[ "${1:-}" == "--check-inputs" ]]; then
-  inputs=(Package.swift scripts/tatwo-cef-bundle.sh scripts/stage-ipad-use-device.sh
+  inputs=(Package.swift App/Sources/TatwoFleetGate/main.swift scripts/tatwo-cef-bundle.sh scripts/stage-ipad-use-device.sh
     scripts/bundle-engines.sh scripts/bundle-cli-runtime.sh scripts/runtime-sign.py
     scripts/runtime-layer.sh scripts/runtime-layer.py scripts/runtime-layer.txt
     Apps/TatwoUltraworkMac/CEF/cef-runtime-arm64.json
@@ -13,7 +13,7 @@ if [[ "${1:-}" == "--check-inputs" ]]; then
     App/Sources/Tatwo2/Resources/os-upstream.md)
   for engine in claude codex grok; do inputs+=("Engines/$engine-sidecar/sidecar.mjs"); done
   inputs+=(Engines/model-capabilities.mjs Engines/claude-sidecar/package.json Engines/browser-mcp/server.mjs Engines/os-mcp/server.mjs scripts/impact.mjs
-    Engines/gbrain-adapter/server.mjs Engines/gbrain-adapter/service.mjs scripts/bundle-gbrain.py
+    Engines/gbrain-adapter/server.mjs Engines/gbrain-adapter/service.mjs Engines/gbrain-adapter/ssh-pins.mjs scripts/bundle-gbrain.py
     Engines/spotify-helper/Cargo.toml Engines/spotify-helper/Cargo.lock Engines/spotify-helper/src/main.rs
     Engines/spotify-helper/LICENSE-librespot scripts/bundle-spotify.py)
   inputs+=(Engines/chatgpt-hands/gateway.mjs Engines/chatgpt-hands/fsop.mjs Engines/chatgpt-hands/gateway.sb Engines/chatgpt-hands/cloudflared.sb Engines/chatgpt-hands/tunnel-guard.sh)
@@ -50,6 +50,7 @@ prepare_cef_runtime
 # Keep both layers bounded on the 16 GiB delivery host.
 JOBS="${TATWO2_BUILD_JOBS:-2}"
 swift build -c release --product TatwoCEFHelper --scratch-path .build-sol --jobs "$JOBS" -Xswiftc -num-threads -Xswiftc "$JOBS"
+swift build -c release --product TatwoFleetGate --scratch-path .build-sol --jobs "$JOBS" -Xswiftc -num-threads -Xswiftc "$JOBS"
 swift build -c release --product Tatwo2 --scratch-path .build-sol --jobs "$JOBS" -Xswiftc -num-threads -Xswiftc "$JOBS"
 BIN_PATH="$(swift build -c release --show-bin-path --scratch-path .build-sol)"
 
@@ -59,8 +60,10 @@ if [[ -e "$APP" ]]; then
 fi
 mkdir -p \
   "$CONTENTS/MacOS" \
+  "$CONTENTS/Helpers" \
   "$CONTENTS/Resources"
 cp "$BIN_PATH/Tatwo2" "$CONTENTS/MacOS/tatwo2"
+cp "$BIN_PATH/TatwoFleetGate" "$CONTENTS/Helpers/TatwoFleetGate"
 # 三家引擎的 sidecar 都進 bundle（正式 App 不能依賴 repo 路徑）
 for eng in claude codex grok; do
   cp -R "Engines/$eng-sidecar" "$CONTENTS/Resources/$eng-sidecar"
@@ -146,6 +149,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   python3 -E "$ROOT/scripts/bundle-spotify.py" finalize "$APP" "$SIGN_IDENTITY"
   python3 -E "$ROOT/scripts/runtime-sign.py" "$APP" "$SIGN_IDENTITY"
   bash "$ROOT/scripts/runtime-layer.sh" prepare "$APP"
+  codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$CONTENTS/Helpers/TatwoFleetGate"
   codesign --force --sign "$SIGN_IDENTITY" --timestamp=none "$APP"
 else
   echo "sign: ad-hoc（找不到開發憑證）"
@@ -153,6 +157,7 @@ else
   python3 -E "$ROOT/scripts/bundle-spotify.py" finalize "$APP" -
   python3 -E "$ROOT/scripts/runtime-sign.py" "$APP" -
   bash "$ROOT/scripts/runtime-layer.sh" prepare "$APP"
+  codesign --force --sign - "$CONTENTS/Helpers/TatwoFleetGate"
   codesign --force --sign - "$APP"
 fi
 codesign --verify --deep --strict "$APP"

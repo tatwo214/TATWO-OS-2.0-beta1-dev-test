@@ -1,0 +1,32 @@
+✔ W61 exported tree passes safety scan and the exact personal-data grep (13484.123833ms)
+✔ W61 does not widen or rewrite any pre-existing allowlist entry (0.439541ms)
+✔ macOS account paths and user/name fields reject non-generic names (190.122ms)
+✔ generic accounts and documentation/loopback addresses and example hosts pass (26.50075ms)
+✔ private IPv4 ranges include boundaries and mapped IPv6, but not adjacent public ranges (414.293583ms)
+✔ named personal domains and SSH aliases are rejected (594.2845ms)
+✔ all four new categories enforce exact file + regex and every value on a line (620.021292ms)
+✔ personal identifiers come only from the private list, also when split into fragments; the list never ships (218.912625ms)
+✔ legacy email, token and key detection remains enforced (98.573375ms)
+✔ SSH wrappers fail before any command or state write when host is unset or empty (90.152958ms)
+✔ gateway label discovery uses product default, explicit override, or unique legacy registration (read-only) (106.887291ms)
+✔ public blocklist serialization preserves the original non-personal ad domain (6.124ms)
+✔ legacy V3 import directory discovery is local, unambiguous and prefers the new default (523.889916ms)
+✔ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (7138.031209ms)
+✔ native Codex catalog preserves new official ID and excludes hidden models without guessing capabilities (0.3875ms)
+✔ Claude native resolvedModel is authoritative and duplicate effort levels normalize once (0.083584ms)
+✔ W298b real installer gates fake registry and binary adoption, rollback, SDK and daily UI (15881.429625ms)
+✔ W298b selection, cancellation, renamed quota action and theme matrix (0.13725ms)
+✔ W298b changed Swift adds no hardcoded RGB or hexadecimal colors (24.000417ms)
+✔ W298b R1 failed Claude update restores full version tree and exact launcher (0.111791ms)
+✔ W298b R2 verification uses private snapshot despite source mutation (0.056583ms)
+✔ W298b R3 rollback validation waits for in-flight update (0.042084ms)
+✔ W298b R4 only user rollback records explicit version pin (0.349083ms)
+✔ W298b R5 failed current publication preserves exact previous pointer (0.050292ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 39551.047709

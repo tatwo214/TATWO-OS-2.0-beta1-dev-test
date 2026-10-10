@@ -877,9 +877,13 @@ enum EngineMemoryLinks {
               let pinned = record.pinnedHostKeyFingerprint, pinned.hasPrefix("SHA256:"),
               !record.user.isEmpty, !record.user.hasPrefix("-"),
               record.user.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return nil }
-        let knownPath = environment["TATWO2_SSH_KNOWN_HOSTS"] ?? environment["TATWO2_KNOWN_HOSTS"] ?? paths.home + "/.ssh/known_hosts"
+        var pinEnvironment = environment
+        if pinEnvironment["TATWO2_SSH_KNOWN_HOSTS"] == nil && pinEnvironment["TATWO2_KNOWN_HOSTS"] == nil {
+            pinEnvironment["TATWO2_SSH_KNOWN_HOSTS"] = paths.home + "/.ssh/known_hosts"
+        }
+        guard let lines = try? DeviceFleetSSHPins.lines(for: record, registry: DeviceRegistry(environment: pinEnvironment)) else { return nil }
         var match: (key: String, algorithm: String)?
-        for line in (try? String(contentsOfFile: knownPath, encoding: .utf8))?.split(separator: "\n") ?? []
+        for line in lines
             where !line.hasPrefix("#") && !line.hasPrefix("@") {
             let parts = line.split(whereSeparator: \.isWhitespace)
             guard parts.count >= 3 else { continue }
@@ -1066,7 +1070,7 @@ enum EngineMemoryLinks {
 
     @discardableResult
     static func run(_ executable: String, _ arguments: [String], in directory: URL? = nil,
-                    environment: [String: String]? = nil, timeout: TimeInterval = 60) -> (status: Int32, output: String) {
+                    environment: [String: String]? = nil, timeout: TimeInterval = 60, captureDiagnostics: Bool = false) -> (status: Int32, output: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -1076,7 +1080,7 @@ enum EngineMemoryLinks {
         process.environment = env
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        process.standardError = captureDiagnostics ? pipe : FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return (-1, "") }
         let deadline = DispatchSource.makeTimerSource(queue: .global(qos: .utility))

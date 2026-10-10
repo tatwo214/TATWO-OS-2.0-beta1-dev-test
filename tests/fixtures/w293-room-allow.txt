@@ -1,0 +1,12 @@
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm # Explicit owned mock switch in browser and every child launch; keep deny list intact.
+Package.swift # Link Security for the staging-only CEF native certificate/credential read boundary in the bridge and Helpers.
+script/tatwo2-staging-launcher.c # Staging-only re-exec exposes owned flag in OS process argv before payload load.
+App/Sources/Tatwo2/Facade/TestKeychainBoundary.swift # Disable all six native Keychain entry points for staging, including release.
+App/Sources/Tatwo2/Browser/BrowserPasswordVault.swift # Disable staging LocalAuthentication prompts before creating LAContext.
+App/Sources/Tatwo2/Facade/GitHubAccounts.swift # Disable staging gh auth subprocesses, which bypass native API wrappers.
+App/Sources/Tatwo2/Facade/PrimaryTransfer.swift # Disable staging signing identity inventory via security.
+App/Sources/Tatwo2/New/IPadUseController.swift # Disable staging device signing identity inventory via security.
+App/Sources/Tatwo2/Facade/EngineLogin.swift # Disable real staging Claude CLI auth/status; isolated synthetic login fixtures remain available.
+App/Sources/Tatwo2/Engine/ClaudeSidecar.swift # Disable staging Claude SDK subprocess authentication, which is outside Swift wrappers.
+tests/w293-mockkeychain.test.mjs # Compiled activation, denial, argv and formal baseline regression tests.
+tests/fixtures/w293-* # Disposable native CEF/cookie/form system probes and audited evidence; no real credentials.

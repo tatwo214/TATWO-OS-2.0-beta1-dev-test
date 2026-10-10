@@ -121,7 +121,14 @@ enum UIProbe {
     /// W170：主視窗畫成 PNG（App 自己畫自己，不需要螢幕錄製權限；螢幕截不到時的自測用，例如 mini 沒接螢幕）。
     /// 檔案固定寫到暫存資料夾，不接受外部路徑。
     private static func snapshot() -> [String: Any] {
-        guard let window = NSApp.windows.filter({ $0.isVisible && $0.contentView != nil })
+        let capture = DMSecretCodeView.holdForCapture()
+        defer { DMSecretCodeView.releaseCapture(capture) }
+        let visible = NSApp.windows.filter { $0.isVisible }
+        guard DeviceFlowSession.shared.active == nil,
+              !visible.contains(where: { WindowCaptureShield.shared.isShielding($0) || $0.sharingType == .none }) else {
+            return ["error": "sensitive_window_open", "message": "配對窗或敏感卡片開著，無法拍圖；請先收起。"]
+        }
+        guard let window = visible.filter({ $0.contentView != nil && !WindowCaptureShield.shared.isShielding($0) })
                 .max(by: { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }),
               let view = window.contentView?.superview ?? window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return ["error": "no_window"] }

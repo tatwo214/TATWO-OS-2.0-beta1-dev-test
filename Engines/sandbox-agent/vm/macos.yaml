@@ -1,0 +1,9 @@
+base:
+- isolation.yaml
+- template:_images/macos-26
+memory: 8GiB
+disk: 80GiB
+video: {display: "default"}
+provision:
+- mode: system
+  file: {url: macos.sh}

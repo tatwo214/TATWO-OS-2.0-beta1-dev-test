@@ -327,6 +327,12 @@ private final class FixtureClock: @unchecked Sendable {
         let keyUp = DisplayKeyTap.MediaEvent.decode(subtype: 8, data1: (2 << 16) | (0x0b << 8))
         check(keyDown?.key == .brightnessUp && keyDown?.pressed == true && keyDown?.isRepeat == true && keyUp?.pressed == false &&
               DisplayKeyTap.MediaEvent.decode(subtype: 9, data1: 0) == nil, "system media key decode down repeat up")
+        let codeDown = DisplayKeyTap.MediaEvent.decode(keycode: 145, down: true, isRepeat: true)
+        let codeUp = DisplayKeyTap.MediaEvent.decode(keycode: 144, down: false, isRepeat: false)
+        check(codeDown == .init(key: .brightnessDown, pressed: true, isRepeat: true) &&
+              codeUp == .init(key: .brightnessUp, pressed: false, isRepeat: false) &&
+              DisplayKeyTap.MediaEvent.decode(keycode: 122, down: true, isRepeat: false) == nil,
+              "Apple keyboard brightness key codes 144/145 decode; F1 key code does not")
         check(MonitorControlDetector.running(in: ["app.monitorcontrol.MonitorControl"]) &&
               !MonitorControlDetector.running(in: ["app.example.fixture"]), "MonitorControl bundle detector")
         let query = IOAVTransport.packet(.brightness)

@@ -95,7 +95,7 @@ enum OSUpstream { static let overridePath = "unused" }
 test('D10 production plan recovery preserves content and requires new human confirmation', () => {
   swift(`${app('Chat/DistillSubmission.swift')}
 ${app('Chat/TatwoPlanArtifact.swift')}
-struct PRPlanReview: Codable, Equatable, Sendable {}
+struct PRPlanReview: Codable, Equatable, Sendable { var attempted = false; var submittedURL: URL? }
 @main struct Main { static func main() throws {
   var plan = TatwoPlanArtifactV1(threadID: UUID(), objective: "fixture", sections: [.init(title: "做什麼", body: "test")], state: .confirmed, kind: "pr")
   plan.executionTurnID = "fixture-turn"
@@ -256,7 +256,7 @@ test('D10 actual live/plans loader recovers only on canvas load with no active t
   const root = fs.mkdtempSync(join(tmpdir(), 'w29b-plan-load-'));
   swift(`${app('Chat/DistillSubmission.swift')}
 ${app('Chat/TatwoPlanArtifact.swift')}
-struct PRPlanReview: Codable, Equatable, Sendable {}
+struct PRPlanReview: Codable, Equatable, Sendable { var attempted = false; var submittedURL: URL? }
 final class ChatLiveEngine {
  struct Store { let url: URL }
  let store: Store

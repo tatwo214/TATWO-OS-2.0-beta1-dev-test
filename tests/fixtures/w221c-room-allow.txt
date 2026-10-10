@@ -1,0 +1,10 @@
+App/Sources/Tatwo2/Facade/DeviceFleetRoster.swift
+App/Sources/Tatwo2/Facade/DeviceRegistry.swift
+App/Sources/Tatwo2/Facade/DeviceDispatch.swift
+App/Sources/Tatwo2/Facade/W221c*Acceptance.swift
+App/Sources/Tatwo2/Facade/DeviceFleet*Acceptance.swift
+tests/w221c-*.test.mjs
+tests/fixtures/w221c-room-allow.txt
+App/Sources/Tatwo2/DM/DeviceFlowSession.swift
+App/Sources/Tatwo2/New/DeviceFleetPresentation.swift
+tests/w187-*.test.mjs

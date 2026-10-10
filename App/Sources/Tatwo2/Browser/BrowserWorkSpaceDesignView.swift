@@ -4,6 +4,7 @@ import Combine
 // MARK: - Registry projection (also compiled directly by the isolated test)
 @MainActor
 final class BrowserWorkSpaceStore: ObservableObject {
+    var downloadScope: String { "browser-\(ObjectIdentifier(self).hashValue)" }
     struct Space: Identifiable, Equatable {
         let id: Int
         var name: String
@@ -523,6 +524,7 @@ struct BrowserWorkSpaceDesignView: View {
             .onReceive(NotificationCenter.default.publisher(for: BrowserShortcutMap.changed)) { _ in
                 shortcutMap = BrowserGeneralSettings.load().shortcuts
             }
+            .modifier(BrowserDownloadSurface(scope: sidebarStore.downloadScope, persistent: true, floating: sidebarStore.focusMode && !sidebarStore.hoverRailShown && !sidebarStore.sidebarInteractionActive, showsCard: sidebarStore.focusMode && !sidebarStore.hoverRailShown && !sidebarStore.sidebarInteractionActive))
             .overlay { if tabSearchPresented { tabSearchOverlay } }
             .popover(isPresented: $embeddedSidebarPresented) {
                 BrowserWorkSpaceSidebarList(store: store)
@@ -856,7 +858,6 @@ struct BrowserWorkSpaceSidebarList: View {
     @State private var selectedDownloadID: String?
     @State private var hoveredDownloadID: String?
     @State private var downloadsPresented = false
-    @State private var downloadsContentHeight = BrowserSidebarMetrics.zero
     @State private var diagnosticsPresented = false
     @FocusState private var focusedField: Field?
     private enum Field: Hashable { case close(Int), folderName }
@@ -908,6 +909,11 @@ struct BrowserWorkSpaceSidebarList: View {
             if !store.threadScoped { spaceControls } // 聊天旁的分頁組跟著討論串走，不給手動切
         }
         .frame(maxHeight: .infinity)
+        .overlay(alignment: .bottomLeading) {
+            if !store.focusMode || store.hoverRailShown || store.sidebarInteractionActive { BrowserDownloadCard(scope: store.downloadScope).padding(.leading, 8).padding(.bottom, 40) }
+        }
+        .onChange(of: downloadsPresented) { _, shown in if shown { downloadStore.markDownloadsSeen() } }
+        .onChange(of: downloadStore.unreadCompletions) { _, _ in if downloadsPresented { downloadStore.markDownloadsSeen() } }
         .sheet(isPresented: $diagnosticsPresented) { BrowserDiagnosticsView() }
         // W184 G2d：借用的那一邊留著它自己的側欄（下載清單開著時）；不動主視窗的 store（兩邊是同一份 store）。
         .onChange(of: downloadsPresented || diagnosticsPresented || editingFolderID != nil) { _, active in
@@ -985,20 +991,13 @@ struct BrowserWorkSpaceSidebarList: View {
 
     private var spaceRow: some View {
         HStack(spacing: BrowserSidebarMetrics.rowHorizontalPadding) {
-            Button { downloadsPresented.toggle() } label: {
-                Image(systemName: "arrow.down.circle")
-                    .overlay(alignment: .topTrailing) {
-                        if !downloadStore.downloads.isEmpty {
-                            Circle().fill(LiquidGlassTokens.browserDownloadBadge)
-                                .frame(width: BrowserSidebarMetrics.downloadBadgeSize, height: BrowserSidebarMetrics.downloadBadgeSize)
-                                .offset(x: BrowserSidebarMetrics.downloadBadgeOffsetX, y: BrowserSidebarMetrics.downloadBadgeOffsetY)
-                                .accessibilityHidden(true)
-                        }
-                    }
-                    .frame(width: BrowserSidebarMetrics.footerControlSize, height: BrowserSidebarMetrics.footerControlSize)
-            }
-            .accessibilityLabel("瀏覽器下載")
-            .popover(isPresented: $downloadsPresented, arrowEdge: .bottom) { downloadsPopover }
+            ZStack {   // 10-07：有下載才出現、留到清除（空位保留）；往上開，往下開會擠出螢幕讓 NSPopover 重排當機
+                if !downloadStore.downloads.isEmpty {
+                    Button { downloadsPresented.toggle() } label: { BrowserDownloadIndicator(scope: store.downloadScope) }
+                        .accessibilityLabel("瀏覽器下載").accessibilityIdentifier("browser.downloads")
+                        .popover(isPresented: $downloadsPresented, arrowEdge: .top) { downloadsPopover }
+                }
+            }.frame(width: BrowserSidebarMetrics.footerControlSize, height: BrowserSidebarMetrics.footerControlSize)
             .background { guest?.mark?("downloads") }
             WorkspaceSpaceControls {
                     // W184 G2d：借用的那一邊（私訊框）：圓點不給編輯（右鍵不改名、不換色、不刪），點＝交給它（記下使用者選的空間再切）。
@@ -1049,8 +1048,8 @@ struct BrowserWorkSpaceSidebarList: View {
                 Button("清除紀錄", action: downloadStore.clearDownloads)
                     .disabled(!downloadStore.downloads.contains { $0.state.isTerminal })
             }
-            ScrollView {
-                VStack(alignment: .leading, spacing: BrowserSidebarMetrics.downloadsSpacing) {
+            // Height from the item count, not measured (a measured height fed into the popover frame can loop).
+            let list = VStack(alignment: .leading, spacing: BrowserSidebarMetrics.downloadsSpacing) {
                     if downloadStore.downloads.isEmpty { Text("尚無下載").foregroundStyle(LiquidGlassTokens.browserMutedInk) }
                     ForEach(["今天", "昨天", "Earlier"], id: \.self) { section in
                         let files = downloadStore.downloads.filter {
@@ -1066,9 +1065,8 @@ struct BrowserWorkSpaceSidebarList: View {
                         }
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { downloadsContentHeight = $0 }
-            }
-            .frame(height: min(max(downloadsContentHeight, BrowserSidebarMetrics.downloadsMinimumListHeight), BrowserSidebarMetrics.downloadsMaxListHeight))
+            if downloadStore.downloads.count > BrowserSidebarMetrics.downloadsScrollThreshold { ScrollView { list }.frame(height: BrowserSidebarMetrics.downloadsMaxListHeight) }
+            else { list.frame(minHeight: BrowserSidebarMetrics.downloadsMinimumListHeight, alignment: .topLeading) }
         }
         .font(.system(size: BrowserSidebarMetrics.downloadActionFontSize))
         .buttonStyle(.plain)
@@ -1125,6 +1123,8 @@ struct BrowserWorkSpaceSidebarList: View {
                 if downloadStore.canRetry(download) { Button("重試下載") { downloadStore.retry(download) } }
                 if download.done {
                     Button("快速預覽") { downloadStore.preview(download) }
+                }
+                if downloadStore.revealURL(download) != nil {
                     Button("在 Finder 顯示") { downloadStore.reveal(download) }
                 }
             }.font(.system(size: BrowserSidebarMetrics.downloadActionFontSize))
@@ -1133,7 +1133,7 @@ struct BrowserWorkSpaceSidebarList: View {
         .background(selected ? palette.surfaceBorder : .clear, in: RoundedRectangle(cornerRadius: BrowserSidebarMetrics.downloadRowCornerRadius))
         .onHover { hoveredDownloadID = $0 ? download.id : nil }
         .contextMenu {
-            Button("在 Finder 顯示") { downloadStore.reveal(download) }.disabled(!download.done)
+            Button("在 Finder 顯示") { downloadStore.reveal(download) }.disabled(downloadStore.revealURL(download) == nil)
             Button("快速預覽") { downloadStore.preview(download) }.disabled(!download.done)
             Button("暫停") { downloadStore.pause(download) }.disabled(!downloadStore.canPause(download))
             Button("繼續下載") { downloadStore.resume(download) }.disabled(!downloadStore.canResume(download))

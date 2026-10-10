@@ -17,6 +17,7 @@ final class DevicePairingHost: @unchecked Sendable {
         // 加入端自報的兩把公鑰指紋（舊版加入端沒有這兩欄，照樣相容）。
         var clientKeyFingerprint: String?
         var hostKeyFingerprint: String?
+        var fleet: String?
     }
 
     private struct PairResponse: Codable {
@@ -29,6 +30,8 @@ final class DevicePairingHost: @unchecked Sendable {
         // 本機自報的兩把公鑰指紋，讓加入端把主機／客戶端金鑰分開存。
         var hostKeyFingerprint: String?
         var clientKeyFingerprint: String?
+        var fleet: String?
+        var previewOnly: Bool?
         var mac: String?
     }
 
@@ -65,6 +68,7 @@ final class DevicePairingHost: @unchecked Sendable {
     }
 
     enum HostError: Error, LocalizedError {
+        case windowClosed
         case noLocalAddress
         case noPortAvailable
         case listenerStartTimedOut
@@ -72,6 +76,7 @@ final class DevicePairingHost: @unchecked Sendable {
 
         var errorDescription: String? {
             switch self {
+            case .windowClosed: "pairing_window_closed"
             case .noLocalAddress: "pairing_no_local_address"
             case .noPortAvailable: "pairing_no_port_available"
             case .listenerStartTimedOut: "pairing_listener_start_timed_out"
@@ -84,25 +89,49 @@ final class DevicePairingHost: @unchecked Sendable {
     private let environment: [String: String]
     private let queue = DispatchQueue(label: "ai.tatwo.tatwo2.device-pairing-host")
     private let stateLock = NSLock()
+    private let peerHostResolver: (NWEndpoint) -> String
     private var listener: NWListener?
     private var activeCode: TatwoDevicePairingCodeRecordV1?
     private var activeToken: UUID?
     private var failedAttempts = 0
+    private var fleetOffer: DeviceFleetPairOffer?
+    private var restoringDeviceID: String?
     private(set) var port: Int?
     var onClose: (() -> Void)?
+    #if DEBUG
+    var afterConsume: (() -> Void)?
+    var enrollmentCheck: (() throws -> Void)?
+    var captureWire: ((Data, SymmetricKey) -> Void)?
+    #endif
 
     init(
         registry: DeviceRegistry? = nil,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        peerHostResolver: ((NWEndpoint) -> String)? = nil
     ) {
         self.environment = environment
         self.registry = registry ?? DeviceRegistry(environment: environment)
+        self.peerHostResolver = peerHostResolver ?? Self.remoteHost
     }
 
-    func startPairingWindow() throws -> (code: String, expiresAt: Date, listenAddress: String) {
+    func startPairingWindow(kind: DeviceFactionKind = .owner, factionID: String? = nil, restoringDeviceID: String? = nil) throws -> (code: String, expiresAt: Date, listenAddress: String) {
+        let fleet = DeviceFleetStore(registry: registry, environment: environment)
+        try fleet.requireOwner()
         cancelPairingWindow()
+        if let id = restoringDeviceID {
+            guard try DeviceIdentityStore.readLocal(entry: TatwoEntry(environment: environment))?.role == .primary else { throw DeviceFleetError.primaryRequired }
+            guard let roster = try fleet.current()?.roster, roster.revoked.contains(id), let member = roster.devices.first(where: { $0.id == id }),
+                  roster.kindForRestoration(member) == kind,
+                  (kind != .managed || factionID == member.groupID) else { throw DeviceFleetError.role }
+        }
+        if let roster = try fleet.current()?.roster, let id = restoringDeviceID,
+           !roster.canRestore(id) { throw DeviceFleetError.keyConflict }
+        self.restoringDeviceID = restoringDeviceID
         let identity = try DeviceIdentityStore.forLocalDevice(
             entry: TatwoEntry(environment: environment)).read()
+        if kind == .owner, identity.role != .primary, identity.primaryDeviceID != nil { throw DeviceFleetError.primaryRequired }
+        if kind == .sandbox, identity.role != .primary { throw DeviceFleetError.primaryRequired }
+        if kind == .managed, identity.role != .primary { throw DeviceFleetError.primaryRequired }
         let authority = identity.primaryDeviceID ?? identity.deviceID
         let code = try TatwoDevicePairingCodeEngineV1.mint(
             createdBy: identity.deviceID,
@@ -113,6 +142,8 @@ final class DevicePairingHost: @unchecked Sendable {
         guard let bindAddress = Self.bindAddress(environment: environment) else {
             throw HostError.noLocalAddress
         }
+        let offer = try fleet.makeOffer(kind: kind, factionID: factionID, host: bindAddress)
+        if kind != .owner, offer == nil { throw DeviceFleetError.primaryRequired }
 
         var lastFailure: Error?
         for candidatePort in Array(18800...18899).shuffled() {
@@ -150,6 +181,7 @@ final class DevicePairingHost: @unchecked Sendable {
                 activeCode = code
                 activeToken = token
                 failedAttempts = 0
+                fleetOffer = offer
                 port = candidatePort
                 stateLock.unlock()
                 candidate.start(queue: queue)
@@ -219,6 +251,20 @@ final class DevicePairingHost: @unchecked Sendable {
     }
 
     private func handle(_ data: Data, from connection: NWConnection, token: UUID) {
+        // This proof reveals no member information and never consumes the invitation.
+        if let hello = try? JSONDecoder().decode([String: String].self, from: data),
+           let nonce = hello["hello"], DevicePairingAuth.isValidNonce(nonce) {
+            let record = stateLock.withLock { activeToken == token ? activeCode : nil }
+            guard let record, record.expiresAt > Date(), record.consumedAt == nil,
+                  let key = DevicePairingAuth.key(code: record.seed, nonce: nonce),
+                  stateLock.withLock({ activeToken == token && activeCode == record && record.expiresAt > Date() }) else {
+                connection.cancel(); return
+            }
+            let proof = DevicePairingAuth.mac(key: key, label: "host-proof", fields: [nonce])
+            var reply = try! JSONEncoder().encode(["proof": proof]); reply.append(0x0A)
+            connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
         guard let request = try? JSONDecoder().decode(PairRequest.self, from: data),
               !request.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
@@ -253,7 +299,7 @@ final class DevicePairingHost: @unchecked Sendable {
               DevicePairingAuth.verify(mac: request.mac, key: key, label: "request", fields: DevicePairingAuth.requestFields(
                   nonce: nonce, publicKey: request.publicKey, name: request.name, user: request.user,
                   deviceID: request.deviceID, clientKeyFingerprint: request.clientKeyFingerprint,
-                  hostKeyFingerprint: request.hostKeyFingerprint))
+                  hostKeyFingerprint: request.hostKeyFingerprint, fleet: request.fleet))
         else {
             reject(connection, token: token, reason: "pairing_code_mismatch")
             return
@@ -266,27 +312,59 @@ final class DevicePairingHost: @unchecked Sendable {
             send(PairResponse(ok: false, reason: "pairing_window_closed"), to: connection, auth: auth)
             return
         }
+        let fleetRequestPreview = request.fleet.flatMap { Data(base64Encoded: $0) }.flatMap { try? JSONDecoder().decode(DeviceFleetPairRequest.self, from: $0) }
+        let previewOnly = fleetRequestPreview?.previewOnly == true
         let local: DeviceIdentity
+        let capturedRestoreID = restoringDeviceID
+        let capturedOffer = fleetOffer
         do {
             guard let identity = try DeviceIdentityStore.readLocal(entry: TatwoEntry(environment: environment))
             else { throw DeviceIdentityError.identityConflict }
             local = identity
-            activeCode = try TatwoDevicePairingCodeEngineV1.consume(
+            let previewAllowed = previewOnly && identity.role == .primary
+                && capturedOffer?.trust.localID == capturedOffer?.trust.primaryID
+                && capturedOffer.map { $0.faction.kind != .owner } == true
+            try TatwoDevicePairingCodeEngineV1.validate(seed: record.seed, against: record,
+                expectedPrimary: identity.primaryDeviceID ?? identity.deviceID,
+                expectedEpoch: UInt64(identity.epoch ?? 0), expectedCreator: capturedOffer?.member.id)
+            if !previewAllowed { activeCode = try TatwoDevicePairingCodeEngineV1.consume(
                 seed: record.seed,
                 record: record,
                 expectedPrimary: identity.primaryDeviceID ?? identity.deviceID,
-                expectedEpoch: UInt64(identity.epoch ?? 0))
+                expectedEpoch: UInt64(identity.epoch ?? 0),
+                expectedCreator: fleetOffer?.member.id) }
+            if previewOnly && !previewAllowed { throw DeviceFleetError.previewNotAllowed }
             stateLock.unlock()
         } catch {
             stateLock.unlock()
-            reject(connection, token: token, reason: error.localizedDescription, auth: auth)
+            reject(connection, token: token, reason: DeviceFleetReason.code(error) ?? error.localizedDescription, closeWindow: (error as? DeviceFleetError) == .previewNotAllowed, auth: auth)
             return
         }
 
+        #if DEBUG
+        afterConsume?()
+        #endif
         do {
-            let deviceID = try registry.pairingDeviceID(
+            let fleet = DeviceFleetStore(registry: registry, environment: environment)
+            try fleet.requireOwner()
+            try fleet.requireOwnerMember(local.deviceID)
+            if let restoreID = capturedRestoreID {
+                guard let roster = try fleet.current()?.roster,
+                      let target = roster.devices.first(where: { $0.id == restoreID }),
+                      roster.revoked.contains(restoreID), request.deviceID?.lowercased() == restoreID.lowercased(),
+                      try DeviceRegistry.fingerprint(publicKey: request.publicKey) == target.clientKeyFingerprint else {
+                    throw DeviceFleetError.keyConflict
+                }
+            }
+            var deviceID = try registry.pairingDeviceID(
                 publicKey: request.publicKey, requestedID: request.deviceID,
                 localDeviceID: local.deviceID)
+            if let roster = try fleet.current()?.roster, roster.revoked.contains(deviceID), capturedRestoreID != deviceID {
+                // Generic invitations create a fresh identity and default arrows, never revive the old row.
+                let fingerprint = try DeviceRegistry.fingerprint(publicKey: request.publicKey)
+                let lifecycle = "new-enrollment-" + deviceID + "-" + String(roster.version)
+                deviceID = DevicePairingClient.legacyHostID(host: fingerprint, name: lifecycle)
+            }
             let previous = registry.list().first { $0.id.lowercased() == deviceID }
             // 加入端自報的客戶端金鑰指紋必須跟它送來的公鑰一致，不一致就不授權、不配對。
             if let declared = request.clientKeyFingerprint {
@@ -297,42 +375,113 @@ final class DevicePairingHost: @unchecked Sendable {
             // 加入端的主機金鑰指紋只在格式正確時收下；收不到就留空，之後往它的隧道照樣擋。
             let peerHostKey = request.hostKeyFingerprint.flatMap { $0.hasPrefix("SHA256:") ? $0 : nil }
             let paired = DeviceFingerprintProvenance(source: "pairing", recordedAt: Date())
-            let fingerprint = try registry.authorize(publicKey: request.publicKey, deviceID: deviceID)
-            do {
-                _ = try registry.add(
-                    id: deviceID,
-                    name: request.name,
-                    host: Self.remoteHost(connection.endpoint),
-                    user: request.user ?? NSUserName(),
-                    sshPort: 22,
-                    publicKeyFingerprint: fingerprint,
-                    workdirMap: previous?.workdirMap ?? [:],
-                    lanHost: previous?.lanHost,
-                    role: previous?.role,
-                    epoch: previous?.epoch,
-                    hostKeyFingerprint: peerHostKey ?? previous?.hostKeyFingerprint,
-                    clientKeyFingerprint: fingerprint,
-                    hostKeyFingerprintSource: peerHostKey == nil
-                        ? previous?.hostKeyFingerprintSource : paired,
-                    clientKeyFingerprintSource: paired)
-            } catch {
-                // A failed re-pair must not revoke the previously authorized device.
-                if previous == nil { try? registry.removeAuthorizedKey(deviceID: deviceID) }
-                throw error
+            var offer = capturedOffer
+            let fleetRequest: DeviceFleetPairRequest?
+            if let raw = request.fleet {
+                guard let data = Data(base64Encoded: raw),
+                      let decoded = try? JSONDecoder().decode(DeviceFleetPairRequest.self, from: data) else {
+                    throw DeviceFleetError.malformed
+                }
+                fleetRequest = decoded
+            } else { fleetRequest = nil }
+            let enrolled = try fleet.trust() != nil
+            if (offer != nil || enrolled), fleetRequest == nil {
+                throw DeviceFleetError.consentRequired
+            }
+            if let offer, offer.faction.kind != .owner {
+                guard fleetRequest?.kind == offer.faction.kind, fleetRequest?.consent == true else {
+                    throw DeviceFleetError.consentRequired
+                }
+            }
+            let fingerprint = try DeviceRegistry.fingerprint(publicKey: request.publicKey)
+            var member: DeviceFleetMember?
+            if let currentOffer = offer, let fleetRequest {
+                guard fleetRequest.kind == currentOffer.faction.kind,
+                      try DeviceRegistry.fingerprint(publicKey: fleetRequest.hostPublicKey) == peerHostKey else {
+                    throw DeviceFleetError.keyConflict
+                }
+                let kind = currentOffer.faction.kind
+                let row = DeviceFleetMember(id: deviceID, name: DeviceFleetName.clean(request.name), factionID: currentOffer.faction.id,
+                    role: kind == .owner ? .secondary : (kind == .managed ? .managed : .sandbox),
+                    clientKeyFingerprint: fingerprint, hostKeyFingerprint: peerHostKey,
+                    clientPublicKey: request.publicKey, hostPublicKey: fleetRequest.hostPublicKey,
+                    endpoints: [.init(kind: .lan, host: peerHostResolver(connection.endpoint))],
+                    user: request.user ?? NSUserName())
+                try row.validate()
+                if let roster = try fleet.current()?.roster {
+                    guard !roster.devices.contains(where: { previous in
+                        previous.id == row.id && (previous.role == .sandbox ? .sandbox
+                            : roster.factions.first { $0.id == previous.factionID }?.kind) != kind
+                    }) else {
+                        throw DeviceFleetError.reverseEnrollment
+                    }
+                    guard !roster.devices.contains(where: { $0.id != row.id && !roster.revoked.contains($0.id) &&
+                        ($0.clientKeyFingerprint == row.clientKeyFingerprint || $0.hostKeyFingerprint == row.hostKeyFingerprint)
+                    }) else { throw DeviceFleetError.keyConflict }
+                }
+                member = row
+
+            }
+            // Closing or replacing the window is serialized with all persistent side effects.
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            guard activeToken == token, activeCode?.seed == record.seed, record.expiresAt > Date() else {
+                throw HostError.windowClosed
+            }
+            try fleet.pairingTransaction {
+                if let member, var currentOffer = offer {
+                    if currentOffer.trust.localID == currentOffer.trust.primaryID {
+                        let restore = capturedRestoreID == member.id
+                        if previewOnly {
+                            guard member.role != .secondary || currentOffer.faction.kind != .owner else { throw DeviceFleetError.role }
+                            currentOffer.envelope = try fleet.previewAdmission(member, sender: local.deviceID, allowRePair: restore)
+                        } else {
+                            if let expected = fleetRequest?.previewDigest {
+                                let preview = try fleet.previewAdmission(member, sender: local.deviceID, allowRePair: restore)
+                                let slice = try JSONDecoder().decode(DeviceFleetPayload.self, from: preview.body).slice!
+                                guard try DeviceFleetStore.consentDigest(slice) == expected else { throw DeviceFleetError.staleProposal }
+                            } else if currentOffer.faction.kind != .owner {
+                                // Protocol callers may explicitly consent; the UI always binds its exact preview.
+                                guard fleetRequest?.consent == true else { throw DeviceFleetError.consentRequired }
+                            }
+                            try fleet.approve([member], sender: local.deviceID, allowRePair: restore)
+                            currentOffer.envelope = try fleet.delivery(for: member.id)
+                        }
+                    } else {
+                        // Pending membership has no SSH authority before MAIN signs it.
+                        guard !previewOnly else { throw DeviceFleetError.primaryRequired }
+                        try fleet.queue(member)
+                    }
+                    offer = currentOffer
+                    #if DEBUG
+                    try enrollmentCheck?()
+                    #endif
+                } else {
+                    guard !previewOnly, try fleet.trust() == nil else { throw DeviceFleetError.consentRequired }
+                    _ = try registry.authorize(publicKey: request.publicKey, deviceID: deviceID)
+                    _ = try registry.add(id: deviceID, name: DeviceFleetName.clean(request.name),
+                        host: peerHostResolver(connection.endpoint), user: request.user ?? NSUserName(),
+                        sshPort: 22, publicKeyFingerprint: fingerprint, workdirMap: previous?.workdirMap ?? [:],
+                        hostKeyFingerprint: peerHostKey, clientKeyFingerprint: fingerprint,
+                        hostKeyFingerprintSource: peerHostKey.map { _ in paired }, clientKeyFingerprintSource: paired)
+                }
+                guard record.expiresAt > Date() else { throw TatwoDevicePairingErrorV1.codeExpired }
             }
             let response = PairResponse(
                 ok: true,
                 deviceID: deviceID,
-                hostName: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
-                hostUser: NSUserName(),
+                hostName: offer?.faction.kind != nil && offer?.faction.kind != .owner
+                    ? offer?.faction.managerDisplayName : Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
+                hostUser: offer?.faction.kind != nil && offer?.faction.kind != .owner ? "manager" : NSUserName(),
                 hostDeviceID: local.deviceID,
                 hostKeyFingerprint: DeviceRegistry.localHostKeyFingerprint(environment: environment),
-                clientKeyFingerprint: DeviceRegistry.localClientKeyFingerprint(environment: environment))
+                clientKeyFingerprint: DeviceRegistry.localClientKeyFingerprint(environment: environment),
+                fleet: try offer.map { try JSONEncoder().encode($0).base64EncodedString() }, previewOnly: previewOnly)
             send(response, to: connection, auth: auth) { [weak self] in
-                self?.finishCurrentWindow(token: token)
+                if !previewOnly { self?.finishCurrentWindow(token: token) }
             }
         } catch {
-            send(PairResponse(ok: false, reason: error.localizedDescription), to: connection, auth: auth) { [weak self] in
+            send(PairResponse(ok: false, reason: DeviceFleetReason.code(error) ?? error.localizedDescription), to: connection, auth: auth) { [weak self] in
                 self?.finishCurrentWindow(token: token)
             }
         }
@@ -367,18 +516,27 @@ final class DevicePairingHost: @unchecked Sendable {
         completion: (() -> Void)? = nil
     ) {
         var response = response
+        // Refusals contain only the protocol reason, never any member fields.
+        if !response.ok { response = PairResponse(ok: false, reason: response.reason) }
         if let auth {
             response.mac = DevicePairingAuth.mac(key: auth.key, label: "response", fields: DevicePairingAuth.responseFields(
                 nonce: auth.nonce, ok: response.ok, deviceID: response.deviceID, hostName: response.hostName,
                 hostUser: response.hostUser, hostDeviceID: response.hostDeviceID,
                 hostKeyFingerprint: response.hostKeyFingerprint,
-                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason))
+                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason, fleet: response.fleet, previewOnly: response.previewOnly))
         }
         guard var data = try? JSONEncoder().encode(response) else {
             connection.cancel()
             completion?()
             return
         }
+        if let auth, response.ok {
+            guard let sealed = try? DevicePairingAuth.sealResponse(data, key: auth.key) else { connection.cancel(); completion?(); return }
+            data = sealed
+        }
+        #if DEBUG
+        if let auth { captureWire?(data, auth.key) }
+        #endif
         data.append(0x0A)
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
@@ -410,6 +568,7 @@ final class DevicePairingHost: @unchecked Sendable {
         activeCode = nil
         activeToken = nil
         failedAttempts = 0
+        fleetOffer = nil
         port = nil
         let callback = notify ? onClose : nil
         stateLock.unlock()

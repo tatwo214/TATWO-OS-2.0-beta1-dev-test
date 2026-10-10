@@ -1,0 +1,13 @@
+App/Sources/Tatwo2/Facade/ChangeProposalStore.swift
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/W244ProposalAcceptance.swift
+App/Sources/Tatwo2/Facade/W245MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W246TailAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+Engines/claude-sidecar/sidecar.mjs
+Engines/codex-sidecar/sidecar.mjs
+tests/w246-tail.test.mjs
+tests/fixtures/w246-room-allow.txt

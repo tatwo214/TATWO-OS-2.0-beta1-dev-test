@@ -373,11 +373,14 @@ extension HandsUIAcceptance {
         check(renamed && aiKept && !ChatGPTHandsService.safetyStopped(paths),
               "W183 R6a 審查 安全停機先鎖再停：預寫的那份改名成鎖（磁碟滿也改得了名）；助理的重試不解除，使用者的「重試」才解除",
               "renamed=\(renamed) aiKept=\(aiKept)")
-        // ② 改名、寫檔都不行（資料夾不能寫）：把預寫的那份改成唯讀，重開 App 照樣鎖著；這個行程也記著。
+        // ② 用隔離目錄占住落點，確定改名與寫檔都失敗；原子寫入會重設父目錄權限，不能只靠 chmod。
+        // 移除占位後才驗磁碟鎖，避免占位本身被當成鎖。
         _ = ChatGPTHandsService.armSafety(paths)
-        chmod(paths.appDir.path, 0o500)
+        try FileManager.default.createDirectory(at: stopURL, withIntermediateDirectories: false)
         let full = ChatGPTHandsService(dependencies: deps)
         full.debugSafetyStop()
+        let fallbackReadOnly = (try FileManager.default.attributesOfItem(atPath: armedURL.path)[.posixPermissions] as? NSNumber)?.intValue == 0o400
+        try FileManager.default.removeItem(at: stopURL)
         full.debugEvaluate()
         let memoryLocked = full.debugPhase == .failed(ChatGPTHandsService.tamperedText)
         chmod(paths.appDir.path, 0o700)
@@ -387,9 +390,9 @@ extension HandsUIAcceptance {
             && !FileManager.default.fileExists(atPath: stopURL.path)
         restarted.retry()
         restarted.debugEvaluate()
-        check(memoryLocked && diskLocked && !ChatGPTHandsService.safetyStopped(paths),
+        check(fallbackReadOnly && memoryLocked && diskLocked && !ChatGPTHandsService.safetyStopped(paths),
               "W183 R6a 審查 鎖寫不進去（資料夾不能寫、磁碟滿）：預寫的那份改成唯讀，重開 App 照樣鎖著；「重試」才解除",
-              "memory=\(memoryLocked) disk=\(diskLocked)")
+              "memory=\(memoryLocked) disk=\(diskLocked) readOnly=\(fallbackReadOnly)")
         // ③ 讀標記出錯（權限）＝當成鎖著（fail closed），不當成沒鎖。④ App 當掉留下的預寫檔（可寫）不算鎖（當掉後照樣自動續跑）。
         chmod(paths.appDir.path, 0o000)
         let unreadable = ChatGPTHandsService.safetyState(paths)

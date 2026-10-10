@@ -1,0 +1,36 @@
+W302b baseline: cherry-picked a0a44f75 (original e85e67d4) on 31544a71.
+Command: node --test --test-timeout=60000 tests/w177-chatgpt-space.test.mjs
+Observed 81 reported entries: 54 pass, 26 fail, 1 cancelled file-level entry.
+The file has 80 actual tests; unfinished polling kept the process alive; this room ended its own baseline run after all 80 results.
+Causes: 19 completion timeouts; 7 node.querySelectorAll TypeErrors.
+First-round completion exits: ChatGPTTap.swift:2463 (page-only tick); ChatGPTTap.swift:2527 (poll text only, no finished exit).
+First-round DOM exception: ChatGPTTap.swift:2149 (unconditional node.querySelectorAll).
+Three EOF-only tests contradict the no-early-completion requirement: baseline w177 lines 463, 551, 2020.
+Their original assertions are retained; each now asserts unfinished EOF before an explicit finished server response.
+
+tests/w177-chatgpt-space.test.mjs:422 | completion timeout | pod script: send types into the page, swaps the model and streams v1 deltas
+tests/w177-chatgpt-space.test.mjs:463 | completion timeout | pod script: legacy full-message stream still shows the growing answer
+tests/w177-chatgpt-space.test.mjs:483 | DOM TypeError | pod script: when the stream cannot be parsed, the answer comes from the page and the id from the URL
+tests/w177-chatgpt-space.test.mjs:551 | completion timeout | pod script: after a stream_handoff, a follow-up event stream from the page is parsed for the same turn
+tests/w177-chatgpt-space.test.mjs:626 | completion timeout | pod script: a new chat switches the page to Chat (not Work) and the chosen effort is applied
+tests/w177-chatgpt-space.test.mjs:653 | completion timeout | pod script: model variants merge into one effort slider, Work-only models are hidden, and the page choice is reported
+tests/w177-chatgpt-space.test.mjs:696 | DOM TypeError | pod script: regenerate goes through "Switch model" and presses "Try again" in its menu
+tests/w177-chatgpt-space.test.mjs:764 | completion timeout | pod script: attachments are handed to the page's own file input before sending
+tests/w177-chatgpt-space.test.mjs:790 | completion timeout | pod script: tools, home suggestions and GPTs are read; a tool rides along as system_hints; a GPT chat opens /g/<id> first
+tests/w177-chatgpt-space.test.mjs:844 | completion timeout | pod script: picker v2 turns versions × intelligence presets into the web's menu and maps the page choice back
+tests/w177-chatgpt-space.test.mjs:899 | completion timeout | pod script: every message of a temporary chat carries history_and_training_disabled; normal chats do not
+tests/w177-chatgpt-space.test.mjs:922 | completion timeout | pod script W184 G3c: a temporary send with a non-string body is read as text, flagged, confirmed, and only then sent
+tests/w177-chatgpt-space.test.mjs:963 | DOM TypeError | pod script W184 G3c: a temporary turn the page completes without our send path is a failure, never a conversation
+tests/w177-chatgpt-space.test.mjs:1198 | DOM TypeError | pod script: regenerating with another preset swaps the model on the page's own request
+tests/w177-chatgpt-space.test.mjs:1312 | completion timeout | pod script: sending after switching versions (or editing) continues from the chosen node
+tests/w177-chatgpt-space.test.mjs:1335 | completion timeout | pod script: a new chat in a project is sent from the project page
+tests/w177-chatgpt-space.test.mjs:1412 | DOM TypeError | pod script: retrying with a model that has no reasoning effort drops the page's effort
+tests/w177-chatgpt-space.test.mjs:2020 | completion timeout | pod script: the old /backend-api/conversation send path is intercepted too, and project sends carry conversation_mode
+tests/w177-chatgpt-space.test.mjs:2130 | completion timeout | pod script: a handed-off answer is polled from the conversation until it finishes
+tests/w177-chatgpt-space.test.mjs:2167 | completion timeout | pod script: an empty send stream with a known conversation falls back to polling the conversation
+tests/w177-chatgpt-space.test.mjs:2191 | DOM TypeError | pod script: a placeholder on the page ("Pro thinking") does not end an empty-stream turn; the server answer does
+tests/w177-chatgpt-space.test.mjs:2224 | DOM TypeError | pod script: the stop button vanishing while the send stream is still open and silent does not end the turn
+tests/w177-chatgpt-space.test.mjs:2321 | completion timeout | review fixes: a send that stays in Work is not sent; a Request-object send is still rewritten
+tests/w177-chatgpt-space.test.mjs:2355 | completion timeout | review fixes: text before a handoff is not completion; polling ignores the previous turn's finished answer
+tests/w177-chatgpt-space.test.mjs:2405 | completion timeout | send: replaces a restored draft inside the composer; fails loudly when it cannot type or has no composer
+tests/w177-chatgpt-space.test.mjs:2448 | completion timeout | project send: when the page stays on the project page, the new conversation is found in the project list and polled

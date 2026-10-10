@@ -1,0 +1,36 @@
+BUILD W298b-aiinstall @ 9139ad50 (lock wait 35s)
+free+inactive 37.1GB
+swift build exit=0 seconds=30
+== node tests/w298b-ai-install.test.mjs tests/w298a-ai-update.test.mjs tests/public-privacy.test.mjs
+ℹ tests 19
+ℹ pass 19
+ℹ fail 0
+ℹ skipped 0
+== selftest w298b
+PASS lines: 83
+W298B SUMMARY failures=0 passed=83
+selftest w298b exit=0
+== selftest w298a
+PASS lines: 39
+W298A PASS defer preserves config and dispatch remains blocked
+W298A SUMMARY failures=0 passed=39
+selftest w298a exit=0
+== selftest w214
+PASS lines: 98
+W214 SUMMARY failures=0 passed=98
+selftest w214 exit=0
+== selftest w288
+PASS lines: 49
+W288 SUMMARY checks=49 failures=0
+selftest w288 exit=0
+== selftest w189commands
+PASS lines: 230
+W189COMMANDS F4 SUMMARY checks=4 failures=0
+W189COMMANDS F5 SUMMARY checks=16 failures=0
+W189COMMANDS F6 SUMMARY checks=6 failures=0
+W189COMMANDS F7 SUMMARY checks=8 failures=0
+W189COMMANDS F8 SUMMARY checks=23 failures=0
+W189COMMANDS S2 SUMMARY checks=15 failures=0
+W189COMMANDS S6 SUMMARY checks=3 failures=0
+W189COMMANDS SUMMARY checks=230 failures=0
+selftest w189commands exit=0

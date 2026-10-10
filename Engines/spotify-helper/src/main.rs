@@ -84,6 +84,36 @@ fn emit(event: &str, extra: serde_json::Value) {
     println!("{object}");
 }
 
+fn registration_timeout(session: &Session, registered: &mut bool, resume: bool, name: &str) -> Option<serde_json::Value> {
+    if *registered || session.is_invalid() { return None; }
+    *registered = true;
+    Some(serde_json::json!({ "device": name, "device_id": session.device_id(), "resume": resume, "unconfirmed": true }))
+}
+
+type SpircFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+type ClusterStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<ClusterUpdate, Error>> + Send>>;
+
+fn reconnect(session: &Session, stop: impl FnOnce(), backoff: &mut Backoff, connected_at: Instant, reason: &str,
+    saved: &mut Option<Playback>, playback: Option<&Playback>, restoring: &mut Option<Playback>,
+    spirc: &mut Option<Spirc>, task: &mut Option<SpircFuture>, cluster: &mut Option<ClusterStream>,
+    active: &mut bool, owned: &mut bool, player_active: &mut bool, device: &mut Option<String>,
+    transfer_task: &mut Option<tokio::task::JoinHandle<Result<(), Error>>>, transferring: &mut Option<Transfer>,
+) -> tokio::time::Instant {
+    if saved.is_none() { *saved = resume_snapshot(*owned, playback); }
+    *restoring = None;
+    *task = None; *spirc = None; *cluster = None;
+    *active = false; *owned = false; *player_active = false; *device = None;
+    if let Some(task) = transfer_task.take() { task.abort(); }
+    if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::not_found("session disconnected"))); }
+    if !session.is_invalid() { session.shutdown(); }
+    stop();
+    // Reset only after a stable connection, not each brief successful handshake.
+    if connected_at.elapsed() >= Duration::from_secs(60) { backoff.reset(); }
+    let delay = backoff.next();
+    emit("reconnecting", serde_json::json!({ "delay": delay.as_secs(), "reason": reason }));
+    tokio::time::Instant::now() + delay
+}
+
 struct Options {
     cache: PathBuf,
     name: String,
@@ -112,6 +142,7 @@ struct Transfer {
     id: String,
     device_id: Option<String>,
     resume: bool,
+    reason: String,
 }
 
 enum Command {
@@ -133,6 +164,7 @@ fn parse_command(line: &str) -> Option<Command> {
             id: object["id"].as_str().unwrap_or("legacy").into(),
             device_id: object["device_id"].as_str().map(str::to_owned),
             resume: object["resume"].as_bool().unwrap_or(false),
+            reason: object["reason"].as_str().unwrap_or("").into(),
         })),
         "reconnect" => Some(Command::Reconnect),
         "cancel_resume" => Some(Command::CancelResume),
@@ -155,12 +187,21 @@ fn spawn_stdin_reader() -> mpsc::UnboundedReceiver<Command> {
     rx
 }
 
-// None means preserve the source's playing/paused state, never force play.
+fn transfer_options(reason: &str, playing: bool) -> Option<librespot::core::spclient::TransferRequest> {
+    let paused = match reason { "gesture" => "resume", "tab-open" | "retake" if !playing => "pause", _ => return None };
+    Some(librespot::core::spclient::TransferRequest { transfer_options: librespot::core::dealer::protocol::TransferOptions {
+        restore_paused: Some(paused.into()), ..Default::default()
+    } })
+}
+
 // Always resolve the target from the live session, not a previously connected session.
-async fn transfer_here(session: Session, from: Option<String>) -> Result<(), Error> {
+async fn transfer_here(session: Session, from: Option<String>, reason: String, playing: bool) -> Result<(), Error> {
     let own = session.device_id();
     let from = from.as_deref().filter(|id| !id.is_empty()).unwrap_or(own);
-    session.spclient().transfer(from, own, None).await?;
+    let options = transfer_options(&reason, playing);
+    let paused = options.as_ref().and_then(|o| o.transfer_options.restore_paused.as_deref());
+    emit("transfer_options", serde_json::json!({ "pause": paused == Some("pause"), "play": paused == Some("resume") }));
+    session.spclient().transfer(from, own, options.as_ref()).await?;
     Ok(())
 }
 
@@ -239,8 +280,6 @@ async fn main() {
     });
     let mut player_events = player.get_player_event_channel();
 
-    type SpircFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
-    type ClusterStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<ClusterUpdate, Error>> + Send>>;
     let mut spirc: Option<Spirc> = None;
     let mut spirc_task: Option<SpircFuture> = None;
     let mut connecting: Option<tokio::task::JoinHandle<Result<(Spirc, SpircFuture), Error>>> = None;
@@ -258,6 +297,7 @@ async fn main() {
     let mut transfer_accepted = false;
     let mut active_device: Option<String> = None;
     let mut active = false;
+    let mut active_playing = false;
     // SessionDisconnected is also emitted during unexpected shutdown.
     // Only a cluster naming another device revokes pre-disconnect ownership.
     let mut owned = false;
@@ -273,9 +313,11 @@ async fn main() {
     loop {
         tokio::select! {
             _ = connection_check.tick(), if spirc.is_some() => {
-                // Freeze before librespot's asynchronous disconnect cleanup can delay reconnection.
-                if session.is_invalid() && saved.is_none() {
-                    saved = resume_snapshot(owned, playback.as_ref());
+                // Do not wait for librespot's asynchronous disconnect cleanup to finish.
+                if session.is_invalid() {
+                    retry_at = reconnect(&session, || player.stop(), &mut backoff, connected_at, "session-invalid",
+                        &mut saved, playback.as_ref(), &mut restoring, &mut spirc, &mut spirc_task, &mut cluster_updates,
+                        &mut active, &mut owned, &mut player_active, &mut active_device, &mut transfer_task, &mut transferring);
                 }
             },
             _ = tokio::time::sleep_until(retry_at), if spirc.is_none() && connecting.is_none() && credentials.is_some() && login_task.is_none() => {
@@ -314,7 +356,7 @@ async fn main() {
                         } else {
                             let delay = backoff.next();
                             retry_at = tokio::time::Instant::now() + delay;
-                            emit("reconnecting", serde_json::json!({ "delay": delay.as_secs() }));
+                            emit("reconnecting", serde_json::json!({ "delay": delay.as_secs(), "reason": "connect-failed" }));
                         }
                     }
                 }
@@ -376,7 +418,7 @@ async fn main() {
                     active = false; owned = false; player_active = false; active_device = None;
                     backoff.reset();
                     retry_at = tokio::time::Instant::now();
-                    emit("reconnecting", serde_json::json!({ "delay": 0 }));
+                    emit("reconnecting", serde_json::json!({ "delay": 0, "reason": "requested" }));
                 }
                 Command::Quit => break,
                 }
@@ -394,19 +436,9 @@ async fn main() {
                 }
             },
             _ = async { spirc_task.as_mut().unwrap().await }, if spirc_task.is_some() => {
-                if saved.is_none() { saved = resume_snapshot(owned, playback.as_ref()); }
-                restoring = None;
-                spirc_task = None; spirc = None; cluster_updates = None;
-                active = false; owned = false; player_active = false; active_device = None;
-                if let Some(task) = transfer_task.take() { task.abort(); }
-                if let Some(request) = transferring.take() { transfer_result(&request, Err(Error::not_found("session disconnected"))); }
-                if !session.is_invalid() { session.shutdown(); }
-                player.stop();
-                // Reset only after a stable connection, not each brief successful handshake.
-                if connected_at.elapsed() >= Duration::from_secs(60) { backoff.reset(); }
-                let delay = backoff.next();
-                retry_at = tokio::time::Instant::now() + delay;
-                emit("reconnecting", serde_json::json!({ "delay": delay.as_secs() }));
+                retry_at = reconnect(&session, || player.stop(), &mut backoff, connected_at, "task-ended",
+                    &mut saved, playback.as_ref(), &mut restoring, &mut spirc, &mut spirc_task, &mut cluster_updates,
+                    &mut active, &mut owned, &mut player_active, &mut active_device, &mut transfer_task, &mut transferring);
             },
             update = async { cluster_updates.as_mut().unwrap().next().await }, if cluster_updates.is_some() => {
                 match update {
@@ -416,23 +448,23 @@ async fn main() {
                             emit("connected", serde_json::json!({ "device": options.name, "device_id": session.device_id(), "resume": saved.is_some() }));
                         }
                         let id = &update.cluster.active_device_id;
-                        if !id.is_empty() {
-                            active_device = Some(id.clone());
-                            active = id == session.device_id();
-                            owned = active;
-                            let web = update.cluster.device.get(id).is_some_and(|info|
-                                is_web_player(&info.name, &info.model));
-                            emit("device", serde_json::json!({ "active": active, "web": web }));
-                        }
+                        active_playing = !id.is_empty() && update.cluster.player_state.is_playing && !update.cluster.player_state.is_paused;
+                        active_device = (!id.is_empty()).then(|| id.clone());
+                        active = id == session.device_id();
+                        owned = active;
+                        let web = update.cluster.device.get(id).is_some_and(|info|
+                            is_web_player(&info.name, &info.model));
+                        emit("device", serde_json::json!({ "active": active, "web": web, "playing": active_playing }));
                     }
                     None => cluster_updates = None,
                     _ => {}
                 }
             },
-            _ = tokio::time::sleep_until(registration_deadline), if spirc.is_some() && !registered => {
-                log::warn!("device registration timed out");
-                session.shutdown();
-                registration_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            _ = tokio::time::sleep_until(registration_deadline), if spirc.is_some() && !registered && !session.is_invalid() => {
+                if let Some(connected) = registration_timeout(&session, &mut registered, saved.is_some(), &options.name) {
+                    log::warn!("registration unconfirmed; continuing");
+                    emit("connected", connected);
+                }
             },
             result = async { transfer_task.as_mut().unwrap().await }, if transfer_task.is_some() => {
                 transfer_task = None;
@@ -489,7 +521,7 @@ async fn main() {
                     transfer_accepted = active && player_active;
                     if !transfer_accepted {
                         let (session, from) = (session.clone(), active_device.clone());
-                        transfer_task = Some(tokio::spawn(transfer_here(session, from)));
+                        transfer_task = Some(tokio::spawn(transfer_here(session, from, request.reason.clone(), active_playing)));
                     }
                     transferring = Some(request);
                 }
@@ -526,6 +558,42 @@ async fn main() {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn live_registration_timeouts_continue_once_and_invalid_sessions_schedule_retries() {
+        let mut backoff = Backoff::default();
+        let (mut saved, mut restoring, mut spirc, mut device, mut transferring) = (None, None, None, None, None);
+        let playback = Playback { track: "fixture".into(), position_ms: 42, playing: true, updated: Instant::now() };
+        for delay in [1, 2, 4] {
+            let session = Session::new(SessionConfig::default(), None);
+            let mut task: Option<SpircFuture> = Some(Box::pin(std::future::pending()));
+            let mut cluster: Option<ClusterStream> = Some(Box::pin(futures_util::stream::empty()));
+            let (mut active, mut owned, mut player_active, mut stopped) = (true, true, true, false);
+            let mut transfer = Some(tokio::spawn(std::future::pending::<Result<(), Error>>()));
+            let mut registered = false;
+            let connected = registration_timeout(&session, &mut registered, false, "fixture-device").unwrap();
+            assert!(registered && connected["unconfirmed"] == true && connected["resume"] == false && connected["device_id"] == session.device_id());
+            for _ in 0..400 { assert!(registration_timeout(&session, &mut registered, false, "fixture-device").is_none() && !session.is_invalid() && task.is_some() && cluster.is_some() && !stopped); }
+            session.shutdown(); registered = false; assert!(registration_timeout(&session, &mut registered, false, "fixture-device").is_none());
+            let before = tokio::time::Instant::now();
+            let retry = reconnect(&session, || stopped = true, &mut backoff, Instant::now(), "session-invalid",
+                &mut saved, Some(&playback), &mut restoring, &mut spirc, &mut task, &mut cluster,
+                &mut active, &mut owned, &mut player_active, &mut device, &mut transfer, &mut transferring);
+            assert!(task.is_none() && cluster.is_none() && transfer.is_none() && spirc.is_none());
+            assert!(session.is_invalid() && stopped && !active && !owned && !player_active);
+            assert!(saved.is_some() && (retry - before).as_secs() == delay);
+        }
+    }
+
+    #[test]
+    fn automatic_idle_transfer_pauses_playing_transfer_preserves_and_gesture_plays() {
+        for reason in ["tab-open", "retake"] {
+            assert_eq!(serde_json::to_value(transfer_options(reason, false).unwrap()).unwrap()["transfer_options"]["restore_paused"], "pause");
+            assert!(transfer_options(reason, true).is_none());
+        }
+        assert_eq!(transfer_options("gesture", false).unwrap().transfer_options.restore_paused.as_deref(), Some("resume"));
+        assert_eq!(transfer_options("gesture", true).unwrap().transfer_options.restore_paused.as_deref(), Some("resume"));
+    }
+
     #[test]
     fn real_http_404_and_410_become_the_not_found_wire_flag() {
         for status in [404u16, 410u16] {
@@ -539,11 +607,12 @@ mod tests {
     #[test]
     fn stdin_json_transfer_preserves_request_target_and_resume_semantics() {
         let Some(Command::Transfer(request)) = parse_command(
-            r#"{"command":"transfer","id":"request-1","device_id":"live-device","resume":false}"#
+            r#"{"command":"transfer","id":"request-1","device_id":"live-device","resume":false,"reason":"tab-open"}"#
         ) else { panic!("expected transfer"); };
         assert_eq!(request.id, "request-1");
         assert_eq!(request.device_id.as_deref(), Some("live-device"));
         assert!(!request.resume);
+        assert_eq!(request.reason, "tab-open");
         let Some(Command::Transfer(request)) = parse_command(
             r#"{"command":"transfer","id":"resume-1","resume":true}"#
         ) else { panic!("expected resume"); };

@@ -116,7 +116,7 @@ enum DistillAcceptance {
               && !ChatLiveEngine.engineText("/蒸餾").contains("主題") && ChatLiveEngine.engineText("你好") == "你好"
               && ChatLiveEngine.engineText("/plg 開工").contains("OS 指令 /plg"),
               "engine-text-distill-translated")
-        check(ChatPageModel.slashCommandItems.contains { $0.cmd == "/蒸餾" && $0.title == "/蒸餾 — 把這條 session 整理成技能"
+        check(ChatPageModel.slashCommandItems.contains { $0.cmd == "/蒸餾" && $0.title == "/蒸餾 — 把這條對話整理成技能"
                   && $0.subtitle.contains("預設寫成技能") && !$0.subtitle.contains("skillet") },
               "slash-menu-new-copy")
         // 技能名稱照 Agent Skills：小寫英文、數字和 -；中文、大寫、底線、點、保留字都擋。

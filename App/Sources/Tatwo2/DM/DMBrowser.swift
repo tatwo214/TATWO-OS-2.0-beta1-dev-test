@@ -395,6 +395,7 @@ final class DMBrowser: ObservableObject {
 
     let store: GlobalDMStore
     /// W184 AB（GPT-6 複核 新發現 1–3）：開框＝交出一個開框請求（正式＝過桌面控制器的關口：倒放先立起、轉換中整個請求排隊）。
+    var presentsInPlace = false
     private let openRequest: @MainActor (GlobalDMOpenRequest) -> Void
     private let pageHost: any GlobalDMWebPageHosting
     private let podPage: @MainActor () -> (any DMBrowserPage)?
@@ -615,7 +616,7 @@ final class DMBrowser: ObservableObject {
     @discardableResult
     func openPod(purpose: DMBrowserPurpose = .chatgptDeveloper, currentURL: URL? = nil,
                  onCancel: (@MainActor () -> Void)? = nil) -> Bool {
-        guard store.isEnabled else { return false }
+        guard store.isEnabled || presentsInPlace else { return false }
         let observed = currentURL.flatMap { GlobalDMWebPageState.committed($0.absoluteString) }
         if let existing = tabs.first(where: { $0.kind == .pod }) {
             if pages[existing.id] == nil {
@@ -656,7 +657,7 @@ final class DMBrowser: ObservableObject {
     /// purpose＝配對頁（連線流程拿著 Pod 時開的）或登入視窗；onCancel＝使用者在還沒完成時關掉這個分頁（配對頁＝取消這次連線）。
     func adoptPopup(_ page: any DMBrowserPage, key: Int, purpose: DMBrowserPurpose = .chatgptPairing, expectedHost: String?,
                     onCancel: (@MainActor () -> Void)? = nil, onFull: (@MainActor () -> Void)? = nil) {
-        guard store.isEnabled else { page.close(); return }
+        guard store.isEnabled || presentsInPlace else { page.close(); return }
         if let existing = tabs.first(where: { $0.kind == .popup(key) }) {
             reveal(existing.id)
             return
@@ -1079,7 +1080,13 @@ final class DMBrowser: ObservableObject {
     /// W184 AB（GPT-6 複核 新發現 1–3）：整個操作是一個開框請求——倒放、轉換中排隊的是整個請求，框真的開好之後才切到 Browser、
     /// 把分頁叫到前面；出列前分頁被關掉＝撤銷（不再開框、不立起）；完成回呼記這一次開框之後的樣子。
     private func reveal(_ id: UUID) {
-        guard store.isEnabled else { return }
+        guard store.isEnabled || presentsInPlace else { return }
+        if presentsInPlace {
+            activeID = id
+            isShowingTabList = false
+            place(focus: true)
+            return
+        }
         if prior == nil { prior = BoxState(docked: store.isOpen, floating: store.isFloatingOpen, browsing: store.isBrowsing) }
         pendingOpens.removeValue(forKey: id)?.cancel()
         let request = GlobalDMOpenRequest(valid: { [weak self] in self?.tabs.contains { $0.id == id } == true },

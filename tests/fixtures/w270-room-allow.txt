@@ -1,0 +1,17 @@
+# W270 共用 A2 動畫；基準 dc6a2c27，產品淨增上限 300。
+App/Sources/Tatwo2/Browser/BrowserDownloadFlight.swift # 共用 Core Animation、點擊監聽、宿主/下載鈕登記、浮出鈕與隊列。
+App/Sources/Tatwo2/Browser/BrowserDownloadFeedback.swift # 按宿主顯示漸層進度、落地彈動、完成打勾與卡片。
+App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift # 僅首次事件與完成事件通知動畫；不動保留/暫存邏輯。
+App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift # 登記 Browser 網頁區，收起時浮出下載鈕。
+App/Sources/Tatwo2/Browser/EmbeddedBrowserView.swift # 登記 Coder 右側網頁區，沿用工具列下載鈕。
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # GPT Space 與私訊框 ChatGPT/Dots 共用 Pane 接入。
+App/Sources/Tatwo2/TAP/TapWebPod.swift # DEBUG 自測 Dots 固定到本機假站，避免連外。
+App/Sources/Tatwo2/Tatwo2App.swift # 正式 App 開始時初始化座標監聽，無已登記宿主的 CEF 視窗也可顯示卡片。
+App/Sources/Tatwo2/SelfTest.swift # 登記 w270dlfly 與真 CEF Application 初始化。
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift # 重用隔離 CEF 啟動，接入 W270 自測與本機對照稿。
+App/Sources/Tatwo2/Browser/W268DownloadAcceptance.swift # 按 A2 落地時序驗證舊回饋功能。
+App/Sources/Tatwo2/Browser/W270DownloadAcceptance.swift # 真 CEF、原生點擊、多畫面量測與截圖。
+tests/browser-workspace-design.test.mjs # 完整 SwiftUI 型別驗證納入真共用動畫元件，CEF 仍是簽章 double。
+tests/fixtures/w258-server.py # 本機對照稿、Dots 路由與窄版面回顯，避免假站快照誤判遮擋。
+tests/fixtures/w270-* # 環境、逐條報告、實測 JSON 與截圖證據。
+!Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm

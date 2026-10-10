@@ -23,6 +23,7 @@ struct OSDocumentsCard: View {
                                     : "正本在主設備；這台改了會送去主設備核准。") {
             if let onBack { OSChipButton(title: "‹ OS", action: onBack) }
         }
+        WorkPathRow()
         Group {
             if !TatwoEntry().exists {
                 VStack(alignment: .leading, spacing: 8) {

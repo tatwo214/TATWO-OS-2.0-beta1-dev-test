@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fixture, makePage, h, MCP, queryAll } from './w185-pod-fixture.mjs';
 
 const NAME = 'TATWO（Synthetic Device）';
-const original = { id: 'original-connector', name: NAME, url: MCP, authorized: false };
+const original = { id: 'asdk_app_original', name: NAME, url: MCP, authorized: false };
 
 // The same shared browser fixture that exercises the production connector safety chain.
 function connectorPage(records, { section = true, installed = [], paged = false, tab = false, deleteConfirmed = true, beforeConfirm } = {}) {
@@ -24,8 +24,8 @@ function connectorPage(records, { section = true, installed = [], paged = false,
         body.appendChild(dialog);
         beforeConfirm?.(pod);
       };
-      body.appendChild(h('main', {}, h('h1', {}, record.name), h('p', {}, record.url), h('p', {}, record.auth === 'none' ? 'Authentication: None' : 'Authentication: OAuth'),
-        ...(record.authorized ? [h('p', {}, 'Connected')] : []), connect, remove));
+      body.appendChild(h('main', {}, h('h1', {}, record.name), h('div', {}, h('h3', {}, 'About'), h('div', {}, h('p', {}, 'URL'), h('p', {}, record.url)), h('div', {}, h('p', {}, 'App ID'), h('p', {}, record.id))), h('p', {}, record.auth === 'none' ? 'Authentication: None' : 'Authentication: OAuth'),
+        ...(record.authorized ? [h('section', {}, h('h3', {}, 'Connected accounts'), h('p', {}, 'Synthetic account row'))] : []), connect, remove));
       return;
     }
     const create = h('button', {}, '+'); create.onclick = () => { clicks.create++; };
@@ -78,8 +78,8 @@ test('20 reconnect cycles use one connector; transient failures never press Conn
     if (round % 5 === 3) records[0].authorized = false;
     const inspected = (await pod.command({ cmd: 'connectorInspect', url: MCP, connectorID: original.id, detailPath: '/plugins/' + original.id, connected: false })).data;
     assert.equal(inspected.connector.id, original.id);
-    assert.equal(inspected.authorization, records[0].authorized ? 'connected' : 'needs_reconnect');
-    if (inspected.authorization === 'needs_reconnect') {
+    assert.equal(inspected.authorization, records[0].authorized ? 'connected' : 'not_connected');
+    if (inspected.authorization === 'not_connected') {
       const result = await pod.command({ cmd: 'connectorReconnect', url: MCP, connectorID: original.id, detailPath: '/plugins/' + original.id, connected: false });
       assert.equal(result.data.status, 'pressed');
     } else assert.deepEqual(clicks.connect, []);
@@ -97,7 +97,7 @@ test('namesake on another URL is reported as a conflict and cannot be reconnecte
 });
 
 test('cleanup deletes a same-URL numbered duplicate, never the active connector or another URL', async () => {
-  const duplicate = { ...original, id: 'duplicate-connector', name: NAME + '12', auth: 'none' };
+  const duplicate = { ...original, id: 'asdk_app_duplicate', name: NAME + '12', auth: 'none' };
   const { pod, records, clicks } = connectorPage([{ ...original, authorized: true }, duplicate]); await pod.signIn();
   const keep = await pod.command({ cmd: 'connectorDelete', url: MCP, connectorID: original.id, name: NAME, keeping: original.id });
   assert.notEqual(keep.data?.deleted, true);
@@ -184,7 +184,7 @@ test('installed namesake on another server stops creation even with an empty sel
 });
 
 test('closing the delete dialog is not success while the connector still appears in the complete list', async () => {
-  const duplicate = { ...original, id: 'duplicate-connector', name: NAME + '2' };
+  const duplicate = { ...original, id: 'asdk_app_duplicate', name: NAME + '2' };
   const { pod, records, clicks } = connectorPage([{ ...original, authorized: true }, duplicate], { deleteConfirmed: false });
   await pod.signIn();
   const result = await pod.command({ cmd: 'connectorDelete', url: MCP, connectorID: duplicate.id, name: duplicate.name, keeping: original.id });
@@ -194,7 +194,7 @@ test('closing the delete dialog is not success while the connector still appears
 
 test('scan exposes the actual connected detail state for migration instead of assuming installed means connected', async () => {
   const active = { ...original, name: NAME + '4', authorized: true };
-  const unfinished = { ...original, id: 'unfinished-connector', name: NAME + '2' };
+  const unfinished = { ...original, id: 'asdk_app_unfinished', name: NAME + '2' };
   const { pod, clicks } = connectorPage([active, unfinished]); await pod.signIn();
   const scan = (await pod.command({ cmd: 'connectorScan', url: MCP })).data;
   assert.equal(scan.listKnown, true);
@@ -204,7 +204,7 @@ test('scan exposes the actual connected detail state for migration instead of as
 
 
 test('W210-1 account A to B while connectorDelete waits never presses final Delete', async () => {
-  const duplicate = { ...original, id: 'duplicate-connector', name: NAME + '2' };
+  const duplicate = { ...original, id: 'asdk_app_duplicate', name: NAME + '2' };
   const { pod, clicks } = connectorPage([{ ...original, authorized: true }, duplicate], {
     beforeConfirm(p) { void p.sandbox.window.fetch('https://chatgpt.com/backend-api/me', {
       headers: { authorization: 'Bearer ACCOUNT-B-SYNTHETIC' },
@@ -217,7 +217,7 @@ test('W210-1 account A to B while connectorDelete waits never presses final Dele
 });
 
 test('account A to B and back to A while connectorDelete waits still voids the deletion', async () => {
-  const duplicate = { ...original, id: 'duplicate-connector', name: NAME + '2' };
+  const duplicate = { ...original, id: 'asdk_app_duplicate', name: NAME + '2' };
   const { pod, clicks } = connectorPage([{ ...original, authorized: true }, duplicate], {
     beforeConfirm(p) {   // the page wrapper records each header synchronously
       void p.sandbox.window.fetch('https://chatgpt.com/backend-api/me', { headers: { authorization: 'Bearer ACCOUNT-B-SYNTHETIC' } });

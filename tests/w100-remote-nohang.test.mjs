@@ -7,6 +7,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetRPCCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = resolve('App/Sources/Tatwo2');
 const source = name => readFileSync(join(app, name), 'utf8');
@@ -178,10 +179,9 @@ test('W100b f: SelfTest harness 等完成回呼，診斷入口不在主執行緒
 test('W100 e: 主佇列進 RemoteHostLink.call 會被擋，背景佇列照常回錯誤', { timeout: 180_000 }, () => {
   const root = testScratch('w100-nohang-');
   writeFileSync(join(root, 'Remote.swift'), source('Facade/RemoteHostLink.swift'));
-  writeFileSync(join(root, 'Stubs.swift', ), String.raw`
+  writeFileSync(join(root, 'Stubs.swift', ), fleetRPCCompileStubs() + String.raw`
 import Foundation
 
-enum DeviceRole: String, Codable, Sendable { case primary, secondary }
 enum DeviceStatusReader {
     static func registry(environment: [String: String]) -> [DeviceRecord] { [] }
 }
@@ -217,7 +217,8 @@ struct DeviceStatusProbe {
 `);
   const binary = join(root, 'probe');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
-    join(app, 'Facade/DeviceRegistry.swift'), join(root, 'Remote.swift'), join(root, 'Stubs.swift'),
+    join(app, 'Facade/DeviceRegistry.swift'),
+    ...['TatwoEntry', 'DeviceIdentity', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate'].map(name => join(app, 'Facade', name + '.swift')), join(root, 'Remote.swift'), join(root, 'Stubs.swift'),
     '-o', binary], { encoding: 'utf8', timeout: 150_000 });
 
   let trapped = null;

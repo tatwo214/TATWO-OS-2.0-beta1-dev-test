@@ -124,7 +124,9 @@ test('W57d production UA pure function and file dialog callback fixture', {
     current: slice('bool W57dCurrent(', 'void TatwoClient::W57dCancel()'),
     cancel: slice('void TatwoClient::W57dCancel()', 'void W57dInvalidate(TatwoCEFBrowserView *view) {'),
     dialog: slice('bool TatwoClient::OnFileDialog(', '// Only a completed regular .pdf'),
+    deniedDownload: bridge.slice(bridge.indexOf('    W57dDownloadUpdate(download_item);\n    callback->Cancel();'), bridge.indexOf('    PublishVisibleError(owner_,', bridge.indexOf('  void OnDownloadUpdated('))),
     pdfDownload: slice('bool W57dIsPDF(', '// CefPrintHandler is Linux-only'),
+    activeDownloads: slice('  bool HasActiveHumanDownloads() const {', '  HumanDownload &HumanDownloadFor('),
   })) source = source.replace(`// INSERT ${name}`, code);
   writeFileSync(join(dir, 'fixture.mm'), source);
   const build = spawnSync('xcrun', ['clang++', '-std=c++20', '-fobjc-arc', '-fblocks',
@@ -134,6 +136,7 @@ test('W57d production UA pure function and file dialog callback fixture', {
   const run = spawnSync(join(dir, 'fixture'), [], {encoding: 'utf8', timeout: 15000});
   assert.equal(run.status, 0, `${run.error ?? ''}\n${run.stdout}\n${run.stderr}`);
   assert.match(run.stdout, /W57d UA and dialog fixture passed/);
+  assert.match(run.stdout, /L1 non-human PDF failure leaves no unfinished human download record/);
   console.log(run.stdout.trim());
 });
 

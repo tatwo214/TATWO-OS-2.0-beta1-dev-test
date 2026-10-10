@@ -1,3 +1,4 @@
+import './fixtures/w255-swift-plugin.mjs';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -227,9 +228,14 @@ test('changed resource, mode, entitlement, corrupt seal and wrong identity do no
   }
 });
 
+// W255: tests never read the host Keychain; a refused lookup means no usable certificate here.
+const hostIdentities = () => {
+  try { return run('security', ['find-identity', '-v', '-p', 'codesigning']); }
+  catch (error) { if (/W255_BOUNDARY/.test(String(error?.message))) return ''; throw error; }
+};
+
 test('real certificate cannot be reused under a requested ad-hoc identity', t => {
-  const identities = run('security', ['find-identity', '-v', '-p', 'codesigning']);
-  const cert = selectSignIdentity(identities, process.env.TATWO_TEST_SIGN_IDENTITY);
+  const cert = selectSignIdentity(hostIdentities(), process.env.TATWO_TEST_SIGN_IDENTITY);
   if (!cert) return t.skip('no existing signing certificate; never create one in tests');
   const dir = mkdtempSync(join(tmpdir(), 'w27-cert-'));
   const baseline = fixture(join(dir, 'baseline'));
@@ -242,8 +248,7 @@ test('real certificate cannot be reused under a requested ad-hoc identity', t =>
 });
 
 test('linker-signed Mach-O and CMS use the same normalized unsigned content', t => {
-  const cert = selectSignIdentity(run('security', ['find-identity', '-v', '-p', 'codesigning']),
-    process.env.TATWO_TEST_SIGN_IDENTITY);
+  const cert = selectSignIdentity(hostIdentities(), process.env.TATWO_TEST_SIGN_IDENTITY);
   if (!cert) return t.skip('no existing signing certificate');
   const dir = mkdtempSync(join(tmpdir(), 'w27-linker-'));
   writeFileSync(join(dir, 'code.c'), 'int main(void) { return 0; }');

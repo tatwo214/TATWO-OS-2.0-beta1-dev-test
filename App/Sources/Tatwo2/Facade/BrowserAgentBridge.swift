@@ -196,7 +196,7 @@ final class BrowserAgentBridge: @unchecked Sendable {
         let path = socketPath
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try HandsFiles.ensureDirectory(directory)
         } catch {
             fputs("browser_agent_bridge_error=create_directory_failed\n", stderr)
             return
@@ -255,7 +255,7 @@ final class BrowserAgentBridge: @unchecked Sendable {
             fputs("browser_agent_bridge_error=bind_or_listen_failed path=\(path)（未清除路徑）\n", stderr)
             return
         }
-        _ = chmod(path, S_IRUSR | S_IWUSR)
+        guard chmod(path, S_IRUSR | S_IWUSR) == 0 else { close(fd); _ = unlink(path); return }
         stateLock.lock(); listenerFD = fd; listenerLeaseFD = lease; stateLock.unlock()
         keepLease = true
         fputs("browser_agent_bridge_socket=\(path)\n", stderr)

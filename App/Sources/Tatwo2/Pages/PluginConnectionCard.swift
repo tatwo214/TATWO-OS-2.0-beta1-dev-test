@@ -20,14 +20,16 @@ struct PluginLivenessStatusPill: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 5)
         .background(color.opacity(0.12), in: Capsule())
-        .foregroundStyle(color)
+        .foregroundStyle(state.state.pillColor == "gray" ? Color.secondary : color)
     }
 }
 
 /// Only the MCP tab uses this card. Skillet keeps its original row/presentation.
 struct PluginConnectionCard: View {
     let entry: PluginRegistryEntry
-    let requestRemoval: () -> Void
+    var osAction: AnyView? = nil
+
+    var showsLivenessStatus: Bool { !entry.id.hasPrefix("os-mcp:") || entry.liveness.state != .unknown }
 
     var body: some View {
         GlassCard {
@@ -40,9 +42,9 @@ struct PluginConnectionCard: View {
                     HStack(spacing: 8) {
                         Text(entry.name).font(.headline)
                         Badge(entry.kind == .builtin ? "內建" : "MCP")
-                        Badge(entry.safetyLevel.rawValue)
+                        Badge(entry.safetyLevel == .high ? "高風險" : entry.safetyLevel == .low ? "低風險" : "一般")
                     }
-                    Text(entry.purpose).foregroundStyle(.secondary)
+                    Text(entry.purpose).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     Text("誰能用：\(entry.availableTo.isEmpty ? "—" : entry.availableTo.joined(separator: "・"))")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("工具數：\(entry.toolCount.map(String.init) ?? "—")")
@@ -54,17 +56,14 @@ struct PluginConnectionCard: View {
                             .foregroundStyle(entry.liveness.state == .unreachable ? Color.red : Color.secondary)
                     }
                     Text("安裝：\(installationLabel)・\(entry.publicInstallHint)")
-                        .font(.caption2).foregroundStyle(.tertiary)
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     Label(entry.trigger, systemImage: "bolt.horizontal")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 10)
                 VStack(alignment: .trailing, spacing: 8) {
-                    PluginLivenessStatusPill(state: entry.liveness)
-                    if entry.kind == .mcp && entry.liveness.state == .unreachable {
-                        Button("移除登記", role: .destructive, action: requestRemoval)
-                            .buttonStyle(.bordered)
-                    }
+                    if showsLivenessStatus { PluginLivenessStatusPill(state: entry.liveness) }
+                    if let osAction { osAction }
                 }
             }
         }

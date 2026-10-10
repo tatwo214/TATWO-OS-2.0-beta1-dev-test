@@ -29,6 +29,7 @@ struct LiveThreadRecord {
  var id = UUID(); let projectID: UUID; var title: String; var engine: String; var model: String?; var enabledMCP: [String]
  var isArchived = false; var parentThreadID: UUID?; var subStatus: String?; var roomReadOnly: Bool?; var cwdOverride: String?
  var requestedModel: String?; var requestedEffort: String?; var requestedSpeedTier: String?; var memoryStrength: String?
+ var controllerCreatorFingerprint: String?
 }
 struct Document { var threads: [LiveThreadRecord]; var selectedThreadID: UUID? }
 final class Probe {

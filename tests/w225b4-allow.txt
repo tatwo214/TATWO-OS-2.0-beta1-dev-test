@@ -1,0 +1,13 @@
+App/Sources/Tatwo2/Facade/Group*.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+App/Sources/Tatwo2/Facade/ChatGPTTapTurnRunner.swift
+App/Sources/Tatwo2/Facade/OSUpstream.swift
+App/Sources/Tatwo2/Facade/HandsService.swift
+App/Sources/Tatwo2/*Acceptance.swift
+App/Sources/Tatwo2/**/*Acceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/*
+tests/**/*
+docs/specs/225-coder-trio/*
+docs/specs/225-coder-trio/**/*

@@ -83,7 +83,9 @@ enum HandsW185Acceptance {
         let trading = live.newProject(name: "BTC 實盤", workdir: tradingDir.path)
         let paths = HandsPaths(root: try dir("hands"))
         var runtime = HandsRuntime.current(paths: paths, environment: environment)
-        if let node = HandsUIAcceptance.findNode() {
+        let nodeFixture = URL(fileURLWithPath: "/private/tmp/w185-node-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: nodeFixture) }
+        if let node = HandsUIAcceptance.findNode(fixtureDirectory: nodeFixture) {
             // 自測的沙盒小幫手用明確 Node 副本；仍走正式 profile、spawn 與授權檢查。
             runtime.nodePath = node.path
             runtime.nodeBundled = true
@@ -151,7 +153,7 @@ enum HandsW185Acceptance {
         let startupCapture = base.appendingPathComponent("startup-writes")
         let startupMarker = base.appendingPathComponent("startup-marker")
         let fixtureNode = slowRuntime.appendingPathComponent("node")
-        try "#!/bin/sh\nprintf started > '\(startupMarker.path)'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '\(startupCapture.path)'; done\n"
+        try "#!/bin/sh\nprintf started > '\(startupMarker.path)'\nprintf '%s\\n' \"$TATWO2_ENGINE_IDENTITY\" >> '\(startupCapture.path)'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '\(startupCapture.path)'; done\n"
             .write(to: fixtureNode, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixtureNode.path)
         let priorRuntime = ProcessInfo.processInfo.environment["TATWO2_RUNTIME_BIN"]
@@ -173,7 +175,7 @@ enum HandsW185Acceptance {
             try await Task.sleep(for: .milliseconds(50))
         }
         let queuedOutput = (try? String(contentsOf: startupCapture, encoding: .utf8)) ?? ""
-        check(queuedOutput.components(separatedBy: "fixture-turn").count == 2 && queuedSidecar.startedExecutableIdentity?.contains("0.99.0") == true,
+        check(queuedOutput.components(separatedBy: "fixture-turn").count == 2 && queuedOutput.contains("0.99.0"),
               "A2 completed selection delivers the queued turn exactly once")
         queuedSidecar.terminate()
         for interrupt in [false, true] {

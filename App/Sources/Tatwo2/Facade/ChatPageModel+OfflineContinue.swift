@@ -273,27 +273,6 @@ extension ChatPageModel {
         remoteSessions.first { $0.device.id == deviceID }?.offlineMirror.usageLine
     }
 
-    /// 清除這台的離線副本（移到垃圾桶，可以放回）；正在看它的唯讀畫面就先回本機。
-    func clearRemoteOfflineCache(deviceID: String, completion: @escaping @MainActor (String) -> Void) {
-        guard let session = remoteSessions.first(where: { $0.device.id == deviceID }) else {
-            completion("這台現在沒有離線副本")
-            return
-        }
-        if selectedRemote?.deviceID == deviceID, session.engine == nil { exitRemoteMode() }
-        session.offlineMirror.clear { [weak self, weak session] result in
-            switch result {
-            case .success(true):
-                completion("已清除：這台存的副本移到垃圾桶（可以放回）。"
-                           + (session?.engine != nil ? "現在連著線，下次同步會再存一份新的。" : ""))
-            case .success(false):
-                completion("這台現在沒有離線副本")
-            case .failure(let error):
-                completion("沒清掉：\(error.localizedDescription)")
-            }
-            self?.rebuildRemoteSidebarSections()
-        }
-    }
-
     /// 設定 › 設備「移除」那台（在換掉連線物件之前叫）：它存在這台的離線副本一起移到垃圾桶（可以放回），
     /// 不留在磁碟、畫面上也不會沒有地方清；之後重新配對同一個 id 不會冒出舊快照。那台的連線物件先停記。
     func retireRemoteOfflineCache(deviceID: String, environment: [String: String],

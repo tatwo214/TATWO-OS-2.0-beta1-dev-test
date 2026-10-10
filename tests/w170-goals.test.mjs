@@ -70,6 +70,57 @@ test('W170 production Swift: goal list only appends, guards completion, keeps on
         try ThreadGoalRules.setStatus(&forced, id: stuck.id, to: .active, evidence: nil, actor: .lead)
         try ThreadGoalRules.setStatus(&forced, id: top.id, to: .done, evidence: nil, actor: .user)
         require(forced.goals.allSatisfy { $0.status == .done }, "user closing parent closes everything under it")
+        // W252 共用欄位、夾值、權限、ETA 與舊檔相容；既有檢查原樣保留。
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var loops = ThreadGoalList()
+        let loop = try ThreadGoalRules.add(&loops, title: "loop", userWords: nil, proposed: false, parent: 1, now: now)
+        try ThreadGoalRules.setStatus(&loops, id: loop.id, to: .active, evidence: nil, actor: .sub, now: now)
+        try ThreadGoalRules.setStatus(&loops, id: loop.id, to: .active, evidence: nil, actor: .sub, now: now.addingTimeInterval(60))
+        require(loops.goals[0].startedAt == now, "W252 first start is retained")
+        let long = String(repeating: "步", count: 210)
+        try ThreadGoalRules.updateDetails(&loops, id: loop.id, progress: 3, etaMinutes: 8.5,
+            queue: Array(repeating: long, count: 25), doneSteps: Array(repeating: long, count: 25),
+            branch: long, device: long, actor: .sub, ownGoalID: loop.id, now: now)
+        require(loops.goals[0].progress == 1 && loops.goals[0].etaAt == now.addingTimeInterval(510), "W252 progress upper clamp and ETA seconds")
+        require(loops.goals[0].queue?.count == 20 && loops.goals[0].doneSteps?.count == 20 &&
+            loops.goals[0].queue?.allSatisfy { $0.count == 200 } == true && loops.goals[0].doneSteps?.allSatisfy { $0.count == 200 } == true &&
+            loops.goals[0].branch?.count == 200 && loops.goals[0].device?.count == 200, "W252 bounded steps and location")
+        let beforeDenied = loops
+        fails("W252 sub cannot update another loop", .subOnlyOwnGoal) {
+            try ThreadGoalRules.updateDetails(&loops, id: loop.id, progress: 0.5, actor: .sub, ownGoalID: 999)
+        }
+        fails("W252 sub requires own binding", .subOnlyOwnGoal) {
+            try ThreadGoalRules.updateDetails(&loops, id: loop.id, progress: 0.5, actor: .sub)
+        }
+        require(loops == beforeDenied, "W252 denied updates preserve data")
+        try ThreadGoalRules.updateDetails(&loops, id: loop.id, progress: -1, actor: .lead, now: now)
+        require(loops.goals[0].progress == 0 && loops.goals[0].etaAt == now.addingTimeInterval(510), "W252 lower clamp preserves absent fields")
+        try ThreadGoalRules.updateDetails(&loops, id: loop.id, etaMinutes: -2, queue: [], doneSteps: [], actor: .lead, now: now)
+        require(loops.goals[0].etaAt == now.addingTimeInterval(-120) && loops.goals[0].queue == [] && loops.goals[0].doneSteps == [], "W252 overdue ETA and empty steps")
+        fails("W252 nonfinite progress rejected", .invalidDetails) {
+            try ThreadGoalRules.updateDetails(&loops, id: loop.id, progress: .nan, actor: .lead)
+        }
+        fails("W252 nonfinite ETA rejected", .invalidDetails) {
+            try ThreadGoalRules.updateDetails(&loops, id: loop.id, etaMinutes: .infinity, actor: .lead)
+        }
+        fails("W252 ETA overflow rejected", .invalidDetails) {
+            try ThreadGoalRules.updateDetails(&loops, id: loop.id, etaMinutes: .greatestFiniteMagnitude, actor: .lead)
+        }
+        fails("W252 progress does not bypass evidence", .evidenceRequired) {
+            try ThreadGoalRules.setStatus(&loops, id: loop.id, to: .done, evidence: nil, actor: .lead)
+        }
+        let decoder = JSONDecoder(); decoder.dateDecodingStrategy = .iso8601
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let legacy = Data(#"{"nextID":2,"goals":[{"id":1,"title":"old","status":"pending","proposed":false,"createdAt":"2026-10-06T00:00:00Z","updatedAt":"2026-10-06T00:00:00Z"}]}"#.utf8)
+        let old = try decoder.decode(ThreadGoalList.self, from: legacy)
+        require(old.goals.count == 1 && old.goals[0].progress == nil && old.goals[0].startedAt == nil && old.goals[0].etaAt == nil &&
+            old.goals[0].queue == nil && old.goals[0].doneSteps == nil && old.goals[0].branch == nil && old.goals[0].device == nil, "W252 legacy file decodes")
+        let encodedOld = try JSONSerialization.jsonObject(with: encoder.encode(old)) as! [String: Any]
+        let oldGoal = (encodedOld["goals"] as! [[String: Any]])[0]
+        require(["progress","startedAt","etaAt","queue","doneSteps","branch","device"].allSatisfy { oldGoal[$0] == nil }, "W252 nil fields omitted on legacy save")
+        let encodedLoops = try encoder.encode(loops)
+        let decodedLoops = try decoder.decode(ThreadGoalList.self, from: encodedLoops)
+        require(decodedLoops == loops, "W252 new fields round trip without milliseconds")
         print("W170RULES SUMMARY failures=0")
     }
 }

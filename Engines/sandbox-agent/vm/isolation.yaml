@@ -1,0 +1,10 @@
+minimumLimaVersion: 2.2.0
+vmType: vz
+cpus: 4
+mounts: []
+portForwards:
+- {guestIP: "0.0.0.0", guestPortRange: [1, 65535], ignore: true}
+- {guestIP: "127.0.0.1", guestPortRange: [1, 65535], ignore: true}
+- {guestIP: "::", guestPortRange: [1, 65535], ignore: true}
+ssh: {forwardAgent: false, loadDotSSHPubKeys: false, forwardX11: false, forwardX11Trusted: false}
+containerd: {system: false, user: false}

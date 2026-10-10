@@ -14,6 +14,14 @@ enum LiveSendDelivery: Equatable, Sendable {
     case unknown(String)
 }
 
+/// Shared TAP routing boundary: managed conversations must never use a private ChatGPT account.
+enum ManagedConversationTAPPolicy {
+    static func rejectionReason(model: String?, creator: String?) -> String? {
+        guard creator != nil, let model, ChatGPTTapModelCatalog.isRouteID(model) else { return nil }
+        return "受管對話不能使用 ChatGPT TAP，因為它會使用這台的私人 ChatGPT 帳號與記憶。"
+    }
+}
+
 @MainActor
 protocol LiveEngineAPI: AnyObject {
     var store: ChatLiveStore { get }
@@ -165,12 +173,14 @@ struct ChatGPTCoderTurnState {
 final class ChatLiveEngine: LiveEngineAPI {
     let store: ChatLiveStore
     private let environment: [String: String]
+    var composerSkills: () -> [PluginRegistryEntry] = { [] }
     private(set) var doc: LiveDocumentRecord
     private(set) var messages: [UUID: [ChatMessage]] = [:]
     private(set) var tapTurn: [UUID: ChatGPTCoderTurnState] = [:]
     private var sidecars: [UUID: ClaudeSidecar] = [:]
     private let conversationTap: any ConversationTap
     private var tapRunners: [UUID: ChatGPTTapTurnRunner] = [:]
+    lazy var groupBridge = GroupCoderBridge(owner: self, tap: conversationTap)
     private var tapModelObservation: ChatGPTTapModelObservation?
     var tapInboxFolder: URL { store.url.deletingLastPathComponent().appendingPathComponent("tap-inbox", isDirectory: true) }
     lazy var tapMapper = TapProjectMapper(tap: conversationTap, inboxFolder: tapInboxFolder)
@@ -200,11 +210,14 @@ final class ChatLiveEngine: LiveEngineAPI {
                 onThreadArchived?(threadID, next)
             }
         }
-        guard let callback = onTurnComplete.removeValue(forKey: threadID) else { return }
+        let callback = onTurnComplete.removeValue(forKey: threadID)
+        guard callback != nil || groupBridge.hasCompletion(threadID) else { return }
         let reply = (messages[threadID] ?? []).last {
             $0.turnID == turnID[threadID] && $0.role == .assistant && $0.eventKind == .message
+                && (!groupBridge.hasCompletion(threadID) || $0.runtimeAdapterID != TatwoChatRuntimeAdapter.chatgptTap.rawValue)
         }?.text ?? ""
-        callback(succeeded, reply)
+        groupBridge.completePrimary(threadID, succeeded: succeeded, reply: reply)
+        callback?(succeeded, reply)
     }
     private var runningThreads: Set<UUID> = []
     private var stoppingThreads: Set<UUID> = []
@@ -350,7 +363,7 @@ final class ChatLiveEngine: LiveEngineAPI {
         }
     }
 
-    func isRunning(_ threadID: UUID?) -> Bool { threadID.map { runningThreads.contains($0) } ?? false }
+    func isRunning(_ threadID: UUID?) -> Bool { threadID.map { runningThreads.contains($0) || groupBridge.sessions[$0]?.busy == true } ?? false }
     func isExecutingPlan(_ plan: TatwoPlanArtifactV1) -> Bool {
         isRunning(plan.threadID) && plan.executionTurnID != nil && turnID[plan.threadID] == plan.executionTurnID
     }
@@ -360,10 +373,14 @@ final class ChatLiveEngine: LiveEngineAPI {
         if running { runningThreads.insert(id) } else { runningThreads.remove(id) }
         onChange?()
     }
+    func tapSelfTestHasRunner(_ id: UUID) -> Bool { tapRunners[id] != nil }
+    func tapSelfTestSendDirect(_ id: UUID, route: String) -> Bool {
+        sendTap(threadID: id, text: "synthetic", routeID: route, attachments: [], effort: nil, delivery: nil, source: .system)
+    }
     func tapSelfTestSidecarClosed(_ id: UUID) { handle(id, .closed) }
     #endif
     /// Any thread still running (window-close confirmation gate).
-    var hasRunningWork: Bool { !runningThreads.isEmpty }
+    var hasRunningWork: Bool { !runningThreads.isEmpty || groupBridge.sessions.values.contains { $0.busy } }
     func acceptsBrowserAgentRequests(_ threadID: UUID) -> Bool {
         runningThreads.contains(threadID) && !stoppingThreads.contains(threadID)
     }
@@ -451,13 +468,18 @@ final class ChatLiveEngine: LiveEngineAPI {
 
     @discardableResult
     func newThread(in projectID: UUID?, title: String = "新聊天") -> UUID {
+        newThread(in: projectID, title: title, select: true)
+    }
+
+    @discardableResult
+    func newThread(in projectID: UUID?, title: String = "新聊天", select: Bool) -> UUID {
         let destination = projectID ?? doc.ensureGeneralProject()
         var t = LiveThreadRecord(projectID: destination, title: title)
         let defaults = ChatModelPreferences.selection(nil)
         t.requestedModel = defaults.route.id
         t.requestedEffort = defaults.effort
         t.requestedSpeedTier = defaults.speed.rawValue
-        doc.threads.insert(t, at: 0); messages[t.id] = []; doc.selectedThreadID = t.id
+        doc.threads.insert(t, at: 0); messages[t.id] = []; if select { doc.selectedThreadID = t.id }
         persist(); return t.id
     }
 
@@ -532,6 +554,13 @@ final class ChatLiveEngine: LiveEngineAPI {
         persist()
     }
     /// W180 E1：記憶強度只改這一條（照 setModelPreferences 存在那條）。
+    func markControllerThread(_ threadID: UUID, fingerprint: String) {
+        guard let index = doc.threads.firstIndex(where: { $0.id == threadID }) else { return }
+        doc.threads[index].controllerCreatorFingerprint = fingerprint
+        (groupBridge.tap as? ChatGPTTap)?.cancelRejectedQueuedSends()
+        doc.threads[index].memoryStrength = "off"
+        persist()
+    }
     func setMemoryStrength(threadID: UUID, _ strength: TatwoMemoryStrength) {
         guard let index = doc.threads.firstIndex(where: { $0.id == threadID }),
               doc.threads[index].memoryStrength != strength.rawValue else { return }
@@ -568,6 +597,8 @@ final class ChatLiveEngine: LiveEngineAPI {
             pendingArchives.remove(threadID)
             if doc.threads[index].isArchived { return doc.selectedThreadID }
         }
+        do { try groupBridge.proposals.remove(threadID) }
+        catch { onHint?("提案資料未能刪除，這串尚未封存。"); return doc.selectedThreadID }
         chatGPTDispatcher?.endRoom(caller: threadID)
         let projectID = doc.threads[index].projectID
         doc.threads[index].isArchived = true
@@ -663,6 +694,7 @@ final class ChatLiveEngine: LiveEngineAPI {
         discussion.requestedModel = parent.requestedModel
         discussion.requestedEffort = parent.requestedEffort
         discussion.requestedSpeedTier = parent.requestedSpeedTier
+        discussion.controllerCreatorFingerprint = parent.controllerCreatorFingerprint
         discussion.memoryStrength = parent.memoryStrength   // W180 E1：子討論串跟母串
         doc.threads.insert(discussion, at: 0)
         messages[discussion.id] = []
@@ -678,6 +710,8 @@ final class ChatLiveEngine: LiveEngineAPI {
             let parentID = doc.threads[childIndex].parentThreadID,
             doc.threads.contains(where: { $0.id == parentID })
         else { return nil }
+        do { try groupBridge.proposals.remove(discussionID) }
+        catch { onHint?("提案資料未能刪除，這串尚未封存。"); return nil }
         let child = doc.threads[childIndex]
         if child.cwdOverride != nil, isRunning(discussionID) { stop(threadID: discussionID) }
         if let summary = (messages[discussionID] ?? [])
@@ -704,6 +738,8 @@ final class ChatLiveEngine: LiveEngineAPI {
             let parentID = doc.threads[childIndex].parentThreadID,
             doc.threads.contains(where: { $0.id == parentID })
         else { return nil }
+        do { try groupBridge.proposals.remove(discussionID) }
+        catch { onHint?("提案資料未能刪除，這串尚未封存。"); return nil }
         let child = doc.threads[childIndex]
         if child.cwdOverride != nil, isRunning(discussionID) { stop(threadID: discussionID) }
         let prefix = "〔支線 \(child.title)〕"
@@ -805,11 +841,11 @@ final class ChatLiveEngine: LiveEngineAPI {
     func gitSummary(for threadID: UUID?, completion: @escaping (GitSummary) -> Void) {
         guard let threadID, let t = doc.threads.first(where: { $0.id == threadID }),
               let cwd = t.cwdOverride ?? doc.projects.first(where: { $0.id == t.projectID })?.workdir else { completion(GitSummary()); return }
-        let hands = t.engine == Self.handsEngine   // W183 R1：手腳房間的 worktree 是沙盒寫的，主機端 git 一律加固、不進子模組
+        let hardened = t.controllerCreatorFingerprint != nil || t.engine == Self.handsEngine
         DispatchQueue.global(qos: .utility).async {
             var readFailed = false
             func run(_ args: [String]) -> String {
-                guard let output = hands ? HandsGit.hostRead(args, cwd: cwd) : TurnArtifactsGit.run(args, cwd: cwd) else { readFailed = true; return "" }
+                guard let output = HandsGit.hostRead(args, cwd: cwd, hardened: hardened) else { readFailed = true; return "" }
                 return output
             }
             var g = GitSummary()
@@ -871,8 +907,17 @@ final class ChatLiveEngine: LiveEngineAPI {
     @discardableResult func send(threadID: UUID, text: String, model: String?, engine: ClaudeSidecar.Kind, systemPrompt: String?,
                                  attachments: [String], reasoningEffort: String?, serviceTier: String?,
                                  ultrawork: UltraworkTurnSettings?, delivery: (@MainActor (LiveSendDelivery) -> Void)?) -> Bool {
+        let source = OSEventSources.take()
         guard !store.isReadOnly else { return false }
+        let requested = model ?? threadRecord(threadID)?.requestedModel ?? threadRecord(threadID)?.model
+        let model = requested.flatMap { EngineAIUpdate.retired($0, deviceID: threadRecord(threadID)?.deviceID ?? "local") == nil ? model : ChatRouteChoice.resolve($0, deviceID: threadRecord(threadID)?.deviceID ?? "local").modelArgument }
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if GroupTurnEngine.departure(t) != nil, threadRecord(threadID)?.engine != Self.handsEngine,
+           let routed = groupBridge.route(threadID: threadID, text: t, model: model, engine: engine, systemPrompt: systemPrompt,
+                                          attachments: attachments, effort: reasoningEffort, tier: serviceTier, ultrawork: ultrawork, delivery: delivery, source: source) { return routed }
+        if groupBridge.sessions[threadID]?.busy == true, (!t.isEmpty || !attachments.isEmpty),
+           let routed = groupBridge.route(threadID: threadID, text: t, model: model, engine: engine, systemPrompt: systemPrompt,
+                                          attachments: attachments, effort: reasoningEffort, tier: serviceTier, ultrawork: ultrawork, delivery: delivery, source: source) { return routed }
         guard (!t.isEmpty || !attachments.isEmpty), !runningThreads.contains(threadID), tapRunners[threadID] == nil else { return false }
         if let reason = importedSendBlockReason(threadID) {   // W180 E3：匯入的串原本的資料夾不在了，不送並說明
             appendSystemMessage(threadID: threadID, text: reason, status: "error|匯入"); return false
@@ -882,13 +927,18 @@ final class ChatLiveEngine: LiveEngineAPI {
         }
         let selectedModel = model ?? threadRecord(threadID)?.requestedModel
         if let selectedModel, ChatGPTTapModelCatalog.isRouteID(selectedModel) {
+            if let reason = ManagedConversationTAPPolicy.rejectionReason(model: selectedModel, creator: threadRecord(threadID)?.controllerCreatorFingerprint) {
+                appendSystemMessage(threadID: threadID, text: reason, status: "error|ChatGPT TAP"); return false
+            }
             guard CanvasCommandPolicy.command(in: t) == nil else {
                 appendSystemMessage(threadID: threadID, text: CanvasCommandPolicy.tapUnsupported, status: "info|ChatGPT TAP")
                 return false
             }
             return sendTap(threadID: threadID, text: t, routeID: selectedModel, attachments: attachments,
-                           effort: reasoningEffort, delivery: delivery)
+                           effort: reasoningEffort, delivery: delivery, source: source)
         }
+        if let routed = groupBridge.route(threadID: threadID, text: t, model: model, engine: engine, systemPrompt: systemPrompt,
+                                          attachments: attachments, effort: reasoningEffort, tier: serviceTier, ultrawork: ultrawork, delivery: delivery, source: source) { return routed }
         var plan: TatwoPlanArtifactV1?
         do { plan = try loadPlanArtifact(threadID) }
         catch {
@@ -952,8 +1002,8 @@ final class ChatLiveEngine: LiveEngineAPI {
         artifactClaims[threadID] = []
         artifactClaimsTruncated.remove(threadID)
         let shown = ChatAttachmentTranscript.displayTurn(text: t, attachmentPaths: attachments)
-        append(threadID, ChatMessage(role: .user, text: shown, turnID: turn))
-        let userRowID = messages[threadID]?.last?.id ?? ""   // W184 H4 修正第二輪：沒送到時標這一列
+        if !groupBridge.relay.contains(threadID) { append(threadID, ChatMessage(role: .user, text: shown, turnID: turn), source: source) }
+        let userRowID = groupBridge.relay.contains(threadID) ? "" : messages[threadID]?.last?.id ?? ""   // W184 H4 修正第二輪：沒送到時標這一列
         if let i = doc.threads.firstIndex(where: { $0.id == threadID }), doc.threads[i].title == "新聊天" {
             doc.threads[i].title = String(ChatAttachmentTranscript.previewText(userText: t, attachmentPaths: attachments).prefix(24))
         }
@@ -981,7 +1031,9 @@ final class ChatLiveEngine: LiveEngineAPI {
         if outgoing == engineText, let caughtUp = offlineCatchUpSeed(threadID: threadID, currentTurn: turn, userText: engineText) {
             outgoing = caughtUp   // W182 R5（主設備這一側）：副設備離線那段剛補回這條、引擎沒看過：這句帶上（資料不是指令，只帶一次）
         }
+        if let personality = PetPersonality.turnPrompt(engine: self, projectID: thread?.projectID, source: source) { outgoing += "\n\n" + personality }
         if let planBriefing { outgoing += "\n\n" + planBriefing }
+        if source.origin == "composer" { outgoing = composerTurnText(outgoing, engine: engine, markers: engineText) }
         // W170：每一輪都把這串還沒完成的目標交給引擎（不顯示在對話裡），主線才不會飄。
         if let goals = ThreadGoalRules.promptSummary(ThreadGoalStore.shared.list(threadID)) { outgoing += "\n\n" + goals }
         // W180 E1：依這條的記憶強度附上記憶候選（不顯示在對話裡）；「關」、資料夾不在、快取還沒好都不附，送出照常。
@@ -992,6 +1044,8 @@ final class ChatLiveEngine: LiveEngineAPI {
         if let block = ultraworkTurn.block { outgoing += "\n\n" + block }
         // W184 H4 修正第二輪（GPT-6 H4b 審查 #1）：寫不進引擎（程序已經不在、管線斷了）＝這一句沒送出：不算回覆中、那一列標沒送到、
         // ultrawork 的「上一輪帶出去的」不動（下一輪照樣補說一聲「關了」）；回 false，呼叫端留著草稿。
+        if let groupText = groupBridge.outgoing[threadID] { outgoing += "\n\n" + groupText }
+        if let review = groupBridge.reviewContext[threadID] { outgoing += "\n\n" + review }
         guard sidecar.send(text: outgoing, uuid: turn, attachments: attachments, model: model,
                            reasoningEffort: effort, serviceTier: tier) else {
             runningThreads.remove(threadID)
@@ -1000,6 +1054,7 @@ final class ChatLiveEngine: LiveEngineAPI {
             persist()
             return false
         }
+        if let groupText = groupBridge.outgoing[threadID] { groupBridge.sessions[threadID]?.adjustPrimarySent(outgoing.count - groupText.count) }
         pendingTurnDeliveries[threadID] = PendingTurnDelivery(turn: turn, userRowID: userRowID,
                                                               ultraworkSent: ultraworkTurn.sent, callback: delivery)
         persist()
@@ -1103,13 +1158,14 @@ final class ChatLiveEngine: LiveEngineAPI {
 
     func canSteer(_ threadID: UUID) -> Bool {
         runningThreads.contains(threadID) && !stoppingThreads.contains(threadID) &&
-        pendingSteers[threadID] == nil && sidecars[threadID]?.kind == .codex &&
+        pendingSteers[threadID] == nil && (sidecars[threadID]?.kind == .codex || sidecars[threadID]?.kind == .claude) &&
         threadRecord(threadID)?.deviceID == nil
     }
 
     @discardableResult
     func steer(threadID: UUID, text: String, attachments: [String],
                completion: @escaping (Bool, String?) -> Void) -> Bool {
+        let source = OSEventSources.take()
         guard canSteer(threadID), let target = turnID[threadID],
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
         else { return false }
@@ -1117,10 +1173,10 @@ final class ChatLiveEngine: LiveEngineAPI {
         pendingSteers[threadID] = .init(requestID: requestID, targetTurnID: target, completion: completion)
         append(threadID, ChatMessage(id: requestID, role: .user,
             text: ChatAttachmentTranscript.displayTurn(text: text, attachmentPaths: attachments),
-            status: "steering|等待插話確認", turnID: target))
+            status: "steering|等待插話確認", turnID: target), source: source)
         // Keep subsequent assistant text below the inserted user message.
         endStreaming(threadID)
-        sidecars[threadID]?.steer(text: text, attachments: attachments,
+        sidecars[threadID]?.steer(text: source.origin == "composer" ? composerTurnText(text, engine: sidecars[threadID]?.kind ?? .codex) : text, attachments: attachments,
                                  requestID: requestID, targetTurnUUID: target)
         persist()
         return true
@@ -1138,6 +1194,7 @@ final class ChatLiveEngine: LiveEngineAPI {
     }
 
     func stop(threadID: UUID) {
+        if groupBridge.stop(threadID) { return }
         _ = chatGPTDispatcher?.stop(caller: threadID)
         if let runner = tapRunners[threadID] {
             stoppingThreads.insert(threadID)
@@ -1222,6 +1279,7 @@ final class ChatLiveEngine: LiveEngineAPI {
     }
 
     func shutdownAll() {
+        groupBridge.shutdown()
         chatGPTDispatcher?.stopAll()
         for id in runningThreads {
             if onTurnComplete[id] == nil { eventsFinished(id, succeeded: false, turn: turnID[id]) }
@@ -1263,6 +1321,9 @@ final class ChatLiveEngine: LiveEngineAPI {
     func configureRoom(threadID: UUID, parentThreadID: UUID, roomBrief: String, engine: String, cwdOverride: String, deviceID: String? = nil) {
         guard let i = doc.threads.firstIndex(where: { $0.id == threadID }) else { return }
         doc.threads[i].parentThreadID = parentThreadID
+        if let creator = threadRecord(parentThreadID)?.controllerCreatorFingerprint {
+            doc.threads[i].controllerCreatorFingerprint = creator; doc.threads[i].memoryStrength = "off"
+        }
         doc.threads[i].roomBrief = roomBrief
         doc.threads[i].subStatus = "running"
         doc.threads[i].engine = engine
@@ -1280,13 +1341,26 @@ final class ChatLiveEngine: LiveEngineAPI {
 
     // MARK: - sidecar
 
+    #if DEBUG
     func composedSystemPrompt(threadID: UUID, systemPrompt: String? = nil) -> String? {
+        let includeUserPreferences: Bool
+        do {
+            includeUserPreferences = try ManagedEnginePolicy.forThread(threadID,
+                creator: threadRecord(threadID)?.controllerCreatorFingerprint,
+                fleet: DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment)) == nil
+        } catch { includeUserPreferences = false }
+        return composedSystemPrompt(threadID: threadID, systemPrompt: systemPrompt, includeUserPreferences: includeUserPreferences)
+    }
+
+    #endif
+
+    private func composedSystemPrompt(threadID: UUID, systemPrompt: String? = nil, includeUserPreferences: Bool) -> String? {
         let isAssistant = doc.assistantProjectID != nil
             && threadRecord(threadID)?.projectID == doc.assistantProjectID
         let persona = isAssistant
             ? [OSUpstream.assistantPersona(), systemPrompt].compactMap { $0 }.joined(separator: "\n\n")
             : systemPrompt
-        return OSUpstream.compose(threadSystemPrompt: persona)
+        return OSUpstream.compose(threadSystemPrompt: persona, includeUserPreferences: includeUserPreferences, environment: environment)
     }
 
     private func ensureSidecar(_ threadID: UUID, model: String?, engine: ClaudeSidecar.Kind, systemPrompt: String? = nil) -> ClaudeSidecar? {
@@ -1299,36 +1373,45 @@ final class ChatLiveEngine: LiveEngineAPI {
             return nil
         }
         guard let record = threadRecord(threadID) else { return nil }
+        let controlled = record.controllerCreatorFingerprint != nil
+        let memoryPolicy: ManagedEnginePolicy?
+        do { memoryPolicy = try ManagedEnginePolicy.forThread(threadID, creator: record.controllerCreatorFingerprint,
+            fleet: DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment)) }
+        catch {
+            sidecars[threadID]?.terminate(); sidecars[threadID] = nil
+            runningThreads.remove(threadID)
+            appendSystem(threadID, ManagedEnginePolicy.refusal(error, fleet: DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment)), status: "error|權限不足")
+            return nil
+        }
         let permissionMode = TatwoPermissionPreset.resolvedSidecarMode(
-            user: userPermissionPreset, bot: record.botPermissionPreset,
+            user: controlled ? .askFirst : userPermissionPreset, bot: controlled ? .askFirst : record.botPermissionPreset,
             readOnly: record.roomReadOnly == true,
-            legacyCodexAutoApprove: autoApprove && engine == .codex)
+            legacyCodexAutoApprove: !controlled && autoApprove && engine == .codex)
         // Process exit can precede its queued main-thread close callback.
         if let s = sidecars[threadID], s.isRunning,
            s.isStarting || s.processIdentifier.flatMap({ OSSocketCaller.processStartTime($0) }).map({ $0 == s.processStartTime }) == true {
             // W181 R3：「不用 API 金鑰」在它啟動後切換過（啟動時才拿掉金鑰變數）：這條沒在回覆就重開，照新設定帶或拿掉金鑰。
             let apiKeyOptOutMatches = s.startedWithAPIKeyOptOut == !EngineDisableStore.allowsAPIKey(engine)
                 || runningThreads.contains(threadID)
-            // W184 H4 修正（審查 #1）：同一家換模型（例：Fable → Opus）：Claude、Grok 的模型只在啟動時給（--model），重用就會留在舊模型——
-            // 跟啟動時的模型不一樣就照下面現有的啟動路徑重開（--resume 接回同一段對話）。Codex 每一輪自己帶模型，不用重開；回覆中不動。
             let modelMatches = engine == .codex || sidecarModels[threadID] == (model ?? "") || runningThreads.contains(threadID)
-            let runtimeMatches = record.deviceID != nil || s.isStarting || runningThreads.contains(threadID)
-                || s.startedExecutableIdentity == EnginePaths(environment: environment).cachedSelection(for: engine).identity
             if s.kind == engine && sidecarPermissionModes[threadID] == (permissionMode ?? "configured-default")
-                && modelMatches && apiKeyOptOutMatches && runtimeMatches { return s }
+                && modelMatches && apiKeyOptOutMatches && s.startedWithoutMemory == (memoryPolicy != nil) { return s }
             finishGoalControl(threadID, accepted: false, message: "引擎或權限已切換，目標操作結果待確認")
             currentNativeGoals.remove(threadID)
             s.onEvent = nil; s.close(); sidecars[threadID] = nil   // 換引擎：舊的先解除事件再關，免得它的「結束」事件蓋掉新引擎的狀態
         }
         guard let idx = doc.threads.firstIndex(where: { $0.id == threadID }) else { return nil }
         let thread = doc.threads[idx]
-        let cwd = thread.cwdOverride ?? doc.projects.first { $0.id == thread.projectID }?.workdir ?? NSHomeDirectory()
+        let requestedDirectory = thread.cwdOverride ?? doc.projects.first { $0.id == thread.projectID }?.workdir
+        let cwd: String
+        do { cwd = try memoryPolicy?.workDirectory(for: thread, project: projectRecord(thread.projectID)) ?? requestedDirectory ?? NSHomeDirectory() }
+        catch { runningThreads.remove(threadID); appendSystem(threadID, ManagedEnginePolicy.refusal(error, fleet: DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment)), status: "error|工作資料夾"); return nil }
         if thread.deviceID == nil, let problem = ExternalWorkspacePolicy.engineProblem(cwd: cwd) {   // W183 R6c 審查：不在入口 chatgpt/ 啟動引擎
             appendSystem(threadID, problem, status: "error|外部工作區")
             runningThreads.remove(threadID)
             return nil
         }
-        let resume = thread.sessionIDs[engine.rawValue] ?? (engine == .claude ? thread.sessionID : nil)
+        let resume = thread.sessionID(for: engine.rawValue, isolated: memoryPolicy != nil)
         doc.threads[idx].engine = engine.rawValue
         let script = ClaudeSidecar.scriptPath(for: engine, allowsOverride: thread.roomReadOnly != true)
         let remote: RemoteDeviceRef?
@@ -1373,12 +1456,12 @@ final class ChatLiveEngine: LiveEngineAPI {
         }
         do {
             let mcpEngine = PluginsSource.MCPEngine(rawValue: engine.rawValue) ?? .grok
-            let mcpConfig = thread.roomReadOnly == true ? nil : PluginsSource.sidecarMCPConfig(
+            let mcpConfig = thread.roomReadOnly == true ? nil : memoryPolicy != nil ? String(decoding: try JSONSerialization.data(withJSONObject: ["engine": engine.rawValue, "threadID": threadID.uuidString, "servers": [:], "configured": [], "enabled": []]), as: UTF8.self) : PluginsSource.sidecarMCPConfig(
                 engine: mcpEngine,
                 stored: thread.enabledMCP,
                 threadID: threadID,
                 environment: environment)
-            try s.start(cwd: cwd, resume: resume, model: model, systemPrompt: composedSystemPrompt(threadID: threadID, systemPrompt: systemPrompt), mcpConfig: mcpConfig, permissionMode: permissionMode, remote: remoteHandle)
+            try s.start(cwd: cwd, resume: resume, model: model, systemPrompt: composedSystemPrompt(threadID: threadID, systemPrompt: systemPrompt, includeUserPreferences: memoryPolicy == nil), mcpConfig: mcpConfig, permissionMode: permissionMode, remote: remoteHandle, memoryPolicy: memoryPolicy)
             sidecars[threadID] = s
             sidecarPermissionModes[threadID] = permissionMode ?? "configured-default"
             sidecarModels[threadID] = model ?? ""   // W184 H4 修正（審查 #1）
@@ -1396,6 +1479,13 @@ final class ChatLiveEngine: LiveEngineAPI {
         }
     }
 
+    #if DEBUG
+    /// Exercise the production launch checkpoint with isolated fixture devices.
+    func fixtureStartSidecar(_ thread: UUID, engine: ClaudeSidecar.Kind, systemPrompt: String? = nil) -> Bool {
+        ensureSidecar(thread, model: nil, engine: engine, systemPrompt: systemPrompt) != nil
+    }
+    #endif
+
     /// R3 無頭驗收只讀：回目前討論串 sidecar（本機 node 或遠端 ssh）的 PID。
     func sidecarProcessID(threadID: UUID) -> Int32? {
         sidecars[threadID]?.processIdentifier
@@ -1409,6 +1499,23 @@ final class ChatLiveEngine: LiveEngineAPI {
             if let pid = sidecar.processIdentifier, let startTime = sidecar.processStartTime { owners[pid] = (thread, startTime) }
         }
         return owners
+    }
+
+    static func engineStderrHint(_ s: String) -> String? {
+        // 引擎的雜訊：去掉 ANSI 色碼；codex 的日誌行（時間戳＋INFO/WARN/ERROR）不當提示，只留人看得懂的
+        var line = s.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // 只認 timestamp 日誌的記憶 worker；使用者工具錯誤即使提到 memories 路徑也保留。
+        if line.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?\s+ERROR\s+codex_core::memories(?:::|:)"#, options: .regularExpression) != nil {
+            return nil
+        }
+        if line.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?\s+(TRACE|DEBUG|INFO|WARN|ERROR)\b"#, options: .regularExpression) != nil {
+            if line.contains("ERROR") { line = "引擎回報錯誤：" + (line.split(separator: " ", maxSplits: 3).last.map(String.init) ?? line) }
+            else { return nil }
+        }
+        // Node 自己的執行期警告（`(node:1234) [CODE] Warning: …`、`(Use \`node --trace-warnings\` …)`）不是給使用者看的。
+        if line.range(of: #"^\(node:\d+\)|^\(Use `node --trace"#, options: .regularExpression) != nil { return nil }
+        return line.isEmpty ? nil : String(line.prefix(120))
     }
 
     private func handle(_ threadID: UUID, _ e: ClaudeSidecar.Event) {
@@ -1433,7 +1540,13 @@ final class ChatLiveEngine: LiveEngineAPI {
             withPendingPermission(threadID) {
             let pretty = (try? JSONSerialization.data(withJSONObject: input, options: [.prettyPrinted, .sortedKeys]))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "\(input)"
-            let botPreset = doc.threads.first(where: { $0.id == threadID })?.botPermissionPreset
+            let controlled = threadRecord(threadID)?.controllerCreatorFingerprint != nil
+            if let creator = threadRecord(threadID)?.controllerCreatorFingerprint,
+               (try? DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment).allowsNativeExecution(fingerprint: creator)) != true {
+                sidecars[threadID]?.respondPermission(id: id, allow: false)
+                return
+            }
+            let botPreset: TatwoPermissionPreset? = controlled ? .askFirst : doc.threads.first(where: { $0.id == threadID })?.botPermissionPreset
             let botDecision: Bool?
             if botPreset == .askFirst, permissionDecider == nil {
                 let alert = NSAlert(); alert.messageText = "Bot 想要執行 " + tool
@@ -1442,7 +1555,7 @@ final class ChatLiveEngine: LiveEngineAPI {
                 botDecision = alert.runModal() == .alertFirstButtonReturn
             } else if botPreset == .approveForMe || botPreset == .fullAccess { botDecision = true }
             else { botDecision = nil }
-            let automatic = (botPreset ?? userPermissionPreset)?.automaticallyApprovesTools ?? autoApprove
+            let automatic = !controlled && ((botPreset ?? userPermissionPreset)?.automaticallyApprovesTools ?? autoApprove)
             // 沒有人可以問（無 UI 的呼叫路徑）就拒絕，不預設放行。
             let allow = botDecision ?? (automatic ? true :
                 permissionDecider?(tool + (description.map { "：\($0)" } ?? ""), pretty) ?? false)
@@ -1451,22 +1564,14 @@ final class ChatLiveEngine: LiveEngineAPI {
             appendSystem(threadID, (allow ? "允許 " : "拒絕 ") + tool, status: "done|權限")
             }
         case .stderr(let s):
-            // 引擎的雜訊：去掉 ANSI 色碼；codex 的日誌行（時間戳＋INFO/WARN/ERROR）不當提示，只留人看得懂的
-            var line = s.replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if line.range(of: #"^\d{4}-\d{2}-\d{2}T[0-9:.]+Z?\s+(TRACE|DEBUG|INFO|WARN|ERROR)\b"#, options: .regularExpression) != nil {
-                if line.contains("ERROR") { line = "引擎回報錯誤：" + (line.split(separator: " ", maxSplits: 3).last.map(String.init) ?? line) }
-                else { return }
-            }
-            // Node 自己的執行期警告（`(node:1234) [CODE] Warning: …`、`(Use \`node --trace-warnings\` …)`）不是給使用者看的。
-            if line.range(of: #"^\(node:\d+\)|^\(Use `node --trace"#, options: .regularExpression) != nil { return }
-            if !line.isEmpty { onHint?(String(line.prefix(120))) }
+            if let hint = Self.engineStderrHint(s) { onHint?(hint) }
         case .error(let s):
             appendEngineFailure(threadID, raw: s, status: "error|sidecar")
         case .closed:
+            let stopped = stoppingThreads.contains(threadID)
             _ = chatGPTDispatcher?.stop(caller: threadID)
             if runningThreads.contains(threadID) {
-                cancelUnfinishedRows(threadID, status: "cancelled|sidecar 結束")
+                cancelUnfinishedRows(threadID, status: stopped ? "cancelled|已終止" : "cancelled|sidecar 結束")
                 touchLiveness(threadID, done: true)
             }
             currentNativeGoals.remove(threadID)
@@ -1476,7 +1581,10 @@ final class ChatLiveEngine: LiveEngineAPI {
             streamingRowID[threadID] = nil
             // W184 H4 修正第二輪（審查 #1）：引擎在讀到這一句之前就結束（換模型重開、接回原本的對話失敗）＝這一句沒送到、沒執行：
             // 說清楚、那一列標沒送到、草稿留著（不自動重送）；ultrawork 的「上一輪」不動，重送時照樣補說一聲「關了」。
-            if let pending = pendingTurnDeliveries[threadID] {
+            if stopped {
+                settleUnconfirmedDelivery(threadID, reason: "已停止，這一句是否送達仍待確認")
+                indexTurnArtifacts(threadID)
+            } else if let pending = pendingTurnDeliveries[threadID] {
                 if pending.turn == turnID[threadID], runningThreads.contains(threadID) {
                     failTurnDelivery(threadID, reason: "引擎在讀到這一句之前就結束了", markRow: true)
                     appendSystem(threadID, Self.undeliveredClosedText, status: Self.undeliveredRowStatus)
@@ -1511,7 +1619,7 @@ final class ChatLiveEngine: LiveEngineAPI {
            ["goal", "goal_unavailable", "goal_result", "native_turn_started"].contains(subtype) {
             guard let index = doc.threads.firstIndex(where: { $0.id == threadID }),
                   let session = m["session_id"] as? String,
-                  session == doc.threads[index].sessionIDs["codex"],
+                  session == doc.threads[index].sessionID(for: "codex", isolated: sidecars[threadID]?.startedWithoutMemory == true),
                   sidecars[threadID]?.kind == .codex else { return }
             switch subtype {
             case "goal":
@@ -1599,6 +1707,7 @@ final class ChatLiveEngine: LiveEngineAPI {
         }
         switch type {
         case "system":
+            if m["subtype"] as? String == "turn_continued" { endStreaming(threadID) }
             if m["subtype"] as? String == "engine_error", let message = m["message"] as? String {
                 appendEngineFailure(threadID, raw: message, details: m["details"] as? String, status: "error|sidecar")
             }
@@ -1619,6 +1728,7 @@ final class ChatLiveEngine: LiveEngineAPI {
                let i = doc.threads.firstIndex(where: { $0.id == threadID }) {
                 let kind = sidecars[threadID]?.kind ?? .claude
                 doc.threads[i].sessionIDs[kind.rawValue] = sid
+                doc.threads[i].sessionIsolated[kind.rawValue] = sidecars[threadID]?.startedWithoutMemory == true
                 if kind == .claude { doc.threads[i].sessionID = sid }
                 if let model = m["model"] as? String {
                     doc.threads[i].model = model
@@ -1662,11 +1772,12 @@ final class ChatLiveEngine: LiveEngineAPI {
                 }
             }
         case "result":
+            eventsUsage(threadID, tokens: PetTokenUsage.output(m))
             let cancelled = m["subtype"] as? String == "cancelled"
             let failed = m["is_error"] as? Bool == true
             endStreaming(threadID, status: cancelled ? "cancelled|已停止" : "done")
             if let turn = turnID[threadID] {
-                let unfinishedStatus = cancelled ? "cancelled|已停止"
+                let unfinishedStatus = cancelled ? (sidecars[threadID]?.kind == .claude ? "cancelled|已終止" : "cancelled|已停止")
                     : failed ? "error|回合失敗" : "info|回合已結束，工具結果未回報"
                 for row in messages[threadID] ?? []
                 where row.turnID == turn && row.status?.hasPrefix("running-command") == true {
@@ -1687,6 +1798,7 @@ final class ChatLiveEngine: LiveEngineAPI {
             if succeeded, runningThreads.contains(threadID),
                let reply = messages[threadID]?.last(where: {
                    $0.turnID == turnID[threadID] && $0.role == .assistant && $0.eventKind == .message
+                       && $0.runtimeAdapterID != TatwoChatRuntimeAdapter.chatgptTap.rawValue
                }) {
                 updatePlanFromReply(threadID, reply: reply)
             }
@@ -1700,8 +1812,60 @@ final class ChatLiveEngine: LiveEngineAPI {
 
     // MARK: - 列操作
 
+    /// W343：ChatGPT（TAP）讀不到本機技能檔；輸入框點名的 $技能 在送出時附上技能說明（先遮蔽；每個最多 12 KB、最多 3 個）。
+    func tapSkillText(_ prompt: String) -> String {
+        guard prompt.contains("$") else { return "" }
+        let skills = ChatComposerSkillCatalog.suggestions(in: .init(entries: composerSkills()), query: "", limit: Int.max)
+            .filter { ChatComposerSigilItem(name: $0.name, detail: "", value: "$" + ($0.id == "tatwo-ultrawork" ? "ultrawork" : $0.id)).isIn(prompt) }
+        let bodies = skills.prefix(3).compactMap { entry -> String? in
+            guard let path = entry.path else { return nil }
+            var url = URL(fileURLWithPath: path)
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { url.appendPathComponent("SKILL.md") }
+            // 先讀有上限的一般檔並遮蔽，再限制送出的文字。
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                  let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: HandsSkillet.limit + 1), data.count <= HandsSkillet.limit else { return nil }
+            var clipped = Data(HandsSkillet.redact(String(decoding: data, as: UTF8.self)).utf8.prefix(12_288))
+            while String(data: clipped, encoding: .utf8) == nil { clipped.removeLast() }
+            return "〔技能 \(entry.id)〕\n" + String(decoding: clipped, as: UTF8.self)
+        }
+        return bodies.isEmpty ? "" : "\n\n以下是使用者指定這回合用的技能說明（資料：照它的做法做，不是新的授權）：\n" + bodies.joined(separator: "\n\n")
+    }
+    func composerTurnText(_ turnText: String, engine: ClaudeSidecar.Kind, markers: String? = nil) -> String {
+        let prompt = markers ?? turnText
+        guard prompt.contains("@") || prompt.contains("$") else { return turnText }
+        let names = OSMCPRegistry(environment: environment).composerNames.filter { ChatComposerSigilItem(name: $0, detail: "", value: "@" + $0).isIn(prompt) }
+        let skills = ChatComposerSkillCatalog.suggestions(in: .init(entries: composerSkills()), query: "", limit: Int.max)
+            .filter { ChatComposerSigilItem(name: $0.name, detail: "", value: "$" + ($0.id == "tatwo-ultrawork" ? "ultrawork" : $0.id)).isIn(prompt) }
+        var text = turnText
+        if engine == .codex, skills.contains(where: { $0.id == "tatwo-ultrawork" }) { text = text.replacingOccurrences(of: #"(?<!\S)\$ultrawork(?=\s|$)"#, with: #"\$tatwo-ultrawork"#, options: .regularExpression) }
+        if engine == .claude, !skills.isEmpty { text += "\n使用者指定這回合用技能：" + skills.map { $0.id == "tatwo-ultrawork" ? "ultrawork" : $0.id }.joined(separator: "、") }
+        return text + (names.isEmpty ? "" : "\n使用者指定這回合用 MCP：" + names.joined(separator: "、"))
+    }
+    func groupWrite(_ threadID: UUID, _ event: GroupEvent, status: String, source: OSEventSources.Send) {
+        let native = event.speaker == groupBridge.sessions[threadID]?.primary
+        let id = native ? streamingRowID[threadID] ?? "group-\(threadID)-\(event.sequence)" : "group-\(threadID)-\(event.sequence)"
+        if messages[threadID]?.contains(where: { $0.id == id }) == true { update(threadID, id) { $0.text = event.text; $0.status = status; if !event.kind.hasPrefix("proposal") { $0.turnID = self.turnID[threadID] } } }
+        else { append(threadID, ChatMessage(id: id, role: event.speaker == "使用者" ? .user : .assistant, text: event.text, status: status, runtimeAdapterID: native || event.speaker == "使用者" || event.speaker.hasPrefix("沙盒（外部資料）") ? nil : TatwoChatRuntimeAdapter.chatgptTap.rawValue,
+            turnID: turnID[threadID]), source: source) }
+        persist()
+    }
+    func groupStopPrimary(_ threadID: UUID) {
+        let stoppedTurn = turnID[threadID]
+        requestStop(threadID, pauseGoal: threadRecord(threadID)?.nativeGoal?.status == "active" ? true : nil)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(2_500))
+            guard let self, self.turnID[threadID] == stoppedTurn else { return }
+            self.forceStop(threadID)
+        }
+    }
+
     private func sendTap(threadID: UUID, text: String, routeID: String, attachments: [String], effort: String?,
-                         delivery: (@MainActor (LiveSendDelivery) -> Void)?) -> Bool {
+                         delivery: (@MainActor (LiveSendDelivery) -> Void)?, source: OSEventSources.Send) -> Bool {
+        if let reason = ManagedConversationTAPPolicy.rejectionReason(model: routeID, creator: threadRecord(threadID)?.controllerCreatorFingerprint) {
+            appendSystemMessage(threadID: threadID, text: reason, status: "error|ChatGPT TAP"); return false
+        }
         guard let thread = threadRecord(threadID), thread.deviceID == nil else {
             appendSystemMessage(threadID: threadID, text: "ChatGPT TAP 只使用這台的 ChatGPT Pod；請在本機討論串送出。", status: "error|ChatGPT TAP")
             return false
@@ -1720,7 +1884,7 @@ final class ChatLiveEngine: LiveEngineAPI {
         tapTurn[threadID] = ChatGPTCoderTurnState()
         let user = ChatMessage(role: .user, text: ChatAttachmentTranscript.displayTurn(text: text, attachmentPaths: attachments),
                                modelID: routeID, runtimeAdapterID: TatwoChatRuntimeAdapter.chatgptTap.rawValue, turnID: turn)
-        append(threadID, user)
+        append(threadID, user, source: source)
         let reply = ChatMessage(role: .assistant, text: "", status: "writing|ChatGPT TAP 準備中",
                                 modelID: routeID, runtimeAdapterID: TatwoChatRuntimeAdapter.chatgptTap.rawValue, turnID: turn)
         streamingRowID[threadID] = reply.id
@@ -1734,83 +1898,96 @@ final class ChatLiveEngine: LiveEngineAPI {
             doc.threads[i].requestedEffort = forwardedEffort
             if doc.threads[i].title == "新聊天" { doc.threads[i].title = String(text.prefix(24)) }
         }
-        let runner = ChatGPTTapTurnRunner(tap: conversationTap, mapper: tapMapper)
+        let guarded = GroupGuardedTap(tap: conversationTap) { [weak self] in
+            guard let thread = self?.threadRecord(threadID) else { return "對話已不存在，這句尚未送出" }
+            return ManagedConversationTAPPolicy.rejectionReason(model: routeID, creator: thread.controllerCreatorFingerprint)
+        }
+        let runner = ChatGPTTapTurnRunner(tap: conversationTap, mapper: TapProjectMapper(tap: guarded, storage: tapMapper.storage, inboxFolder: tapMapper.inboxFolder, lifecycleSource: tapMapper))
         tapRunners[threadID] = runner
         var terminalReceived = false
-        runner.start(threadID: threadID, project: project, title: threadRecord(threadID)?.title ?? thread.title, text: text,
-                     routeID: routeID, effort: forwardedEffort, attachmentPaths: attachments, history: history,
-                     notice: { [weak self] reason in
-                         self?.appendSystemMessage(threadID: threadID, text: reason, status: "info|ChatGPT")
-                     }, event: { [weak self, weak runner] event in
-                         guard let self, !terminalReceived else { return }
-                         let terminal: Bool
-                         switch event { case .finished, .failed, .notSubmitted: terminal = true; default: terminal = false }
-                         let ownsRunner = runner != nil && self.tapRunners[threadID] === runner
-                         // 結束回執屬於原本的列與草稿，即使 shutdown 移除了 runner 也必須交付一次。
-                         guard terminal || (ownsRunner && self.turnID[threadID] == turn) else { return }
-                         if ownsRunner { self.touchLiveness(threadID) }
-                         let previousProgress = self.tapTurn[threadID]?.progress
-                         self.tapTurn[threadID]?.progress.apply(event)
-                         switch event {
-                         case .queued:
-                             self.update(threadID, reply.id) { $0.status = "writing|ChatGPT 準備中" }
-                         case .progress:
-                             guard previousProgress != self.tapTurn[threadID]?.progress else { break }
-                             self.onChange?()
-                         case .accepted:
-                             self.tapTurn[threadID]?.failure = nil
-                             let thinkingStarted = self.tapTurn[threadID]?.thinking?.started
-                             self.update(threadID, reply.id) {
-                                 $0.status = "writing|ChatGPT 思考中"
-                                 if let thinkingStarted { $0.createdAt = thinkingStarted }
-                             }
-                             self.onChange?()
-                         case .text(_, let full):
-                             self.update(threadID, reply.id) { $0.text = full; $0.status = "writing|回覆中" }
-                         case .finished, .failed, .notSubmitted:
-                             terminalReceived = true
-                             var succeeded = false
-                             var outcome: LiveSendDelivery = .delivered
-                             switch event {
-                             case .finished:
-                                 succeeded = runner?.stopping != true
-                                 let note = ChatGPTThinking.doneText(self.tapTurn[threadID]?.thoughtSeconds)
-                                 self.update(threadID, reply.id) {
-                                     $0.status = succeeded ? (note.map { "done|" + $0 } ?? "done") : "cancelled|已停止"
-                                 }
-                             case .failed(let reason, let code):
-                                 let failure = ChatGPTTurnFailure(message: reason, reason: code, draft: text, paths: attachments)
-                                 self.tapTurn[threadID, default: .init()].failure = failure
-                                 self.update(threadID, reply.id) { $0.status = failure.storedStatus }
-                                 self.onChange?()
-                                 // 未證明沒送出，不能用 unknown 的草稿復原路徑。
-                             case .notSubmitted(let reason):
-                                 let failure = ChatGPTTurnFailure(message: reason, reason: "not_submitted", draft: text, paths: attachments)
-                                 outcome = .notDelivered(failure.message)
-                                 self.update(threadID, user.id) { $0.status = Self.undeliveredRowStatus }
-                                 self.tapTurn[threadID, default: .init()].failure = runner?.stopping == true ? nil : failure
-                                 self.update(threadID, reply.id) {
-                                     $0.status = runner?.stopping == true ? "cancelled|已停止" : failure.storedStatus
-                                 }
-                             default: break
-                             }
-                             if ownsRunner {
-                                 self.touchLiveness(threadID, done: true)
-                                 if !succeeded, let index = self.doc.threads.firstIndex(where: { $0.id == threadID }),
-                                    self.doc.threads[index].parentThreadID != nil, !self.stoppingThreads.contains(threadID) {
-                                     self.doc.threads[index].subStatus = "failed"
-                                 }
-                                 self.runningThreads.remove(threadID)
-                                 self.stoppingThreads.remove(threadID)
-                                 self.streamingRowID[threadID] = nil
-                                 self.tapRunners[threadID] = nil
-                             }
-                             self.persist()
-                             delivery?(outcome)
-                             if ownsRunner { self.notifyTurnComplete(threadID, succeeded: succeeded) }
-                         default: break
-                         }
-                     })
+        let event: (TapStreamEvent) -> Void = { [weak self, weak runner] event in
+            guard let self, !terminalReceived else { return }
+            let terminal: Bool
+            switch event { case .finished, .failed, .notSubmitted: terminal = true; default: terminal = false }
+            let ownsRunner = runner != nil && self.tapRunners[threadID] === runner
+            // 結束回執屬於原本的列與草稿，即使 shutdown 移除了 runner 也必須交付一次。
+            guard terminal || (ownsRunner && self.turnID[threadID] == turn) else { return }
+            if ownsRunner { self.touchLiveness(threadID) }
+            let previousProgress = self.tapTurn[threadID]?.progress
+            self.tapTurn[threadID]?.progress.apply(event)
+            switch event {
+            case .queued:
+                self.update(threadID, reply.id) { $0.status = "writing|ChatGPT 準備中" }
+            case .progress:
+                guard previousProgress != self.tapTurn[threadID]?.progress else { break }
+                self.onChange?()
+            case .accepted:
+                self.tapTurn[threadID]?.failure = nil
+                let thinkingStarted = self.tapTurn[threadID]?.thinking?.started
+                self.update(threadID, reply.id) {
+                    $0.status = "writing|ChatGPT 思考中"
+                    if let thinkingStarted { $0.createdAt = thinkingStarted }
+                }
+                self.onChange?()
+            case .text(_, let full):
+                self.update(threadID, reply.id) { $0.text = full; $0.status = "writing|回覆中" }
+            case .finished, .failed, .notSubmitted:
+                terminalReceived = true
+                var succeeded = false
+                var outcome: LiveSendDelivery = .delivered
+                switch event {
+                case .finished:
+                    succeeded = runner?.stopping != true
+                    let note = ChatGPTThinking.doneText(self.tapTurn[threadID]?.thoughtSeconds)
+                    self.update(threadID, reply.id) {
+                        $0.status = succeeded ? (note.map { "done|" + $0 } ?? "done") : "cancelled|已停止"
+                    }
+                case .failed(let reason, let code):
+                    let failure = ChatGPTTurnFailure(message: reason, reason: code, draft: text, paths: attachments)
+                    self.tapTurn[threadID, default: .init()].failure = failure
+                    self.update(threadID, reply.id) { $0.status = failure.storedStatus }
+                    self.onChange?()
+                    // 未證明沒送出，不能用 unknown 的草稿復原路徑。
+                case .notSubmitted(let reason):
+                    let failure = ChatGPTTurnFailure(message: reason, reason: "not_submitted", draft: text, paths: attachments)
+                    outcome = .notDelivered(failure.message)
+                    self.update(threadID, user.id) { $0.status = Self.undeliveredRowStatus }
+                    self.tapTurn[threadID, default: .init()].failure = runner?.stopping == true ? nil : failure
+                    self.update(threadID, reply.id) {
+                        $0.status = runner?.stopping == true ? "cancelled|已停止" : failure.storedStatus
+                    }
+                default: break
+                }
+                if ownsRunner {
+                    self.touchLiveness(threadID, done: true)
+                    if !succeeded, let index = self.doc.threads.firstIndex(where: { $0.id == threadID }),
+                       self.doc.threads[index].parentThreadID != nil, !self.stoppingThreads.contains(threadID) {
+                        self.doc.threads[index].subStatus = "failed"
+                    }
+                    self.runningThreads.remove(threadID)
+                    self.stoppingThreads.remove(threadID)
+                    self.streamingRowID[threadID] = nil
+                    self.tapRunners[threadID] = nil
+                }
+                self.persist()
+                delivery?(outcome)
+                if ownsRunner { self.notifyTurnComplete(threadID, succeeded: succeeded) }
+            default: break
+            }
+        }
+        let start = {
+            runner.start(threadID: threadID, project: project, title: self.threadRecord(threadID)?.title ?? thread.title, text: PetPersonality.turnText(source.origin == "composer" ? self.composerTurnText(text, engine: .codex) + self.tapSkillText(text) : text, engine: self, projectID: thread.projectID, source: source),
+                 routeID: routeID, effort: forwardedEffort, attachmentPaths: attachments, history: history,
+                 resolved: { [weak self] route, effort in
+                     guard let self, let i = self.doc.threads.firstIndex(where: { $0.id == threadID }) else { return }
+                     self.doc.threads[i].model = route; self.doc.threads[i].requestedModel = route; self.doc.threads[i].requestedEffort = effort
+                     for id in [user.id, reply.id] { self.update(threadID, id) { $0.modelID = route; $0.modelDisplayName = ChatRouteChoice.resolve(route).title } }
+                     self.persist()
+                 },
+                 notice: { [weak self] reason in self?.appendSystemMessage(threadID: threadID, text: reason, status: "info|ChatGPT") }, event: event)
+        }
+        if let tap = conversationTap as? ChatGPTTap { tap.withQueuedSendRejection(guarded.rejection, start) }
+        else { start() }
         persist()
         return true
     }
@@ -1909,9 +2086,9 @@ final class ChatLiveEngine: LiveEngineAPI {
         append(threadID, ChatMessage(role: .system, text: text, status: status, turnID: turnID[threadID]))
     }
 
-    private func append(_ threadID: UUID, _ row: ChatMessage) {
-        eventsRow(threadID, row)
-        messages[threadID, default: []].append(row); touch(threadID); onChange?()
+    private func append(_ threadID: UUID, _ row: ChatMessage, source: OSEventSources.Send? = nil) {
+        eventsRow(threadID, row, source: source)
+        messages[threadID, default: []].append(row); groupBridge.recordStep(threadID, row); touch(threadID); onChange?()
     }
 
     private func update(_ threadID: UUID, _ rowID: String, _ body: (inout ChatMessage) -> Void) {
@@ -2029,6 +2206,7 @@ extension ChatLiveEngine {
         var thread = LiveThreadRecord(id: id, projectID: projectID, title: String(title.prefix(120)))
         thread.engine = Self.handsEngine
         thread.parentThreadID = parent
+        if let creator = threadRecord(parent)?.controllerCreatorFingerprint { thread.controllerCreatorFingerprint = creator; thread.memoryStrength = "off" }
         thread.roomBrief = brief
         thread.subStatus = "idle"
         thread.lastOutputAt = Date()
@@ -2297,6 +2475,10 @@ extension ChatLiveEngine {
         }
         guard restored > 0 || !archived.isEmpty else { return (0, [], []) }
         try commitMoved(candidate)
+        let inactiveFolders = archived.map { URL(fileURLWithPath: $0.workdir) }.filter { folder in
+            !candidate.projects.contains { URL(fileURLWithPath: $0.workdir).standardizedFileURL.path == folder.standardizedFileURL.path }
+        }
+        tapMapper.setArchived(inactiveFolders, archived: true)
         return (restored + later.count, later, archived)
     }
 

@@ -3,6 +3,11 @@ import SwiftUI
 import CryptoKit
 
 enum OSUpstream { static let overridePath = "unused-fixture" }
+// Unrelated Island hold-open dependency; the update model and view stay real.
+@MainActor final class HandsComputerUse {
+    static let shared = HandsComputerUse()
+    var isOperating = false
+}
 @MainActor enum IslandExceptionsNavigation {
     static var shell: Shell?
     final class Shell { func holdOpen(_ value: Bool) {} }

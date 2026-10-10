@@ -1,0 +1,12 @@
+# W269: GPT window sidebar footer, Browser edge spacing and one shared reveal toggle.
+App/Sources/Tatwo2/Chat/ChatPage+Sidebar.swift # Restore OS footer; use Browser pin/hover state for the web window.
+App/Sources/Tatwo2/Chat/ChatPage.swift # Reuse Browser gap/reserves; one shared toggle above the sliding rail with Browser chrome metrics.
+App/Sources/Tatwo2/Chat/ChatPage+Panels.swift # Select the isolated fixture Tap for full-window tests; reuse the existing reveal host.
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # DEBUG fixture Tap injection for full production ChatPage without external sites.
+App/Sources/Tatwo2/TAP/TapWebPod.swift # Admit the separate W269 isolated fixture to the existing DEBUG profile override.
+App/Sources/Tatwo2/SelfTest.swift # Register the separate W269 CEF suite; W248 flow is unchanged.
+App/Sources/Tatwo2/TAP/W269GPTChromeAcceptance.swift # Eight real CEF screenshots, AX/click/edge measurements and Browser comparison.
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift # Update only the obsolete picker-only assertion to require the restored OS footer; no new flow.
+tests/w248-webspace.test.mjs # Update old source expectations for shared footer and suppression of duplicate GPT toggle.
+tests/w269-gptchrome.test.mjs # Assert window-only shared control and native/DM separation.
+tests/fixtures/w269-room-allow.txt # Record the exact scope and reasons.

@@ -29,6 +29,7 @@ extension ChatPage {
     }
 
     func composer(contentMaxWidth: CGFloat?, forceCompactToolbar: Bool = false) -> some View {
+        let submit = { if model.canSend { model.send() } }
         let compactToolbar = forceCompactToolbar || (contentMaxWidth ?? ChatUILayout.chatColumnMaxWidth) < 720
         let composerTextMinimumHeight = surface == .window
             ? TatwoChatTranscriptVisualMetrics.windowComposerTextMinimumHeight
@@ -72,76 +73,10 @@ extension ChatPage {
                 DispatchCard(model: model)
             }
 
-            if !model.skillSuggestions.isEmpty {
-                skillSuggestionRail
-            }
-
             // 「/」斜線指令列：內嵌在輸入框上方(不浮層)，避免與上方目標狀態列重疊。
             let slashCmds = model.matchingSlashCommands
             if !slashCmds.isEmpty {
                 slashCommandRail(slashCmds)
-            }
-
-            // 「@」全域搜尋列（Codex 式）：先在輸入框上方逐筆列出可搜尋的 issue，
-            // 點選某一筆才釘進右側資訊卡；打字即時過濾。
-            if model.issueAtMentionQuery != nil {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Issue List")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
-                    if model.issueAtMentionMatches.isEmpty {
-                        Text("沒有符合的 issue")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                    }
-                    ForEach(Array(model.issueAtMentionMatches.enumerated()), id: \.element.id) { idx, entry in
-                        let isSelected = model.issueMentionSelectedIndex == idx
-                        Button {
-                            withAnimation(.easeOut(duration: 0.14)) {
-                                model.pickIssueMention(entry)
-                            }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "circle")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(entry.title)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text("Issue・\(entry.sourceReference)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                                if isSelected {
-                                    Text("↵")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(
-                                LiquidGlassTokens.brandAccent.opacity(isSelected ? 0.18 : 0.06),
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(
-                                        isSelected
-                                            ? LiquidGlassTokens.brandAccent
-                                            : Color.clear,
-                                        lineWidth: 1))
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help("↑↓ 選取、Enter 釘選，或點擊：\(entry.title)")
-                    }
-                }
-                .onAppear { model.reloadIssueList() }
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -153,10 +88,7 @@ extension ChatPage {
                     isMonospaced: model.mode == .cli,
                     minimumHeight: composerTextMinimumHeight,
                     maximumHeight: composerTextMaximumHeight,
-                    onSubmit: {
-                        guard model.canSend else { return }
-                        model.send()
-                    },
+                    onSubmit: submit,
                     onFocusChange: { focused in
                         composerFocused = focused
                     },
@@ -170,6 +102,14 @@ extension ChatPage {
                 .padding(.horizontal, 20)
                 .padding(.top, 15)
                 .padding(.bottom, 8)
+
+                if !model.composerMarkers.isEmpty {
+                    HStack(spacing: 6) {
+                        ForEach(model.composerMarkers, id: \.self) { marker in
+                            Text(marker).font(.caption.monospaced()).padding(6).liquidGlassPanelSurface(cornerRadius: 8)
+                        }
+                    }.padding(.horizontal, 13).padding(.bottom, 6)
+                }
 
                 if !model.droppedPaths.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -199,6 +139,29 @@ extension ChatPage {
             // 計劃書側欄開、關的當下收起（Plan 畫布裡那張 ultraworkOnly 照舊在側欄裡）。
             .tatwoComposerModeCard(isPresented: $showUltraworkPanel) {
                 TatwoComposerModeCard(mode: coderComposerMode(), metrics: .main)
+            }
+            .tatwoComposerModeCard(isPresented: Binding(get: { model.composerSigil != nil }, set: { if !$0 { model.dismissComposerSigil() } })) {
+                if let kind = model.composerSigil {
+                    ChatComposerSigilMenu(kind: kind, items: model.composerSigilItems,
+                        selectedIndex: model.issueMentionSelectedIndex ?? -1, pick: model.pickComposerSigil)
+                        .onAppear { if kind == .issue { model.reloadIssueList() } }
+                        .background(TatwoComposerModeKeyMonitor(onKey: { key in
+                            switch key {
+                            case .escape: model.dismissComposerSigil(); return true
+                            case .next, .right: return model.handleComposerSuggestionKey(.next)
+                            case .previous, .left: return model.handleComposerSuggestionKey(.prev)
+                            case .commit:
+                                if !model.handleComposerSuggestionKey(.commit) { submit() }
+                                return true
+                            }
+                        }, isLive: { model.composerSigil != nil }))
+                }
+            }.zIndex(model.composerSigil == nil ? 0 : 10)
+            .onChange(of: model.composerSigil) { _, kind in
+                if kind != nil { showUltraworkPanel = false; infoCardFloatingOpen = false }
+            }
+            .onChange(of: infoCardFloatingOpen) { _, open in
+                if open { showUltraworkPanel = false; model.dismissComposerSigil() }
             }
             .onChange(of: planInspectorPresented) { _, _ in
                 if showUltraworkPanel { showUltraworkPanel = false }
@@ -237,6 +200,14 @@ extension ChatPage {
         .onChange(of: globalNoteOpen) { open in
             if open { composerFocused = false; NSApp.keyWindow?.makeFirstResponder(nil) }
         }
+        .onChange(of: model.selectedModel) { _, _ in coderVoice.endVoice() }
+        .onChange(of: model.selectedThreadID) { _, _ in coderVoice.endVoice() }
+        .onChange(of: coderVoice.voiceActive) { _, active in
+            if !active, coderVoice.lastEnd == .forced {
+                model.flashComposerHint(coderVoice.voiceStatus.hasPrefix("正在結束") ? "語音已停止，已關閉語音頁面" : coderVoice.voiceStatus)
+            }
+        }
+        .onDisappear { coderVoice.endVoice() }
     }
 
     // 微倒梯形（頂寬、底稍窄）：上緣切平(與聊天窗銜接處不要 r)，只圓下緣兩角。
@@ -509,11 +480,16 @@ extension ChatPage {
                 .background(Color.secondary.opacity(0.10), in: Capsule())
             }
             if !model.archivedPlanCanvases.isEmpty {
-                Menu("封存畫布") {
+                Menu {
                     ForEach(model.archivedPlanCanvases, id: \.planID) { plan in
                         Button("\(plan.kind ?? "plan") · \(plan.objective)") { model.restoreArchivedCanvas(plan.planID) }
                     }
-                }.accessibilityIdentifier("composer-archived-canvases")
+                } label: {
+                    Text("封存畫布").font(.system(size: 10, weight: .bold))
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .padding(.horizontal, 8).frame(height: 24).chatGlassChip()
+                .accessibilityIdentifier("composer-archived-canvases")
             }
 
             // 「工作中」已搬到下方梯形（2026-09-11 使用者）。
@@ -525,11 +501,15 @@ extension ChatPage {
                 composerModeChip(compact: compactToolbar)
             }
 
-            // 一般回覆沿用送出／停止單顆鈕；保留畫布的串另留停止入口，避免草稿遮住停止。
-            if model.isRunning && (model.routeChoice.runtimeAdapter == .chatgptTap || !model.canSend || model.activePlanArtifact != nil) {
-                composerStopButton
+            // 停止固定在最右側；有草稿時，插話入口出現在停止左側。
+            if model.isRunning {
                 if model.canSend { composerSendButton(compactToolbar: compactToolbar) }
+                composerStopButton
             } else {
+                if model.mode != .cli, model.routeChoice.runtimeAdapter == .chatgptTap {
+                    ChatGPTVoiceModeButton(enabled: coderVoice.canStart && !coderVoice.voiceActive,
+                        metrics: .space, identifier: "tatwo.coder.voice") { coderVoice.startVoice() }
+                }
                 composerSendButton(compactToolbar: compactToolbar)
             }
         }
@@ -537,7 +517,7 @@ extension ChatPage {
 
     func composerSendButton(compactToolbar: Bool) -> some View {
         ChatComposerSendButton(enabled: model.canSend) { model.send() }
-            .accessibilityLabel("送出")
+            .accessibilityLabel(model.canSteerCurrentTurn ? "插話到目前工作" : "送出")
             .accessibilityIdentifier("chat-composer-send")
             .accessibilityValue(model.sendAvailabilityDiagnostic)
             .accessibilityAction { model.send() }
@@ -546,7 +526,7 @@ extension ChatPage {
     }
 
     // 斜線指令列（打「/」內嵌浮現，不遮上方目標列）：橫向 chip；打字越多前綴越窄。
-    // 當只剩一個符合(如「/go」)會標 ↵ 提示可直接 Enter 執行。
+    // Return 補第一筆或鍵盤選中的指令；補全不送出。
     func slashCommandRail(_ cmds: [ChatPageModel.SlashCommandItem]) -> some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
@@ -571,7 +551,7 @@ extension ChatPage {
                                     Text(item.subtitle)
                                         .font(.system(size: 8.5)).foregroundStyle(.secondary).lineLimit(1)
                                 }
-                                if cmds.count == 1 {
+                                if idx == (model.slashCommandSelectedIndex ?? 0) {
                                     Text("↵").font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
                                 }
                             }
@@ -685,6 +665,8 @@ extension ChatPage {
             y: LiquidGlassTokens.shadowOffsetY
         )
         .help("停止")
+        .accessibilityLabel("停止")
+        .accessibilityIdentifier("chat-composer-stop")
     }
 
     // MARK: W184 H4：模式選擇
@@ -701,7 +683,10 @@ extension ChatPage {
 
     func toggleComposerModeCard() {
         let willShow = !showUltraworkPanel
-        if willShow { model.refreshChatGPTTapModels() }
+        if willShow {
+            infoCardFloatingOpen = false; model.dismissComposerSigil()
+            model.refreshChatGPTTapModels()
+        }
         withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
             showUltraworkPanel = willShow
             showSingleModelPanel = false
@@ -741,7 +726,7 @@ extension ChatPage {
                 guard row.id == "single" else { return nil }
                 let reason = model.tapModelSelectionUnavailableReason(ChatRouteChoice.resolve(option.id))
                 return TatwoComposerMode.ModelOption(
-                    id: option.id, title: reason.map { "\(option.title) · \($0)" } ?? option.title,
+                    id: option.id, title: reason.map { "\(option.title) · \($0)" } ?? (option.title + (ChatGPTTapModelCatalog.isFresh ? "" : " · 待更新")),
                     brand: option.brand, isSelected: option.isSelected,
                     isDisabled: reason != nil, isPending: option.isPending)
             }
@@ -1161,6 +1146,9 @@ extension ChatPage {
 
     @ViewBuilder
     var ultraworkCollaborationPanel: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("ultraworkCollaborationPanel")
+        #endif
         if sliderWindowRouteProbeEnabled || sliderArchProbeEnabled {
             VStack(alignment: .leading, spacing: 0) {
                 if sliderWindowRouteProbeEnabled {
@@ -1609,5 +1597,34 @@ extension ChatPage {
             }
         }
         return accepted
+    }
+}
+
+struct ChatComposerSigilMenu: View {
+    let kind: ChatComposerSigil
+    let items: [ChatComposerSigilItem]
+    let selectedIndex: Int
+    let pick: (ChatComposerSigilItem) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(kind.title).font(.caption2.weight(.bold)).foregroundStyle(.secondary).padding(6).accessibilityIdentifier("composer-sigil-title")
+            if kind == .tap { Text("@@ 開始協作・@- 結束協作").font(.caption2).foregroundStyle(.secondary).padding(6) }
+            if items.isEmpty { Text("沒有符合的項目").font(.caption).foregroundStyle(.secondary).padding(8) }
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                Button { pick(item) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: kind.icon).frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.name).font(.system(size: 12, weight: .medium))
+                            Text(item.detail).font(.caption2).foregroundStyle(.secondary)
+                        }.lineLimit(1)
+                        Spacer(minLength: 8)
+                        Text(item.value).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                    }.foregroundStyle(item.enabled ? .primary : .secondary)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LiquidGlassTokens.brandAccent.opacity(index == selectedIndex && item.enabled ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 8))
+                }.buttonStyle(.plain).disabled(!item.enabled).accessibilityIdentifier("composer-sigil-item-" + item.value)
+            }
+        }.padding(6).liquidGlassPanelSurface(cornerRadius: 12)
     }
 }

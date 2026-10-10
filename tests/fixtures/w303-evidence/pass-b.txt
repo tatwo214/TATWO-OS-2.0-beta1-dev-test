@@ -1,0 +1,13 @@
+BUILD W303-mcpadd @ 31544a71 (lock wait 0s)
+free+inactive 40.4GB
+swift build exit=0 seconds=107
+== node tests/w248-webspace.test.mjs
+ℹ tests 4
+ℹ pass 4
+ℹ fail 0
+ℹ skipped 0
+== selftest w294e
+PASS lines: 77
+W294E SUMMARY passes=71 failures=0
+selftest w294e exit=0
+isolated scratch retained

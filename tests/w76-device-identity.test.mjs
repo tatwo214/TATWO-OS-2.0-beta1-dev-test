@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetRPCCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = fileURLToPath(new URL('../App/Sources/Tatwo2/', import.meta.url));
 const source = file => readFileSync(join(app, file), 'utf8');
@@ -16,13 +17,15 @@ function probe() {
   if (binary) return binary;
   const root = testScratch('w76-compiled-');
   const outputBinary = join(root, 'checks');
+  const roomBinary = process.env.TATWO2_TEST_BINARY ?? join(process.cwd(), '.build/debug/Tatwo2');
+  copyFileSync(join(dirname(roomBinary), 'TatwoFleetGate'), join(root, 'TatwoFleetGate'));
   const stubs = source('Facade/DevicesStubs.swift');
   const reader = stubs.slice(stubs.indexOf('struct TatwoFlexPrimaryState:'),
     stubs.indexOf('enum TatwoHostMemoryPressureLevelV1:'));
   assert.ok(reader.includes('enum TatwoFlexPrimaryReader'));
   writeFileSync(join(root, 'Reader.swift'), 'import Foundation\n' + reader);
   const driver = join(root, 'Checks.swift');
-  writeFileSync(driver, String.raw`
+  writeFileSync(driver, fleetRPCCompileStubs() + String.raw`
 import Darwin
 import Foundation
 
@@ -49,7 +52,8 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
     }
     static func registry(_ root: URL, _ name: String) -> DeviceRegistry {
         DeviceRegistry(root: root.appendingPathComponent(name),
-                       authorizedKeysURL: root.appendingPathComponent(name + "-keys"), environment: [:])
+                       authorizedKeysURL: root.appendingPathComponent(name + "-keys"),
+                       knownHostsURL: root.appendingPathComponent(name + "-hosts"), environment: [:])
     }
     static func migration(_ epoch: Int = 1) throws -> [String: DeviceIdentity] {
         try DeviceIdentityMigration.preview(
@@ -70,6 +74,7 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
         }
     }
     static func run() throws {
+        DeviceFleetRevocation.testHooks = .init(sessions: { [] }, terminate: { _ in false })
         let mode = CommandLine.arguments[1]
         let root = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
         // All mutable state is caller-provided synthetic TMPDIR data.
@@ -114,6 +119,7 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
               "publicKeyFingerprint":"fixture","addedAt":"2026-09-17T00:00:00Z",
               "lastSeenAt":"2026-09-17T00:00:00Z","workdirMap":{}}]
             """
+            try FileManager.default.createDirectory(at: reg.root, withIntermediateDirectories: true)
             try Data(oldJSON.utf8).write(to: reg.url)
             let before = try Data(contentsOf: reg.url)
             try check(reg.list().first?.role == nil && reg.list().first?.epoch == nil,
@@ -245,9 +251,20 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
             let hostKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBBSVJURVNULUhPU1QtS0VZLUZJWFRVUkUtMDAwMDAx w76-host"
             let hostKeyPub = root.appendingPathComponent("w76-host-key.pub")
             try (hostKeyLine + "\n").write(to: hostKeyPub, atomically: true, encoding: .utf8)
+            let hostClientKey = root.appendingPathComponent("host-client-key").path
+            let clientHostKey = root.appendingPathComponent("client-host-key").path
+            for path in [hostClientKey, clientHostKey] {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+                process.arguments = ["-q", "-t", "ed25519", "-N", "", "-f", path]
+                try process.run(); process.waitUntilExit()
+                try check(process.terminationStatus == 0, "owned fixture key generated")
+            }
             let hostEnv = ["TATWO_OS_ROOT": ea.root.path, "TATWO2_PAIRING_HOST": "127.0.0.1",
-                           "TATWO2_SSH_HOST_KEY_PUB": hostKeyPub.path]
-            let clientEnv = ["TATWO_OS_ROOT": eb.root.path]
+                           "TATWO2_SSH_HOST_KEY_PUB": hostKeyPub.path, "TATWO2_SSH_KEY_PATH": hostClientKey]
+            let clientEnv = ["TATWO_OS_ROOT": eb.root.path,
+                             "TATWO2_SSH_HOST_KEY_PUB": clientHostKey + ".pub",
+                             "TATWO2_SSH_KEY_PATH": root.appendingPathComponent("ssh/id_ed25519").path]
             let hr = registry(root, "host-live"), cr = registry(root, "client-live")
             let hostStore = try DeviceIdentityStore.forLocalDevice(entry: ea, pairedDeviceID: a, name: "Host")
             try hostStore.write(migration()["legacy-primary"]!)
@@ -277,7 +294,11 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
                     port: Int(stale.listenAddress.split(separator: ":").last!)!,
                     code: stale.code, name: "Client")
             }
-            try check(try pair().id == a, "new pairing window uses updated epoch")
+            try rejects("unsigned identity epoch cannot mint a fleet pairing window") {
+                _ = try host.startPairingWindow()
+            }
+            try hostStore.write(migration()["legacy-primary"]!)
+            try check(try pair().id == a, "new pairing window uses verified sovereignty epoch")
             let pub = try String(contentsOf: root.appendingPathComponent("ssh/id_ed25519.pub"), encoding: .utf8)
             try check(try hr.pairingDeviceID(publicKey: pub, requestedID: nil, localDeviceID: a) == local.deviceID,
                       "legacy request recovers existing UUID by SSH fingerprint")
@@ -313,9 +334,11 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
 }
 `);
   execFileSync('swiftc', [
-    '-swift-version', '5', '-parse-as-library', '-num-threads', '2',
+    '-D', 'DEBUG', '-swift-version', '5', '-parse-as-library', '-num-threads', '2',
     ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingCode', 'DevicePairingStubs',
-      'DevicePairingAuth', 'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
+      'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph',
+      'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate',
+      'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
     join(app, 'Chat/UltraworkRoleConfiguration.swift'), join(root, 'Reader.swift'),
     driver, '-o', outputBinary,
   ], { encoding: 'utf8', timeout: 180_000 });
@@ -326,9 +349,13 @@ enum ChatCollaborationLevel { case off, s, m, l, xl, xxl }
 for (const mode of ['format', 'registry', 'migration', 'guards', 'reader', 'roles', 'pairing']) {
   test(`W76 production Swift: ${mode}`, () => {
     const root = testScratch(`w76-${mode}-`);
+    mkdirSync(join(root, 'home'));
     const hardware = execFileSync('/usr/sbin/sysctl', ['-n', 'hw.model'], { encoding: 'utf8' }).trim();
     const env = Object.fromEntries(Object.entries(process.env)
-      .filter(([key]) => !key.startsWith('TATWO') && !key.startsWith('GIT_')));
+      .filter(([key]) => !key.startsWith('TATWO') && !key.startsWith('GIT_') &&
+        key !== 'SSH_AUTH_SOCK' && key !== 'SSH_AGENT_PID'));
+    Object.assign(env, { HOME: join(root, 'home'), CFFIXED_USER_HOME: join(root, 'home'),
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' });
     const output = execFileSync(probe(), [mode, root, hardware], {
       encoding: 'utf8', env, timeout: 90_000,
     });

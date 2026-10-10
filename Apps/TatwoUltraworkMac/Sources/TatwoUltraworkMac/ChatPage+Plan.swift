@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import TatwoCEFBridge
 import Combine
 import UniformTypeIdentifiers
 import Darwin
@@ -90,31 +91,31 @@ enum PlanDownloadPolicy {
         {
             return URL(fileURLWithPath: configuredPath, isDirectory: true)
         }
-        return fileManager.urls(
-            for: .downloadsDirectory,
-            in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Downloads", isDirectory: true)
+        let path = NSSearchPathForDirectoriesInDomains(
+            .downloadsDirectory, .userDomainMask, true).first
+            ?? fileManager.homeDirectoryForCurrentUser.path + "/Downloads"
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    static func availableDestination(
-        in directory: URL,
-        fileManager: FileManager = .default
-    ) -> URL {
-        let original = directory.appendingPathComponent("PLAN.md")
-        guard fileManager.fileExists(atPath: original.path) else {
-            return original
-        }
+    static func export(_ markdown: String, in directory: URL, name: String = "PLAN.md") throws -> URL {
+        let filename = try TatwoPlanExport.write(
+            Data(markdown.utf8), directory: directory.path, name: name)
+        return directory.appendingPathComponent(filename)
+    }
 
-        var suffix = 2
-        while true {
-            let candidate = directory.appendingPathComponent(
-                "PLAN \(suffix).md")
-            if !fileManager.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-            suffix += 1
+    @MainActor static func download(_ markdown: String) {
+        do {
+            _ = try export(markdown, in: downloadDirectory())
+        } catch {
+            report(error)
         }
+    }
+
+    @MainActor static func report(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "計畫匯出失敗"
+        alert.informativeText = error.localizedDescription
+        TatwoModalPanelGate.run { alert.runModal() }
     }
 }
 
@@ -321,20 +322,15 @@ struct PlanTranscriptSummaryView: View {
                 UTType(filenameExtension: "md") ?? .plainText
             ]
             guard TatwoModalPanelGate.run({ panel.runModal() }) == .OK, let url = panel.url else { return }
-            try? markdown.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try markdown.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                PlanDownloadPolicy.report(error)
+            }
             return
         }
 
-        let fileManager = FileManager.default
-        let directory = PlanDownloadPolicy.downloadDirectory(
-            fileManager: fileManager)
-        let destination = PlanDownloadPolicy.availableDestination(
-            in: directory,
-            fileManager: fileManager)
-        try? markdown.write(
-            to: destination,
-            atomically: true,
-            encoding: .utf8)
+        PlanDownloadPolicy.download(markdown)
     }
 }
 
@@ -593,16 +589,7 @@ struct PlanTranscriptInspectorView: View {
     }
 
     private func downloadPlan() {
-        let fileManager = FileManager.default
-        let directory = PlanDownloadPolicy.downloadDirectory(
-            fileManager: fileManager)
-        let destination = PlanDownloadPolicy.availableDestination(
-            in: directory,
-            fileManager: fileManager)
-        try? markdown.write(
-            to: destination,
-            atomically: true,
-            encoding: .utf8)
+        PlanDownloadPolicy.download(markdown)
     }
 }
 

@@ -1,0 +1,8 @@
+# W267: only window-top routing. Visual acceptance is a real-device side-by-side on the installed preview (lead), not an in-process harness.
+App/Sources/Tatwo2/Chat/ChatPage.swift # Share Browser top-button/traffic-light/hover conditions.
+App/Sources/Tatwo2/Chat/ChatPage+Panels.swift # Extend web GPT to top; reuse W112 reveal host and teardown; align hover sidebar button.
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # One flag-aware Browser chrome predicate; DM pane remains unchanged.
+App/Sources/Tatwo2/Shell/AppShell.swift # The outer drag rail must exclude web GPT just as it excludes Browser.
+tests/w248-webspace.test.mjs # Guard window-only Browser routing and native/DM separation.
+tests/w177-chatgpt-space.test.mjs # Keep native top-control contract behind the web opt-out.
+tests/fixtures/w267-room-allow.txt # Explain exact guard scope.

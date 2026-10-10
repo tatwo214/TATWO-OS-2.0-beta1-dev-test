@@ -1,0 +1,12 @@
+App/Sources/Tatwo2/Facade/RemoteHostLink.swift
+App/Sources/Tatwo2/Facade/DeviceFleetGate.swift
+App/Sources/Tatwo2/Facade/HandsBuildController.swift
+App/Sources/Tatwo2/Facade/HandsBuildModel.swift
+App/Sources/Tatwo2/Facade/HandsRemote.swift
+App/Sources/Tatwo2/Facade/HandsBuildUIAcceptance.swift
+App/Sources/Tatwo2/New/ChatGPTBuildSection.swift
+App/Sources/Tatwo2/Tatwo2App.swift
+tests/w311-fleetssh.test.mjs
+tests/fixtures/w311-room-allow.txt
+tests/helpers/fleet-rpc-compile-stubs.mjs
+App/Sources/Tatwo2/Facade/HandsBuildAcceptance.swift

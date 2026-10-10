@@ -500,6 +500,14 @@ extension HandsBuildAcceptance {
             revocation: .standard(service: observer.service, callPrimary: fleetPrimaryCall(fleet, sender: aID)),
             role: { observer.role }, openLogin: { _, _ in }, closeLogin: { _ in },
             background: { $0() }, now: { fleet.clock.now() }, uptime: { fleet.clock.uptime() }))
+        observer.sync.syncNow()
+        _ = await waitUntil(3) { ctl.config != nil }
+        check(ctl.connectionReason(bID) == "沒收到這台的回報" && !ctl.statusText.contains("登入 Cloudflare"),
+              "W311 沒收到副設備回報：不要求 Cloudflare 登入", ctl.statusText)
+        for detail in ["Connection reset by peer", "Connection closed by remote host", "ssh_remote_login_unresponsive"] {
+            check(HandsRemoteClient.plain(RemoteHostLinkError.sshHomeLookupFailed(detail)) == "主設備的遠端登入沒有回應",
+                  "W311 SSH 拒絕與主設備没開分開：" + detail)
+        }
         func report(_ id: String, running: Bool, grants: Int) -> HandsBuildDeviceReport {
             var r = HandsBuildDeviceReport(deviceID: id)
             r.appliedConfigRevision = config.configRevision
@@ -510,6 +518,13 @@ extension HandsBuildAcceptance {
             r.grants = grants; r.confirmedGrants = grants
             return r
         }
+        var unauthorized = report(bID, running: false, grants: 0)
+        unauthorized.accounts = [.init(id: accountID, name: "fixture", zones: [.init(zoneID: zoneID, name: domain, authorized: false)])]
+        fleet.authority.record(report(pID, running: false, grants: 0), from: pID)
+        fleet.authority.record(unauthorized, from: bID)
+        observer.sync.syncNow()
+        _ = await waitUntil(3) { ctl.hasFreshReport(bID) }
+        check(ctl.statusText.contains("登入 Cloudflare"), "W311 明確回報沒有通道憑證：才要求登入", ctl.statusText)
         let primary = report(pID, running: true, grants: 1)
         let stopped = report(bID, running: false, grants: 0)
         fleet.authority.record(primary, from: pID)
@@ -561,6 +576,25 @@ extension HandsBuildAcceptance {
         check(HandsBuildController.memberAvailability(permit: active, primary: "Mac mini", lastSync: now, now: now) == nil
               && HandsBuildController.memberAvailability(permit: .inactive(nil), primary: "Mac mini", lastSync: nil, now: now) == nil,
               "W185 主設備恢復或未啟用：不誤報失聯暫停")
+        let refusal = HandsLocked(false)
+        let refused = try fleet.add(bID, name: "fixture", callPrimary: { payload in
+            if refusal.get() { throw RemoteHostLinkError.sshHomeLookupFailed("Connection reset by peer") }
+            return try Fleet.wire(try HandsBuildRemote.handle(payload: try Fleet.wire(payload), sender: bID, authority: fleet.authority))
+        })
+        let refusedCard = HandsBuildController(dependencies: .init(
+            sync: refused.sync, flow: HandsConnectFlow(), localID: { bID }, pairedDevices: { known },
+            loginHere: {}, unlockHere: { _, _, _ in nil },
+            revocation: .standard(service: refused.service, callPrimary: fleetPrimaryCall(fleet, sender: bID)),
+            role: { refused.role }, openLogin: { _, _ in }, closeLogin: { _ in },
+            background: { $0() }, now: { fleet.clock.now() }, uptime: { fleet.clock.uptime() }))
+        refused.sync.syncNow()
+        _ = await waitUntil(3) { refused.sync.lastSync != nil }
+        refusal.set(true); fleet.clock.advance(HandsBuildEnvelopes.lifetime + 1)
+        refused.sync.syncNow()
+        _ = await waitUntil(3) { refusedCard.localAvailabilityText == "已暫停：主設備的遠端登入沒有回應" }
+        check(refusedCard.localAvailabilityText == "已暫停：主設備的遠端登入沒有回應"
+              && refused.sync.problem == "連不到主設備（主設備的遠端登入沒有回應）",
+              "W311 副設備信封到期且 SSH 被拒：卡片不誤報主設備沒開", refusedCard.statusText)
         let old = HandsSetupStepState(status: .done, message: "運作中（舊資料）", updatedAt: now)
         let live = HandsSetup.liveStartStep(old, phase: .failed("暫時讀不到；12:34 自動重試"))
         check(live.status == .failed && live.message == "沒在跑：暫時讀不到；12:34 自動重試"

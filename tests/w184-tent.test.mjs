@@ -267,7 +267,7 @@ test('keyboard in the tent: ⌘ shortcuts do not reach the main menu or the main
   // W184 G2 修正：Esc 的判斷抽成靜態的 routeEscape（自測拿真的 Esc 事件走同一條），形態由 handleEscape 照 desk.form 傳進來；
   // 倒放照舊最先判斷（在「Browser 自己的面板開著＝只收面板」與「Browser 開著＝給網頁」之前）。
   assert.match(panels, /return Self\.routeEscape\(event, window: window, floating: floating, store: store, form: desk\.form\)/);
-  assert.match(panels, /if form == \.tent \{\s*if window === floating \{ store\.isFloatingOpen = false \} else if store\.isOpen \{ store\.isOpen = false \} else \{ return event \}\s*CoderSheetEscapeGuard\.armForDM\(after: event\)\s*return nil\s*\}\s*(?:\/\/[^\n]*\n\s*)*if DMBrowserPanelEscape\.closePanel\(in: window\) \{ return nil \}\s*if store\.isBrowsing \{ return event \}/);
+  assert.match(panels, /if form == \.tent \{\s*if window === floating \{ store\.isFloatingOpen = false \} else if store\.isOpen \{ store\.isOpen = false \} else \{ return event \}\s*return nil\s*\}\s*(?:\/\/[^\n]*\n\s*)*if DMBrowserPanelEscape\.closePanel\(in: window\) \{ return nil \}\s*if store\.isBrowsing \{ return event \}/);
 });
 
 test('timing with the forms (room AB): leave the tent before the animation, enter after it; hand-offs wait a beat', () => {

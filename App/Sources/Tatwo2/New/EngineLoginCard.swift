@@ -5,6 +5,7 @@ import SwiftUI
 struct EngineLoginCard: View {
     @ObservedObject var model: ChatPageModel
     @ObservedObject var chatGPT: ChatGPTTap = .shared
+    @ObservedObject var aiUpdate: EngineAIUpdate = .shared
     var environmentTarget: EnvironmentLoginTarget? = nil
     #if DEBUG
     final class Probe {
@@ -14,10 +15,12 @@ struct EngineLoginCard: View {
     }
     var testProbe: Probe? = nil
     #endif
+    @Environment(\.colorScheme) private var scheme
     @State private var environmentExpanded = false
     @State private var expandedDetails: Set<ClaudeSidecar.Kind> = []
     @State private var loginInput = ""
     @State private var confirmResetCredit = false
+    @FocusState private var updateLogoFocused: ClaudeSidecar.Kind?
 
     private let kinds: [ClaudeSidecar.Kind] = [.codex, .claude, .grok]
 
@@ -26,7 +29,21 @@ struct EngineLoginCard: View {
         ScrollView {
         VStack(alignment: .leading, spacing: TatwoSettingsPageMetrics.sectionSpacing) {
             TatwoSettingsPageHeader(title: "登入") {
-                OSChipButton(title: "重新檢查") { model.refreshEngineLogins(); model.refreshEngineQuotas() }
+                if aiUpdate.selecting {
+                    OSChipButton(title: "取消") { aiUpdate.cancel() }.accessibilityIdentifier("login.aiUpdate.cancel")
+                    OSChipButton(title: "更新所選（\(aiUpdate.selected.count)）", isPrimary: true) { Task { await aiUpdate.installSelected { model.objectWillChange.send() } } }
+                        .disabled(aiUpdate.selected.isEmpty || aiUpdate.running).accessibilityIdentifier("login.aiUpdate.installSelected")
+                } else {
+                OSChipButton(title: aiUpdate.running ? "更新中…" : "更新 AI 版本", systemImage: "arrow.down.to.line", isPrimary: true) {
+                    Task { await aiUpdate.check { model.objectWillChange.send() } }
+                }.disabled(aiUpdate.running).accessibilityIdentifier("login.aiUpdate")
+                    .overlay(alignment: .topTrailing) { if aiUpdate.hasNewVersion { Circle().fill(TatwoActivePalette.current.brandAccent).frame(width: 6, height: 6).accessibilityLabel("有新版 AI").accessibilityIdentifier("login.aiUpdate.dot") } }
+                OSChipButton(title: "刷新額度") { model.refreshEngineLogins(); model.refreshEngineQuotas() }.accessibilityIdentifier("login.refreshQuota")
+                }
+            }
+            if !aiUpdate.message.isEmpty {
+                Text(aiUpdate.selecting ? "點下面的圖示選要更新的；有新版的先幫你勾好。" : aiUpdate.message).font(.caption).foregroundStyle(aiUpdate.selecting ? Color.secondary : Color.primary).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background((aiUpdate.selecting || aiUpdate.running ? Color.secondary : Color.green).opacity(0.12), in: RoundedRectangle(cornerRadius: LiquidGlassTokens.radiusChip))
             }
             // W171 初始設定：登入任何一家就能開始對話。
             if !model.engineLogins.contains(where: \.isLoggedIn) {
@@ -34,7 +51,7 @@ struct EngineLoginCard: View {
             }
 
             VStack(spacing: 0) {
-                ChatGPTTapLoginRow(tap: chatGPT).padding(.vertical, 8).padding(.horizontal, 6)
+                ChatGPTTapLoginRow(tap: chatGPT, updateSelecting: aiUpdate.selecting).padding(.vertical, 8).padding(.horizontal, 6)
                 Divider().opacity(0.5)
                 ForEach(kinds, id: \.rawValue) { kind in
                     SwipeRevealRow(revealWidth: 132, isRevealedInitially: false) {
@@ -68,6 +85,29 @@ struct EngineLoginCard: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            if aiUpdate.localInstalled {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "desktopcomputer").foregroundStyle(TatwoActivePalette.current.brandAccent).opacity(aiUpdate.selecting ? 0.35 : 1)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("本機模型").font(.subheadline.weight(.semibold))
+                        Text("照本機：只列出／換新模型清單").font(.caption2).foregroundStyle(.secondary)
+                        Text(aiUpdate.rows["ollama"] ?? "只同步清單").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }.foregroundStyle(.primary).padding(10).accessibilityIdentifier("login.localModels")
+            }
+            ForEach(aiUpdate.proposals) { proposal in
+                HStack {
+                    Text(proposal.text).font(.caption)
+                    OSChipButton(title: "先不要") { Task { try? await aiUpdate.decide(proposal, accept: false) } }
+                        .accessibilityIdentifier("login.aiUpdate.defer.\(proposal.id)")
+                    OSChipButton(title: "好", isPrimary: true) {
+                        Task { do { try await aiUpdate.decide(proposal, accept: true) } catch { aiUpdate.message = error.localizedDescription } }
+                    }.disabled(proposal.suggested == nil).accessibilityIdentifier("login.aiUpdate.accept.\(proposal.id)")
+                }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(TatwoActivePalette.current.brandAccent.opacity(scheme == .dark ? 0.22 : 0.10), in: RoundedRectangle(cornerRadius: LiquidGlassTokens.radiusChip))
+                    .overlay(RoundedRectangle(cornerRadius: LiquidGlassTokens.radiusChip).stroke(TatwoActivePalette.current.brandAccent.opacity(0.30), lineWidth: 0.5))
+            }
 
             if model.engineLoginInProgress != nil {
                 loginProgress
@@ -96,6 +136,7 @@ struct EngineLoginCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { model.refreshEngineLogins(); model.refreshEngineQuotas() }
+        .task { await aiUpdate.refreshLocalVersions() }
         .task(id: environmentTarget) {
             guard let target = environmentTarget else { return }
             if let tab = EnvironmentLoginTab(rawValue: target == .backup ? "github" : target.rawValue) {
@@ -124,8 +165,7 @@ struct EngineLoginCard: View {
         let detail = model.engineQuotaDetails[kind.rawValue]
         let account = detail?.accountLabel ?? status?.account
         HStack(alignment: .top, spacing: 12) {
-            // 各家 logo 取代小圓點（使用者 2026-09-05）；未登入變淡、送不出（W181 R3）加紅圈
-            ZStack {
+            Button { aiUpdate.toggle(kind.rawValue) } label: { ZStack {
                 if kind == .codex { ChatGPTLogo() }
                 else if let logo = ProviderSVGIconLoader.image(for: Self.logoID(kind)) {
                     Image(nsImage: logo)
@@ -141,11 +181,18 @@ struct EngineLoginCard: View {
                 }
             }
             .padding(.top, 3)
-            .opacity(loggedIn ? 1 : 0.35)
+            .opacity(aiUpdate.selecting || loggedIn ? 1 : 0.35)
             .overlay(
                 Circle().stroke(Color.red.opacity(disabled ? 0.8 : 0), lineWidth: 1.5)
                     .frame(width: 26, height: 26)
             )
+            .frame(width: 30, height: 30).contentShape(Circle())
+            .overlay { if aiUpdate.selecting { Circle().stroke(TatwoActivePalette.current.brandAccent, style: StrokeStyle(lineWidth: 1.5, dash: aiUpdate.selected.contains(kind.rawValue) ? [] : [3, 3])) } }
+            .overlay(alignment: .bottomTrailing) { if aiUpdate.selecting && aiUpdate.selected.contains(kind.rawValue) { Image(systemName: "checkmark.circle.fill").foregroundStyle(TatwoActivePalette.current.brandAccent).background(TatwoActivePalette.current.surfaceFill, in: Circle()).font(.system(size: 11)) } }
+            .opacity(aiUpdate.selecting && aiUpdate.rows[kind.rawValue]?.contains("可更新") != true ? 0.35 : 1)
+            }.buttonStyle(.plain).focusable(aiUpdate.selecting).focused($updateLogoFocused, equals: kind).disabled(!aiUpdate.selecting || aiUpdate.rows[kind.rawValue]?.contains("可更新") != true)
+                .onKeyPress(keys: [.space, .return]) { _ in aiUpdate.toggle(kind.rawValue); return .handled }
+                .accessibilityLabel("\(aiUpdate.selected.contains(kind.rawValue) ? "不要更新" : "更新") \(EngineAIUpdate.name(kind))").accessibilityIdentifier("login.aiUpdate.select.\(kind.rawValue)")
 
             VStack(alignment: .leading, spacing: 6) {
                 // 第一行：名字・等級（純文字）・到期
@@ -207,6 +254,12 @@ struct EngineLoginCard: View {
                         Button("允許讀取額度…") { model.authorizeClaudeQuotaRead() }
                         .buttonStyle(.link).font(.caption)
                     }
+                }
+                Text("\(kind == .codex ? "Codex CLI" : kind == .claude ? "Claude Code" : "Grok Build") \(aiUpdate.rows[kind.rawValue] ?? status?.executableChoice?.version ?? "版本查不到")")
+                    .font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("login.aiUpdate.\(kind.rawValue)")
+                if let version = aiUpdate.rollbackVersions[kind.rawValue] {
+                    OSChipButton(title: "退回 \(version)") { Task { await aiUpdate.rollback(kind); model.objectWillChange.send() } }
+                        .disabled(aiUpdate.running || aiUpdate.selecting).accessibilityIdentifier("login.aiUpdate.rollback.\(kind.rawValue)")
                 }
                 if let choice = status?.executableChoice {
                     Text(Self.runtimeSummary(choice)).font(.caption2).foregroundStyle(.secondary)
@@ -435,14 +488,17 @@ struct SwipeRevealRow<Content: View, Reveal: View>: View {
 /// ChatGPT TAP 登入；與 Codex 的訂閱登入各自獨立。
 struct ChatGPTTapLoginRow: View {
     @ObservedObject var tap: ChatGPTTap
+    var updateSelecting = false
     @State private var showsLogin = false
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            ChatGPTLogo()
+            ChatGPTLogo().opacity(updateSelecting ? 0.35 : 1)
             VStack(alignment: .leading, spacing: 6) {
                 Text("ChatGPT").font(.subheadline.weight(.semibold))
                 Text(tap.isLoggedIn ? "已登入" : "未登入").font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("login.chatgpt.status")
+                Text(ChatGPTTapModelCatalog.effectiveModel(ChatGPTTapModelCatalog.routeID("")).map { "照網頁：\($0.title)，強度 \($0.efforts.count) 段" } ?? "照網頁")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             ChatGPTTapLoginButton(tap: tap) { showsLogin = true }

@@ -154,13 +154,13 @@ test('T2/T3/T15 pairing window, confirmation card, grants and tokens (v2 §3–�
   const token = between(auth, 'private func tokenLocked(', 'private func issueLocked(');
   assert.match(token, /revokeLocked\(\[used\.grantID\], reason: "refresh_reused"\)/);
   assert.match(token, /revokeLocked\(\[grant\], reason: "code_reused"\)/);
-  assert.match(token, /allow\("token:" \+ clientID, max: 20, per: 60\)/);
+  assert.match(token, /allow\(lane \+ "token:" \+ clientID, max: 20, per: 60\)/);
   assert.match(token, /HandsAuthState\.Grant\(id: "g_" \+ Self\.hex\(bytes: 10\), clientID: clientID, level: entry\.level,\s*projectIDs: entry\.projectIDs/);
   // 撤銷不開給關口；狀態檔只存雜湊。
   assert.doesNotMatch(between(auth, 'func handle(op: String', 'private func requireKeys'), /revoke/);
   assert.doesNotMatch(between(auth, 'struct Token: Codable', 'struct UsedRefresh'), /var (access|refresh)Token|var token:/);
   assert.match(service, /let scope = op == "authorize_begin" \? grantScope\(current\)/);
-  assert.match(service, /return \["level": level, "tools": HandsTools\.catalog\(level: level\)\.map\(\\\.descriptor\)\]/);
+  assert.match(service, /return \["level": level, "tools": \(grant\.sandboxDeviceID == nil \? HandsTools\.catalog\(level: level\) : HandsSandboxLane\.tools\)\.map\(\\\.descriptor\)\]/);
   assert.match(service, /let level = min\(grant\.grantLevel, current\.level\)/);
   const settings = swift('Facade/HandsSettings.swift');
   assert.match(settings, /static let rootFolderName = "TATWO OS Hands"/);
@@ -419,7 +419,7 @@ test('Tools: exactly the v2 §7 table (+v3 + W185 CU/skillet + W225 collaboratio
   const specs = [...tools.matchAll(/HandsToolSpec\(id: "([a-z_]+)", level: (\d)/g)].map(match => [match[1], Number(match[2])]);
   assert.deepEqual(Object.fromEntries(specs), {
     tatwo_status: 0, list_projects: 0, read_session: 0, create_project: 1, list_workspaces: 0, read_file: 0, list_dir: 0, search: 0, git_status: 0, git_diff: 0,
-    memory_search: 1, memory_get: 1, memory_inbox_save: 1, memory_inbox_list: 1, propose_goal: 1, write_report: 1,
+    memory_search: 1, memory_get: 1, memory_inbox_save: 1, memory_inbox_list: 1, propose_goal: 1, write_report: 1, propose_change: 1,
     skillet_list: 1, skillet_read: 1,
     computer_request: 2, computer_status: 2, computer_observe: 2, computer_action: 2, computer_stop: 2,
     open_workspace: 2, write_file: 2, edit_file: 2, apply_patch: 2, run_command: 2, job_start: 2, job_status: 2, job_output: 2,

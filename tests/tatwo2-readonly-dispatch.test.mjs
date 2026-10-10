@@ -39,6 +39,10 @@ function fixtureSource() {
   return String.raw`
 import Foundation
 import Darwin
+enum DispatchGit {
+    private static let queue = DispatchQueue(label: "fixture.dispatch.git")
+    ${get(fs.readFileSync(path.join(root, 'App/Sources/Tatwo2/New/DispatchGit.swift'), 'utf8'), 'static func background<')}
+}
 // Unrelated UI payloads and recording-only engine transport dependencies.
 enum OSEventSources {
     static var send = "system"
@@ -208,9 +212,9 @@ func setup(cwd: String? = nil, remoteParent: Bool = false) -> (ChatLiveEngine, C
 func spec(_ engine: String = "claude", readonly: Bool = true, device: String? = nil) -> RoomSpec {
     RoomSpec(title: "room", engine: engine, model: "fixture-model", brief: "read fixture", device: device, readOnly: readonly)
 }
-func rejected(_ model: ChatPageModel, _ engine: RecordingEngine, _ parent: UUID, _ batch: [RoomSpec]) throws {
+func rejected(_ model: ChatPageModel, _ engine: RecordingEngine, _ parent: UUID, _ batch: [RoomSpec]) async throws {
     let count = engine.doc.threads.count
-    do { _ = try model.dispatchChecked(rooms: batch, parent: parent); fatalError("invalid readonly accepted") }
+    do { _ = try await model.dispatchChecked(rooms: batch, parent: parent); fatalError("invalid readonly accepted") }
     catch ChatPageModel.DispatchError.readOnlyUnavailable {}
     check(engine.newThreads == 0 && engine.sends.isEmpty && engine.doc.threads.count == count, "invalid batch partially dispatched")
     check(Calls.prepare.isEmpty && Calls.remote == 0 && Calls.git == 0, "invalid batch caused I/O")
@@ -243,7 +247,7 @@ catch DecodingError.typeMismatch(_, _) {}
 for cwd in [nil, parentCwdURL.path] as [String?] {
     let (engine, model, parent) = setup(cwd: cwd)
     let expected = cwd ?? source.path
-    let result = try model.dispatchChecked(rooms: [spec()], parent: parent)
+    let result = try await model.dispatchChecked(rooms: [spec()], parent: parent)
     check(result.count == 1, "readonly dispatch missing")
     let room = result[0]; let id = UUID(uuidString: room.threadID)!
     check(room.readOnly && room.worktree.isEmpty && room.workingDirectory == expected, "readonly result/path")
@@ -260,7 +264,7 @@ for cwd in [nil, parentCwdURL.path] as [String?] {
     // a reopened engine. Any regression to source path handling fails this test.
     let reopenedEngine = ChatLiveEngine(root: engine.store.url.deletingLastPathComponent(), doc: reopened)
     for keep in [false, true] {
-        let reclaimed = try ChatPageModel(reopenedEngine).reclaimRoom(id, keepBranch: keep)
+        let reclaimed = try await ChatPageModel(reopenedEngine).reclaimRoom(id, keepBranch: keep)
         check(reclaimed.originalPath.isEmpty && reclaimed.archivedPath == nil && reclaimed.stash == nil && reclaimed.branch == nil && !reclaimed.branchDeleted, "readonly reclaim not a no-op")
     }
     for branch in [false, true] {
@@ -277,21 +281,21 @@ for cwd in [nil, parentCwdURL.path] as [String?] {
 // Unsupported engines/devices and mixed batches reject BEFORE construction-first work.
 for bad in [spec("codex"), spec("grok"), spec("unknown"), spec(device: "remote")] {
     let (engine, model, parent) = setup()
-    try rejected(model, engine, parent, [spec("codex", readonly: false), bad])
+    try await rejected(model, engine, parent, [spec("codex", readonly: false), bad])
 }
 do {
     let (engine, model, parent) = setup(remoteParent: true)
-    try rejected(model, engine, parent, [spec()])
+    try await rejected(model, engine, parent, [spec()])
 }
 do {
     let (local, _, parent) = setup()
     let nonlocal = RecordingEngine(root: root.appendingPathComponent(UUID().uuidString), doc: local.doc)
-    try rejected(ChatPageModel(nonlocal), nonlocal, parent, [spec()])
+    try await rejected(ChatPageModel(nonlocal), nonlocal, parent, [spec()])
 }
 // An unsuccessful readonly send must throw without retrying as construction.
 do {
     let (engine, model, parent) = setup(); engine.sendSucceeds = false
-    do { _ = try model.dispatchChecked(rooms: [spec()], parent: parent); fatalError("send failure hidden") }
+    do { _ = try await model.dispatchChecked(rooms: [spec()], parent: parent); fatalError("send failure hidden") }
     catch is DispatchGitFailure {}
     check(engine.newThreads == 1 && engine.sends.count == 1 && Calls.prepare.isEmpty && Calls.remote == 0, "failed readonly silently fell back")
     check(engine.doc.threads.last!.roomReadOnly == true, "failed readonly widened")
@@ -299,7 +303,7 @@ do {
 // Supported mixed batch remains valid; construction uses project cwd, not parent override.
 do {
     let (engine, model, parent) = setup(cwd: parentCwdURL.path)
-    let rooms = try model.dispatchChecked(rooms: [defaultSpec, spec()], parent: parent)
+    let rooms = try await model.dispatchChecked(rooms: [defaultSpec, spec()], parent: parent)
     check(rooms.count == 2 && !rooms[0].readOnly && rooms[1].readOnly, "valid mixed batch rejected")
     check(Calls.prepare == [source.path] && Calls.remote == 0 && engine.sends.count == 2, "construction path changed")
     let normalID = UUID(uuidString: rooms[0].threadID)!
@@ -318,7 +322,7 @@ try fm.createSymbolicLink(at: alias, withDestinationURL: external)
 for workdir in [external.path, alias.path] {
     let (engine, model, parent) = setup()
     engine.doc.projects[0].workdir = workdir
-    do { _ = try model.dispatchChecked(rooms: [defaultSpec], parent: parent); fatalError("external workspace accepted") }
+    do { _ = try await model.dispatchChecked(rooms: [defaultSpec], parent: parent); fatalError("external workspace accepted") }
     catch is DispatchGitFailure {}
     check(Calls.prepare.isEmpty && Calls.remote == 0 && Calls.git == 0 && engine.sends.isEmpty,
           "external workspace triggered construction or send")

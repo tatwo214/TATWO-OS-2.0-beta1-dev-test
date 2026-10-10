@@ -1,0 +1,45 @@
+# W280；基準 archive/w280-native-dots-base；只刪原生 Dots；不併、不推
+# 只保留網頁版 URL；刪除原生 state、分類器、侧欄與 Pane
+App/Sources/Tatwo2/TAP/ChatGPTDots.swift
+# 刪除 Dots holder、暫借／返回租約、等待與腳本守門；保留語音及登出
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+# 刪除 Dots 側欄、頁面切換、返回按鈕、狀態與 self-test 欄位
+App/Sources/Tatwo2/TAP/ChatGPTSpace.swift
+# 刪除只供原生 Dots 用的 callback、顯示入口與 generation；保留網頁版 sibling
+App/Sources/Tatwo2/TAP/TapWebPod.swift
+# 刪除失去呼叫者的 Dots fake callback、generation、顯示入口與 pagePresented 欄位
+App/Sources/Tatwo2/TAP/FakeTapPodAcceptance.swift
+# 整檔封存於基準標籤；移除原生 Dots 自測
+App/Sources/Tatwo2/Facade/W197DotsAcceptance.swift
+# 原生可見性自測以 Bool 關閉網頁旗標，驗證原生 fallback；保留原斷言並還原旗標
+App/Sources/Tatwo2/Facade/ChatGPTTapAcceptance.swift
+# 刪除 w197dots 登記
+App/Sources/Tatwo2/SelfTest.swift
+# 移除 Dots icon 測試；旗標關閉的原生側欄截圖及無 Dots AX 驗證
+App/Sources/Tatwo2/Facade/W205Acceptance.swift
+# 刪除原生 Dots 排隊／返回案例及只供該案例用的 overrides
+App/Sources/Tatwo2/Facade/W208TapAcceptance.swift
+# 整檔原生 Dots 腳本測試移除
+tests/w197-dots.test.mjs
+# 改驗網頁版 Dots 入口仍在、原生 Dots 不在；其餘原生對話斷言保留
+tests/w177-chatgpt-space.test.mjs
+# 移除 Dots 斷言；保留語音排隊 deadline 與 disappear 順序驗證
+tests/w184-chat.test.mjs
+# 刪除 w197dots 執行項；其餘 cleanup 自測保留
+tests/native-cleanup-suites.test.mjs
+# 原生 Dots return／W197 斷言改驗網頁版共用 Pod context 與無 TAP scripting
+tests/cleanup-safety-boundaries.test.mjs
+# 本房逐檔白名單與理由
+tests/fixtures/w280-room-allow.txt
+
+# 使用者指定禁區
+!App/Sources/Tatwo2/Chat/ChatPage.swift
+!App/Sources/Tatwo2/Chat/ChatPage+Panels.swift
+!App/Sources/Tatwo2/Shell/AppShell.swift
+!App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift
+!App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift
+!App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift
+!Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+!App/Sources/Tatwo2/DM/GlobalDMView.swift
+!App/Sources/Tatwo2/DM/GlobalDMChatGPTNavigation.swift
+!App/Sources/Tatwo2/DM/GlobalDMChatGPTComposer.swift

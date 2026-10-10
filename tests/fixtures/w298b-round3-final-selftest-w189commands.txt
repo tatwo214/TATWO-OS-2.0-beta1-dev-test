@@ -1,0 +1,246 @@
+W189COMMANDS PASS F1/S1/S2/send-02 pr off releases context
+W189COMMANDS PASS F1 pr off consumes command
+W189COMMANDS PASS F1 PR exit preserves canvas
+W189COMMANDS PASS F1/S1/S2/send-02 pr exit releases context
+W189COMMANDS PASS F1 pr exit consumes command
+W189COMMANDS PASS F1 PR exit preserves canvas
+W189COMMANDS PASS F1/S1/S2/send-02 pr stop releases context
+W189COMMANDS PASS F1 pr stop consumes command
+W189COMMANDS PASS F1 PR exit preserves canvas
+W189COMMANDS PASS F1/S1/S2/send-02 pr 關閉 releases context
+W189COMMANDS PASS F1 pr 關閉 consumes command
+W189COMMANDS PASS F1 PR exit preserves canvas
+W189COMMANDS PASS F1/S1/S2/send-02 pr 結束 releases context
+W189COMMANDS PASS F1 pr 結束 consumes command
+W189COMMANDS PASS F1 PR exit preserves canvas
+W189COMMANDS PASS F1/S1/S2/send-02 plan off releases context
+W189COMMANDS PASS F1 plan off consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 plan exit releases context
+W189COMMANDS PASS F1 plan exit consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 plan stop releases context
+W189COMMANDS PASS F1 plan stop consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 plan 關閉 releases context
+W189COMMANDS PASS F1 plan 關閉 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 plan 結束 releases context
+W189COMMANDS PASS F1 plan 結束 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 feedback off releases context
+W189COMMANDS PASS F1 feedback off consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 feedback exit releases context
+W189COMMANDS PASS F1 feedback exit consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 feedback stop releases context
+W189COMMANDS PASS F1 feedback stop consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 feedback 關閉 releases context
+W189COMMANDS PASS F1 feedback 關閉 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 feedback 結束 releases context
+W189COMMANDS PASS F1 feedback 結束 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 distill off releases context
+W189COMMANDS PASS F1 distill off consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 distill exit releases context
+W189COMMANDS PASS F1 distill exit consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 distill stop releases context
+W189COMMANDS PASS F1 distill stop consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 distill 關閉 releases context
+W189COMMANDS PASS F1 distill 關閉 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F1/S1/S2/send-02 distill 結束 releases context
+W189COMMANDS PASS F1 distill 結束 consumes command
+W189COMMANDS PASS S2 exit does not create off plan
+W189COMMANDS PASS F1 archived canvas keeps complete artifact
+W189COMMANDS PASS F1 exit exposes archived canvas in composer
+W189COMMANDS PASS F1 archive restores complete artifact
+W189COMMANDS PASS F1 restore removes obsolete archive menu item
+W189COMMANDS PASS F2/S3 draft feedback remains guarded
+W189COMMANDS PASS F2/S3/send-02 submitted feedback releases context
+W189COMMANDS PASS F2/S3 submitted feedback stays released after restart
+W189COMMANDS PASS F4 discussing plg cannot start
+W189COMMANDS PASS F4 confirmed plg starts
+W189COMMANDS PASS F4 plg receives execution context
+W189COMMANDS PASS F4 plg stays one shot
+W189COMMANDS PASS F6 /plan translates before Claude
+W189COMMANDS PASS F6 exact token only /plan
+W189COMMANDS PASS F6 /pr translates before Claude
+W189COMMANDS PASS F6 exact token only /pr
+W189COMMANDS PASS F6 /feedback translates before Claude
+W189COMMANDS PASS F6 exact token only /feedback
+W189COMMANDS PASS F7 replacing ready PR preserves archive
+W189COMMANDS PASS F7 replacing another canvas preserves archive
+W189COMMANDS PASS F8 goal and list are separate rows /g
+W189COMMANDS PASS F8 first unselected goal row completes without sending
+W189COMMANDS PASS F8 goal and list are separate rows /go
+W189COMMANDS PASS F8 first unselected goal row completes without sending
+W189COMMANDS PASS F8 goal and list are separate rows /goal
+W189COMMANDS PASS F8 first unselected goal row completes without sending
+W189COMMANDS PASS F8 goal and list are separate rows   /g
+W189COMMANDS PASS F8 first unselected goal row completes without sending
+W189COMMANDS PASS F8 selected goal Enter inserts add command
+W189COMMANDS PASS F8 list Enter opens card without adding goals /g
+W189COMMANDS PASS F8 list Enter opens card without adding goals /goal
+W189COMMANDS PASS F8 list Enter opens card without adding goals /goal l
+W189COMMANDS PASS F8 list Enter opens card without adding goals /goal li
+W189COMMANDS PASS F8 list Enter opens card without adding goals /goal list
+W189COMMANDS PASS F8 subcommand partial only suggests list
+W189COMMANDS PASS F8 list row uses list icon
+W189COMMANDS PASS F8 add row only describes mainline
+W189COMMANDS PASS F8 existing argument and multiline behavior /goal legacy objective
+W189COMMANDS PASS F8 existing argument and multiline behavior /goal list extra
+W189COMMANDS PASS F8 existing argument and multiline behavior /plan draft
+W189COMMANDS PASS F8 existing argument and multiline behavior /issue draft
+W189COMMANDS PASS F8 existing argument and multiline behavior /plan
+/g
+W189COMMANDS PASS F8 multiple unselected suggestions complete the first row
+W189COMMANDS PASS F10/S5 empty issue opens queue
+W189COMMANDS PASS F11 fresh child appears in discussion tray
+W189COMMANDS PASS F11 tray reports existing child
+W189COMMANDS PASS S6 second line does not suggest
+W189COMMANDS PASS S6 leading newline does not suggest
+W189COMMANDS PASS S6 first line still suggests
+W189COMMANDS PASS F12 interrupted submission recovers uncertainty
+W189COMMANDS PASS F12 never silently retries
+W189COMMANDS PASS F5 TAP /plan leaves canvas unchanged
+W189COMMANDS PASS F5 TAP /plan keeps draft with explicit support hint
+W189COMMANDS PASS F5 TAP /plan menu explains unsupported
+W189COMMANDS PASS F5 TAP /pr leaves canvas unchanged
+W189COMMANDS PASS F5 TAP /pr keeps draft with explicit support hint
+W189COMMANDS PASS F5 TAP /pr menu explains unsupported
+W189COMMANDS PASS F5 TAP /feedback leaves canvas unchanged
+W189COMMANDS PASS F5 TAP /feedback keeps draft with explicit support hint
+W189COMMANDS PASS F5 TAP /feedback menu explains unsupported
+W189COMMANDS PASS F5 TAP /蒸餾 leaves canvas unchanged
+W189COMMANDS PASS F5 TAP /蒸餾 keeps draft with explicit support hint
+W189COMMANDS PASS F5 TAP /蒸餾 menu explains unsupported
+W189COMMANDS PASS F3 unrelated running turn does not reopen completed plan indicator
+W189COMMANDS PASS F3/Sol F3 completed plan allows running issue
+W189COMMANDS PASS F3 completed plan allows running goal
+W189COMMANDS PASS F3 completed plan allows running tray
+W189COMMANDS PASS F3 completed plan allows running discussion creation
+W189COMMANDS PASS F3 unrelated running turn does not reopen completed plan indicator
+W189COMMANDS PASS F3/Sol F3 completed pr allows running issue
+W189COMMANDS PASS F3 completed pr allows running goal
+W189COMMANDS PASS F3 completed pr allows running tray
+W189COMMANDS PASS F3 completed pr allows running discussion creation
+W189COMMANDS PASS F3 unrelated running turn does not reopen completed plan indicator
+W189COMMANDS PASS F3/Sol F3 completed feedback allows running issue
+W189COMMANDS PASS F3 completed feedback allows running goal
+W189COMMANDS PASS F3 completed feedback allows running tray
+W189COMMANDS PASS F3 completed feedback allows running discussion creation
+W189COMMANDS PASS F3 unrelated running turn does not reopen completed plan indicator
+W189COMMANDS PASS F3/Sol F3 completed distill allows running issue
+W189COMMANDS PASS F3 completed distill allows running goal
+W189COMMANDS PASS F3 completed distill allows running tray
+W189COMMANDS PASS F3 completed distill allows running discussion creation
+W189COMMANDS PASS F3 writing discussion still blocks overlapping send
+W189COMMANDS PASS DM-09 /plan rejected with draft preserved
+W189COMMANDS PASS DM-09 /goal rejected with draft preserved
+W189COMMANDS PASS DM-09 /pr rejected with draft preserved
+W189COMMANDS PASS DM-09 /feedback rejected with draft preserved
+W189COMMANDS PASS DM-09 /蒸餾 rejected with draft preserved
+W189COMMANDS PASS DM-09 /issue rejected with draft preserved
+W189COMMANDS PASS DM-09 /討論串 rejected with draft preserved
+W189COMMANDS PASS DM-09 /顯示討論串 rejected with draft preserved
+W189COMMANDS PASS DM-09 no raw commands reach assistant engine
+W189COMMANDS PASS F1 remote archive preserves canvas
+W189COMMANDS PASS F1 remote restore preserves exact canvas
+W189COMMANDS PASS F1 /pr off consumes command and releases rules
+W189COMMANDS PASS F1 /pr off preserves complete canvas
+W189COMMANDS PASS F5 direct TAP /pr rejects before Pod invocation
+W189COMMANDS PASS F1 /plan off consumes command and releases rules
+W189COMMANDS PASS F1 /plan off preserves complete canvas
+W189COMMANDS PASS F5 direct TAP /plan rejects before Pod invocation
+W189COMMANDS PASS F1 /feedback off consumes command and releases rules
+W189COMMANDS PASS F1 /feedback off preserves complete canvas
+W189COMMANDS PASS F5 direct TAP /feedback rejects before Pod invocation
+W189COMMANDS PASS F1 /蒸餾 off consumes command and releases rules
+W189COMMANDS PASS F1 /蒸餾 off preserves complete canvas
+W189COMMANDS PASS F5 direct TAP /蒸餾 rejects before Pod invocation
+W189COMMANDS PASS F1/S1 GitHub login failure keeps exit available
+W189COMMANDS PASS F1/S1 can exit after GitHub preflight failure
+W189COMMANDS PASS F7 pending send PR preserves review and diff
+W189COMMANDS PASS F7 restored pending PR retains submit state
+W189COMMANDS PASS F7 distill archive preserves current and earlier rollback receipts
+W189COMMANDS PASS F7 restored distill keeps full rollback data
+W189COMMANDS PASS F7 in-flight write is never replaced
+W189COMMANDS PASS F7 unreadable active canvas is retained exactly
+W189COMMANDS DM-09 SUMMARY checks=9 failures=0
+W189COMMANDS F1 SUMMARY checks=117 failures=0
+W189COMMANDS F10 SUMMARY checks=1 failures=0
+W189COMMANDS F11 SUMMARY checks=2 failures=0
+W189COMMANDS F12 SUMMARY checks=2 failures=0
+W189COMMANDS F2 SUMMARY checks=3 failures=0
+W189COMMANDS F3 SUMMARY checks=21 failures=0
+W189COMMANDS F4 SUMMARY checks=4 failures=0
+W189COMMANDS F5 SUMMARY checks=16 failures=0
+W189COMMANDS F6 SUMMARY checks=6 failures=0
+W189COMMANDS F7 SUMMARY checks=8 failures=0
+W189COMMANDS F8 SUMMARY checks=23 failures=0
+W189COMMANDS S2 SUMMARY checks=15 failures=0
+W189COMMANDS S6 SUMMARY checks=3 failures=0
+W189COMMANDS SUMMARY checks=230 failures=0

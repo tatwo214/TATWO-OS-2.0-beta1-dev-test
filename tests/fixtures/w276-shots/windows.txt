@@ -1,0 +1,74 @@
+APP id=ai.tatwo.tatwo2 pid=72148 path=/Applications/TATWO OS.app/Contents/MacOS/tatwo2
+APP id=ai.tatwo.tatwo2.staging pid=50191 path=/Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging
+WINDOW pid=50191 id=80818 layer=0 onscreen= bounds={
+    Height = 500;
+    Width = 500;
+    X = 0;
+    Y = 580;
+} title=
+WINDOW pid=50191 id=80817 layer=0 onscreen=1 bounds={
+    Height = 880;
+    Width = 1220;
+    X = 350;
+    Y = 48;
+} title=
+WINDOW pid=72148 id=80081 layer=0 onscreen= bounds={
+    Height = 800;
+    Width = 1100;
+    X = "-30000";
+    Y = 30280;
+} title=
+WINDOW pid=72148 id=80080 layer=2147483631 onscreen= bounds={
+    Height = 1080;
+    Width = 1920;
+    X = 0;
+    Y = 0;
+} title=
+WINDOW pid=72148 id=80078 layer=0 onscreen= bounds={
+    Height = 30;
+    Width = 1920;
+    X = 0;
+    Y = 0;
+} title=
+WINDOW pid=72148 id=80077 layer=0 onscreen= bounds={
+    Height = 30;
+    Width = 1920;
+    X = 0;
+    Y = 0;
+} title=
+WINDOW pid=72148 id=80076 layer=0 onscreen= bounds={
+    Height = 30;
+    Width = 1920;
+    X = 0;
+    Y = 0;
+} title=
+WINDOW pid=72148 id=80075 layer=0 onscreen= bounds={
+    Height = 30;
+    Width = 1920;
+    X = 0;
+    Y = 0;
+} title=
+WINDOW pid=72148 id=80072 layer=0 onscreen=1 bounds={
+    Height = 80;
+    Width = 80;
+    X = 1496;
+    Y = 858;
+} title=
+WINDOW pid=72148 id=80071 layer=3 onscreen= bounds={
+    Height = 77;
+    Width = 84;
+    X = 756;
+    Y = 876;
+} title=
+WINDOW pid=72148 id=80070 layer=0 onscreen=1 bounds={
+    Height = 880;
+    Width = 1220;
+    X = 350;
+    Y = 48;
+} title=
+WINDOW pid=72148 id=80069 layer=27 onscreen=1 bounds={
+    Height = 172;
+    Width = 692;
+    X = 614;
+    Y = 0;
+} title=

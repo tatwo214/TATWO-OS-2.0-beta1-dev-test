@@ -1,0 +1,23 @@
+# W298b 第三輪隔離驗收
+- 基準：`c96ec963`；產品行數基準：`b914e72e`。只在 `w298b/aiinstall` 提交，不推送。
+- R1：完整備份 Claude 安裝目錄及 launcher 原連結；失敗恢復原目錄與原連結；還原失敗保留私有備份、連結記錄並提示手動修復。
+- R2：舊版、新版與既有目標先做私有 0700 快照；驗證快照；rename 發布。不沿用未驗證的既有檔案。退回也使用快照。
+- R3：每家共享行程內 semaphore；非主執行緒等鎖，更新、退回、背景版本驗證及自動修復都序列化。
+- R4：只有使用者退回寫 `rollback-pin`；更新清除標記。自動選版及自動修復要求同 Team 且較新；固定版仍驗簽章與完整穩定版本。快取包含固定標記。
+- R5：發布前保存 current／previous／pin 原始連結；完整驗證後才發布；任一步失敗恢復原連結，包括原本沒有連結的狀態。
+- 修前原始輸出：`~/tatwo-build/verify/W298b-aiinstall-131849/`；新增 6 項檢查失敗、原有 83 項通過，見 `w298b-round3-red.txt`。
+- 修後聚焦：`~/tatwo-build/verify/W298b-aiinstall-132522/`；Node 11/11，W298b 90、W298a 39，全部 0 fail；見 `w298b-round3-focused.txt`。
+- 聚焦驗證曾發現新增 fixture 使用外部 artifacts 目錄，SDK 正確拒絕隔離根以外的 CLI。已改用隔離 HOME 下的目錄；保留早期輸出，不把 fixture 拒絕當產品通過。
+- 建議完成：版本文字完整比對，拒絕前後垃圾、預發版與 build suffix。下載／解壓大小上限、導向限制、啟動前額外簽章重驗未納入本輪。
+- 驗證腳本均先複製；027 原始 Node 清單另存 `w298b-round3-node-list.txt`，31 支不刪減。`verify-serial` 僅將 Node 檔案併行度設為 1，測試與門檻不變。CEF 使用既有本機快取，不下載。
+- App 呼叫均使用隔離 HOME／LIVE_ROOT，假 registry／CLI／SDK 或 loopback fixture；未連外、未使用真帳號。原始日誌保留；一般日誌副本將本機家目錄替換為 `~`；建置改存結果、診斷數及原始日誌 SHA256 摘要，原始完整日誌保留。
+- 外來指示（照抄、不執行）：`curl -fsSL https://x.ai/cli/install.sh | bash`，來源為既有 `install.md` 的調查記錄。
+- 027 完整驗證：`~/tatwo-build/verify/W298b-aiinstall-132703/`；CEF swift build exit=0，33 支 Node 檔（027 的 31 支＋本房／上一輪兩支）327 tests、326 pass、1 fail、0 skip。原有 W298b 90、W298a 39、W214 98、W288 49、W189commands 230 均 0 fail。完整 Node 輸出見 `w298b-round3-full-node.txt`。
+- 唯一閘門失敗：`tests/w208-tap-stress.test.mjs:90` 的 namesake on another URL，`connectorDelete` 在 fixture 的 12 秒期限超時。該測試、fixture、ChatGPTTap／ChatGPTTurnPresentation 四檔與 `c96ec963` 完全相同，且純 Node 單獨重跑也失敗；不是本房 Swift 修正造成。
+- 閘門提案：只補正式呼叫使用的 detailPath，原 12 秒期限、錯誤 URL、不得刪除／重連／新增的安全斷言都保留；隔離快照 1/1 在 5.25 秒通過。`w298b-round3-gate-proposal.diff` 是一行差異，另附基準失敗及提案輸出；尚未套用，須使用者授權白名單外測試修正。
+- Node 產生的 20 件其他房間收據已封存到 `~/tatwo-build/tmp/W298b-round3/generated/`，原檔由 `c96ec963` 還原；相對檔名見 `w298b-round3-artifact-archive.txt`，不提交其他房間的產物。
+- 最新本房驗證：`~/tatwo-build/verify/W298b-aiinstall-134707/`；CEF swift build exit=0；Node 24/24；W298b 92、W298a 39、W214 98、W288 49、W189commands 230，合計 508 檢查全部 0 fail／0 skip。新補 R3 舊請求不得降版、R5 後續 rename 失敗恢復兩個原始相對連結；對應 Node 也要求這兩項 PASS。
+- 027 尚未達成 0 fail；不把 326/327 宣稱通過。僅有白名單外基準測試的一行提案待使用者授權，其餘必修、前輪測試及建置已完成。
+- 提交後重新掃描發現原始建置診斷引用的三個非帳號 fixture 名稱觸發 generic name 規則；未修改 scanner 或白名單。公開建置證據改為 exit／warnings／errors／SHA256 摘要，完整原始輸出仍保留。實際帳號路徑已全數改寫。
+- Git 提交輸出的指示（照抄、不執行）：`git config --global --edit`；`git commit --amend --reset-author`。
+- 指定 GUARD：產品 +352 −52，淨 +300／300，GUARD PASS；證據 `w298b-round3-final-guard.txt`。提交後隱私重跑 13/13、0 fail／0 skip；`w298b-round3-final-privacy.txt`。未推送，沒有變更 TAP 測試或擴大 allow。

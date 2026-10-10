@@ -1,0 +1,18 @@
+# T1：只移除狀態細節的重複來源提示，保留 trigger 的變動欄位與重新帶入操作。
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+# T2：共用不可見字元判斷，沿用指令核准的控制字元錯誤與多行規則。
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift
+# T2：TAP 名稱沿用控制字元檢查，另共用不可見字元判斷。
+App/Sources/Tatwo2/Facade/TapProjectMap.swift
+# T2：MCP 索引、帶入與解析共用同一判斷並提供可見警告。
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+# T3：移除沒有畫面讀取的備份路徑狀態與三個寫入點。
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+# T1/T2：回歸測試包含修前重複重現、實際卡片、逐種字元及正常文字。
+App/Sources/Tatwo2/Facade/W245MCPAcceptance.swift
+# T1：更新舊卡片斷言，要求分開顯示重新帶入操作與單一變動欄位提示。
+App/Sources/Tatwo2/Facade/W240MCPAcceptance.swift
+# T1：舊同意資料仍顯示重新帶入操作與同意方式升級說明。
+App/Sources/Tatwo2/Facade/W242MCPAcceptance.swift
+# 收房：逐檔列出本房允許改動的路徑與理由。
+tests/fixtures/w259-room-allow.txt

@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/fixtures/w312-composer-picker.mjs
+tests/fixtures/w312-room-allow.txt
+tests/w312-composerpicker.test.mjs

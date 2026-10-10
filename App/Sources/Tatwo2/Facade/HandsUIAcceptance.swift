@@ -362,7 +362,7 @@ enum HandsUIAcceptance {
     }
 
     /// 扮演 cloudflared 的 Node：要在家目錄與外接卷外面（沙盒擋那兩處）。隔離自測可指定私有暫存目錄內的 Node 副本。
-    static func findNode() -> URL? {
+    static func findNode(fixtureDirectory: URL? = nil) -> URL? {
         let home = HandsGatewayLaunch.realPath(HandsGatewayLaunch.accountHome()) ?? HandsGatewayLaunch.accountHome()
         // Studio has a standalone Node. A copied temporary fixture keeps the same real sandbox,
         // without installing Homebrew or allowing the user's home into the profile.
@@ -380,11 +380,26 @@ enum HandsUIAcceptance {
             }
         }
         // Studio 的隔離自測可帶暫存 runtime；仍照原本 realpath 的家目錄與外接卷禁讀檢查。
-        // .056 閘門：runtime 的 node 放最後——mini 上它在沙盒裡讀不到自己的 libnode，有系統 Node 就先用系統的。
+        // 先用 PATH 的 Node；runtime 留最後，避免動態程式庫在沙盒中讀不到。
         let runtimeNode = EnginePaths().runtimeBinDirectory.appendingPathComponent("node").path
-        for candidate in ["/opt/homebrew/bin/node", "/usr/local/bin/node", runtimeNode] where FileManager.default.isExecutableFile(atPath: candidate) {
+        let candidates = (environment["PATH"] ?? "").split(separator: ":").map { String($0) + "/node" } + [runtimeNode]
+        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
             guard let real = HandsGatewayLaunch.realPath(candidate), !real.hasPrefix(home + "/"), !real.hasPrefix("/Volumes/") else { continue }
             return URL(fileURLWithPath: real)
+        }
+        // PATH 可能在帳號家目錄；只在完整隔離自測複製單一執行檔，不放寬沙盒。
+        if ["w183ui", "w185tools"].contains(environment["TATWO2_SELFTEST"] ?? ""),
+           NativeStagingIsolation.isEnabled(environment), NativeStagingIsolation.validationError(environment) == nil,
+           let fixtureDirectory, fixtureDirectory.path.hasPrefix("/private/tmp/"),
+           let candidate = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }),
+           let real = HandsGatewayLaunch.realPath(candidate) {
+            do {
+                try FileManager.default.createDirectory(at: fixtureDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                let copy = fixtureDirectory.appendingPathComponent("node")
+                try FileManager.default.copyItem(at: URL(fileURLWithPath: real), to: copy)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: copy.path)
+                return copy
+            } catch { return nil }
         }
         return nil
     }
@@ -526,8 +541,10 @@ enum HandsUIAcceptance {
         check(!ChatGPTHandsService.allowedToRun(environment: environment), "自測／staging：真的關口與通道不啟動（T12）")
         staticChecks(check)
         isolationChecks(check)
-        guard let node = findNode() else {
-            check(false, "找不到家目錄與外接卷外的 Homebrew Node 來扮演 cloudflared；流程與沙盒實跑沒有驗")
+        let nodeFixture = URL(fileURLWithPath: "/private/tmp/w183-node-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: nodeFixture) }
+        guard let node = findNode(fixtureDirectory: nodeFixture) else {
+            check(false, "PATH 與 runtime 找不到可用 Node 來扮演 cloudflared；流程與沙盒實跑沒有驗")
             print("W183UI SUMMARY passed=\(check.passed) failures=\(check.failed)")
             return false
         }

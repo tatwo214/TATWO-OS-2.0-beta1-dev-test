@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import ScreenCaptureKit
 import Combine
 import SwiftUI
 
@@ -362,6 +363,24 @@ enum GlobalDMChatAcceptance {
         func close() { window.orderOut(nil); window.contentView = nil; window.close() }
     }
 
+    @MainActor static func attribute(_ object: NSObject, _ name: String, _ legacy: String) -> Any? {
+        let selector = NSSelectorFromString(name)
+        if object.responds(to: selector), let value = object.perform(selector)?.takeUnretainedValue() { return value }
+        let old = NSSelectorFromString("accessibilityAttributeValue:")
+        return object.responds(to: old) ? object.perform(old, with: legacy)?.takeUnretainedValue() : nil
+    }
+    @MainActor static func tree(_ shot: GlobalDMChatAcceptance.Rendered) -> [String: NSObject] {
+        var result: [String: NSObject] = [:], seen = Set<ObjectIdentifier>()
+        func visit(_ object: NSObject, _ depth: Int) {
+            guard depth < 80, seen.insert(ObjectIdentifier(object)).inserted else { return }
+            if let id = attribute(object, "accessibilityIdentifier", "AXIdentifier") as? String { result[id] = object }
+            for child in attribute(object, "accessibilityChildren", "AXChildren") as? [NSObject] ?? [] { visit(child, depth + 1) }
+            if let view = object as? NSView { for child in view.subviews { visit(child, depth + 1) } }
+        }
+        visit(shot.window, 0); visit(shot.host, 0)
+        return result
+    }
+
     /// 同步畫（等核准的狀態只在引擎的回呼裡，所以不能 await）：淺色、白底的無邊框視窗，放在螢幕上但全透明、不接滑鼠
     /// （SwiftUI 要視窗在畫面上才建無障礙樹；同 Bot 頁、空狀態自測的做法，只是看不見）；讓 SwiftUI 跑幾輪再截。
     @MainActor static func renderSync<V: View>(_ view: V, size: CGSize, scheme: ColorScheme = .light) -> Rendered? {
@@ -392,7 +411,46 @@ enum GlobalDMChatAcceptance {
             return nil
         }
         host.cacheDisplay(in: host.bounds, to: bitmap)
-        return Rendered(host: host, window: window, bitmap: bitmap, size: size)
+        let shot = Rendered(host: host, window: window, bitmap: bitmap, size: size)
+        return shot
+    }
+
+    /// System glass is composited by WindowServer; cacheDisplay omits its GPU layers.
+    /// Enumerate only this process's windows, then capture only the synthetic test window.
+    @MainActor static func captureOwnWindow(_ shot: Rendered) -> Rendered? {
+        guard #available(macOS 14.4, *) else { return nil }
+        let frame = shot.window.frame, alpha = shot.window.alphaValue
+        defer { shot.window.alphaValue = alpha; shot.window.setFrame(frame, display: false) }
+        shot.window.alphaValue = 1
+        shot.window.setFrameOrigin(NSScreen.main?.visibleFrame.origin ?? .zero)
+        shot.window.orderFrontRegardless()
+        for _ in 0..<4 { shot.window.displayIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
+        let lock = NSLock()
+        var content: SCShareableContent?, image: CGImage?, done = false, reason: String?
+        SCShareableContent.getCurrentProcessShareableContent { value, error in
+            lock.lock(); content = value; reason = error?.localizedDescription; done = true; lock.unlock()
+        }
+        func wait() -> Bool {
+            let until = Date().addingTimeInterval(5)
+            while Date() < until {
+                lock.lock(); let ready = done; lock.unlock()
+                if ready { return true }
+                RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            }
+            return false
+        }
+        guard wait(), let window = content?.windows.first(where: { $0.windowID == CGWindowID(shot.window.windowNumber) }) else {
+            print("SELFTEST CAPTURE FAIL own window enumeration: \(reason ?? "missing window")"); return nil
+        }
+        let config = SCStreamConfiguration()
+        config.width = shot.bitmap.pixelsWide; config.height = shot.bitmap.pixelsHigh
+        config.showsCursor = false; config.ignoreShadowsSingleWindow = true
+        lock.lock(); done = false; lock.unlock()
+        SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config) { value, error in
+            lock.lock(); image = value; reason = error?.localizedDescription; done = true; lock.unlock()
+        }
+        guard wait(), let image else { print("SELFTEST CAPTURE FAIL \(reason ?? "timeout")"); return nil }
+        return Rendered(host: shot.host, window: shot.window, bitmap: NSBitmapImageRep(cgImage: image), size: shot.size)
     }
 
     /// 深色字（墨水）占的範圍，單位是點、y 從上往下；白底上一個深色都沒有是 nil。每個像素看 RGB 三個值都深才算（不管位元組順序）。

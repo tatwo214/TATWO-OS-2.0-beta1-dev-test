@@ -1,0 +1,688 @@
+[
+  {
+    "bytes": 98304,
+    "inode": 28220210,
+    "mode": 420,
+    "stage": "light-expanded-start",
+    "filename": "slow-light-expanded (1).bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220211,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-expanded-start",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 671744,
+    "inode": 28220210,
+    "mode": 420,
+    "stage": "light-expanded-progress",
+    "filename": "slow-light-expanded (1).bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220211,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-expanded-progress",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-expanded-complete",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 81920,
+    "inode": 28220635,
+    "mode": 420,
+    "stage": "light-collapsed-start",
+    "filename": "slow-light-collapsed (1).bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220636,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-collapsed-start",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 655360,
+    "inode": 28220635,
+    "mode": 420,
+    "stage": "light-collapsed-progress",
+    "filename": "slow-light-collapsed (1).bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220636,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-collapsed-progress",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "light-collapsed-complete",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 81920,
+    "inode": 28220778,
+    "mode": 420,
+    "stage": "dark-expanded-start",
+    "filename": "slow-dark-expanded (1).bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220779,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-expanded-start",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 655360,
+    "inode": 28220778,
+    "mode": 420,
+    "stage": "dark-expanded-progress",
+    "filename": "slow-dark-expanded (1).bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220779,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-expanded-progress",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220778,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-expanded-complete",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220778,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220892,
+    "mode": 384,
+    "stage": "dark-collapsed-start",
+    "filename": "slow-dark-collapsed.bin"
+  },
+  {
+    "bytes": 81920,
+    "inode": 28220891,
+    "mode": 420,
+    "stage": "dark-collapsed-start",
+    "filename": "slow-dark-collapsed (1).bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220778,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 0,
+    "inode": 28220892,
+    "mode": 384,
+    "stage": "dark-collapsed-progress",
+    "filename": "slow-dark-collapsed.bin"
+  },
+  {
+    "bytes": 655360,
+    "inode": 28220891,
+    "mode": 420,
+    "stage": "dark-collapsed-progress",
+    "filename": "slow-dark-collapsed (1).bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220635,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "slow-light-collapsed.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220778,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "slow-dark-expanded.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220210,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "slow-light-expanded.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220160,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "C.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220143,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "B.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220047,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "A.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220195,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "E.bin"
+  },
+  {
+    "bytes": 61440,
+    "inode": 28220178,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "D.bin"
+  },
+  {
+    "bytes": 2097152,
+    "inode": 28220891,
+    "mode": 384,
+    "stage": "dark-collapsed-complete",
+    "filename": "slow-dark-collapsed.bin"
+  }
+]

@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w324-pluginsettings-page.test.mjs
+tests/fixtures/w324-pluginsettings-page.mjs
+tests/fixtures/w324-room-allow.txt

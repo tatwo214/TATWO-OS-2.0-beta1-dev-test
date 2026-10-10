@@ -5,10 +5,11 @@ import Foundation
         weak var engine: ChatLiveEngine?
         var activeTurns: [UUID: String] = [:]
         var completed: Set<String> = []
+        var usage: [UUID: Int] = [:]
         init(_ engine: ChatLiveEngine) { self.engine = engine }
     }
-    struct Send { var origin: String; var actor: String; var surface: String? }
-    static var send = Send(origin: "system", actor: "系統", surface: nil)
+    struct Send { var origin: String; var actor: String; var surface: String?; static let system = Send(origin: "system", actor: "系統", surface: nil) }
+    static var send = Send.system
     private static var engines: [String: Context] = [:]
     static func register(_ engine: ChatLiveEngine) { engines[engine.store.url.deletingLastPathComponent().path] = Context(engine) }
     static func context(_ engine: ChatLiveEngine) -> Context {
@@ -16,8 +17,12 @@ import Foundation
         if engines[key]?.engine !== engine { register(engine) }; return engines[key]!
     }
     static func scope<T>(origin: String, actor: String = "你", surface: String? = nil, _ body: () -> T) -> T {
-        let previous = send; send = Send(origin: origin, actor: actor, surface: surface); defer { send = previous }; return body()
+        scope(Send(origin: origin, actor: actor, surface: surface), body)
     }
+    static func scope<T>(_ source: Send, _ body: () -> T) -> T {
+        let previous = begin(origin: source.origin, actor: source.actor, surface: source.surface); defer { send = previous }; return body()
+    }
+    static func take() -> Send { let source = send; send = .system; return source }
     static func begin(origin: String, actor: String, surface: String? = nil) -> Send {
         let previous = send; send = Send(origin: origin, actor: actor, surface: surface); return previous
     }
@@ -36,9 +41,9 @@ extension ChatLiveEngine {
     }
     func eventsTurnStarted(_ thread: UUID, turn: String) {
         let context = OSEventSources.context(self)
-        if !context.completed.contains(turn) { context.activeTurns[thread] = turn }
+        if !context.completed.contains(turn), context.activeTurns[thread] != turn { context.activeTurns[thread] = turn; context.usage[thread] = nil }
     }
-    func eventsRow(_ thread: UUID, _ row: ChatMessage) {
+    func eventsRow(_ thread: UUID, _ row: ChatMessage, source: OSEventSources.Send? = nil) {
         guard row.eventKind == .toolUse || row.role == .user else { return }
         let record = threadRecord(thread), purpose = row.role == .user ? row.id : messages[thread]?.last { $0.role == .user }?.id
         if row.eventKind == .toolUse {
@@ -46,19 +51,33 @@ extension ChatLiveEngine {
             events.append(project: eventProject(thread), thread: thread, actor: (record?.engine ?? "引擎") + "/" + (row.modelID ?? record?.model ?? "未知"),
                           kind: "tool_step", purpose: purpose, used: ["@" + name], note: "工具步驟")
         } else {
-            let source = OSEventSources.send
+            let source = source ?? OSEventSources.send
             if let turn = row.turnID { eventsTurnStarted(thread, turn: turn) }
-            events.append(project: eventProject(thread), thread: thread, actor: source.actor, kind: "user_send", purpose: row.id, sizeText: row.text, note: "送出訊息", origin: source.origin)
+            events.append(project: eventProject(thread), thread: thread, actor: source.actor, kind: "user_send", purpose: row.id, sizeText: row.text, note: "送出訊息", origin: source.origin, surface: source.surface)
             if source.origin == "composer" { OSPresence.shared.record(thread: thread, project: eventProject(thread), log: events, surface: source.surface) }
         }
+    }
+    func eventsGroup(_ thread: UUID, _ event: GroupEvent, source: OSEventSources.Send) {
+        guard ["message", "summary", "human-forward", "join", "leave", "away", "reconnect", "transfer"].contains(event.kind) else { return }
+        let human = event.speaker == "使用者", initiated = human || ["join", "leave"].contains(event.kind)
+        events.append(project: eventProject(thread), thread: thread, actor: human ? source.actor : event.speaker, kind: "group_" + event.kind,
+                      at: event.time ?? Date(), size: event.text.count, note: "群組 " + event.kind,
+                      id: "group:\(thread):\(event.sequence):\(event.kind):\(event.speaker)", origin: initiated ? source.origin : OSEventSources.Send.system.origin)
+    }
+    func eventsUsage(_ thread: UUID, tokens: Int?) {
+        let context = OSEventSources.context(self)
+        if context.activeTurns[thread] != nil, let tokens { context.usage[thread] = tokens }
     }
     func eventsFinished(_ thread: UUID, succeeded: Bool, turn: String? = nil) {
         let context = OSEventSources.context(self)
         guard let active = context.activeTurns[thread], turn == nil || turn == active else { return }
         context.activeTurns.removeValue(forKey: thread); guard context.completed.insert(active).inserted else { return }
         let record = threadRecord(thread)
+        let tap = record?.engine == TatwoChatRuntimeAdapter.chatgptTap.rawValue
+        let reply = tap ? (messages[thread] ?? []).reduce(0) { $0 + ($1.turnID == active && $1.role == .assistant && $1.eventKind == .message ? $1.text.count : 0) } : nil
+        let tokens = context.usage.removeValue(forKey: thread) ?? (tap ? reply : nil)
         events.append(project: eventProject(thread), thread: thread, actor: record?.engine == TatwoChatRuntimeAdapter.chatgptTap.rawValue ? "TAP/ChatGPT" : (record?.engine ?? "引擎") + "/" + (messages[thread]?.last { $0.turnID == active && $0.modelID != nil }?.modelID ?? record?.model ?? "未知"),
-                      kind: "turn_end", purpose: messages[thread]?.last { $0.role == .user }?.id, result: succeeded ? "通過" : "失敗", sizeText: messages[thread]?.last { $0.turnID == active && $0.role == .assistant && $0.eventKind == .message }?.text, id: "turn:" + thread.uuidString + ":" + active, turn: active)
+                      kind: "turn_end", purpose: messages[thread]?.last { $0.role == .user }?.id, result: succeeded ? "通過" : "失敗", sizeText: messages[thread]?.last { $0.turnID == active && $0.role == .assistant && $0.eventKind == .message }?.text, id: "turn:" + thread.uuidString + ":" + active, turn: active, tokens: tokens, estimated: tap ? true : nil)
     }
     func eventsPermission(_ thread: UUID, allowed: Bool, human: Bool) {
         let project = eventProject(thread)

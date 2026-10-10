@@ -1,0 +1,10 @@
+Package.swift
+App/Sources/Tatwo2/Chat/ChatPage+Plan.swift
+Apps/TatwoUltraworkMac/Sources/TatwoUltraworkMac/ChatPage+Plan.swift
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoPlanExport.mm
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoPlanExport.h
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoCEFBridge.h
+Apps/TatwoUltraworkMac/Tests/TatwoUltraworkMacTests/ChatPlanArtifactBehaviorTests.swift
+tests/w283-plan-export.test.mjs
+tests/fixtures/w283-plan-export-checks.mm
+tests/fixtures/w283-room-allow.txt

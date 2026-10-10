@@ -9,7 +9,6 @@ import { testScratch } from './helpers/test-scratch.mjs';
 // One execution per suite: assert real receipts, never source-code labels.
 const suites = [
   ['w185tap', 'W185TAP', ['W196 C4 display and navigation leave stored map bytes unchanged', 'W205-1 w205-aurora-dark input-mode-disabled stays legible']],
-  ['w197dots', 'W197DOTS', ['W197 restored ChatGPT resumes the queued send', 'W197 redirected account replaces the web page with plain unavailable copy']],
   ['w199quiet', 'W199QUIET', ['W199 expand synchronously enters loading', 'W203-1 offline for five minutes keeps Space and DM entry silent']],
   ['w202perf', 'W202PERF', ['20 Browser switches do not rebuild ChatPage or composer', 'retained hidden ChatPage and shell stay quiet', 'W204 main favorites redraw', 'W204 DM favorites redraw through their own store']],
   ['w182assistoffline', 'W182ASSISTOFFLINE', ['W201 ten disconnect/reconnect cycles: zero hints and zero Island notices', 'W203 actual Remove removes obsolete refusal', 'actual retry requeues and handling prompt disappears']],

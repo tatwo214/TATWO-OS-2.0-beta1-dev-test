@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift
+App/Sources/Tatwo2/TAP/TapWebPod.swift
+App/Sources/Tatwo2/DM/W265DMChatGPTAcceptance.swift
+tests/w265-dmchatgpt.test.mjs
+tests/fixtures/w266-room-allow.txt

@@ -3,6 +3,8 @@
 # Secondary sends a proposal. Host archives and keeps the curated body.
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON="${TATWO_SKILLET_MD_PYTHON:-/usr/bin/python3}"
@@ -74,10 +76,10 @@ PY
 }
 
 install_remote_tool() {
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "mkdir -p '$(dirname "$REMOTE_TOOL")' '$REMOTE_INBOX'"
-  scp -q -o BatchMode=yes -o ConnectTimeout=20 "$TOOL" "$SSH_HOST:/tmp/tatwo-skillet-md.py"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/scp -q -o BatchMode=yes -o ConnectTimeout=20 "$TOOL" "$SSH_HOST:/tmp/tatwo-skillet-md.py"
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "mv /tmp/tatwo-skillet-md.py '$REMOTE_TOOL' && chmod 755 '$REMOTE_TOOL'"
 }
 
@@ -87,14 +89,14 @@ upload_submit() {
   submit_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["submitId"])' "$bundle/manifest.json")"
   device_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["device"])' "$bundle/manifest.json")"
   remote_dir="$REMOTE_INBOX/$device_name/$submit_id"
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "mkdir -p '$remote_dir'"
-  tar -C "$bundle" -cf - . | ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" "mkdir -p '$remote_dir'"
+  tar -C "$bundle" -cf - . | tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "tar -xf - -C '$remote_dir'"
   printf '%s\n' "$submit_id"
 }
 
 remote_unify() {
-  ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
+  tatwo_pinned_run "$SSH_HOST" /usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=20 "$SSH_HOST" \
     "$PYTHON '$REMOTE_TOOL' --support '$REMOTE_SUPPORT' --inbox '$REMOTE_INBOX' unify"
 }
 

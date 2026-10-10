@@ -38,7 +38,7 @@ test('W97 (a) force-renderer-accessibility is only appended inside the gate', ()
   const startup = section(bridge, '  void OnBeforeCommandLineProcessing(',
     '  void OnBeforeChildProcessLaunch(', 'OnBeforeCommandLineProcessing');
   guardedBy(startup, 'command_line->AppendSwitchWithValue("force-renderer-accessibility", "complete");',
-    'CEFAccessibilityTreeEnabled', 'startup switch');
+    'CEFAccessibilityTreeForced', 'startup switch');
   // The whole file must not reach for the switch anywhere else.
   assert.equal(bridge.split('force-renderer-accessibility').length - 1, 1);
 
@@ -58,7 +58,8 @@ test('W97 (b) SetAccessibilityState(STATE_ENABLED) is only called inside the gat
     'OnAfterCreated');
   guardedBy(created, 'browser->GetHost()->SetAccessibilityState(STATE_ENABLED);',
     'CEFAccessibilityTreeEnabled', 'per-browser state');
-  assert.equal(bridge.split('->SetAccessibilityState(').length - 1, 1);
+  assert.equal(bridge.split('->SetAccessibilityState(').length - 1, 2);
+  assert.match(bridge, /state->browser->GetHost\(\)->SetAccessibilityState\(mode\)/);
 });
 
 test('W97 (c) the pump and windowed-rendering settings are untouched', () => {
@@ -99,6 +100,7 @@ test('W97 diagnostics reports the tree state and the reason it was decided', () 
     '（原因：環境變數 TATWO_CEF_FORCE_AX=0）',
     '（原因：VoiceOver）',
     '（原因：未偵測到輔助工具）',
+    '（原因：輔助工具 AXEnhancedUserInterface／AXManualAccessibility）',
   ]) assert.ok(state.includes(reason), reason);
   // Same inputs as the bridge, same precedence: environment first, then VoiceOver.
   assert.ok(state.indexOf('TATWO_CEF_FORCE_AX') < state.indexOf('isVoiceOverEnabled'));

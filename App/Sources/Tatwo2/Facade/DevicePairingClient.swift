@@ -17,6 +17,7 @@ final class DevicePairingClient: @unchecked Sendable {
         // 主機金鑰讓主機之後能 pin 住反向隧道（舊版主機沒有這兩欄，照樣相容）。
         var clientKeyFingerprint: String?
         var hostKeyFingerprint: String?
+        var fleet: String?
     }
 
     private struct PairResponse: Codable {
@@ -30,6 +31,8 @@ final class DevicePairingClient: @unchecked Sendable {
         // 客戶端金鑰讓加入端之後能驗主機送來的 RPC 簽章。
         var hostKeyFingerprint: String?
         var clientKeyFingerprint: String?
+        var fleet: String?
+        var previewOnly: Bool?
         var mac: String?
     }
 
@@ -103,6 +106,10 @@ final class DevicePairingClient: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    var omitFleetForTest = false
+    #endif
+    private(set) var managementPreview: DeviceFleetSlice?
     private let registry: DeviceRegistry
     private let entry: TatwoEntry
     private let environment: [String: String]
@@ -110,6 +117,7 @@ final class DevicePairingClient: @unchecked Sendable {
     private let sshVerifier: (_ user: String, _ host: String, _ hostKey: String) -> Bool
     /// 回主機的 ed25519 公鑰（`ssh-ed25519 <base64>`）；配對時比對對方用配對碼證明的指紋，第一次 SSH 也只信這一把。
     private let hostKeyResolver: (String) -> String?
+    private let peerEndpoints: (String, DeviceFleetMember) -> [DeviceEndpoint]
     private let queue = DispatchQueue(label: "ai.tatwo.tatwo2.device-pairing-client")
 
     init(
@@ -117,7 +125,8 @@ final class DevicePairingClient: @unchecked Sendable {
         privateKeyURL: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         sshVerifier: ((_ user: String, _ host: String, _ hostKey: String) -> Bool)? = nil,
-        hostKeyResolver: ((String) -> String?)? = nil
+        hostKeyResolver: ((String) -> String?)? = nil,
+        peerEndpoints: ((String, DeviceFleetMember) -> [DeviceEndpoint])? = nil
     ) {
         self.registry = registry ?? DeviceRegistry(environment: environment)
         self.entry = TatwoEntry(environment: environment)
@@ -130,10 +139,20 @@ final class DevicePairingClient: @unchecked Sendable {
             Self.verifySSH(user: $0, host: $1, hostKey: $2, privateKeyURL: resolvedPrivateKeyURL, environment: environment)
         }
         self.hostKeyResolver = hostKeyResolver ?? Self.resolveHostKey
+        self.peerEndpoints = peerEndpoints ?? { host, _ in [.init(kind: .lan, host: host)] }
     }
 
     @discardableResult
-    func pair(host: String, port: Int, code: String, name: String) throws -> DeviceRecord {
+    func pair(host: String, port: Int, code: String, name: String,
+              kind: DeviceFactionKind = .owner, consentToManagement: Bool = false,
+              previewOnly: Bool = false, previewDigest: String? = nil) throws -> DeviceRecord {
+        let fleet = DeviceFleetStore(registry: registry, environment: environment)
+        if try !fleet.locallyRevoked() { try fleet.requireOwner() }
+        if let trust = try fleet.trust() {
+            if trust.kind != .owner && kind == .owner { throw DeviceFleetError.managedLocked }
+            if trust.kind == .sandbox && kind != .sandbox { throw DeviceFleetError.reverseEnrollment }
+        }
+        if kind != .owner, !consentToManagement { throw DeviceFleetError.consentRequired }
         let cleanHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard DevicePairingAuth.isSafeSSHHost(cleanHost) else {
             throw ClientError.invalidHost
@@ -142,11 +161,15 @@ final class DevicePairingClient: @unchecked Sendable {
             throw ClientError.invalidPort
         }
         let publicKey = try ensurePublicKey()
-        // A first pairing adopts the host-issued UUID; an already identified device keeps it.
-        let local = try DeviceIdentityStore.readLocal(entry: entry)
         let nonce = DevicePairingAuth.makeNonce()
         guard let key = DevicePairingAuth.key(code: code, nonce: nonce) else {
             throw ClientError.responseInvalid
+        }
+        try proveHost(host: cleanHost, port: nwPort, nonce: nonce, key: key)
+        // A first pairing adopts the host-issued UUID; an already identified device keeps it.
+        let local = try DeviceIdentityStore.readLocal(entry: entry)
+        if local?.role == .primary {
+            try fleet.bootstrapPrimary(host: environment["TATWO2_PAIRING_HOST"] ?? ProcessInfo.processInfo.hostName)
         }
         var request = PairRequest(
             v: DevicePairingAuth.protocolVersion, nonce: nonce,
@@ -154,10 +177,18 @@ final class DevicePairingClient: @unchecked Sendable {
             deviceID: local?.deviceID,
             clientKeyFingerprint: try? DeviceRegistry.fingerprint(publicKey: publicKey),
             hostKeyFingerprint: DeviceRegistry.localHostKeyFingerprint(environment: environment))
+        if let hostKey = try? String(contentsOfFile: environment["TATWO2_SSH_HOST_KEY_PUB"]
+                                     ?? "/etc/ssh/ssh_host_ed25519_key.pub", encoding: .utf8) {
+            request.fleet = try JSONEncoder().encode(DeviceFleetPairRequest(
+                hostPublicKey: hostKey, kind: kind, consent: consentToManagement, previewOnly: previewOnly, previewDigest: previewDigest)).base64EncodedString()
+        } else if kind != .owner { throw DeviceFleetError.missingKey }
+        #if DEBUG
+        if omitFleetForTest { request.fleet = nil }
+        #endif
         request.mac = DevicePairingAuth.mac(key: key, label: "request", fields: DevicePairingAuth.requestFields(
             nonce: nonce, publicKey: request.publicKey, name: request.name, user: request.user,
             deviceID: request.deviceID, clientKeyFingerprint: request.clientKeyFingerprint,
-            hostKeyFingerprint: request.hostKeyFingerprint))
+            hostKeyFingerprint: request.hostKeyFingerprint, fleet: request.fleet))
         var payload = try JSONEncoder().encode(request)
         payload.append(0x0A)
 
@@ -171,7 +202,7 @@ final class DevicePairingClient: @unchecked Sendable {
                         reply.resolve(.failure(error))
                         connection.cancel()
                     } else {
-                        self?.receiveLine(from: connection, buffer: Data(), reply: reply)
+                        self?.receiveLine(from: connection, buffer: Data(), reply: reply, key: key)
                     }
                 })
             case let .failed(error):
@@ -203,7 +234,7 @@ final class DevicePairingClient: @unchecked Sendable {
                 nonce: nonce, ok: response.ok, deviceID: response.deviceID, hostName: response.hostName,
                 hostUser: response.hostUser, hostDeviceID: response.hostDeviceID,
                 hostKeyFingerprint: response.hostKeyFingerprint,
-                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason))
+                clientKeyFingerprint: response.clientKeyFingerprint, reason: response.reason, fleet: response.fleet, previewOnly: response.previewOnly))
         guard response.ok else {
             // 拒絕不一定帶得出驗證（配對碼打錯時雙方金鑰不同）；只拿來顯示原因，不採信任何其他欄位。
             throw ClientError.pairingRejected(response.reason ?? "unknown")
@@ -219,8 +250,7 @@ final class DevicePairingClient: @unchecked Sendable {
             ?? UUID(uuidString: Self.legacyHostID(host: cleanHost, name: hostName))?.uuidString
             ?? UUID().uuidString
         guard UUID(uuidString: deviceID) != nil, UUID(uuidString: hostDeviceID) != nil,
-              deviceID.lowercased() != hostDeviceID.lowercased(),
-              local.map({ $0.deviceID.lowercased() == deviceID.lowercased() }) ?? true
+              deviceID.lowercased() != hostDeviceID.lowercased()
         else {
             throw ClientError.responseInvalid
         }
@@ -236,16 +266,68 @@ final class DevicePairingClient: @unchecked Sendable {
             throw ClientError.hostFingerprintUnavailable
         }
         guard fingerprint == declaredHostKey else { throw ClientError.hostKeyMismatch }
+        let offer: DeviceFleetPairOffer?
+        if let raw = response.fleet {
+            guard let data = Data(base64Encoded: raw),
+                  let decoded = try? JSONDecoder().decode(DeviceFleetPairOffer.self, from: data),
+                  decoded.member.id == hostDeviceID.lowercased(), decoded.member.hostKeyFingerprint == fingerprint,
+                  decoded.member.clientKeyFingerprint == response.clientKeyFingerprint,
+                  decoded.faction.kind == kind, decoded.trust.kind == .owner,
+                  decoded.member.role == .primary || decoded.member.role == .secondary else {
+                throw DeviceFleetError.reverseEnrollment
+            }
+            try decoded.member.validate()
+            offer = decoded
+        } else {
+            guard kind == .owner else { throw DeviceFleetError.consentRequired }
+            offer = nil
+        }
+        try fleet.checkJoining(hostFingerprint: fingerprint, offer: offer)
+        if previewOnly {
+            guard response.previewOnly == true else { throw ClientError.responseUnauthenticated }
+            guard kind != .owner, let offer, let envelope = offer.envelope else { throw DeviceFleetError.consentRequired }
+            let trust = DeviceFleetTrust(localID: deviceID.lowercased(), primaryID: offer.trust.primaryID,
+                epoch: offer.trust.epoch, pinnedPrimaryKey: offer.trust.pinnedPrimaryKey, kind: kind)
+            guard let slice = try envelope.verified(trust: trust).slice else { throw DeviceFleetError.signature }
+            managementPreview = slice
+            return DeviceRecord(id: hostDeviceID.lowercased(), name: hostName, host: cleanHost, user: hostUser,
+                sshPort: 22, publicKeyFingerprint: fingerprint, addedAt: Date(), lastSeenAt: Date(), workdirMap: [:])
+        }
         // 第一次 SSH 也只信這把已證明的金鑰：掃描之後才換端點的中間人，登入會直接失敗。
-        guard sshVerifier(hostUser, cleanHost, scannedKey) else {
+        // 受管加入只有一次 HMAC 同意流程；絕不做 M -> owner 的 SSH 登入。
+        let pendingApproval = offer?.envelope.flatMap { try? $0.verified(trust: offer!.trust).roster }?
+            .devices.contains(where: { $0.id == deviceID.lowercased() }) == false
+        guard kind != .owner || pendingApproval || sshVerifier(hostUser, cleanHost, scannedKey) else {
             throw ClientError.sshVerificationFailed
         }
         let hostKeySource = "pairing"
         // 主機的客戶端金鑰指紋只在格式正確時收下；收不到就留空，之後 RPC 照樣擋。
         let peerClientKey = response.clientKeyFingerprint.flatMap { $0.hasPrefix("SHA256:") ? $0 : nil }
+        if let local, local.deviceID.lowercased() != deviceID.lowercased() {
+            guard let offer, let envelope = offer.envelope else { throw DeviceFleetError.role }
+            let trust = DeviceFleetTrust(localID: kind == .owner ? hostDeviceID.lowercased() : deviceID.lowercased(),
+                primaryID: offer.trust.primaryID, epoch: offer.trust.epoch, pinnedPrimaryKey: offer.trust.pinnedPrimaryKey, kind: kind)
+            let payload = try envelope.verified(trust: trust)
+            let member = (payload.roster?.devices ?? payload.slice?.devices ?? []).first { $0.id == deviceID.lowercased() }
+            guard member?.clientKeyFingerprint == (try DeviceRegistry.fingerprint(publicKey: publicKey)),
+                  payload.roster?.revoked.contains(local.deviceID) != false,
+                  let generation = (payload.roster?.rePairVersions ?? payload.slice?.rePairVersions)?[member!.clientKeyFingerprint!],
+                  generation > (try fleet.current()?.revision ?? UInt64.max) else { throw DeviceFleetError.replay }
+            let fresh = DeviceIdentity(deviceID: deviceID.lowercased(), name: name, hardwareModel: local.hardwareModel,
+                role: .secondary, epoch: offer.trust.epoch, primaryDeviceID: offer.trust.primaryID,
+                legacyIdentity: local.deviceID, updatedAt: Date())
+            // Only a newer primary-signed enrollment can replace a revoked UUID, even if its notice was missed.
+            // Preserve local onboarding/preferences/extensions; never import them from the peer.
+            DeviceFleetConnections.closeAll(scope: registry.root.path)
+            var object = try JSONSerialization.jsonObject(with: DeviceDispatchSafeFile.read(entry.deviceJSON, limit: 1024 * 1024)) as! [String: Any]
+            let fields = try JSONSerialization.jsonObject(with: fresh.encoded()) as! [String: Any]
+            object.removeValue(forKey: "transfer")
+            for (key, value) in fields { object[key] = value }
+            try DeviceDispatchSafeFile.write(JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), url: entry.deviceJSON)
+        }
         _ = try DeviceIdentityStore.forLocalDevice(entry: entry, pairedDeviceID: deviceID, name: name)
         let now = Date()
-        return try registry.recordPairedHost(DeviceRecord(
+        let record = DeviceRecord(
             id: hostDeviceID.lowercased(),
             name: hostName,
             host: cleanHost,
@@ -257,8 +339,28 @@ final class DevicePairingClient: @unchecked Sendable {
             clientKeyFingerprint: peerClientKey,
             hostKeyFingerprintSource: .init(source: hostKeySource, recordedAt: now),
             clientKeyFingerprintSource: peerClientKey.map { _ in
-                .init(source: "pairing", recordedAt: now) }),
-            localDeviceID: deviceID)
+                .init(source: "pairing", recordedAt: now) })
+        if let offer {
+            var peer = offer.member
+            peer.endpoints = peerEndpoints(cleanHost, peer)
+            try fleet.completePair(peer: peer, offer: offer, consent: consentToManagement)
+            let store = try DeviceIdentityStore.forLocalDevice(entry: entry, pairedDeviceID: deviceID)
+            var identity = try store.read()
+            identity.primaryDeviceID = offer.trust.primaryID; identity.epoch = offer.trust.epoch
+            identity.role = identity.deviceID == offer.trust.primaryID ? .primary : .secondary
+            try store.write(identity)
+            if let envelope = offer.envelope, let trust = try fleet.trust() {
+                let payload = try envelope.verified(trust: kind == .owner
+                    ? .init(localID: hostDeviceID.lowercased(), primaryID: trust.primaryID, epoch: trust.epoch,
+                            pinnedPrimaryKey: trust.pinnedPrimaryKey, kind: .owner) : trust)
+                if payload.roster?.kind(of: deviceID.lowercased()) == .owner || payload.slice != nil {
+                    try fleet.synchronizeEnvelope(envelope)
+                }
+            }
+        }
+        // 單向設備不保存 owner 的名字／地址／角色到可列出的設備表。
+        if kind != .owner { return record }
+        return try registry.recordPairedHost(record, localDeviceID: deviceID)
     }
 
     /// Deterministic UUID-shaped ID for a pre-W76 host (name-based, lowercase hex).
@@ -267,6 +369,47 @@ final class DevicePairingClient: @unchecked Sendable {
         let hex = digest.prefix(16).map { String(format: "%02x", $0) }.joined()
         let c = Array(hex)
         return "\(String(c[0..<8]))-\(String(c[8..<12]))-5\(String(c[13..<16]))-a\(String(c[17..<20]))-\(String(c[20..<32]))"
+    }
+
+    private final class ProofBox: @unchecked Sendable {
+        let semaphore = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var data = Data()
+        var done = false
+        func finish(_ bytes: Data?) {
+            lock.withLock { if done { return }; done = true; if let bytes { data = bytes }; semaphore.signal() }
+        }
+    }
+    private func proveHost(host: String, port: NWEndpoint.Port, nonce: String, key: SymmetricKey) throws {
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let box = ProofBox()
+        var hello = try JSONEncoder().encode(["hello": nonce]); hello.append(0x0A)
+        let wire = hello
+        @Sendable func receive(_ buffer: Data) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, complete, error in
+                var joined = buffer; if let data { joined.append(data) }
+                if joined.count > 4096 { box.finish(nil); return }
+                if let newline = joined.firstIndex(of: 0x0A) { box.finish(Data(joined[..<newline])) }
+                else if complete || error != nil { box.finish(joined) }
+                else { receive(joined) }
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready: connection.send(content: wire, completion: .contentProcessed { error in
+                if error != nil { box.finish(nil) } else { receive(Data()) }
+            })
+            case .failed, .waiting: box.finish(nil)
+            default: break
+            }
+        }
+        connection.start(queue: queue)
+        defer { connection.cancel() }
+        guard box.semaphore.wait(timeout: .now() + 8) == .success,
+              let reply = try? JSONDecoder().decode([String: String].self, from: box.data),
+              DevicePairingAuth.verify(mac: reply["proof"], key: key, label: "host-proof", fields: [nonce]) else {
+            throw ClientError.responseUnauthenticated
+        }
     }
 
     private func ensurePublicKey() throws -> String {
@@ -290,7 +433,7 @@ final class DevicePairingClient: @unchecked Sendable {
         return value
     }
 
-    private func receiveLine(from connection: NWConnection, buffer: Data, reply: ReplyBox) {
+    private func receiveLine(from connection: NWConnection, buffer: Data, reply: ReplyBox, key: SymmetricKey) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, complete, error in
             guard let self else {
                 reply.resolve(.failure(ClientError.responseInvalid))
@@ -303,21 +446,38 @@ final class DevicePairingClient: @unchecked Sendable {
                 return
             }
             if let newline = joined.firstIndex(of: 0x0A) {
-                self.decodeReply(Data(joined[..<newline]), into: reply)
+                self.decodeReply(Data(joined[..<newline]), into: reply, key: key)
             } else if complete || error != nil {
                 if let error {
                     reply.resolve(.failure(error))
                 } else {
-                    self.decodeReply(joined, into: reply)
+                    self.decodeReply(joined, into: reply, key: key)
                 }
             } else {
-                self.receiveLine(from: connection, buffer: joined, reply: reply)
+                self.receiveLine(from: connection, buffer: joined, reply: reply, key: key)
             }
         }
     }
 
-    private func decodeReply(_ data: Data, into reply: ReplyBox) {
-        guard let response = try? JSONDecoder().decode(PairResponse.self, from: data) else {
+    #if DEBUG
+    func fixtureReplyAccepted(_ data: Data, code: String, nonce: String) -> Bool {
+        guard let key = DevicePairingAuth.key(code: code, nonce: nonce) else { return false }
+        let reply = ReplyBox(); decodeReply(data, into: reply, key: key)
+        if case .success(let response) = reply.result { return response.ok }
+        return false
+    }
+    #endif
+    private func decodeReply(_ data: Data, into reply: ReplyBox, key: SymmetricKey) {
+        let clear: Data
+        do { clear = try DevicePairingAuth.openResponse(data, key: key) }
+        catch {
+            // encryptedResponseRequired: never accept a plaintext success or downgrade after decryption failure.
+            if let rejection = try? JSONDecoder().decode(PairResponse.self, from: data), !rejection.ok {
+                reply.resolve(.success(rejection))
+            } else { reply.resolve(.failure(ClientError.responseUnauthenticated)) }
+            return
+        }
+        guard let response = try? JSONDecoder().decode(PairResponse.self, from: clear) else {
             reply.resolve(.failure(ClientError.responseInvalid))
             return
         }
@@ -359,6 +519,13 @@ final class DevicePairingClient: @unchecked Sendable {
         environment: [String: String]
     ) -> Bool {
         guard let key = normalizedHostKey(hostKey) else { return false }
+        let registry = DeviceRegistry(environment: environment)
+        guard let fingerprint = try? DeviceRegistry.fingerprint(publicKey: key) else { return false }
+        var peer = registry.list().first(where: { $0.host == host && $0.user == user })
+            ?? DeviceRecord(id: "pairing-" + host, name: host, host: host, user: user,
+                sshPort: 22, publicKeyFingerprint: fingerprint, addedAt: Date(), lastSeenAt: Date(), workdirMap: [:])
+        peer.hostKeyFingerprint = fingerprint
+        guard (try? DeviceFleetSSHPins.lines(for: peer, registry: registry)) != nil else { return false }
         let temp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("tatwo-pair-known-\(UUID().uuidString)")
         guard FileManager.default.createFile(

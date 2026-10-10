@@ -8,6 +8,8 @@ enum ChatSteeringAcceptance {
               env["TATWO2_LIVE_ROOT"] == path + "/live",
               env["TATWO2_ENGINES_ROOT"] == path + "/engines",
               FileManager.default.fileExists(atPath: path + "/fixture-only") else { return false }
+        let kind: ClaudeSidecar.Kind = env["TATWO2_CHATSTEERING_ENGINE"] == "claude" ? .claude : .codex
+        let modelID = kind == .claude ? "sonnet5" : "gpt-6-astra"
         let root = URL(fileURLWithPath: path)
         let script = root.appendingPathComponent("steering-fixture.mjs")
         try #"""
@@ -27,9 +29,11 @@ enum ChatSteeringAcceptance {
             active = c.uuid;
             sdk({type:'system',subtype:'init',session_id:'steering-fixture',model:'native-fixture'});
             text(active,'原回合的回覆');
+            if(c.text === 'next') sdk({type:'assistant',client_turn_id:active,message:{content:[{type:'tool_use',id:'stop-tool',name:String('fixture_tool'),input:{}}]}});
           } else if(c.op === 'steer') {
             const target = c.targetTurnUUID;
             if(c.text === 'hold') return;
+            if(c.text === 'unknown') { sdk({type:'system',subtype:'steer_result',request_id:c.uuid,target_turn_id:target,accepted:false,unknown:true}); return; }
             if(c.text === 'late') result(target);
             setTimeout(() => {
               sdk({type:'system',subtype:'steer_result',request_id:c.uuid,target_turn_id:target,
@@ -45,7 +49,8 @@ enum ChatSteeringAcceptance {
         let defaults = UserDefaults.standard
         let prior = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         var overrides = prior
-        overrides["tatwo2.sidecarPath.codex"] = script.path
+        overrides["tatwo2.disabledEngines"] = [String]()
+        overrides["tatwo2.sidecarPath.\(kind.rawValue)"] = script.path
         defaults.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
         defer { defaults.setVolatileDomain(prior, forName: UserDefaults.argumentDomain) }
         let store = ChatLiveStore(root: root.appendingPathComponent("live"))
@@ -57,6 +62,7 @@ enum ChatSteeringAcceptance {
         let model = ChatPageModel(environment: env,
             botCoreFixture: (engine, BotStore(root: root.appendingPathComponent("live"))))
         model.selectedThreadID = thread
+        model.selectedModel = modelID
         engine.onChange = {
             model.document = engine.document
             model.isRunning = engine.isRunning(model.selectedThreadID)
@@ -79,9 +85,9 @@ enum ChatSteeringAcceptance {
         }
         func lastUser() -> ChatMessage? { engine.transcript(for: thread).last { $0.role == .user } }
         check("idle thread is not steerable", !engine.canSteer(thread))
-        check("fixture starts original turn", engine.send(threadID: thread, text: "work", model: "gpt-6-astra", engine: .codex))
+        check("fixture starts original turn", engine.send(threadID: thread, text: "work", model: modelID, engine: kind))
         try await until("original stream") { engine.transcript(for: thread).contains { $0.role == .assistant } }
-        check("actual local Codex work offers native steering", model.canSteerCurrentTurn)
+        check("actual local \(kind.rawValue) work offers steering", model.canSteerCurrentTurn)
         model.prompt = "accept"
         model.droppedPaths = [root.appendingPathComponent("image.png").path]
         let attachments = model.droppedPaths
@@ -106,6 +112,16 @@ enum ChatSteeringAcceptance {
               rows[2].id == firstInsertion?.id && rows[3].role == .assistant)
         check("segmented assistant retains its attested model",
               rows.first { $0.role == .assistant }?.modelID == "native-fixture")
+
+        model.prompt = "second accept"
+        model.send()
+        try await until("second accepted insertion") { model.prompt.isEmpty && engine.canSteer(thread) }
+        check("consecutive insertion stays in original turn", commands().filter { $0["op"] as? String == "send" }.count == 1 && engine.isRunning(thread))
+
+        model.prompt = "unknown"
+        model.send()
+        try await until("unidentified insertion") { lastUser()?.status == "steer_unknown|插話送達狀態待確認" }
+        check("unidentified receipt preserves draft for confirmation", model.prompt == "unknown" && engine.isRunning(thread))
 
         model.prompt = "reject"
         model.send()
@@ -160,7 +176,7 @@ enum ChatSteeringAcceptance {
         try await until("completion before receipt") { !engine.isRunning(thread) }
         check("completion releases pending insertion without claiming delivery", lastUser()?.status == "steer_unknown|插話送達狀態待確認")
         check("unknown outcome keeps the draft", model.prompt == "late")
-        check("explicit next turn starts", engine.send(threadID: thread, text: "next", model: "gpt-6-astra", engine: .codex))
+        check("explicit next turn starts", engine.send(threadID: thread, text: "next", model: modelID, engine: kind))
         model.prompt = "hold"
         model.send()
         let successorInsertionID = lastUser()?.id
@@ -176,8 +192,10 @@ enum ChatSteeringAcceptance {
         try await until("stop confirmation") { !engine.isRunning(thread) }
         check("confirmed stop does not start another turn", commands().filter { $0["op"] as? String == "send" }.count == 2)
         check("stop leaves no false running state", !model.isRunning)
+        check("stop settles tool spinner", engine.transcript(for: thread).first { $0.id == "stop-tool" }?.status ==
+              (kind == .claude ? "cancelled|已終止" : "cancelled|已停止"))
 
-        check("starts final fixture turn", engine.send(threadID: thread, text: "last", model: "gpt-6-astra", engine: .codex))
+        check("starts final fixture turn", engine.send(threadID: thread, text: "last", model: modelID, engine: kind))
         model.prompt = "hold"
         model.send()
         let heldID = lastUser()?.id

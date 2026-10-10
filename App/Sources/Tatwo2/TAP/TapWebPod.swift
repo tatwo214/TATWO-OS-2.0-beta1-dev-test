@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Darwin
 import TatwoCEFBridge
 
@@ -35,10 +36,51 @@ final class TapWebPod {
     /// W183 R9 審查（GPT-6 #10）：只給人用的檔案選擇器（Pod 在私訊框 Browser 的分頁、看得到、使用者自己按才開）。
     private(set) lazy var filePicker = TapPodFilePicker(context: { [weak self] in self?.filePickerContext() ?? .closed })
     private(set) var browser: TatwoCEFBrowserView?
+    private(set) var spacePage: TatwoCEFBrowserView?
+    private(set) var dotsSpacePage: TatwoCEFBrowserView?
+    private var spaceHost: UUID?
+    // One human surface per Pod: first visible host keeps both pages until it disappears.
+    func acquireSpaceHost(_ id: UUID) -> Bool {
+        guard spaceHost == nil || spaceHost == id else { return false }
+        spaceHost = id
+        return true
+    }
+    static let spaceChanged = Notification.Name("TapWebPod.spaceChanged")
+    func spaceDidChange() { NotificationCenter.default.post(name: Self.spaceChanged, object: self) }
+    func releaseSpaceHost(_ id: UUID) { if spaceHost == id { spaceHost = nil; spaceDidChange() } }
     private var lease: TatwoCEFProfileLeaseRegistry.Lease?
     private var hosts: [Host] = []
     private var parking: NSWindow?
+    private struct ConnectorPlacement {
+        weak var parent: NSView?
+        let frame: NSRect, mask: NSView.AutoresizingMask
+    }
+    private var connectorPlacement: ConnectorPlacement?
+    private var connectorViewportUsers = 0
+    private var connectorTermination: AnyCancellable?
+    var connectorViewportBefore: NSSize? { connectorPlacement?.frame.size ?? browser?.bounds.size }
+    func beginConnectorViewport() {
+        connectorViewportUsers += 1
+        guard connectorPlacement == nil, let browser, browser.bounds.width < 1000 || browser.bounds.height < 700 else { return }
+        connectorPlacement = ConnectorPlacement(parent: browser.superview, frame: browser.frame, mask: browser.autoresizingMask)
+        connectorTermination = NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification).sink { [weak self] _ in
+            Task { @MainActor in self?.connectorViewportUsers = 1; self?.endConnectorViewport() }
+        }
+        place()
+    }
+    func endConnectorViewport() {
+        connectorViewportUsers = max(0, connectorViewportUsers - 1)
+        guard connectorViewportUsers == 0 else { return }
+        guard let saved = connectorPlacement, let browser else { return }
+        connectorPlacement = nil; connectorTermination = nil
+        guard let parent = saved.parent, parent.window != nil, parent === placementTarget else { place(); return }
+        browser.removeFromSuperview()
+        parent.addSubview(browser)
+        browser.frame = saved.frame; browser.autoresizingMask = saved.mask
+        updateVisibility()
+    }
     private var managesVisibility = false
+    var isSpacePageShared: Bool { spaceVisible && spacePage == nil }
     private var spaceVisible = false
     private var backgroundWorkActive = false
     private var closingBrowsers = 0
@@ -69,7 +111,7 @@ final class TapWebPod {
     private func updateVisibility() {
         guard managesVisibility, let browser else { return }
         let target = placementTarget
-        let pagePresented = target != nil && (!guards.isEmpty || hosts.last(where: { $0.view != nil })?.presentsPage == true)
+        let pagePresented = connectorPlacement != nil || (target != nil && (!guards.isEmpty || hosts.last(where: { $0.view != nil })?.presentsPage == true))
         browser.isHidden = Self.shouldHide(spaceVisible: spaceVisible, workActive: backgroundWorkActive, pagePresented: pagePresented)
         // 背景送出仍須通過原生輸入的 window.isVisible；不拿焦點、不顯示到螢幕內。
         if browser.superview === parking?.contentView {
@@ -87,8 +129,6 @@ final class TapWebPod {
     var onEvent: ((String) -> Void)?
     /// W183 R6b：主框架實際載入的網址（原生瀏覽器回報：網址、第幾份文件、載入中、HTTP 狀態；不是網頁腳本說的）。
     var onMainFrame: ((String?, UInt64, Bool, Int) -> Void)?
-    /// W197：只傳瀏覽器原生導覽資料，不取頁面文字；不覆蓋連接器的觀察者。
-    var onDisplayFrame: ((String?, UInt64, Bool, Int) -> Void)?
     /// W183 R6b：這個 Pod 開了一個原生新視窗（CEF popup；沿用 Pod 的登入空間）。收到的人可以看它的網址、把它移到別處。
     var onPopup: ((TatwoCEFBrowserView) -> Void)?
 
@@ -99,7 +139,43 @@ final class TapWebPod {
         self.script = script
     }
 
+    #if DEBUG
+    // The isolated CEF fixture uses the existing ai.tatwo.tatwo2.* loopback identity.
+    var selfTestLocation: TatwoCEFProfileLocation?
+    #endif
+
     var isRunning: Bool { browser != nil }
+
+    func openSpacePage() throws -> TatwoCEFBrowserView {
+        if let spacePage { return spacePage }
+        let page = try makeSpacePage(homeURL)
+        spacePage = page
+        return page
+    }
+
+    func openDotsSpacePage() throws -> TatwoCEFBrowserView {
+        if let dotsSpacePage { return dotsSpacePage }
+        var url = ChatGPTDotsState.url
+        #if DEBUG
+        if (ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w265dmchatgpt" || ProcessInfo.processInfo.environment["TATWO_W270_DLFLY"] == "1"), selfTestLocation != nil {
+            url = homeURL.deletingLastPathComponent().appending(path: "dots")
+        }
+        #endif
+        let page = try makeSpacePage(url)
+        dotsSpacePage = page
+        return page
+    }
+
+    private func makeSpacePage(_ url: URL) throws -> TatwoCEFBrowserView {
+        guard let browser else { throw TapPodError.profileUnavailable }
+        // Same Pod lease and human actor; a normal sibling never receives configurePod.
+        let page = try TatwoCEFBrowserView(frame: .zero, sharingContextWith: browser,
+                                         initialURL: url.absoluteString, actor: .human)
+        BrowserHumanInteraction.shared.configure(page, onForegroundTab: { [weak page] url in
+            page?.loadURLString(url.absoluteString)
+        }) { [weak page] url in page?.loadURLString(url.absoluteString) }
+        return page
+    }
 
     /// W183 R9 審查（GPT-6 #3）：用這一份腳本建立瀏覽器（已經在跑＝不動）。
     func start(script: String) throws {
@@ -111,7 +187,16 @@ final class TapWebPod {
     /// 照 OS 瀏覽器開分頁的同一套步驟：找設定檔 → 取租約（一個設定檔同時只給一個宿主）→ 初始化核心 → 建頁面。
     func start() throws {
         guard browser == nil else { return }
-        guard let location = try TatwoCEFProfileLocationResolver.resolve(profile: profile) else {
+        var resolved = try TatwoCEFProfileLocationResolver.resolve(profile: profile)
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        if ["w248webspace", "w265dmchatgpt", "w269gptchrome", "w294e"].contains(env["TATWO2_SELFTEST"] ?? ""), NativeStagingIsolation.isEnabled(env),
+           NativeStagingIsolation.validationError(env) == nil,
+           Bundle.main.bundleIdentifier == "ai.tatwo.tatwo2.staging.w248" {
+            resolved = selfTestLocation
+        }
+        #endif
+        guard let location = resolved else {
             throw TapPodError.profileUnavailable
         }
         if lease == nil {
@@ -126,7 +211,7 @@ final class TapWebPod {
         let view = try TatwoCEFBrowserView(
             frame: NSRect(x: 0, y: 0, width: 1100, height: 800),
             persistentProfile: location.persistentProfilePath,
-            initialURL: "about:blank", actor: .human)
+            initialURL: ChatGPTWebSpace.isEnabled ? homeURL.absoluteString : "about:blank", actor: .human)
         guard view.configurePod(script: script) else { throw TapPodError.scriptRejected }
         view.onPodEvent = { [weak self] json in
             guard let self else { return }
@@ -153,11 +238,11 @@ final class TapWebPod {
         }
         view.stateHandler = { [weak self] committed, generation, _, _, loading, _, status, _, _, _ in
             self?.onMainFrame?(committed, generation, loading, status)
-            self?.onDisplayFrame?(committed, generation, loading, status)
+            if self?.browser?.canShareRequestContext == true { self?.spaceDidChange() }
         }
         browser = view
         place()
-        view.loadURLString(homeURL.absoluteString)
+        if !ChatGPTWebSpace.isEnabled { view.loadURLString(homeURL.absoluteString) }
     }
 
     /// 某個畫面要顯示（或墊著）Pod：最後叫的那個拿到（W183 R8b 審查：受保護的呈現進行中＝只記下，放掉之後才輪到它）。
@@ -228,8 +313,9 @@ final class TapWebPod {
 
     /// Pod 現在該放在哪一格（nil＝停泊視窗）。受保護的呈現進行中＝最新一份有格子的租約（都沒有＝停泊），不看別的畫面。
     var placementTarget: NSView? {
-        if !guards.isEmpty { return guards.last(where: { $0.view != nil })?.view }
-        return hosts.last(where: { $0.view != nil })?.view
+        if connectorPlacement != nil { return nil }
+        if !guards.isEmpty { return guards.last(where: { $0.view?.window != nil })?.view }
+        return hosts.last(where: { $0.view?.window != nil })?.view
     }
 
     /// Pod 渲染程序目前的實體記憶體（位元組）；沒在跑或讀不到回 nil，不假裝是 0。
@@ -266,20 +352,14 @@ final class TapWebPod {
         browser?.runPodCommand(javascript)
     }
 
-    /// 人用的顯示頁面入口；腳本與目的地由 TAP 提供，Pod 不認識特定網站。
-    func displayPage(_ javascript: String) throws {
-        guard let browser else { throw TapPodError.profileUnavailable }
-        browser.runPodCommand(javascript)
-    }
-
-    var displayGeneration: UInt64 { browser?.navigationGeneration ?? 0 }
-
     func restoreDisplayedPage(_ url: URL) {
         browser?.loadURLString(url.absoluteString)
     }
 
     /// 關掉網頁、還回設定檔租約。登入資料留在設定檔裡，下次開不用重登。
     func stop() {
+        connectorViewportUsers = 1
+        endConnectorViewport()
         guard let browser else { return }
         self.browser = nil
         rendererPID = nil
@@ -288,14 +368,22 @@ final class TapWebPod {
         Self.unwireWebFeatures(browser, picker: filePicker)   // W183 R9 審查（GPT-6 #10、N8）
         let lease = self.lease
         self.lease = nil
-        closingBrowsers += 1
-        browser.closeBrowser(completion: { [weak self] in
-            Task { @MainActor in
-                browser.removeFromSuperview()
-                if let lease { TatwoCEFProfileLeaseRegistry.shared.release(lease) }
-                self?.closingBrowsers -= 1
-            }
-        })
+        let pages = [browser] + [spacePage, dotsSpacePage].compactMap { $0 }
+        spacePage = nil
+        dotsSpacePage = nil
+        var pending = pages.count
+        closingBrowsers += pending
+        // A sibling retains the native context after the root closes; keep its lease too.
+        for page in pages {
+            page.closeBrowser(completion: { [weak self] in
+                Task { @MainActor in
+                    page.removeFromSuperview()
+                    pending -= 1
+                    if pending == 0, let lease { TatwoCEFProfileLeaseRegistry.shared.release(lease) }
+                    self?.closingBrowsers -= 1
+                }
+            })
+        }
     }
 
     #if DEBUG

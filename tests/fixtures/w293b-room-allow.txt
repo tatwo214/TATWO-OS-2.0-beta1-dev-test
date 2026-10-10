@@ -1,0 +1,27 @@
+# W293b: bundle-only staging, startup interposer, isolated tests and incident record.
+App/Sources/Tatwo2/Browser/BrowserPasswordVault.swift
+App/Sources/Tatwo2/Engine/ClaudeSidecar.swift
+App/Sources/Tatwo2/Engine/NativeStagingIsolation.swift
+App/Sources/Tatwo2/Facade/EngineLogin.swift
+App/Sources/Tatwo2/Facade/GitHubAccounts.swift
+App/Sources/Tatwo2/Facade/PrimaryTransfer.swift
+App/Sources/Tatwo2/Facade/TestKeychainBoundary.swift
+App/Sources/Tatwo2/New/IPadUseController.swift
+App/Sources/Tatwo2/Resources/tatwo2-git-credential
+App/Sources/Tatwo2/SelfTest.swift
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+Package.swift
+script/build_tatwo2_staging_app.sh
+script/tatwo2-staging-keychain.c
+script/tatwo2-staging-launcher.c
+tests/fixtures/w293-download.py
+tests/fixtures/w293-keychain-probe.c
+tests/fixtures/w293-system.py
+tests/fixtures/w293b-cef-verify.sh
+tests/fixtures/w293b-native.mjs
+tests/fixtures/w293b-room-allow.txt
+tests/w276-staging.test.mjs
+tests/w293-mockkeychain.test.mjs
+tests/w293b-keychain.test.mjs
+經驗.md
+"\\347\\266\\223\\351\\251\\227.md" # Git default C-quoted spelling of the same allowed file.

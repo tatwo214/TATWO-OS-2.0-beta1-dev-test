@@ -962,17 +962,27 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(TatwoLaunchSurfacePolicy.initialActivationPolicy())
         installMainMenuWithEditCommands()
         installAlternateNewChatShortcutMonitor()
-        GlobalHotkeyMonitor.shared.install()
-        GlobalDMPanelController.shared.install() // W179：全域私訊框（主視窗子面板＋⌥⌘ 浮動框）
-        GlobalDMDeskController.shared.install() // 桌面圓鈕、App 前景箭頭、Carbon 直達鍵
+        if !NativeStagingIsolation.isW276Bundle {
+            GlobalHotkeyMonitor.shared.install()
+            GlobalDMPanelController.shared.install() // W179：全域私訊框（主視窗子面板＋⌥⌘ 浮動框）
+            GlobalDMDeskController.shared.install() // 桌面圓鈕、App 前景箭頭、Carbon 直達鍵
+        }
         EngineMemoryWatcher.shared.start() // W179：記憶變動時重產 Codex 讀的摘要（M 房）
         TatwoMemorySync.shared.start() // W180 E1b：入口 memory/ 主副自動同步（60 秒一次、變動後 3 秒，背景跑）
         startLocalMCPServer()
         startSignedUpdateCoordinator()
         startAppPressureRuntime()
         statusBarController = TatwoStatusBarController()
-        islandShellController = TatwoIslandShellController()
-        islandShellController?.show()
+        if !NativeStagingIsolation.isW276Bundle {
+            islandShellController = TatwoIslandShellController()
+            islandShellController?.show()
+        }
+        if NativeStagingIsolation.isW276Bundle, CommandLine.arguments.contains("--staging-snapshot") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                print("tatwo_staging_snapshot=\(UIProbe.run(["action": "snapshot"]))")
+                fflush(stdout)
+            }
+        }
         // install.sh reopens the new App after replacement. Refresh above uses
         // that App's resources; present its pending differences only after Island mounts.
         OSUpstreamUpdateModel.shared.reload(notify: true)
@@ -1149,13 +1159,15 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
         // 都出不來。這裡只讀 monitor 已在背景發布的 process-local 快照；最多落後
         // 一個 5 秒 poll interval，寧可多顯示一次確認，也不能把主執行緒鎖死。
         let snapshot = TatwoLoopsActivityMonitor.terminationSnapshot()
-        let requiresConfirmation = TatwoInterruptGate.decision(kind: .appTerminate, snapshot: snapshot).requiresConfirmation
+        let requiresConfirmation = NativeStagingIsolation.isW276Bundle
+            ? TatwoLoopsActivityMonitor.shared.snapshot.isActive || TatwoInterruptGate.activityProvider()
+            : TatwoInterruptGate.decision(kind: .appTerminate, snapshot: snapshot).requiresConfirmation
         let visibleWindow = NSApp.mainWindow ?? NSApp.windows.first {
             $0.isVisible && $0.level == .normal && !($0 is NSPanel)
         }
         // W153b：放行結束之前，先關掉擴充用的 Chrome 瀏覽器並等它銷毀（不然 CEF 拆 profile 時會當機）。
         let decision = terminationCoordinator.request(requiresConfirmation: requiresConfirmation, window: visibleWindow) { approved in
-            guard approved else { sender.reply(toApplicationShouldTerminate: false); return }
+            guard approved else { CrashRelaunch.requested = nil; sender.reply(toApplicationShouldTerminate: false); return }
             ChromeStyleSpike.drainForTermination { sender.reply(toApplicationShouldTerminate: true) }
         }
         if decision == .terminateNow, ChromeStyleSpike.needsTerminationDrain {
@@ -1238,6 +1250,7 @@ final class TatwoUltraworkAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startSignedUpdateCoordinator() {
+        guard !NativeStagingIsolation.isW276Bundle else { fputs("tatwo_signed_update=disabled reason=staging\n", stderr); return }
         let coordinator = TatwoSparkleUpdateCoordinator()
         coordinator.start()
         sparkleUpdateCoordinator = coordinator
@@ -1325,15 +1338,8 @@ final class TatwoWorkOSWindow: NSWindow {
         layoutTatwoTrafficLights()
     }
 
-    /// Esc 關窗。注意 `close()` **不會**經過 `windowShouldClose(_:)`（那只有 `performClose:` 才走），
-    /// 所以這條路徑必須自己過同一道閘，否則 Esc 就成了繞過確認的後門。
-    override func cancelOperation(_ sender: Any?) {
-        if CoderSheetEscapeGuard.preventsDMWindowClose(NSApp.currentEvent) { return }
-        guard TatwoInterruptConfirmationPresenter.confirm(kind: .escapeClose, window: self) else {
-            return
-        }
-        close()
-    }
+    /// Esc 先由組字、選單與面板處理；傳到主視窗時安靜地結束，不關窗。
+    override func cancelOperation(_ sender: Any?) {}
 }
 
 @MainActor
@@ -1513,7 +1519,7 @@ final class TatwoWorkOSWindowController: NSObject, NSWindowDelegate {
     /// `TatwoPanelView.onDisappear` → `TatwoRetainedChatLifecycle.closeContainer()`
     /// → `model.stop()` → `runner.terminate()`（連 launchctl submit 的子工作一起收）。
     /// app 進程本身不退出（repo 內無 `applicationShouldTerminateAfterLastWindowClosed`），
-    /// 但這一輪的派工會沒。既然會中斷，就要和紅燈／Cmd+W／Esc 過同一道閘。
+    /// 但這一輪的派工會沒。既然會中斷，就要和紅燈／Cmd+W 過同一道閘。
     ///
     /// `window?.close()` 不觸發 `windowShouldClose(_:)`（那只有 `performClose:` 才走），
     /// 所以這裡自己過閘。
@@ -1524,8 +1530,7 @@ final class TatwoWorkOSWindowController: NSObject, NSWindowDelegate {
         window?.close()
     }
 
-    /// 關窗（紅燈 / Cmd+W）的二次確認閘。Esc 走 `TatwoWorkOSWindow.cancelOperation`，
-    /// 那條路徑 `close()` 不經過這裡，故兩處各自過閘、共用同一份判定。
+    /// 關窗（紅燈 / Cmd+W）的二次確認閘；Esc 不關主視窗。
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         TatwoInterruptConfirmationPresenter.confirm(kind: .windowClose, window: sender)
     }
@@ -1544,7 +1549,8 @@ private extension NSRect {
 
 @MainActor
 final class TatwoStatusBarController: NSObject {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    private let statusItem: NSStatusItem? = NativeStagingIsolation.isW276Bundle ? nil
+        : NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panelSize = TatwoAppSurfaceMetrics.panelSize
     private lazy var panel = makePanel()
     private let workOSWindowController = TatwoWorkOSWindowController()
@@ -1647,7 +1653,7 @@ final class TatwoStatusBarController: NSObject {
     }
 
     private func setupStatusItem() {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem?.button else { return }
         button.image = NSImage(systemSymbolName: "sparkles.rectangle.stack", accessibilityDescription: "Tatwo Ultrawork")
         button.image?.isTemplate = true
         button.title = " TATWO"
@@ -1676,7 +1682,7 @@ final class TatwoStatusBarController: NSObject {
     }
 
     private func showPanelFromStatusItem(attempt: Int = 0) {
-        guard let button = statusItem.button, button.window != nil else {
+        guard let button = statusItem?.button, button.window != nil else {
             guard attempt < 20 else {
                 showPanelAtScreenFallback()
                 return
@@ -1782,7 +1788,7 @@ final class TatwoStatusBarController: NSObject {
     }
 
     private func statusItemButtonFrameOnScreen() -> NSRect? {
-        guard let button = statusItem.button, let buttonWindow = button.window else { return nil }
+        guard let button = statusItem?.button, let buttonWindow = button.window else { return nil }
         let buttonFrameInWindow = button.convert(button.bounds, to: nil)
         return buttonWindow.convertToScreen(buttonFrameInWindow)
     }
@@ -2086,6 +2092,9 @@ final class TatwoModesIssuedAuthorityMonitor: ObservableObject {
     ) {
         self.stateDirectoryURL = stateDirectoryURL.standardizedFileURL
         self.debounceInterval = debounceInterval
+        #if DEBUG
+        ChatRenderProbe.record("authority.refreshSources.init")
+        #endif
         refreshSources()
     }
 
@@ -2160,6 +2169,10 @@ final class TatwoModesIssuedAuthorityMonitor: ObservableObject {
                 {
                     self.removeSource(atPath: path)
                 }
+                #if DEBUG
+                ChatRenderProbe.record(path == self.stateDirectoryURL.path ? "authority.event.state" :
+                    (path == self.stateDirectoryURL.appendingPathComponent("goals").path ? "authority.event.goals" : "authority.event.bootstrap"))
+                #endif
                 self.recordMutation()
             }
             source.setCancelHandler {
@@ -2199,6 +2212,10 @@ final class TatwoModesIssuedAuthorityMonitor: ObservableObject {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingMutation = nil
+            #if DEBUG
+            ChatRenderProbe.record("authority.refreshSources.event")
+            ChatRenderProbe.record("TatwoModesIssuedAuthorityMonitor.revision")
+            #endif
             self.refreshSources()
             self.revision &+= 1
         }
@@ -2386,7 +2403,7 @@ private struct TatwoChatFirstFrameShell: View {
     }
 }
 
-private struct TatwoHydratedPanelView: View {
+struct TatwoHydratedPanelView: View {
     @WorkspaceObservedObject private var chatModel: ChatPageModel
     @ObservedObject private var authorityBootstrapModel:
         TatwoAppAuthorityBootstrapModel
@@ -2428,14 +2445,15 @@ private struct TatwoHydratedPanelView: View {
         initialSelection: TatwoPage? = nil,
         initialSnapshot: TatwoAppSnapshot,
         initialModesAuthority: TatwoModesIssuedAuthorityResolution,
-        initialLiveQuotaSnapshot: LiveQuotaDeckSnapshot? = nil
+        initialLiveQuotaSnapshot: LiveQuotaDeckSnapshot? = nil,
+        authorityMonitor: TatwoModesIssuedAuthorityMonitor? = nil
     ) {
         _chatModel = WorkspaceObservedObject(wrappedValue: chatModel, forwardWhenHidden: ChatPageModel.presentationChanges, shouldForward: { _ in false })
         _authorityBootstrapModel = ObservedObject(
             wrappedValue: chatModel.authorityBootstrapModel)
         self.surface = surface
         _modesIssuedAuthorityMonitor = StateObject(
-            wrappedValue: TatwoModesIssuedAuthorityMonitor())
+            wrappedValue: authorityMonitor ?? TatwoModesIssuedAuthorityMonitor())
         let resolvedSelection =
             initialSelection ?? (surface == .panel ? TatwoPage.panelInitialSelection : TatwoPage.initialSelection)
         let resolvedSnapshot = initialSnapshot
@@ -2737,12 +2755,6 @@ private struct TatwoHydratedPanelView: View {
         updateSnapshot()
     }
 
-    private func syncPluginsToClaude() async throws -> TatwoClaudeMCPSyncReceiptV1 {
-        try await Task.detached(priority: .utility) {
-            try TatwoPluginRegistryStore.defaultStore().syncClaudeMCPConfig()
-        }.value
-    }
-
     // Engineering composition (not a Dashboard parameter): TatwoPanelBackdrop
     // always draws LiquidGlassTokens.radiusPrimary (34pt) rounded corners,
     // correct for the floating .panel surface whose NSWindow itself has
@@ -2761,6 +2773,10 @@ private struct TatwoHydratedPanelView: View {
     }
 
     var body: some View {
+        #if DEBUG
+        let _ = ChatRenderProbe.record("TatwoHydratedPanelView.body")
+        let _ = ChatRenderProbe.enabled ? Self._printChanges() : ()
+        #endif
         ZStack {
             // 最底層：極光＝behind-window 真玻璃、fable5＝牛皮紙實底。
             // 只鋪主視窗；menu-bar panel 維持自己的圓角 backdrop 疊層。
@@ -2806,7 +2822,7 @@ private struct TatwoHydratedPanelView: View {
                         retainedWindowContent
                             .overlay(alignment: .top) {
                                 // 只留拖曳區 + 交通燈透明 spacer；右面板開關交給頁內 icon-only strip（#50/#51 對齊 Codex，不再兩層）。
-                                if chatModel.mode != .browser {
+                                if !ChatGPTWebSpace.usesBrowserChrome(chatModel.mode) {
                                     TatwoWindowPageRail(
                                         isRightPanelOpen: isRightPanelOpen,
                                         toggleRightPanel: {
@@ -3188,7 +3204,6 @@ private struct TatwoHydratedPanelView: View {
                 ),
                 onRegister: registerPlugin,
                 onRemove: removePlugin,
-                onSyncClaude: syncPluginsToClaude,
                 pocketThreadID: chatModel.selectedThreadID
             )
         case .devices:

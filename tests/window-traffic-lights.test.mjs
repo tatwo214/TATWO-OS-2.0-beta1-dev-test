@@ -106,7 +106,7 @@ test('production window realigns native lights after AppKit ordering, content ch
 }, () => {
   const source = readFileSync(join(repo, 'App/Sources/Tatwo2/Shell/AppShell.swift'), 'utf8');
   const chrome = readFileSync(join(repo, 'App/Sources/Tatwo2/Shell/WindowChrome.swift'), 'utf8');
-  const window = source.slice(source.indexOf('final class TatwoWorkOSWindow: NSWindow'), source.indexOf('    /// Esc 關窗。')) + '}';
+  const window = source.slice(source.indexOf('final class TatwoWorkOSWindow: NSWindow'), source.indexOf('@MainActor\nfinal class TatwoWorkOSWindowController'));
   const metrics = chrome.slice(chrome.indexOf('enum WindowChromeMetrics'), chrome.indexOf('extension TatwoWorkOSWindow'));
   const layout = chrome.slice(chrome.indexOf('    func layoutTatwoTrafficLights()'), chrome.indexOf('\nstruct TatwoWindowDragRegion'));
   const root = testScratch('traffic-light-position-');

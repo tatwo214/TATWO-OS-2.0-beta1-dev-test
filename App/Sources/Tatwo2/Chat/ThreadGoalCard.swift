@@ -1,6 +1,6 @@
 // W170 Coder 分頁：輸入框上方的「工作列」＝這串的目標＋/plg 派出去的討論串，合成一張卡。
 // 對照稿 https://claude.ai/artifact/9h72oKxJh8TuipBs8cc533；2026-09-22 使用者：造型保留、位置改到輸入框上方、和 PLG 那列合併。
-// 收起來一行（●目前那條＋完成數・討論串幾個在跑），展開是整份清單：進行中、待驗收、待做、暫停、AI 提議、已完成，下面接討論串。
+// W252：先列主線，點主線展開 loops，點 loop 展開設備、分支與步驟。
 // 左列專案與子討論串完全不動。
 import SwiftUI
 
@@ -25,7 +25,7 @@ struct ThreadGoalCard: View {
     }
     @State private var showProject = false
     @ObservedObject private var store = ThreadGoalStore.shared
-    @State private var showDone = false
+    @State private var openGoals: Set<Int> = []
     @State private var editingID: Int?
     @State private var editText = ""
     @State private var message: String?
@@ -103,14 +103,7 @@ struct ThreadGoalCard: View {
     private func panel(_ list: ThreadGoalList) -> some View {
         let (done, total) = ThreadGoalRules.progress(list)
         let main = list.goals.filter { !$0.proposed && $0.parent == nil }
-        let groups: [(String, [ThreadGoal])] = [
-            ("進行中", main.filter { $0.status == .active }),
-            ("待驗收", main.filter { $0.status == .review }),
-            ("待做", main.filter { $0.status == .pending }),
-            ("暫停", main.filter { $0.status == .paused }),
-        ]
         let proposals = list.goals.filter(\.proposed)
-        let finished = main.filter { $0.status == .done }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Text(showProject ? "整個專案" : "這串的目標").font(.system(size: 13, weight: .bold))
@@ -129,24 +122,12 @@ struct ThreadGoalCard: View {
             .frame(height: 4)
             if !showProject { CappedScroll(maxHeight: 300) {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(groups, id: \.0) { title, goals in
-                        if !goals.isEmpty {
-                            sectionTitle(title)
-                            ForEach(goals) { goal in row(goal, list: list) }
-                        }
-                    }
+                    ForEach(Self.ordered(main)) { goal in row(goal, list: list) }
                     if !proposals.isEmpty {
                         sectionTitle("AI 提議（你點頭才算）")
                         ForEach(proposals) { goal in proposalRow(goal) }
                     }
-                    if !finished.isEmpty {
-                        HStack {
-                            sectionTitle("已完成 \(finished.count)")
-                            Spacer()
-                            OSChipButton(title: showDone ? "收起" : "展開") { showDone.toggle() }
-                        }
-                        if showDone { ForEach(finished) { goal in row(goal, list: list) } }
-                    }
+
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } }
@@ -196,63 +177,138 @@ struct ThreadGoalCard: View {
         Text(text).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).padding(.top, 4)
     }
 
+    static func ordered(_ goals: [ThreadGoal]) -> [ThreadGoal] {
+        let order: [ThreadGoal.Status] = [.active, .review, .pending, .paused, .done]
+        return goals.sorted { a, b in
+            let x = order.firstIndex(of: a.status)!, y = order.firstIndex(of: b.status)!
+            return x == y ? a.id < b.id : x < y
+        }
+    }
+
+    static func timeLabel(_ goal: ThreadGoal, now: Date = Date()) -> String {
+        switch goal.status {
+        case .active:
+            if let eta = goal.etaAt {
+                let minutes = Int(ceil(abs(eta.timeIntervalSince(now)) / 60))
+                return eta >= now ? "剩 \(minutes) 分" : "超時 \(minutes) 分"
+            }
+            return "已跑 \(max(0, Int(now.timeIntervalSince(goal.startedAt ?? now) / 60))) 分"
+        case .review: return "等你"
+        case .pending: return "排隊"
+        case .paused: return "暫停"
+        case .done:
+            let formatter = DateFormatter(); formatter.dateFormat = "HH:mm"
+            return formatter.string(from: goal.updatedAt)
+        }
+    }
+
+    private func toggle(_ id: Int) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            if openGoals.contains(id) { openGoals.remove(id) } else { openGoals.insert(id) }
+        }
+    }
+
+    static func loopSummary(_ goal: ThreadGoal) -> String {
+        if goal.status == .done { return "已完成，變暗" }
+        let progress = goal.status == .active ? goal.progress.map { "\(Int(min(1, max(0, $0)) * 100))%，" } ?? "" : ""
+        return progress + timeLabel(goal)
+    }
+
+    private func title(_ goal: ThreadGoal) -> some View {
+        Group {
+            if editingID == goal.id {
+                TextField("目標", text: $editText, onCommit: { save(goal) }).textFieldStyle(.roundedBorder)
+            } else {
+                Text(goal.parent == nil ? "\(goal.id). \(goal.title)" : goal.title).lineLimit(1)
+            }
+        }
+        .font(.system(size: goal.parent == nil ? LiquidGlassTokens.islandNoticeInfoFontSize : LiquidGlassTokens.islandNoticeDetailSize,
+                      weight: goal.status == .active ? .semibold : .regular))
+        .foregroundStyle(LiquidGlassTokens.browserOmniboxInk)
+    }
+
     private func row(_ goal: ThreadGoal, list: ThreadGoalList) -> some View {
-        let children = list.goals.filter { $0.parent == goal.id }
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .top, spacing: 8) {
-                statusMark(goal)
-                VStack(alignment: .leading, spacing: 2) {
-                    if editingID == goal.id {
-                        TextField("目標", text: $editText, onCommit: { save(goal) })
-                            .textFieldStyle(.roundedBorder).font(.system(size: 12.5))
-                    } else if let room = linkedRoom(goal) {
-                        roomView([room], false)
-                    } else {
-                        Text("\(goal.id). \(goal.title)")
-                            .font(.system(size: 12.5, weight: goal.status == .active ? .semibold : .regular))
-                            .foregroundStyle(goal.status == .done ? .secondary : .primary)
-                            .strikethrough(goal.status == .done, color: .secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let words = goal.userWords, words != goal.title, goal.status != .done {
-                        Text("你的原話：「\(words)」").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                    if let evidence = goal.evidence {
-                        Text("證據：\(evidence)").font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
-                    }
+        let children = Self.ordered(list.goals.filter { $0.parent == goal.id && !$0.proposed })
+        return VStack(alignment: .leading, spacing: LiquidGlassTokens.islandNoticeLineSpacing) {
+            HStack(spacing: LiquidGlassTokens.islandNoticeButtonSpacing) {
+                if editingID == goal.id { title(goal) }
+                else {
+                    Button { toggle(goal.id) } label: {
+                        HStack(spacing: LiquidGlassTokens.islandNoticeButtonSpacing) {
+                            statusMark(goal)
+                            title(goal)
+                            Spacer(minLength: LiquidGlassTokens.islandNoticeButtonSpacing)
+                            Text("loops \(children.filter { $0.status == .done }.count)／\(children.count)")
+                                .font(.system(size: LiquidGlassTokens.islandNoticeCountdownSize)).foregroundStyle(.secondary).monospacedDigit()
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("goal.main.\(goal.id)")
                 }
-                Spacer(minLength: 0)
             }
-            ForEach(children) { child in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .center, spacing: 6) {
-                        Text(ThreadGoalRules.symbol(child)).font(.system(size: 10)).foregroundStyle(.secondary)
-                        if let room = linkedRoom(child) {
-                            // 派出去的房間直接長在這條子目標上：狀態、看報告、停、開啟、⋯ 都在這一列。
-                            roomView([room], false)
-                        } else {
-                            Text(child.title + (child.status == .review ? "（待驗收）" : "")).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+            .opacity(goal.status == .done ? LiquidGlassTokens.routePulseOpacity : 1)
+            if openGoals.contains(goal.id) {
+                if let words = goal.userWords { detailText("你的原話：「\(words)」") }
+                if let evidence = goal.evidence { detailText("證據：\(evidence)") }
+                ForEach(children) { child in loopRow(child) }
+            }
+        }
+        .padding(.vertical, LiquidGlassTokens.islandNoticeLineSpacing)
+        .contextMenu { actions(goal) }
+    }
+
+    private func loopRow(_ child: ThreadGoal) -> some View {
+        VStack(alignment: .leading, spacing: LiquidGlassTokens.islandNoticeLineSpacing) {
+            if editingID == child.id { title(child) }
+            else {
+                Button { toggle(child.id) } label: {
+                    HStack(spacing: LiquidGlassTokens.islandNoticeButtonSpacing) {
+                        statusMark(child)
+                        title(child)
+                        Spacer(minLength: LiquidGlassTokens.islandNoticeButtonSpacing)
+                        if child.status == .active, let progress = child.progress {
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(LiquidGlassTokens.browserOmniboxInk.opacity(LiquidGlassTokens.chipFillOpacity))
+                                Capsule().fill(LiquidGlassTokens.brandAccent).frame(width: 64 * min(1, max(0, progress)))
+                            }.frame(width: 64, height: 3)
+                                .accessibilityElement().accessibilityLabel("loop 進度")
+                                .accessibilityValue("\(Int(min(1, max(0, progress)) * 100))%")
+                                .accessibilityIdentifier("goal.progress.\(child.id)")
                         }
-                    }
-                    if let evidence = child.evidence {
-                        Text("證據：\(evidence)").font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(2).textSelection(.enabled)
-                            .padding(.leading, 16)
-                    }
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            Text(Self.timeLabel(child, now: context.date))
+                                .font(.system(size: LiquidGlassTokens.islandNoticeCountdownSize)).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("goal.loop.\(child.id)")
+                    .accessibilityValue(Self.loopSummary(child))
+            }
+            if openGoals.contains(child.id) {
+                let location = [child.device, child.branch].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                if !location.isEmpty { detailText(location).accessibilityIdentifier("goal.location.\(child.id)") }
+                let steps = (child.doneSteps ?? []).map { "✓ " + $0 } + (child.queue ?? []).map { "○ " + $0 }
+                if !steps.isEmpty { detailText(steps.joined(separator: "   ")).accessibilityIdentifier("goal.steps.\(child.id)") }
+                if let evidence = child.evidence { detailText("證據：\(evidence)") }
+                if let room = linkedRoom(child) {
+                    roomView([room], false)
                 }
-                .padding(.leading, 24)
             }
         }
-        .padding(.vertical, 5).padding(.horizontal, 7)
-        .background(goal.status == .active ? LiquidGlassTokens.brandAccent.opacity(0.08) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .contextMenu {
-            if goal.status != .active { Button("設為進行中") { set(goal, .active) } }
-            if goal.status != .done { Button("標為完成") { set(goal, .done) } }
-            if goal.status != .paused { Button("暫停") { set(goal, .paused) } } else { Button("恢復為待做") { set(goal, .pending) } }
-            Button("改文字") { editingID = goal.id; editText = goal.title }
-            Divider()
-            Button("刪除這一條", role: .destructive) { remove(goal) }
-        }
+        .padding(.vertical, LiquidGlassTokens.islandNoticeLineSpacing)
+        .opacity(child.status == .done ? LiquidGlassTokens.routePulseOpacity : 1)
+        .contextMenu { actions(child) }
+    }
+
+    private func detailText(_ text: String) -> some View {
+        Text(text).font(.system(size: LiquidGlassTokens.islandNoticeCountdownSize))
+            .foregroundStyle(LiquidGlassTokens.browserOmniboxMutedInk).textSelection(.enabled)
+    }
+
+    @ViewBuilder private func actions(_ goal: ThreadGoal) -> some View {
+        if goal.status != .active { Button("設為進行中") { set(goal, .active) } }
+        if goal.status != .done { Button("標為完成") { set(goal, .done) } }
+        if goal.status != .paused { Button("暫停") { set(goal, .paused) } } else { Button("恢復為待做") { set(goal, .pending) } }
+        Button("改文字") { editingID = goal.id; editText = goal.title }
+        Divider()
+        Button("刪除這一條", role: .destructive) { remove(goal) }
     }
 
     private func proposalRow(_ goal: ThreadGoal) -> some View {
@@ -277,11 +333,11 @@ struct ThreadGoalCard: View {
         case (true, _):
             Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.2, dash: [2, 2])).foregroundStyle(Color.secondary).frame(width: 14, height: 14)
         case (_, .done):
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(Color.green.opacity(0.75))
+            Image(systemName: "checkmark.circle.fill").font(.system(size: 14)).foregroundStyle(LiquidGlassTokens.loopsPositive)
         case (_, .active):
             Circle().strokeBorder(LiquidGlassTokens.brandAccent, lineWidth: 2).overlay(Circle().fill(LiquidGlassTokens.brandAccent).padding(4)).frame(width: 14, height: 14)
         case (_, .review):
-            Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.6, dash: [3, 2])).foregroundStyle(Color.orange).frame(width: 14, height: 14)
+            Circle().strokeBorder(style: StrokeStyle(lineWidth: 1.6, dash: [3, 2])).foregroundStyle(LiquidGlassTokens.loopsCaution).frame(width: 14, height: 14)
         case (_, .paused):
             Image(systemName: "pause.circle").font(.system(size: 14)).foregroundStyle(.secondary)
         default:

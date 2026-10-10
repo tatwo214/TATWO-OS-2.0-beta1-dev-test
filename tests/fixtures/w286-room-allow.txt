@@ -1,0 +1,10 @@
+# W286: only the contributor's Claude steering / stop slice and isolated tests.
+App/Sources/Tatwo2/Engine/ClaudeSidecar.swift # Allow Claude steer commands.
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift # Enable Claude steering; settle closed stops and tool rows.
+App/Sources/Tatwo2/Facade/ChatPageModel.swift # Enable Claude composer steering.
+Engines/claude-sidecar/sidecar.mjs # Native replay receipts, continued turns, interrupt then close.
+App/Sources/Tatwo2/Facade/ChatSteeringAcceptance.swift # Both engines; consecutive insertion acceptance.
+App/Sources/Tatwo2/Facade/TurnLifecycleAcceptance.swift # Both engines; closed stop, terminated tools, fresh resume.
+tests/claude-sidecar-steering.test.mjs # Contributor tests plus pending inbox / singular UUID coverage.
+tests/w286-steering-app-acceptance.mjs # Isolated Claude and Codex App selftest runner.
+tests/fixtures/w286-room-allow.txt # Scope receipt required by room guard.

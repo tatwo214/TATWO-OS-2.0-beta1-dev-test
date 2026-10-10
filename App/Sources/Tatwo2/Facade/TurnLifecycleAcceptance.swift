@@ -9,14 +9,20 @@ enum TurnLifecycleAcceptance {
               env["TATWO2_LIVE_ROOT"] == path + "/live",
               env["TATWO2_ENGINES_ROOT"] == path + "/engines",
               FileManager.default.fileExists(atPath: path + "/fixture-only") else { return false }
+        let kind: ClaudeSidecar.Kind = env["TATWO2_CHATSTEERING_ENGINE"] == "claude" ? .claude : .codex
+        let modelID = kind == .claude ? "sonnet5" : "gpt-6-astra"
         let root = URL(fileURLWithPath: path)
         let script = root.appendingPathComponent("lifecycle-fixture.mjs")
         try #"""
         import fs from 'node:fs';
         import readline from 'node:readline';
         const args = process.argv.slice(2), cwd = args[args.indexOf('--cwd') + 1];
+        fs.appendFileSync(cwd+'/lifecycle-launches.jsonl',JSON.stringify({args,pid:process.pid})+'\n');
         const emit = msg => console.log(JSON.stringify({ev:'sdk',msg}));
-        let active, prior, timer, rejectedStop = false;
+        const previousCommands = fs.existsSync(cwd+'/lifecycle-commands.jsonl')
+          ? fs.readFileSync(cwd+'/lifecycle-commands.jsonl','utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+        let closeOnStop = false;
+        let active, prior = previousCommands.filter(c => c.op === 'send').at(-1)?.uuid, timer, rejectedStop = false;
         const watch = (file, subtype) => {
           clearInterval(timer);
           timer = setInterval(() => {
@@ -33,7 +39,7 @@ enum TurnLifecycleAcceptance {
           const c = JSON.parse(line);
           fs.appendFileSync(cwd+'/lifecycle-commands.jsonl',JSON.stringify({op:c.op,uuid:c.uuid})+'\n');
           if(c.op === 'send') {
-            active = c.uuid;
+            active = c.uuid; closeOnStop = c.text === 'closed';
             emit({type:'system',subtype:'init',session_id:'lifecycle-fixture',model:'fixture-native'});
             if(prior) {
               emit({type:'stream_event',client_turn_id:prior,event:{type:'content_block_delta',delta:{type:'text_delta',text:'STALE'}}});
@@ -44,6 +50,7 @@ enum TurnLifecycleAcceptance {
             if(c.text === 'second') watch('finish-success','success');
             if(c.text === 'third') watch('finish-failure','error');
           } else if(c.op === 'interrupt') {
+            if(closeOnStop) { console.log(JSON.stringify({ev:'closed'})); process.exit(0); }
             if(!rejectedStop) {
               rejectedStop = true;
               console.log(JSON.stringify({ev:'error',terminal:false,client_turn_id:active,message:'fixture stop rejected'}));
@@ -58,7 +65,8 @@ enum TurnLifecycleAcceptance {
         let defaults = UserDefaults.standard
         let priorDefaults = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         var overrides = priorDefaults
-        overrides["tatwo2.sidecarPath.codex"] = script.path
+        overrides["tatwo2.disabledEngines"] = [String]()
+        overrides["tatwo2.sidecarPath.\(kind.rawValue)"] = script.path
         defaults.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
         defer { defaults.setVolatileDomain(priorDefaults, forName: UserDefaults.argumentDomain) }
         let engine = ChatLiveEngine(store: ChatLiveStore(root: root.appendingPathComponent("live")), environment: env)
@@ -67,12 +75,13 @@ enum TurnLifecycleAcceptance {
         let parent = engine.newThread(in: project)
         let thread = engine.newThread(in: project)
         engine.configureRoom(threadID: thread, parentThreadID: parent, roomBrief: "fixture",
-                             engine: "codex", cwdOverride: path)
+                             engine: kind.rawValue, cwdOverride: path)
         let bots = BotStore(root: root.appendingPathComponent("live"))
         let model = ChatPageModel(environment: env, botCoreFixture: (engine, bots))
         let bridge = OSAgentBridge.botCoreTestBridge(library: bots.library)
         bridge.configureCallerTest(model: model, manager: BackgroundJobManager())
         model.selectedThreadID = thread
+        model.selectedModel = modelID
         // botCoreFixture deliberately skips live subscriptions. Mirror the
         // existing production projection without activating any real bridges.
         engine.onChange = { [weak model, weak engine] in
@@ -99,7 +108,7 @@ enum TurnLifecycleAcceptance {
                 try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
             }
         }
-        check("fixture send accepted", engine.send(threadID: thread, text: "first", model: "fixture", engine: .codex))
+        check("fixture send accepted", engine.send(threadID: thread, text: "first", model: modelID, engine: kind))
         try await until("first tool event") { engine.transcript(for: thread).contains { $0.eventKind == .toolUse } }
         check("tool execution remains running in the engine", engine.isRunning(thread))
         check("ending a text segment does not mark background work done", engine.threadRecord(thread)?.subStatus == "running")
@@ -115,6 +124,8 @@ enum TurnLifecycleAcceptance {
               engine.transcript(for: thread).contains { $0.text == "fixture stop rejected" && $0.status == "error|停止失敗" }
               && engine.threadRecord(thread)?.subStatus == "running")
         check("background room stays active until confirmation", engine.threadRecord(thread)?.subStatus == "running")
+        check("another ordinary send cannot overlap pending cancellation",
+              !engine.send(threadID: thread, text: "must-not-start", model: modelID, engine: kind))
         var unpairedRejected = false
         do { _ = try bridge.callForSelfTest(method: "stop_thread", params: ["threadID": thread.uuidString]) }
         catch { unpairedRejected = String(describing: error).contains("remote_access_disabled") }
@@ -126,21 +137,21 @@ enum TurnLifecycleAcceptance {
         try registry.add(id: "fixture-peer", name: "fixture", host: "fixture.invalid",
                          user: "fixture", publicKeyFingerprint: "SHA256:fixture")
         let requested = try bridge.callForSelfTest(method: "stop_thread", params: ["threadID": thread.uuidString])
-        check("remote stop response distinguishes requested from confirmed",
-              requested["stopRequested"] as? Bool == true && requested["stopped"] as? Bool == false)
+        // The second stop intentionally escalates to forceStop; no native
+        // terminal event is needed after this process has been terminated.
+        check("second stop confirms forced termination",
+              requested["stopRequested"] as? Bool == true && requested["stopped"] as? Bool == true)
         let roomStop = try bridge.callForSelfTest(method: "stop_room",
             params: ["roomID": thread.uuidString, "callerThreadID": parent.uuidString])
-        check("room stop does not falsely acknowledge completion", roomStop["stopped"] as? Bool == false)
+        check("room stop confirms the already terminated process", roomStop["stopped"] as? Bool == true)
         let allStop = try bridge.callForSelfTest(method: "stop_all_rooms",
             params: ["callerThreadID": parent.uuidString])
-        check("stop all rooms also waits for confirmation", allStop["stopped"] as? Bool == false)
-        if engine.isRunning(thread) {
-            check("another ordinary send cannot overlap pending cancellation",
-                  !engine.send(threadID: thread, text: "must-not-start", model: "fixture", engine: .codex))
-        }
+        check("stop all rooms confirms the already terminated process", allStop["stopped"] as? Bool == true)
         try Data().write(to: root.appendingPathComponent("finish-stop"))
         try await until("cancelled terminal") { !engine.isRunning(thread) }
-        // Consume both terminal and immediately following late system metadata.
+        // Force-stop closes the process before it can emit metadata. Exercise
+        // the same late metadata path explicitly, without restarting work.
+        engine.handleSDK(thread, ["type": "system", "subtype": "model", "model": "fixture-native"])
         try await Task.sleep(for: .milliseconds(50))
         check("confirmed stop clears view model running", !model.isRunning)
         check("late system metadata does not resurrect background work", engine.threadRecord(thread)?.subStatus == "done")
@@ -150,7 +161,7 @@ enum TurnLifecycleAcceptance {
             .contains { $0.status == "error|回合失敗" })
 
         check("explicit new send accepted after confirmation",
-              engine.send(threadID: thread, text: "second", model: "fixture", engine: .codex))
+              engine.send(threadID: thread, text: "second", model: modelID, engine: kind))
         try await until("second tool") { engine.transcript(for: thread).filter { $0.eventKind == .toolUse }.count == 2 }
         check("old completion cannot clear new running state", engine.isRunning(thread) && model.isRunning)
         check("old text cannot enter new transcript", !engine.transcript(for: thread).contains { $0.text.contains("STALE") })
@@ -171,7 +182,7 @@ enum TurnLifecycleAcceptance {
         model.stop()
         try await Task.sleep(for: .milliseconds(50))
         check("idle stop does not contact sidecar", commands().filter { $0["op"] as? String == "interrupt" }.count == stopCount)
-        check("explicit third send accepted", engine.send(threadID: thread, text: "third", model: "fixture", engine: .codex))
+        check("explicit third send accepted", engine.send(threadID: thread, text: "third", model: modelID, engine: kind))
         try await until("third tool") { engine.transcript(for: thread).filter { $0.eventKind == .toolUse }.count == 3 }
         try Data().write(to: root.appendingPathComponent("finish-failure"))
         try await until("failed terminal") { !engine.isRunning(thread) }
@@ -180,10 +191,28 @@ enum TurnLifecycleAcceptance {
         check("failure stops the unfinished tool spinner",
               engine.transcript(for: thread).last(where: { $0.eventKind == .toolUse })?.status == "error|回合失敗")
         check("failure remains visible in transcript", engine.transcript(for: thread)
-            .contains { $0.role == .system && $0.status == "error|回合失敗" && $0.text == "fixture failed" })
+            .contains { $0.role == .system && $0.status == "error|回合失敗" && $0.engineErrorDetails?.contains("fixture failed") == true })
         check("only three explicit sends reached fixture",
               commands().filter { $0["op"] as? String == "send" }.count == 3)
-        check("production sidecar path was not used", ClaudeSidecar.scriptPath(for: .codex) == script.path)
+        check("production sidecar path was not used", ClaudeSidecar.scriptPath(for: kind) == script.path)
+        check("closed-only stop turn starts", engine.send(threadID: thread, text: "closed", model: modelID, engine: kind))
+        try await until("closed-only tool") { engine.transcript(for: thread).filter { $0.eventKind == .toolUse }.count == 4 }
+        let stoppedPID = engine.sidecarProcessID(threadID: thread)
+        check("queued insertion submitted", engine.steer(threadID: thread, text: "hold", attachments: []) { _, _ in })
+        let insertionID = engine.transcript(for: thread).last { $0.role == .user }?.id
+        model.stop()
+        try await until("closed-only stop") { !engine.isRunning(thread) && engine.sidecarProcessID(threadID: thread) == nil }
+        check("closed while stopping reports no engine failure", !engine.transcript(for: thread).contains { $0.status == "error|引擎結束" })
+        check("closed stop marks unfinished tool terminated", engine.transcript(for: thread).last { $0.eventKind == .toolUse }?.status == "cancelled|已終止")
+        check("closed stop leaves insertion unconfirmed", engine.transcript(for: thread).first { $0.id == insertionID }?.status == "steer_unknown|插話送達狀態待確認")
+        check("explicit send after closed starts", engine.send(threadID: thread, text: "resumed", model: modelID, engine: kind))
+        try await until("resumed tool") { engine.transcript(for: thread).filter { $0.eventKind == .toolUse }.count == 5 }
+        let launches = try String(contentsOf: root.appendingPathComponent("lifecycle-launches.jsonl"), encoding: .utf8)
+            .split(separator: "\n").compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+        let args = launches.last?["args"] as? [String] ?? []
+        check("new process resumes the same session", engine.sidecarProcessID(threadID: thread) != stoppedPID &&
+              args.contains("--resume") && args.contains("lifecycle-fixture"))
+        check("stop never replays insertion as another send", commands().filter { $0["op"] as? String == "send" }.count == 5)
         print("TURNLIFECYCLETEST RESULT passed=\(passed) failed=\(failed) skipped=0")
         return failed == 0
     }

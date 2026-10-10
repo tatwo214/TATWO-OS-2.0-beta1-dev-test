@@ -82,16 +82,14 @@ final class TatwoFleetSchedulerTests: XCTestCase {
   }
 
   private func requireInteractiveKeychain() throws {
-    switch TatwoTestEnvironmentCapabilities.current.interactiveKeychainAvailability() {
-    case .available:
-      return
-    case let .interactionUnavailable(status):
-      throw XCTSkip("keychain interaction unavailable in this session (\(status))")
-    case let .probeFailed(status):
-      throw TatwoFleetAuthorityError.missingAuthority(
-        "keychain capability probe failed unexpectedly (\(status))")
-    case .unavailableOnPlatform:
-      throw XCTSkip("keychain unavailable on this platform")
+    // A unique service still uses the host default Keychain. Refuse before its probe.
+    throw XCTSkip("W255B_BOUNDARY: host Keychain refused; needs a private test keychain")
+  }
+
+  func testHostKeychainProbeIsRefusedBeforeAccess() {
+    XCTAssertThrowsError(try requireInteractiveKeychain()) { error in
+      XCTAssertTrue(error is XCTSkip)
+      XCTAssertTrue(((error as? XCTSkip)?.message ?? "").contains("W255B_BOUNDARY"))
     }
   }
 

@@ -176,6 +176,7 @@ final class DeviceRegistry: @unchecked Sendable {
         case deviceNotFound
         case pairingIdentityConflict
         case fingerprintConflict
+        case authorizedKeysNotUTF8
 
         var errorDescription: String? {
             switch self {
@@ -185,6 +186,7 @@ final class DeviceRegistry: @unchecked Sendable {
             case .deviceNotFound: "device_not_found"
             case .pairingIdentityConflict: "pairing_identity_conflict"
             case .fingerprintConflict: "device_fingerprint_conflict"
+            case .authorizedKeysNotUTF8: "authorized_keys_not_utf8"
             }
         }
     }
@@ -194,6 +196,8 @@ final class DeviceRegistry: @unchecked Sendable {
     let authorizedKeysURL: URL
     /// 只讀，用來判斷舊紀錄那把指紋是主機金鑰還是客戶端金鑰；不寫入、不新增信任。
     let knownHostsURL: URL
+    var fleetKnownHostsURL: URL { root.appendingPathComponent("fleet-known-hosts") }
+    let fleetEnvironment: [String: String]
     // UI edits and successful background links create separate registry instances.
     // Serialize their read-modify-write cycles so a touch cannot erase an endpoint edit.
     private static let storageLock = NSLock()
@@ -205,6 +209,7 @@ final class DeviceRegistry: @unchecked Sendable {
         knownHostsURL: URL? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
+        self.fleetEnvironment = environment
         self.root = root
             ?? environment["TATWO2_LIVE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -219,7 +224,6 @@ final class DeviceRegistry: @unchecked Sendable {
                 .flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".ssh/known_hosts")
-        try? FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
     }
 
     func list() -> [DeviceRecord] {
@@ -334,14 +338,15 @@ final class DeviceRegistry: @unchecked Sendable {
     /// Re-pairing the same SSH key must retain its UUID; a peer cannot claim another key's ID.
     func pairingDeviceID(publicKey: String, requestedID: String?, localDeviceID: String) throws -> String {
         let fingerprint = try Self.fingerprint(publicKey: publicKey)
+        let revoked = Set(try DeviceFleetStore(registry: self, environment: fleetEnvironment).current()?.roster?.revoked ?? [])
         return try lock.withLock {
             let rows = try readUnlocked()
-            let matches = rows.filter { $0.publicKeyFingerprint == fingerprint }
+            let matches = rows.filter { !revoked.contains($0.id) && ($0.pinnedClientKeyFingerprint ?? $0.publicKeyFingerprint) == fingerprint }
             guard matches.count <= 1 else { throw RegistryError.pairingIdentityConflict }
             let id = (requestedID ?? matches.first?.id ?? UUID().uuidString).lowercased()
             guard UUID(uuidString: id) != nil, id != localDeviceID.lowercased(),
                   matches.first.map({ $0.id.lowercased() == id }) ?? true,
-                  !rows.contains(where: { $0.id.lowercased() == id && $0.publicKeyFingerprint != fingerprint })
+                  !rows.contains(where: { $0.id.lowercased() == id && ($0.pinnedClientKeyFingerprint ?? $0.publicKeyFingerprint) != fingerprint })
             else { throw RegistryError.pairingIdentityConflict }
             return id
         }
@@ -448,22 +453,42 @@ final class DeviceRegistry: @unchecked Sendable {
     /// 只追加 R1 自己管理的一行；回傳 OpenSSH 相容的 SHA256 fingerprint。
     @discardableResult
     func authorize(publicKey: String, deviceID: String) throws -> String {
+        try DeviceFleetStore.lock.withLock {
         guard Self.isSafeDeviceID(deviceID) else { throw RegistryError.invalidDeviceID }
         let normalized = try Self.normalizedPublicKey(publicKey)
         let fingerprint = try Self.fingerprint(forNormalizedPublicKey: normalized)
+        let tombstones = try DeviceFleetStore(registry: self, environment: fleetEnvironment).read().revokedKeys ?? []
+        guard !tombstones.contains(fingerprint) else { throw DeviceFleetError.role }
+        // defense in depth：即使配對或其他本機入口漏守門，單向派系的 key 也不能進 owner。
+        let fleet = DeviceFleetStore(registry: self, environment: fleetEnvironment)
+        if let roster = try fleet.current()?.roster,
+           let member = roster.devices.first(where: { $0.clientKeyFingerprint == fingerprint }) {
+            guard let localID = try fleet.trust()?.localID, roster.kind(of: localID) == .owner,
+                  roster.kind(of: member.id) == .owner else { throw DeviceFleetError.role }
+        } else if try fleet.current()?.slice?.controllers.contains(where: { $0.clientKeyFingerprint == fingerprint }) == true {
+            // Restricted controller keys may be written only by reconciliation with a forced command.
+            throw DeviceFleetError.role
+        }
+        if let roster = try fleet.current()?.roster,
+           roster.devices.contains(where: { $0.clientKeyFingerprint == fingerprint }),
+           try fleet.capabilities(for: fingerprint) == nil {
+            fleet.audit("fleet_managed_key_authorization_refused")
+            throw DeviceFleetError.role
+        }
         try lock.withLock {
             let directory = authorizedKeysURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             _ = chmod(directory.path, S_IRWXU)
 
-            var lines = Self.readLines(at: authorizedKeysURL)
+            var lines = try Self.readAuthorizedLines(at: authorizedKeysURL)
             let marker = Self.marker(deviceID)
             lines.removeAll { Self.trailingMarker(in: $0) == marker }
-            lines.append("\(normalized) \(marker)")
-            try Self.writeLinesAtomically(lines, to: authorizedKeysURL)
+            Self.appendAuthorizedLine("\(normalized) \(marker)", to: &lines)
+            try Self.writeAuthorizedLines(lines, to: authorizedKeysURL)
             _ = chmod(authorizedKeysURL.path, S_IRUSR | S_IWUSR)
         }
         return fingerprint
+        }
     }
 
     static func fingerprint(publicKey: String) throws -> String {
@@ -555,20 +580,20 @@ final class DeviceRegistry: @unchecked Sendable {
     }
 
     private func writeUnlocked(_ rows: [DeviceRecord]) throws {
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try HandsFiles.ensureDirectory(root)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(rows.sorted { $0.addedAt < $1.addedAt }).write(to: url, options: .atomic)
+        try HandsFiles.writeAtomically(encoder.encode(rows.sorted { $0.addedAt < $1.addedAt }), to: url)
     }
 
     private func removeAuthorizedKeyUnlocked(deviceID: String) throws {
         guard FileManager.default.fileExists(atPath: authorizedKeysURL.path) else { return }
         let marker = Self.marker(deviceID)
-        let original = Self.readLines(at: authorizedKeysURL)
+        let original = try Self.readAuthorizedLines(at: authorizedKeysURL)
         let filtered = original.filter { Self.trailingMarker(in: $0) != marker }
         guard filtered != original else { return }
-        try Self.writeLinesAtomically(filtered, to: authorizedKeysURL)
+        try Self.writeAuthorizedLines(filtered, to: authorizedKeysURL)
         _ = chmod(authorizedKeysURL.path, S_IRUSR | S_IWUSR)
     }
 
@@ -599,9 +624,72 @@ final class DeviceRegistry: @unchecked Sendable {
         return text.split(whereSeparator: \.isNewline).map(String.init)
     }
 
-    private static func writeLinesAtomically(_ lines: [String], to url: URL) throws {
-        let text = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
-        try Data(text.utf8).write(to: url, options: .atomic)
+    // Retain every original line ending, blank line and trailing space in user-owned rows.
+    private static func readAuthorizedLines(at url: URL) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url), text = String(decoding: data, as: UTF8.self)
+        guard text.utf8.elementsEqual(data) else { throw RegistryError.authorizedKeysNotUTF8 }
+        var lines = text.components(separatedBy: "\n")
+        for index in lines.indices.dropLast() { lines[index] += "\n" }
+        if lines.last == "" { lines.removeLast() }
+        return lines
+    }
+    private static func appendAuthorizedLine(_ line: String, to lines: inout [String]) {
+        if lines.last?.last?.isNewline == false { lines.insert(line + "\n", at: lines.count - 1) }
+        else { lines.append(line + "\n") }
+    }
+    private static func writeAuthorizedLines(_ lines: [String], to url: URL) throws {
+        try DeviceDispatchSafeFile.write(Data(lines.joined().utf8), url: url)
+    }
+
+    private static func authorizedFingerprint(in line: String) -> String? {
+        let pattern = #"^(?:\uFEFF)?[ \t]*(?:(?:[^\s"\\]|"(?:[^"\\]|\\.)*"|\\.)+[ \t]+)?ssh-ed25519[ \t]+([A-Za-z0-9+/]+={0,2})(?:[ \t\r\n]|$)"#
+        guard !line.replacingOccurrences(of: "\u{FEFF}", with: "").trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#"),
+              let match = try? NSRegularExpression(pattern: pattern).firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let range = Range(match.range(at: 1), in: line) else { return nil }
+        return try? fingerprint(publicKey: "ssh-ed25519 " + line[range])
+    }
+    func authorizedUserLines(fingerprint: String) throws -> [Int] {
+        try lock.withLock { try Self.readAuthorizedLines(at: authorizedKeysURL).enumerated().compactMap { index, line in
+            Self.trailingMarker(in: line)?.hasPrefix("tatwo2-device:") != true && Self.authorizedFingerprint(in: line) == fingerprint ? index + 1 : nil
+        } }
+    }
+    func fleetClientFingerprint(_ member: DeviceFleetMember) -> String? {
+        member.clientKeyFingerprint ?? list().first { $0.id == member.id }?.pinnedClientKeyFingerprint
+    }
+    func revokeAuthorizedKey(deviceID: String, fingerprint: String, retry: Bool = false) throws {
+        guard Self.isSafeDeviceID(deviceID) else { throw RegistryError.invalidDeviceID }
+        try DeviceFleetStore.lock.withLock { try lock.withLock {
+            let fleet = DeviceFleetStore(registry: self, environment: fleetEnvironment)
+            let original = try Self.readAuthorizedLines(at: authorizedKeysURL)
+            var removed = original.enumerated().filter { Self.authorizedFingerprint(in: $0.element) == fingerprint }
+            guard !removed.isEmpty else { try fleet.pendingKeyRemoval(fingerprint, deviceID: nil); return }
+            let backup = root.appendingPathComponent("backups/authorized_keys/" + UUID().uuidString + ".bak")
+            var backedUp = false
+            do {
+                try Self.writeAuthorizedLines(original, to: backup)
+                let metadata: [String: Any] = ["source": authorizedKeysURL.path, "time": ISO8601DateFormatter().string(from: Date()),
+                    "lines": removed.map { $0.offset + 1 }, "fingerprintPrefix": String(fingerprint.prefix(19)),
+                    "restore": "先在 TATWO 恢復該設備再還原，否則名單同步會再撤一次標記行（手動行不會再被刪）。Copy \(backup.path) to \(authorizedKeysURL.path); chmod 600 the restored file."]
+                try DeviceDispatchSafeFile.write(JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]), url: backup.appendingPathExtension("json"))
+                backedUp = true
+            } catch {
+                fleet.audit("authorized_keys_backup_failed")
+                if removed.contains(where: { Self.trailingMarker(in: $0.element)?.hasPrefix("tatwo2-device:") != true }) {
+                    try fleet.pendingKeyRemoval(fingerprint, deviceID: deviceID, lines: removed.filter { Self.trailingMarker(in: $0.element)?.hasPrefix("tatwo2-device:") != true }.map { $0.offset + 1 })
+                }
+                removed.removeAll { Self.trailingMarker(in: $0.element)?.hasPrefix("tatwo2-device:") != true }
+            }
+            guard !removed.isEmpty else { return }
+            let indexes = Set(removed.map(\.offset))
+            var kept = original.enumerated().filter { !indexes.contains($0.offset) }.map(\.element)
+            if original.first?.hasPrefix("\u{FEFF}") == true, kept.first?.hasPrefix("\u{FEFF}") != true { kept.insert("\u{FEFF}", at: 0) }
+            try Self.writeAuthorizedLines(kept, to: authorizedKeysURL)
+            try fleet.pendingKeyRemoval(fingerprint, deviceID: backedUp ? nil : deviceID, lines: kept.enumerated().compactMap { Self.authorizedFingerprint(in: $0.element) == fingerprint ? $0.offset + 1 : nil })
+            let event = retry ? "authorized_keys_cleanup_completed" : "device_revoked"
+            fleet.audit(event, details: ["event": event, "deviceID": deviceID, "removed": removed.count,
+                "manual": removed.filter { Self.trailingMarker(in: $0.element)?.hasPrefix("tatwo2-device:") != true }.count, "backup": backedUp ? backup.path : ""])
+        } }
     }
 
     private static func marker(_ deviceID: String) -> String {
@@ -616,6 +704,216 @@ final class DeviceRegistry: @unchecked Sendable {
         !value.isEmpty && value.count <= 128 && value.unicodeScalars.allSatisfy {
             CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_")).contains($0)
         }
+    }
+}
+
+extension DeviceRegistry {
+    func fleetPruneRevokedKeys() throws {
+        let denied = Set(try DeviceFleetStore(registry: self, environment: fleetEnvironment).read().revokedKeys ?? [])
+        try lock.withLock {
+            let lines = try Self.readAuthorizedLines(at: authorizedKeysURL).filter { line in
+                guard Self.trailingMarker(in: line)?.hasPrefix("tatwo2-device:") == true else { return true }
+                return !denied.contains(Self.authorizedFingerprint(in: line) ?? "")
+            }
+            try Self.writeAuthorizedLines(lines, to: authorizedKeysURL)
+        }
+    }
+    func fleetHasAuthorizedFingerprint(_ fingerprint: String) -> Bool {
+        guard let data = try? DeviceDispatchSafeFile.read(authorizedKeysURL, limit: 2 * 1024 * 1024),
+              let text = String(data: data, encoding: .utf8) else { return false }
+        return text.split(whereSeparator: \.isNewline).contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard let index = fields.firstIndex(of: "ssh-ed25519"), index + 1 < fields.count else { return false }
+            return (try? Self.fingerprint(publicKey: "\(fields[index]) \(fields[index + 1])")) == fingerprint
+        }
+    }
+    func fleetValidatePins(_ members: [DeviceFleetMember]) throws {
+        try lock.withLock {
+            let previous = try readUnlocked(), known = Self.readLines(at: fleetKnownHostsURL) + Self.readLines(at: knownHostsURL)
+            for member in members {
+                if let row = previous.first(where: { $0.id == member.id }) {
+                    for (old, new) in [(row.hostKeyFingerprint, member.hostKeyFingerprint),
+                                      (row.clientKeyFingerprint, member.clientKeyFingerprint)] {
+                        if let old, let new, old != new { throw RegistryError.fingerprintConflict }
+                    }
+                }
+                guard let key = member.hostPublicKey, let fingerprint = member.hostKeyFingerprint else { continue }
+                guard try Self.fingerprint(publicKey: key) == fingerprint else { throw RegistryError.fingerprintConflict }
+                for line in known {
+                    let fields = line.split(whereSeparator: \.isWhitespace)
+                    guard fields.count >= 3 else { continue }
+                    if fields[0] == "@revoked", fields.count >= 4,
+                       (try? Self.fingerprint(publicKey: "\(fields[2]) \(fields[3])")) == fingerprint {
+                        throw RegistryError.fingerprintConflict
+                    }
+                    for endpoint in member.endpoints {
+                        let address = endpoint.kind == .alias ? endpoint.alias! :
+                            (endpoint.port == 22 ? endpoint.host : "[\(endpoint.host)]:\(endpoint.port)")
+                        if fields[1] == "ssh-ed25519", fields[0].split(separator: ",").contains(Substring(address)),
+                           (try? Self.fingerprint(publicKey: "\(fields[1]) \(fields[2])")) != fingerprint {
+                            throw RegistryError.fingerprintConflict
+                        }
+                    }
+                }
+            }
+        }
+    }
+    func fleetHasUnrestrictedFingerprint(_ fingerprint: String) -> Bool {
+        ((try? Self.readAuthorizedLines(at: authorizedKeysURL)) ?? []).contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 2, fields[0] == "ssh-ed25519" else { return false }
+            return (try? Self.fingerprint(publicKey: "\(fields[0]) \(fields[1])")) == fingerprint
+        }
+    }
+    func fleetPublicKey(deviceID: String) -> String? {
+        lock.withLock {
+            for line in (try? Self.readAuthorizedLines(at: authorizedKeysURL)) ?? [] where Self.trailingMarker(in: line) == Self.marker(deviceID) {
+                let fields = line.split(whereSeparator: \.isWhitespace)
+                if let index = fields.firstIndex(of: "ssh-ed25519"), index + 1 < fields.count,
+                   let key = try? Self.normalizedPublicKey("\(fields[index]) \(fields[index + 1])") { return key }
+            }
+            return nil
+        }
+    }
+    func fleetHostPublicKey(fingerprint: String?) -> String? {
+        guard let fingerprint else { return nil }
+        return lock.withLock {
+            for line in Self.readLines(at: fleetKnownHostsURL) + Self.readLines(at: knownHostsURL) {
+                let fields = line.split(whereSeparator: \.isWhitespace)
+                guard fields.count >= 3 else { continue }
+                let key = "\(fields[1]) \(fields[2])"
+                if (try? Self.fingerprint(publicKey: key)) == fingerprint { return key }
+            }
+            return nil
+        }
+    }
+    /// 用簽章名單釘 key；已有同端點不同 key 就拒絕，從來不靜默替換。
+    func fleetPinHost(_ member: DeviceFleetMember) throws {
+        guard let key = member.hostPublicKey, let fingerprint = member.hostKeyFingerprint,
+              try Self.fingerprint(publicKey: key) == fingerprint else { throw DeviceFleetError.missingKey }
+        try fleetValidatePins([member])
+        try lock.withLock {
+            if let row = try readUnlocked().first(where: { $0.id == member.id }),
+               let pinned = row.hostKeyFingerprint, pinned != fingerprint { throw RegistryError.fingerprintConflict }
+            var lines = Self.readLines(at: fleetKnownHostsURL)
+            for endpoint in member.endpoints {
+                let address = endpoint.kind == .alias ? endpoint.alias! :
+                    (endpoint.port == 22 ? endpoint.host : "[\(endpoint.host)]:\(endpoint.port)")
+                for line in lines {
+                    let fields = line.split(whereSeparator: \.isWhitespace)
+                    guard fields.count >= 3, fields[1] == "ssh-ed25519", fields[0].split(separator: ",").contains(Substring(address)) else { continue }
+                    guard (try? Self.fingerprint(publicKey: "\(fields[1]) \(fields[2])")) == fingerprint else {
+                        throw RegistryError.fingerprintConflict
+                    }
+                }
+                if !lines.contains(where: { $0 == "\(address) \(try! Self.normalizedPublicKey(key)) \(Self.marker(member.id))" }) {
+                    lines.append("\(address) \(try Self.normalizedPublicKey(key)) \(Self.marker(member.id))")
+                }
+            }
+            try DeviceDispatchSafeFile.write(Data((lines.joined(separator: "\n") + "\n").utf8), url: fleetKnownHostsURL)
+        }
+    }
+    func fleetUnpinHost(_ member: DeviceFleetMember) throws {
+        try lock.withLock {
+            guard FileManager.default.fileExists(atPath: fleetKnownHostsURL.path) else { return }
+            let lines = Self.readLines(at: fleetKnownHostsURL).filter { line in
+                if let marker = Self.trailingMarker(in: line), marker.hasPrefix("tatwo2-device:") { return marker != Self.marker(member.id) }
+                // 舊版配對沒有 marker：只有端點與被撤銷指紋同時吻合才移除。
+                let fields = line.split(whereSeparator: \.isWhitespace)
+                guard fields.count >= 3,
+                      (try? Self.fingerprint(publicKey: "\(fields[1]) \(fields[2])")) == member.hostKeyFingerprint else { return true }
+                return !member.endpoints.contains { endpoint in
+                    let address = endpoint.port == 22 ? endpoint.host : "[\(endpoint.host)]:\(endpoint.port)"
+                    return fields[0].split(separator: ",").contains(Substring(address))
+                }
+            }
+            try DeviceDispatchSafeFile.write(Data((lines.joined(separator: "\n") + "\n").utf8), url: fleetKnownHostsURL)
+        }
+    }
+    func fleetRemember(_ member: DeviceFleetMember) throws {
+        guard let first = member.endpoints.first else { return }
+        let previous = list().first { $0.id == member.id }
+        for (old, new) in [(previous?.clientKeyFingerprint, member.clientKeyFingerprint),
+                          (previous?.hostKeyFingerprint, member.hostKeyFingerprint)] {
+            if let old, let new, old != new { throw RegistryError.fingerprintConflict }
+        }
+        var endpoints = previous?.endpoints ?? []
+        for endpoint in member.endpoints where !endpoints.contains(endpoint)
+            && !(previous?.retiredEndpoints.contains(endpoint) ?? false) { endpoints.append(endpoint) }
+        var row = DeviceRecord(id: member.id, name: member.name, host: first.host, user: member.user,
+            sshPort: first.port, publicKeyFingerprint: member.hostKeyFingerprint ?? member.clientKeyFingerprint ?? previous?.publicKeyFingerprint ?? "",
+            addedAt: previous?.addedAt ?? Date(), lastSeenAt: previous?.lastSeenAt ?? Date(),
+            workdirMap: previous?.workdirMap ?? [:], lanHost: previous?.lanHost, epoch: previous?.epoch,
+            endpoints: endpoints, retiredEndpoints: previous?.retiredEndpoints ?? [], lastEndpoint: previous?.lastEndpoint,
+            hostKeyFingerprint: member.hostKeyFingerprint, clientKeyFingerprint: member.clientKeyFingerprint)
+        row.role = member.role == .primary ? .primary : (member.role == .secondary ? .secondary : nil)
+        _ = try add(row)
+    }
+    @discardableResult
+    func fleetReconcileKeys(_ keys: [(String, String)], preserveLegacy: Set<String>, pending: Set<String>,
+                            denied: Set<String> = [], unrestricted: Set<String> = []) throws -> [String: String] {
+        return try DeviceFleetStore.lock.withLock { try lock.withLock {
+            var conflicts: [String: String] = [:]
+            let tombstones = Set(try DeviceFleetStore(registry: self, environment: fleetEnvironment).read().revokedKeys ?? [])
+            let denied = denied.union(tombstones)
+            var lines = try Self.readAuthorizedLines(at: authorizedKeysURL)
+            var conflictPins = Set<String>()
+            for (id, key) in keys where !unrestricted.contains(id) {
+                let fingerprint = try Self.fingerprint(publicKey: key)
+                if lines.contains(where: { Self.trailingMarker(in: $0)?.hasPrefix("tatwo2-device:") != true && Self.authorizedFingerprint(in: $0) == fingerprint }) {
+                    conflicts[id] = "authorized_keys_user_line_conflict"; conflictPins.insert(fingerprint)
+                }
+            }
+            let allowed = Set(keys.map(\.0)).union(preserveLegacy).union(pending)
+            func gatePrefix(_ id: String) -> String {
+                let gate = DeviceFleetGate.path(registry: self).path
+                let policy = root.appendingPathComponent("fleet-gate-policy.json").path
+                func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+                let command = shellQuote(gate) + " --device \(id) --policy " + shellQuote(policy)
+                let quoted = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+                return "restrict,command=\"\(quoted)\" "
+            }
+            lines.removeAll {
+                guard let marker = Self.trailingMarker(in: $0), marker.hasPrefix("tatwo2-device:") else { return false }
+                let fields = $0.split(whereSeparator: \.isWhitespace)
+                if let index = fields.firstIndex(of: "ssh-ed25519"), index + 1 < fields.count,
+                   let fp = try? Self.fingerprint(publicKey: "\(fields[index]) \(fields[index+1])"), denied.contains(fp) {
+                    return true
+                }
+                if $0.hasPrefix("restrict,"), conflictPins.contains(Self.authorizedFingerprint(in: $0) ?? "") { return false }
+                return !allowed.contains(String(marker.dropFirst("tatwo2-device:".count)))
+            }
+            // Retained pending/legacy d1 rows migrate too. Keep restrict throughout:
+            // one atomic replacement below publishes every retained row together.
+            lines = lines.map { line in
+                if conflictPins.contains(Self.authorizedFingerprint(in: line) ?? "") { return line }
+                guard line.hasPrefix("restrict,command=\""),
+                      let marker = Self.trailingMarker(in: line), marker.hasPrefix("tatwo2-device:"),
+                      let end = line.range(of: "\" ssh-ed25519 ") else { return line }
+                let id = String(marker.dropFirst("tatwo2-device:".count))
+                guard Self.isSafeDeviceID(id) else { return line }
+                let commandStart = line.index(line.startIndex, offsetBy: "restrict,command=\"".count)
+                let command = line[commandStart..<end.lowerBound]
+                guard command.hasPrefix("/usr/bin/"), command.hasSuffix(" --device \(id)") else { return line }
+                let key = line[line.index(end.lowerBound, offsetBy: 2)...]
+                return gatePrefix(id) + key
+            }
+            for (id, key) in keys {
+                guard conflicts[id] == nil else { continue }
+                let fingerprint = try Self.fingerprint(publicKey: key)
+                // Only TATWO-owned duplicates may be replaced or removed.
+                lines.removeAll { line in
+                    guard Self.trailingMarker(in: line)?.hasPrefix("tatwo2-device:") == true else { return false }
+                    if Self.trailingMarker(in: line) == Self.marker(id) { return true }
+                    return Self.authorizedFingerprint(in: line) == fingerprint
+                }
+                guard !denied.contains(fingerprint) else { continue }
+                let prefix = unrestricted.contains(id) ? "" : gatePrefix(id)
+                Self.appendAuthorizedLine(prefix + "\(try Self.normalizedPublicKey(key)) \(Self.marker(id))", to: &lines)
+            }
+            try Self.writeAuthorizedLines(lines, to: authorizedKeysURL)
+            return conflicts
+        } }
     }
 }
 
@@ -677,5 +975,85 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return try body()
+    }
+}
+
+/// Compose caller-side pin input; SSHHostPin's audited implementation remains unchanged.
+enum DeviceFleetSSHPins {
+    static func lines(for device: DeviceRecord, registry: DeviceRegistry) throws -> [String] {
+        guard let fingerprint = device.pinnedHostKeyFingerprint else { throw DeviceFleetError.missingKey }
+        let files = [registry.knownHostsURL, registry.fleetKnownHostsURL]
+        var all: [String] = []
+        do {
+            for file in files where FileManager.default.fileExists(atPath: file.path) {
+                let text = try String(contentsOf: file, encoding: .utf8)
+                guard text.utf8.count <= 4 * 1024 * 1024 else { throw DeviceFleetError.malformed }
+                let lines = text.split(separator: "\n").map(String.init)
+                // Revocations apply to the key itself, independent of the alias used to locate it.
+                for line in lines {
+                    let fields = line.split(whereSeparator: \.isWhitespace)
+                    if fields.count >= 4, fields[0] == "@revoked",
+                       (try? DeviceRegistry.fingerprint(publicKey: "\(fields[2]) \(fields[3])")) == fingerprint {
+                        throw DeviceFleetError.keyConflict
+                    }
+                }
+                for endpoint in device.orderedEndpoints {
+                    let address = endpoint.kind == .alias ? endpoint.alias! : endpoint.port == 22 ? endpoint.host : "[\(endpoint.host)]:\(endpoint.port)"
+                    // OpenSSH handles hashed hosts, wildcard entries and comma-separated aliases.
+                    let process = Process(), output = Pipe()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh-keygen")
+                    process.arguments = ["-F", address, "-f", file.path]
+                    process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = FileHandle.nullDevice
+                    try process.run()
+                    let data = output.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
+                    guard process.terminationStatus == 0 || process.terminationStatus == 1 else { throw DeviceFleetError.malformed }
+                    for match in String(decoding: data, as: UTF8.self).split(separator: "\n") where !match.hasPrefix("#") {
+                        let fields = match.split(whereSeparator: \.isWhitespace)
+                        guard fields.count >= 3 else { continue }
+                        let marker = fields[0]
+                        if marker == "@cert-authority" || marker == "@revoked" { continue } // Key revocation checked above.
+                        let algorithm = fields[0].hasPrefix("@") ? (fields.count > 3 ? fields[2] : "") : fields[1]
+                        guard algorithm == "ssh-ed25519" else { continue }
+                        guard !fields[0].hasPrefix("@"),
+                              (try? DeviceRegistry.fingerprint(publicKey: "\(fields[1]) \(fields[2])")) == fingerprint else {
+                            throw DeviceFleetError.keyConflict
+                        }
+                    }
+                }
+                all += lines
+            }
+            let fleet = DeviceFleetStore(registry: registry, environment: registry.fleetEnvironment)
+            try DeviceFleetStore.lock.withLock {
+                var state = try fleet.read(); state.pinConflicts?.removeAll { $0 == device.id }; try fleet.save(state)
+            }
+            return all
+        } catch {
+            let fleet = DeviceFleetStore(registry: registry, environment: registry.fleetEnvironment)
+            DeviceFleetStore.lock.withLock {
+                if var state = try? fleet.read() {
+                    state.pinConflicts = Array(Set((state.pinConflicts ?? []) + [device.id])); try? fleet.save(state)
+                }
+            }
+            throw error
+        }
+    }
+    static func withEnvironment<T>(deviceID: String, name: String,
+                                    environment: [String: String] = ProcessInfo.processInfo.environment,
+                                    _ run: ([String: String]) throws -> T) throws -> T {
+        let registry = DeviceRegistry(environment: environment)
+        guard let device = registry.list().first(where: { $0.id == deviceID }) else {
+            throw DeviceFleetError.missingKey
+        }
+        return try withEnvironment(for: device, registry: registry, run)
+    }
+    static func withEnvironment<T>(for device: DeviceRecord, registry: DeviceRegistry,
+                                    _ run: ([String: String]) throws -> T) throws -> T {
+        let lines = try lines(for: device, registry: registry)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("fleet-combined-pin-" + UUID().uuidString)
+        try DeviceDispatchSafeFile.write(Data((lines.joined(separator: "\n") + "\n").utf8), url: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var environment = registry.fleetEnvironment
+        environment["TATWO2_SSH_KNOWN_HOSTS"] = file.path
+        return try run(environment)
     }
 }

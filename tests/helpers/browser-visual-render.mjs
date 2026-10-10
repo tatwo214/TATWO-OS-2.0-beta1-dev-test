@@ -36,7 +36,6 @@ import SwiftUI
 }
 @MainActor struct W54DownloadsFixture: View {
     @State private var downloadQuery = ""
-    @State private var downloadsContentHeight = BrowserSidebarMetrics.zero
     @State private var selectedDownloadID: String?
     @State private var hoveredDownloadID: String?
     @ObservedObject private var downloadStore = BrowserDownloadStore.shared

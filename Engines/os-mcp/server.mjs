@@ -74,10 +74,24 @@ const tools = [
   ['goal_list', 'Read this thread’s goal list (the user’s mainline). Every step you take should map to one of these; say which number in your reply.', {}, []],
   ['goal_index', 'Read-only goals and progress across all threads, with thread titles and project names. Completed goals are excluded unless includeDone is true. No conversation, user words, or evidence content.', { includeDone: { type: 'boolean', default: false } }, []],
   ['os_status', 'Read-only global snapshot: running, awaiting approval, stalled and failed threads, rooms, background jobs, CLI tabs, devices and pending Island request titles. No conversation, commands or logs. Takes no arguments.', {}, []],
+  ['fleet_overview', 'TATWO 助理專用：讀取設備與權限安全摘要；只含代號，不含自訂名稱、位址、配對碼、QR、金鑰或完整指紋。', {}, []],
+  ['fleet_open_card', 'TATWO 助理專用：開啟本機設備卡；不產生配對碼，不確認任何變更。', {
+    card: { type: 'string', enum: ['menu', 'invite', 'join', 'joinManaged', 'joinSandbox', 'managed', 'sandbox', 'permissions', 'transfer'] },
+  }, ['card']],
+  ['fleet_propose', 'TATWO 助理專用：提出設備權限變更並顯示本機預覽；只有使用者在卡片按確認才生效。target/from/to/group 使用 overview 的 g1/d1 代號；支援 stop_tracking（target=overview 的 revokedDevices 代號，停止追蹤撤銷送達但保留撤銷）、revoke_device（target，僅提案撤銷）、rename_group、rename_device、set_manager_name（target,name）、move_device（target,group）、set_visibility（target,showMainPrimary）、set_edge（from,to,direction,capabilities）、set_sub_primary（target=SUB 群組,device=職員設備代號或 null 取消；只由 MAIN 主設備提案）。SUB 主設備只是角色標記；職員電腦之間的互聯暫不開放。沒有確認或移交工具。', {
+    baseVersion: { type: 'integer', minimum: 0 },
+    changes: { type: 'array', minItems: 1, maxItems: 64, items: { type: 'object', properties: {
+      op: { type: 'string', enum: ['rename_group', 'rename_device', 'set_manager_name', 'move_device', 'set_visibility', 'set_edge', 'revoke_device', 'stop_tracking', 'set_sub_primary'] },
+      device: { type: ['string', 'null'] }, target: { type: 'string' }, name: { type: 'string', minLength: 1, maxLength: 160 }, group: { type: 'string' },
+      showMainPrimary: { type: 'boolean' }, from: { type: 'string' }, to: { type: 'string' },
+      direction: { type: 'string', enum: ['none', 'oneway', 'mutual'] },
+      capabilities: { type: 'array', uniqueItems: true, items: { type: 'string', enum: ['files', 'screen', 'dispatch', 'update', 'memory'] } },
+    }, required: ['op'], additionalProperties: false } },
+  }, ['baseVersion', 'changes']],
   ['project_overview', 'Read-only map for sorting conversations into projects (W180): projects with name, folderGroup and thread count; main threads with title, projectID, lastActivity, messageCount, subThreadCount and running. No message content, paths or commands. Takes no arguments. Use before project_suggest when the user asks to organise projects (幫我整理專案).', {}, []],
   ['project_suggest', 'Propose moving main threads (sub-threads follow) into an existing project of the same folderGroup, or into a new project that keeps their folder. Each item needs threadIDs, a reason, and exactly one of targetProjectID or newProjectName; at most 30 threads. Only the TATWO assistant conversation may propose. It only creates a proposal: nothing moves until the user approves it in TATWO › 專案地圖; you cannot approve or move.', { items: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: { threadIDs: { type: 'array', minItems: 1, maxItems: 30, items: { type: 'string' } }, targetProjectID: { type: 'string' }, newProjectName: { type: 'string', maxLength: 60 }, reason: { type: 'string', minLength: 1, maxLength: 300 } }, required: ['threadIDs', 'reason'], additionalProperties: false } } }, ['items']],
   ['goal_propose', 'Propose a new goal when work outside the list seems needed. It stays an AI proposal until the user accepts it; do not start it before then.', { title: { type: 'string' } }, ['title']],
-  ['goal_update', 'Update a goal’s status: pending/active/review/done. Marking done requires evidence (test output, screenshot path or version). Dispatched sub-work can only reach review.', { id: { type: 'integer' }, status: { type: 'string', enum: ['pending', 'active', 'review', 'done'] }, evidence: { type: 'string' } }, ['status']],
+  ['goal_update', 'Update a goal’s optional status or loop details; provide at least one. Marking done requires evidence (test output, screenshot path or version). Dispatched sub-work updates only its own goal and can only reach review. 在跑時更新 progress 與 etaMinutes，步驟做完移到 doneSteps。', { id: { type: 'integer' }, status: { type: 'string', enum: ['pending', 'active', 'review', 'done'] }, evidence: { type: 'string' }, progress: { type: 'number' }, etaMinutes: { type: 'number' }, queue: { type: 'array', items: { type: 'string' } }, doneSteps: { type: 'array', items: { type: 'string' } }, branch: { type: 'string' }, device: { type: 'string' } }, []],
   ['user_remember', 'Propose a durable fact about the user (preference, habit, decision) for the shared user.md. It stays a proposal until the user approves it in Settings › OS › 文件 › 記憶提案. Never propose secrets, credentials, or other people’s private data.', { text: { type: 'string' }, isPublic: { type: 'boolean' } }, ['text']],
   ['memory_search', 'Search the user’s TATWO memory (one Markdown file per memory in the entry memory/ folder) by words and aliases; returns up to 20 {id,title,summary,type,aliases,snippet}. Use when the turn’s 〔TATWO 記憶〕 note asks you to, or the user asks you to look something up in memory. What you read counts in the reply’s 用了 N 條記憶.', { query: { type: 'string', minLength: 1, maxLength: 200 }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, ['query']],
   ['memory_get', 'Read one TATWO memory in full by id (the file name shown in 〔〕 in the 〔TATWO 記憶〕 note or returned by memory_search). Counts in the reply’s 用了 N 條記憶.', { id: { type: 'string', minLength: 1, maxLength: 200 } }, ['id']],
@@ -89,6 +103,10 @@ const tools = [
   ['cli_send', 'Send a line to a live OS terminal.', { id: { type: 'string' }, text: { type: 'string' } }, ['id', 'text']],
   ['cli_tail', "Read the terminal's output/scrollback (stdout+stderr as shown) after cli_send; default 80 lines.", { id: { type: 'string' }, lines: { type: 'integer', minimum: 0, maximum: 10000 } }, ['id']],
   ['cli_close', 'Terminate and close an OS terminal, preserving history.', { id: { type: 'string' } }, ['id']],
+  ['sandbox_dispatch', 'Primary app/local engine only: queue this ordinary Coder thread for a sandbox device; no group collaboration or ChatGPT participant required. Sends only instruction and named file snapshots (256 KB total); strips secrets and refuses trading projects. Results go to an external proposal card for user review.', {
+    device_id: { type: 'string' }, instruction: { type: 'string', maxLength: 8192 },
+    files: { type: 'array', maxItems: 32, items: { type: 'string' } }, artifacts: { type: 'array', maxItems: 16, items: { type: 'string' } },
+  }, ['device_id', 'instruction', 'files', 'artifacts']],
   ['chatgpt_dispatch', 'Local TATWO engine only. Send exactly one of text or ticketPath (UTF-8 file inside the calling room, at most 64 KiB) as a NEW ChatGPT conversation through TAP. model is a native TAP catalog ID. Optional projectID is a TATWO project UUID; omitted uses TATWO · 收件匣. Wait up to timeoutSeconds (default 600, 1–1800, including wake). Save full reply privately at <calling-room>/chatgpt-dispatch/<dispatchID>.md. Returns dispatchID, conversationID, replyPath, summary (first five lines), status (completed/timed_out/failed/not_submitted), reason and stopped. Never automatically retry an uncertain result. chatgpt_dispatch_unconfirmed_full means this calling room has 128 unresolved receipts: inspect its ChatGPT conversations, then explicitly release earlier receipts with chatgpt_dispatch_stop before deciding whether to resend; never clear automatically. Stop with chatgpt_dispatch_stop from the same engine thread.', {
     text: { type: 'string', minLength: 1, maxLength: 65536 },
     ticketPath: { type: 'string', minLength: 1, maxLength: 4096 },
@@ -117,7 +135,7 @@ const tools = [
     },
   }, ['rooms']],
   ['list_rooms', 'List the rooms (sub-threads) under the current main thread. Size timestamps reflect completed async measurements (empty if unmeasured; stale after 60s). merge reports local git ancestry for at most 50 done rooms; unchecked checkedAt is empty, not proof of no merge.', {}, []],
-  ['list_devices', 'List paired SSH devices from live/devices.json.', {}, []],
+  ['list_devices', 'List device names, roles, groups and cached online status. No addresses, accounts, ports, keys, fingerprints or working directories.', {}, []],
   ['os_binding_status', 'Read-only: OS upstream binding status per target (id/label/path/state/hash metadata only; no file content, no diff, no writes). Binding writes stay in the App behind human confirmation. Takes no arguments.', {}, []],
   ['run_background', 'Run a long command in the App-owned background process manager.', { requestKey: { type: 'string', maxLength: 256 }, cmd: { type: 'string' }, cwd: { type: 'string' }, title: { type: 'string' } }, ['cmd']],
   ['background_status', 'Read state and the last 40 log lines for a background job.', { jobID: { type: 'string' }, tailBytes: { type: 'integer', minimum: 0, maximum: 65536 } }, ['jobID']],
@@ -165,6 +183,13 @@ function appCall(method, params = {}) {
       resolve(reply.result ?? {});
     });
   });
+}
+
+const fleetMethods = new Set(['fleet_overview', 'fleet_open_card', 'fleet_propose']);
+async function fleetAvailable() {
+  // App checks the socket peer's registered engine and bound assistant thread.
+  // Environment variables and model arguments are never proof of identity.
+  try { await appCall('fleet_overview'); return true; } catch { return false; }
 }
 
 function textResult(value) {
@@ -299,6 +324,13 @@ async function callTool(name, args) {
     if (process.env.TATWO2_THREAD_ID) params._threadID = process.env.TATWO2_THREAD_ID;
   }
   const result = await appCall(name, params);
+  if (name === 'list_devices' || name === 'os_status') {
+    // Defend the engine boundary even when an older App returns full protocol records.
+    const fields = ['id', 'name', 'role', 'group', 'online'];
+    const devices = (Array.isArray(result.devices) ? result.devices : []).map(row =>
+      Object.fromEntries(fields.filter(field => Object.hasOwn(row, field)).map(field => [field, row[field]])));
+    return textResult(name === 'list_devices' ? { devices } : { ...result, devices });
+  }
   if (name === 'computer_list_apps') return textResult(result.apps ?? []);
   if (['computer_action', 'computer_batch', 'computer_start'].includes(name) && result.observation?.imageBase64) {
     const { imageBase64, ...observation } = result.observation;
@@ -320,9 +352,11 @@ async function handleRequest(request) {
     } else if (request.method === 'notifications/initialized') {
       // Notification: no response.
     } else if (request.method === 'tools/list') {
-      process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result: { tools } })}\n`);
+      const visibleTools = await fleetAvailable() ? tools : tools.filter(tool => !fleetMethods.has(tool.name));
+      process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result: { tools: visibleTools } })}\n`);
     } else if (request.method === 'tools/call') {
       const name = request.params?.name;
+      if (fleetMethods.has(name) && !await fleetAvailable()) throw new Error(`unknown_tool:${name}`);
       if (!tools.some(tool => tool.name === name)) throw new Error(`unknown_tool:${name}`);
       const result = await callTool(name, request.params?.arguments ?? {});
       process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);

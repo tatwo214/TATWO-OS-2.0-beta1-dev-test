@@ -287,7 +287,7 @@ extension GlobalDMStore: ChatGPTModelPicking {
     var pickerModelID: String? { pickerModel?.id }
     var pickerEffortID: String? { ChatGPTModelMenu.effectiveEffort(chatGPTCatalog, chatGPTChoice)?.id }
     var pickerLabel: ChatGPTSpaceModel.PickerLabel {
-        .resolve(effort: ChatGPTModelMenu.effectiveEffort(chatGPTCatalog, chatGPTChoice), model: pickerModel, fallback: "預設")
+        .resolve(effort: ChatGPTModelMenu.effectiveEffort(chatGPTCatalog, chatGPTChoice), model: pickerModel, fallback: "ChatGPT")
     }
     /// 選過、而且跟 ChatGPT 的「上次使用」不一樣（同 ChatGPT Space 的規則）。
     var pickerCanReset: Bool {

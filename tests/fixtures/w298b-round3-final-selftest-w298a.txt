@@ -1,0 +1,40 @@
+W298A PASS new version
+W298A PASS already latest
+W298A PASS latest lookup fails
+W298A PASS same suffix newest numeric version
+W298A PASS Claude same series
+W298A PASS fallback provider default
+W298A PASS needs user selection
+W298A PASS only target role table changes
+W298A PASS independent sources all checked
+W298A PASS new 1 retired 2 duplicate 1 counted accurately
+W298A PASS same provider code deduplicated
+W298A PASS Coder menu replaced
+W298A PASS retired conversation uses provider default
+W298A PASS role proposal awaits approval
+W298A PASS defer preserves config and dispatch remains blocked
+W298A PASS failed sources preserve catalog
+W298A PASS idle actual login page and TAP summary false
+W298A PASS running actual login page and TAP summary false
+W298A PASS running button disabled false enabled=false progress=true
+W298A PASS complete actual login page and TAP summary false
+W298A PASS real defer button false
+W298A PASS defer leaves role unchanged false
+W298A PASS idle actual login page and TAP summary true
+W298A PASS running actual login page and TAP summary true
+W298A PASS running button disabled true enabled=false progress=true
+W298A PASS complete actual login page and TAP summary true
+W298A PASS real defer button true
+W298A PASS defer leaves role unchanged true
+W298A PASS real accept button
+W298A PASS accept saves actual role configuration
+W298A PASS accept updates both role tables
+W298A PASS accept backs up both tables and roles before change
+W298A PASS retired dispatch refused
+W298A PASS dispatch refusal creates no child or worktree
+W298A PASS next sentence admitted
+W298A PASS next sentence actually sends and stores same provider default
+W298A PASS real update button starts check
+W298A PASS button enters provider progress
+W298A PASS button completes fake version sources
+W298A SUMMARY failures=0 passed=39

@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w331-expiredcard.test.mjs
+tests/fixtures/w331-expiredcard.mjs
+tests/fixtures/w331-room-allow.txt

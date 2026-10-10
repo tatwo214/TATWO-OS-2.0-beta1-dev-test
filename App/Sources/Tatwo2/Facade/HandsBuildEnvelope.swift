@@ -96,18 +96,10 @@ struct HandsBuildSigner: @unchecked Sendable {
     /// 跟 DeviceDispatch.signed 同一把金鑰、同樣的做法（不讀私鑰內容、不跳鑰匙圈）；只有命名空間不一樣。
     static func ssh(environment: [String: String] = ProcessInfo.processInfo.environment) -> HandsBuildSigner {
         HandsBuildSigner { data in
-            let key = environment["TATWO2_SSH_KEY_PATH"]
-                ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_ed25519").path
-            let publicKey = try String(contentsOfFile: key + ".pub", encoding: .utf8)
-            var result: (Int32, Data) = (1, Data())
-            if environment["SSH_AUTH_SOCK"]?.isEmpty == false {
-                result = try DeviceDispatch.run("/usr/bin/ssh-keygen", ["-Y", "sign", "-f", key + ".pub", "-n", namespace], input: data)
-            }
-            if result.0 != 0 {
-                result = try DeviceDispatch.run("/usr/bin/ssh-keygen", ["-Y", "sign", "-f", key, "-P", "", "-n", namespace], input: data)
-            }
-            guard result.0 == 0, !result.1.isEmpty else { throw HandsBuildEnvelopeError.signingUnavailable }
-            return (result.1, publicKey)
+            do {
+                let (signature, publicKey) = try DeviceSignature.sign(data, namespace: namespace, environment: environment)
+                return (signature, publicKey)
+            } catch { throw HandsBuildEnvelopeError.signingUnavailable }
         }
     }
 }
@@ -213,21 +205,8 @@ enum HandsBuildEnvelopes {
         #if DEBUG
         debugVerifyCount += 1
         #endif
-        let fields = publicKey.split(whereSeparator: \.isWhitespace)
-        guard fields.count >= 2, !publicKey.contains("\r"), publicKey.split(separator: "\n").count <= 1,
-              fields[0].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "@" || $0 == ".") }),
-              fields[1].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "+" || $0 == "/" || $0 == "=") }) else { return false }
-        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("w183-build-" + UUID().uuidString, isDirectory: true)
-        guard (try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false,
-                                                          attributes: [.posixPermissions: 0o700])) != nil else { return false }
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        let allowed = scratch.appendingPathComponent("allowed"), signatureFile = scratch.appendingPathComponent("signature")
-        guard (try? Data("primary \(fields[0]) \(fields[1])\n".utf8).write(to: allowed)) != nil,
-              (try? signature.write(to: signatureFile)) != nil,
-              let result = try? DeviceDispatch.run("/usr/bin/ssh-keygen", ["-Y", "verify", "-f", allowed.path, "-I", "primary",
-                                                                           "-n", HandsBuildSigner.namespace, "-s", signatureFile.path], input: body)
-        else { return false }
-        return result.0 == 0
+        return DeviceSignature.verify(body: body, signature: signature, publicKey: publicKey,
+                                      namespace: HandsBuildSigner.namespace)
     }
 }
 

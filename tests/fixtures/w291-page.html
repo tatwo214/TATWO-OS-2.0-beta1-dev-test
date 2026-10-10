@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Local translation fixture</title>
+<style>body{background:#fff;color:#202a36;font:20px system-ui;margin:42px;max-width:900px}h1{font-size:34px}p{line-height:1.6;border-bottom:1px solid #ddd;padding-bottom:14px}</style>
+<body><h1>Local browser translation check</h1><div id="article"></div>
+<script>
+for(let i=1;i<=260;i++){const p=document.createElement('p');p.textContent=`Article ${i}: The library opens every morning. Readers can borrow books and enjoy a quiet place to study. This long English page checks every translation batch.`;article.append(p)}
+function appendContent(){let p=document.createElement('p');p.id='dynamic';p.textContent='New article: The museum welcomes visitors and offers guided tours every afternoon.';article.prepend(p)}
+</script></body></html>

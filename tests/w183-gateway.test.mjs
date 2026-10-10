@@ -333,7 +333,7 @@ test('v2 §2 端點矩陣：metadata／register／token／mcp 只收 OpenAI IP�
     const browser = { 'cf-connecting-ip': BROWSER_IP };
     const ok = await gw.get('/.well-known/oauth-protected-resource');
     assert.equal(ok.status, 200);
-    assert.deepEqual(JSON.parse(ok.text).scopes_supported, ['tatwo.hands']);
+    assert.deepEqual(JSON.parse(ok.text).scopes_supported, ['tatwo.hands', 'sandbox']);
     assert.equal(JSON.parse(ok.text).resource, `https://${HOST}/mcp`);
     assert.equal((await gw.get('/.well-known/oauth-protected-resource/mcp')).status, 200);
     const asm = JSON.parse((await gw.get('/.well-known/oauth-authorization-server')).text);

@@ -1,0 +1,2 @@
+INSTANCE_TRACE self=48769 bundle=ai.tatwo.tatwo2.staging count=1
+INSTANCE_TRACE sibling_pid=-1 executable=/Users/fixture/tatwo-build/tmp/W276c/TATWO OS Staging.app/Contents/MacOS/Tatwo2

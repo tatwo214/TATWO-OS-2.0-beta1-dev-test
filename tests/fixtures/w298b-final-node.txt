@@ -1,0 +1,25 @@
+✔ W61 exported tree passes safety scan and the exact personal-data grep (13165.5545ms)
+✔ W61 does not widen or rewrite any pre-existing allowlist entry (0.3655ms)
+✔ macOS account paths and user/name fields reject non-generic names (179.013083ms)
+✔ generic accounts and documentation/loopback addresses and example hosts pass (26.050958ms)
+✔ private IPv4 ranges include boundaries and mapped IPv6, but not adjacent public ranges (334.442292ms)
+✔ named personal domains and SSH aliases are rejected (454.30225ms)
+✔ all four new categories enforce exact file + regex and every value on a line (500.955375ms)
+✔ personal identifiers come only from the private list, also when split into fragments; the list never ships (176.372333ms)
+✔ legacy email, token and key detection remains enforced (74.829875ms)
+✔ SSH wrappers fail before any command or state write when host is unset or empty (73.394542ms)
+✔ gateway label discovery uses product default, explicit override, or unique legacy registration (read-only) (84.591958ms)
+✔ public blocklist serialization preserves the original non-personal ad domain (5.6135ms)
+✔ legacy V3 import directory discovery is local, unambiguous and prefers the new default (471.818291ms)
+✔ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (6729.226625ms)
+✔ native Codex catalog preserves new official ID and excludes hidden models without guessing capabilities (0.354583ms)
+✔ Claude native resolvedModel is authoritative and duplicate effort levels normalize once (0.0725ms)
+✔ W298b real installer gates fake registry and binary adoption, rollback, SDK and daily UI (8915.411833ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 15619.358042

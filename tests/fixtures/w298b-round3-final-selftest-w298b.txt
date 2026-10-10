@@ -1,0 +1,93 @@
+W298B PASS production rejects unsigned fake without execution
+W298B PASS Codex signature-wrong result
+W298B PASS Codex signature-wrong adoption gate
+W298B PASS Codex signature-wrong rejected before execution
+W298B PASS Codex team-wrong result
+W298B PASS Codex team-wrong adoption gate
+W298B PASS Codex team-wrong rejected before execution
+W298B PASS Codex main-integrity result
+W298B PASS Codex main-integrity adoption gate
+W298B PASS Codex main-integrity rejected before execution
+W298B PASS Codex native-integrity result
+W298B PASS Codex native-integrity adoption gate
+W298B PASS Codex native-integrity rejected before execution
+W298B PASS Codex version-fail result
+W298B PASS Codex version-fail adoption gate
+W298B PASS Codex first-run-fail result
+W298B PASS Codex first-run-fail adoption gate
+W298B PASS post-adoption version failure restores previous
+W298B PASS Codex correct result
+W298B PASS Codex correct adoption gate
+W298B PASS original and bundled files remain immutable
+W298B PASS previous version retained
+W298B PASS atomic rollback points to old binary
+W298B PASS running conversation binary survives rollback
+W298B PASS rollback pin beats newer bundled or PATH runtime
+W298B PASS rollback pin still enforces signature identity
+W298B PASS Claude sdk-fail result
+W298B PASS Claude sdk-fail restores user launcher
+W298B PASS Claude sdk-fail records reason
+W298B PASS Claude signature-fail result
+W298B PASS Claude signature-fail restores user launcher
+W298B PASS Claude signature-fail records reason
+W298B PASS Claude post-sdk-fail result
+W298B PASS Claude post-sdk-fail restores user launcher
+W298B PASS Claude post-sdk-fail records reason
+W298B PASS Claude correct result
+W298B PASS Claude validated SDK adopts immutable managed binary
+W298B PASS Claude uses official update command
+W298B PASS Grok missing checksum stops without download or script
+W298B PASS R1 failed Claude update restores full version tree and exact launcher
+W298B PASS R2 verification uses private snapshot despite source mutation
+W298B PASS R2 preexisting backup is reverified before adoption
+W298B PASS R3 rollback validation waits for in-flight update
+W298B PASS stable version matches entire output
+W298B PASS R4 only user rollback records explicit version pin
+W298B PASS R3 stale queued update cannot downgrade current
+W298B PASS R5 failed current publication preserves exact previous pointer
+W298B PASS R5 mid-publication rename failure restores both relative pointers
+W298B PASS daily check lights dot only and never installs
+W298B PASS daily check persists cadence and dot across restart
+W298B PASS no new versions clears dot without message
+W298B PASS real update button enters selection before installing
+W298B PASS new version selected and latest not selected
+W298B PASS real update button installs validated fake tarball
+W298B PASS updated row exposes retained rollback version
+W298B PASS proposal uses model names false updated
+W298B PASS rollback button visible false updated
+W298B PASS dot visibility false updated
+W298B PASS proposal uses model names false dot
+W298B PASS rollback button visible false dot
+W298B PASS dot visibility false dot
+W298B PASS proposal uses model names true updated
+W298B PASS rollback button visible true updated
+W298B PASS dot visibility true updated
+W298B PASS proposal uses model names true dot
+W298B PASS rollback button visible true dot
+W298B PASS dot visibility true dot
+W298B PASS real rollback button
+W298B PASS real rollback button restores previous version
+W298B PASS default selection checks versions without installing
+W298B PASS latest unknown and ChatGPT cannot select
+W298B PASS selected logo accessible label
+W298B PASS real logo toggles selection
+W298B PASS zero selection disables install
+W298B PASS focused logo toggles with Space key
+W298B PASS zero selection never installs
+W298B PASS cancel never installs
+W298B PASS refresh quota renamed button
+W298B PASS unknown current cannot select even with newest version
+W298B PASS selection resets on next check
+W298B PASS only chosen logo selected fable5 false
+W298B PASS install selection button fable5-light-
+W298B PASS only selected installed and skipped summary fable5-light-
+W298B PASS only chosen logo selected fable5 true
+W298B PASS install selection button fable5-dark-
+W298B PASS only selected installed and skipped summary fable5-dark-
+W298B PASS only chosen logo selected aurora false
+W298B PASS install selection button aurora-light-
+W298B PASS only selected installed and skipped summary aurora-light-
+W298B PASS only chosen logo selected aurora true
+W298B PASS install selection button aurora-dark-
+W298B PASS only selected installed and skipped summary aurora-dark-
+W298B SUMMARY failures=0 passed=92

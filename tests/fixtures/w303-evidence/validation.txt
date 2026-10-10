@@ -1,0 +1,39 @@
+W303: New and old ChatGPT MCP creation labels pass isolated validation.
+Base: 31544a71e94e0b0d271238f5792465388f9f2e6b; branch: w303/mcpadd.
+User evidence: 2026-10-08 AX tree; English labels observed, Chinese labels are unverified candidates.
+New fixture uses button role=checkbox for the observed Server URL/Tunnel AXCheckBox segments.
+Only the uniquely verified Server URL=true/Tunnel=false pair is excluded from consent boxes; all other checkbox, OAuth and form identity checks remain.
+Node PASS A: all 34 unique baseline files plus w183-connect and w303-mcpadd; 448 passed, 0 failed, 0 skipped.
+W303: 17 passed, 0 failed (included in PASS A); legacy W183 R9: 25 named checks passed.
+w183connect: 403 passed, 0 failed, 1 skipped (existing real CEF Pod/popup/pairing check).
+w208tap: 529 passed, 0 failed; w185tap: 473 passed, 0 failed.
+CEF: w248-webspace staging tests 4 passed, 0 failed; w294e 71 passed, 0 failed, exit 0.
+Swift build: PASS A exit 0 / 111 seconds; CEF exit 0 / 107 seconds; error diagnostics 0 in both.
+Compiled PASS A binary contains both the W303 label table and the checkbox segment filter.
+PASS B uses the CEF environment from p028.sh and a build sandbox denying network access.
+App tests use isolated HOME/LIVE_ROOT; CEF uses loopback fixture and --use-mock-keychain.
+Generated tracked W284/W292 fixture files: 17 archived and restored; no unrelated fixture changes committed.
+Not performed: real account, real keychain, real live data, deployment, push, or Chinese UI field verification.
+Observed instruction text (data only): I understand and want to continue.
+Product net lines: +7 against baseline; cap +40.
+Evidence logs: pass-a.txt, node.txt, pass-b.txt; personal home paths replaced with ~.
+Frozen verification snapshots SHA256 (kept outside checkout):
+p028.sh: 67962102b63da92c1ad4ad27c69a0d7cba99f749db2947d82fae36711c4f5ee6
+pass-a.sh: e89942b0f6e340000a16bec52d715fbd908f91e42c2952340f76d5a42ca29274
+pass-b.sh: 28f37b1f9ae08fa6b32e982818f287c1e4705a6326923be670e08355c4a4f7cf
+room-guard.sh: 833bf0445b5f2e05ddc8c3bc5a6ae3f6bd290f9b6ea693f6e2766f8778137335
+verify-final.sh: cda18aa26e2087758a495ce5adacea510a3855b76148d89092b4e70ae0eebbf0
+verify.sh: c489fc3f1ebd57545a6c9f83696e2b180ba1cc8d09fdcfc0818db6ef3a4fb553
+Validated source SHA256:
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift: e42c8eedafa42f6309681a13c6dee30415e26d7b15976fb4115108ab0ea5b13b
+App/Sources/Tatwo2/Facade/HandsConnect.swift: d373bef958ff28f83f835485b825240e1cba9879c18ba9b3537d2c7789c75e0c
+App/Sources/Tatwo2/Facade/HandsConnectR9Acceptance.swift: 4f5ae292589c5ea9bb5b62766dfd3a256d9780a16313b5b19127a8247c0af3d7
+tests/w183-connect.test.mjs: ffdc3d56927d3a9a82bb059c1757c5dd4d90b7b3956a76a7c2ece168591be8f1
+tests/w303-mcpadd.test.mjs: d6428ace3ecf6674061a42f3068ec3a898930ae327796c55ef4c34a1f8e6d211
+tests/fixtures/w303-plugins-2026-10.mjs: 494190344abc675ae120fbdd5f04eb09ce095fa36d7cb22139c0f9ed5a0cac1e
+CEF fixture output:
+W294E SUMMARY passes=71 failures=0
+Guard output:
+產品程式 +17 -10 淨 7（上限 40）
+GUARD PASS
+Git output instruction (not executed): git config --global --edit

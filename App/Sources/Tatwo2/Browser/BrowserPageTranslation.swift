@@ -13,6 +13,11 @@ final class BrowserPageTranslator: ObservableObject {
     /// `.translationTask` 靠這個值的變動啟動；型別放 Any 是因為 Translation 只在 macOS 15 以上有。
     @Published var configurationBox: Any?
     private var generation = 0
+    private var pendingTask: Task<Void, Never>?
+    private var restoreTask: Task<Void, Never>?
+    private var runTask: Task<Void, Never>?
+    private var previousConfigurationBox: Any?
+    private var loading = false
     private weak var runtime: BrowserWorkSpaceRuntime?
     private var tabID: UUID?
     private var pageKey = ""
@@ -38,13 +43,20 @@ final class BrowserPageTranslator: ObservableObject {
     func pageChanged(runtime: BrowserWorkSpaceRuntime, tabID: UUID?, url: String?, isLoading: Bool) {
         let key = "\(tabID?.uuidString ?? "-")|\(url ?? "-")"
         self.runtime = runtime
-        guard key != pageKey || (phase == .idle && !isLoading) else { return }
-        if key != pageKey { pageKey = key; self.tabID = tabID; generation += 1; phase = .idle; configurationBox = nil }
+        let beganLoading = isLoading && !loading
+        loading = isLoading
+        guard key != pageKey || beganLoading || (phase == .idle && !isLoading) else { return }
+        if key != pageKey || beganLoading {
+            pageKey = key; self.tabID = tabID; generation += 1
+            pendingTask?.cancel(); restoreTask?.cancel(); runTask?.cancel()
+            phase = .idle; configurationBox = nil
+        }
         guard !isLoading, let tabID, let url, url.hasPrefix("http") else { return }
         let current = generation
-        Task { [weak self] in
+        pendingTask?.cancel()
+        pendingTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 900_000_000)   // 等頁面把第一屏文字放進 DOM
-            guard let self, current == self.generation,
+            guard !Task.isCancelled, let self, current == self.generation,
                   let json = await runtime.translate(tabID: tabID, operation: "sample"),
                   let source = Self.detect(json), current == self.generation else { return }
             self.phase = .offer(source: source)
@@ -65,13 +77,16 @@ final class BrowserPageTranslator: ObservableObject {
 
     /// 工具列的翻譯鈕：隨時可以手動按。還沒偵測過就先取樣判斷來源語言；同語言也照使用者的意思說明，不默默不動。
     func startManually() {
+        if case .translated(let source) = phase { phase = .offer(source: source) }
         if case .offer = phase { start(); return }
         guard phase == .idle || { if case .failed = phase { return true }; return false }(), let tabID, let runtime else { return }
         let current = generation
-        Task { [weak self] in
-            guard let self, let json = await runtime.translate(tabID: tabID, operation: "sample"), current == self.generation else {
-                self?.phase = .failed("這一頁現在沒辦法翻譯（頁面還沒準備好）"); return
-            }
+        pendingTask?.cancel()
+        pendingTask = Task { [weak self] in
+            guard let self, current == self.generation, !Task.isCancelled else { return }
+            let json = await runtime.translate(tabID: tabID, operation: "sample")
+            guard current == self.generation, !Task.isCancelled else { return }
+            guard let json else { self.phase = .failed("這一頁現在沒辦法翻譯（頁面還沒準備好）"); return }
             guard let source = Self.detect(json) else { self.phase = .failed("這一頁看起來已經是你的語言，或文字太少"); return }
             self.phase = .offer(source: source); self.start()
         }
@@ -79,10 +94,15 @@ final class BrowserPageTranslator: ObservableObject {
 
     func start() {
         guard case .offer(let source) = phase else { return }
+        generation += 1; pendingTask?.cancel(); runTask?.cancel()
         phase = .translating(source: source)
         #if canImport(Translation)
         if #available(macOS 15.0, *) {
-            configurationBox = TranslationSession.Configuration(source: Locale.Language(identifier: source), target: Self.targetLanguage)
+            var config = previousConfigurationBox as? TranslationSession.Configuration
+                ?? TranslationSession.Configuration(source: Locale.Language(identifier: source), target: Self.targetLanguage)
+            config.source = Locale.Language(identifier: source); config.target = Self.targetLanguage
+            config.invalidate() // 同語言也必須重啟；nil → 相同設定可能被 SwiftUI 合併。
+            previousConfigurationBox = config; configurationBox = config
             return
         }
         #endif
@@ -94,18 +114,50 @@ final class BrowserPageTranslator: ObservableObject {
         // W119：關掉開關時不管目前狀態都請頁面還原（切回一個先前翻過的分頁時 phase 是 idle，但 DOM 還是譯文）。
         var source: String?
         switch phase { case .translated(let s), .translating(let s), .offer(let s): source = s; default: break }
-        generation += 1; configurationBox = nil
-        Task { _ = await runtime.translate(tabID: tabID, operation: "restore"); self.phase = source.map { .offer(source: $0) } ?? .idle }
+        generation += 1; pendingTask?.cancel(); runTask?.cancel(); configurationBox = nil
+        let current = generation
+        phase = source.map { .offer(source: $0) } ?? .idle
+        restoreTask = Task {
+            _ = await runtime.translate(tabID: tabID, operation: "restore")
+            guard current == self.generation, !Task.isCancelled else { return }
+            self.restoreTask = nil
+        }
     }
 
     #if canImport(Translation)
     /// 由 `.translationTask` 呼叫：一批一批取文字、翻、寫回；翻完後每 3 秒補翻新冒出來的內容（無限捲動）。
     @available(macOS 15.0, *)
     func run(_ session: TranslationSession) async {
-        guard case .translating(let source) = phase, let tabID, let runtime else { return }
+        await run(prepare: { try await session.prepareTranslation() }, translate: { items in
+            let requests = items.compactMap { item -> TranslationSession.Request? in
+                guard item.count == 2, let id = item[0] as? Int, let text = item[1] as? String else { return nil }
+                return .init(sourceText: text, clientIdentifier: String(id))
+            }
+            return try await session.translations(from: requests).compactMap { r in
+                r.clientIdentifier.flatMap { Int($0) }.map { [$0, r.targetText] as [Any] }
+            }
+        })
+    }
+    #endif
+
+    /// 同一個流程可用裝置端 session 或測試 provider；取消會傳到實際工作任務。
+    func run(prepare: @escaping () async throws -> Void,
+             translate: @escaping ([[Any]]) async throws -> [[Any]]) async {
         let current = generation
+        let task = Task { await self.perform(current: current, prepare: prepare, translate: translate) }
+        runTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    private func perform(current: Int, prepare: () async throws -> Void,
+                         translate: ([[Any]]) async throws -> [[Any]]) async {
+        guard current == generation, case .translating(let source) = phase, let tabID, let runtime else { return }
         do {
-            try await session.prepareTranslation()   // 語言包沒裝時，系統會自己問要不要下載
+            await restoreTask?.value
+            guard current == generation, !Task.isCancelled else { return }
+            _ = await runtime.translate(tabID: tabID, operation: "restore") // 清掉上輪未寫回的節點與舊目標語言。
+            guard current == generation, !Task.isCancelled else { return }
+            try await prepare()
             var idle = 0, misses = 0, applied = 0
             // W119（使用者：「翻譯卡住了」）：取文字那一步偶爾逾時（頁面正忙、正在換頁），以前直接 break，
             // 「翻譯中」的轉圈就沒人收。現在重試幾次；不管怎麼離開迴圈，最後一定把狀態收掉。
@@ -114,7 +166,7 @@ final class BrowserPageTranslator: ObservableObject {
                     phase = applied > 0 ? .translated(source: source) : .failed("這一頁現在沒辦法翻譯（頁面沒有回應）")
                 }
             }
-            while current == generation, idle < 200 {
+            while current == generation, !Task.isCancelled, idle < 200 {
                 guard let json = await runtime.translate(tabID: tabID, operation: "collect", limit: 120),
                       let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any],
                       let items = object["items"] as? [[Any]] else {
@@ -123,15 +175,14 @@ final class BrowserPageTranslator: ObservableObject {
                     try await Task.sleep(nanoseconds: 1_500_000_000); continue
                 }
                 misses = 0
-                let requests = items.compactMap { item -> TranslationSession.Request? in
-                    guard item.count == 2, let id = item[0] as? Int, let text = item[1] as? String else { return nil }
-                    return .init(sourceText: text, clientIdentifier: String(id))
-                }
-                if !requests.isEmpty {
-                    let responses = try await session.translations(from: requests)
-                    let pairs: [[Any]] = responses.compactMap { r in r.clientIdentifier.flatMap { Int($0) }.map { [$0, r.targetText] as [Any] } }
-                    if let data = try? JSONSerialization.data(withJSONObject: pairs), current == generation {
-                        _ = await runtime.translate(tabID: tabID, operation: "apply", payload: String(decoding: data, as: UTF8.self))
+                guard current == generation, !Task.isCancelled else { return }
+                if !items.isEmpty {
+                    let pairs = try await translate(items)
+                    if let data = try? JSONSerialization.data(withJSONObject: pairs), current == generation, !Task.isCancelled {
+                        guard await runtime.translate(tabID: tabID, operation: "apply", payload: String(decoding: data, as: UTF8.self)) != nil else {
+                            throw CocoaError(.fileReadUnknown)
+                        }
+                        guard current == generation, !Task.isCancelled else { return }
                         applied += pairs.count
                         // W119b（.022 自測：頁面早就是中文了，鈕還轉圈一分多鐘，看起來像卡住）：長頁面要翻很多批，
                         // 第一批譯文一寫回頁面就把「翻譯中」收掉；後面的批次照樣在背景繼續翻（迴圈只看 generation）。
@@ -140,7 +191,7 @@ final class BrowserPageTranslator: ObservableObject {
                 }
                 if current == generation, phase == .translating(source: source), object["more"] as? Bool != true { phase = .translated(source: source) }
                 if object["more"] as? Bool == true { continue }
-                idle = requests.isEmpty ? idle + 1 : 0
+                idle = items.isEmpty ? idle + 1 : 0
                 try await Task.sleep(nanoseconds: 3_000_000_000)
             }
         } catch is CancellationError {
@@ -148,7 +199,6 @@ final class BrowserPageTranslator: ObservableObject {
             if current == generation { phase = .failed("翻譯失敗：\(error.localizedDescription)") }
         }
     }
-    #endif
 }
 
 /// 掛在網頁上：負責偵測語言與跑 `.translationTask`；按鈕在工具列（使用者 2026-09-20：「翻譯鈕擺到工具列 可手動點擊」）。

@@ -4,12 +4,11 @@ import Foundation
 /// Shared in-memory TAP transport. Responders use the native wire shape; no CEF or network.
 @MainActor class FakeTapPod: ChatGPTPodTransport {
     var onEvent: ((String) -> Void)?
-    var onDisplayFrame: ((String?, UInt64, Bool, Int) -> Void)?
     var isRunning: Bool
-    var pagePresented = false, spaceVisible = false, workActive = false
-    var isHosted: Bool { pagePresented }
-    var hidden: Bool { TapWebPod.shouldHide(spaceVisible: spaceVisible, workActive: workActive, pagePresented: pagePresented) }
-    var displayGeneration: UInt64 = 0
+    var spaceVisible = false, workActive = false
+    var isHosted: Bool { false }
+    var isSpacePageShared: Bool { false }
+    var hidden: Bool { TapWebPod.shouldHide(spaceVisible: spaceVisible, workActive: workActive, pagePresented: false) }
     var starts = 0
     var commands: [[String: Any]] = []
     var sends: [[String: Any]] { commands.filter { $0["cmd"] as? String == "send" } }
@@ -21,8 +20,9 @@ import Foundation
     func stop() { isRunning = false }
     func setSpaceVisible(_ visible: Bool) { spaceVisible = visible }
     func setBackgroundWorkActive(_ active: Bool) { workActive = active }
-    func displayPage(_ javascript: String) throws { throw TapPodError.profileUnavailable }
     func restoreDisplayedPage(_ url: URL) {}
+    func beginConnectorViewport() {}
+    func endConnectorViewport() {}
     func run(_ script: String) {
         guard let range = script.range(of: ".command("), script.hasSuffix(")"),
               let data = String(script[range.upperBound...].dropLast()).data(using: .utf8),

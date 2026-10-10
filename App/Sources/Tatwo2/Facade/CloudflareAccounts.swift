@@ -103,6 +103,7 @@ final class CloudflareKeychain: CloudflareSecretStore, @unchecked Sendable {
             guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else {
                 throw CloudflareSecretError.keychain(status)
             }
+            DeviceOnlyKeychain.harden(query(service, account, backend))
             return value
         }
         return nil

@@ -1,0 +1,6 @@
+Attempt 1: swift build --skip-update --disable-automatic-resolution --product Tatwo2 --jobs 4
+error: unable to spawn process 'metal' (No such file or directory)
+Attempt 2: swift build --build-system native --skip-update --disable-automatic-resolution --product Tatwo2 --jobs 4
+error: external macro implementation type 'SwiftUIMacros.StateMacro' could not be found for macro 'State()'; plugin for module 'SwiftUIMacros' not found
+This is an existing SDK/toolchain dependency used by unrelated SwiftUI files. No source workaround was made.
+No third build attempt, as requested.

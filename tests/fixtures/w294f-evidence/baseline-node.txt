@@ -1,0 +1,40 @@
+✔ unfinished self-created connector is included alongside installed entries without pressing Create (188.864541ms)
+✔ missing, paginated, or unreadable self-created section stays unknown even when installed is empty (10398.519584ms)
+✔ 20 reconnect cycles use one connector; transient failures never press Connect and expired authorization reuses its ID (567.89925ms)
+✖ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (12152.258125ms)
+✔ cleanup deletes a same-URL numbered duplicate, never the active connector or another URL (39.33725ms)
+✔ production browser script completes 200 turns in one conversation and releases each round (202.186708ms)
+✔ minute-scale thinking reports progress instead of prematurely completing the turn (45.312416ms)
+✔ manual namesake card can point to the existing self-created entry without pressing it (19.208625ms)
+✔ scan follows the visible Apps self-created tab and includes unfinished entries (10120.823583ms)
+✔ installed namesake on another server stops creation even with an empty self-created list (142.27025ms)
+✔ closing the delete dialog is not success while the connector still appears in the complete list (22.505458ms)
+✔ scan exposes the actual connected detail state for migration instead of assuming installed means connected (136.279708ms)
+✔ W210-1 account A to B while connectorDelete waits never presses final Delete (20.728958ms)
+✔ account A to B and back to A while connectorDelete waits still voids the deletion (21.247791ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 13
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 34226.296291
+
+✖ failing tests:
+
+test at tests/w208-tap-stress.test.mjs:90:1
+✖ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (12152.258125ms)
+  AssertionError [ERR_ASSERTION]: timed out connectorDelete
+      at Object.send (file:///Users/fixture/tatwo-build/rooms/W294f-fastpath/tests/w185-pod-fixture.mjs:665:14)
+      at async Object.command (file:///Users/fixture/tatwo-build/rooms/W294f-fastpath/tests/w185-pod-fixture.mjs:646:19)
+      at async TestContext.<anonymous> (file:///Users/fixture/tatwo-build/rooms/W294f-fastpath/tests/w208-tap-stress.test.mjs:95:18)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:960:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: undefined,
+    expected: undefined,
+    operator: 'fail',
+    diff: 'simple'
+  }

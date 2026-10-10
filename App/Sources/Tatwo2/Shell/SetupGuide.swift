@@ -153,7 +153,10 @@ struct SetupGuidePage: View {
                 }
                 .frame(height: 5)
                 VStack(spacing: 10) {
-                    ForEach(items) { item in row(item) }
+                    ForEach(items) { item in
+                        row(item)
+                        if item.id == "device" { WorkPathRow(isSetup: true) }
+                    }
                 }
             }
             .padding(TatwoSettingsPageMetrics.inset)

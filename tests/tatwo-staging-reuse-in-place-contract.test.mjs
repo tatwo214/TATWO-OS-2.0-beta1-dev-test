@@ -1,3 +1,4 @@
+import './fixtures/w255-swift-plugin.mjs';
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";

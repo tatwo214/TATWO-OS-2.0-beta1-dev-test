@@ -1,8 +1,10 @@
+import { keychainFixtureFiles } from './helpers/w255b-keychain-fixture.mjs';
 import { testScratch } from './helpers/test-scratch.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {readFileSync,writeFileSync,mkdirSync,existsSync} from 'node:fs';
 import {join} from 'node:path';
+import {homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import vm from 'node:vm';
@@ -113,14 +115,16 @@ test('W59 production Swift RFC6238, CSV, both-vault breach rules and every chang
     chatPageSettings.indexOf('/// The existing Settings navigation/frame'));
   assert.match(pageStyle,/struct TatwoSettingsPageHeader<Trailing: View>: View \{/);
   writeFileSync(join(dir,'settings-page-style.swift'),'import SwiftUI\n'+pageStyle);
-  const sources=['Browser/BrowserPasswordVault.swift','Browser/BrowserPasswordsSettingsView.swift',
+  const sources=['Engine/NativeStagingIsolation.swift','Browser/BrowserPasswordVault.swift','Browser/BrowserPasswordsSettingsView.swift',
     // W54 讓密碼設定頁改用共用視覺 token 與元件，fixture 要一起帶進來才編得過。
     'Visual/WorkspaceSidebarMetrics.swift','Browser/BrowserSettingsComponents.swift','Browser/BrowserGeneralSettings.swift','Browser/BrowserShortcuts.swift',
     'Browser/BrowserAIVault.swift','Browser/BrowserAIVaultSettingsView.swift','Browser/BrowserAILogin.swift','Browser/Import/BrowserPasswordCSVImport.swift',
     'Chat/TatwoPermissionPreset.swift','Chat/TatwoCodexSandboxMode.swift',
     'Custody/TOTP.swift','Custody/AIICloudImport.swift','Custody/AIAccountEditView.swift','Custody/AgentAccountsSettingsView.swift','Custody/AIPasswordChange.swift','Custody/BreachDetector.swift'].map(p=>app+p);
   const binary=join(dir,'fixture');
-  const compile=spawnSync('swiftc',['-parse-as-library','-swift-version','6','-num-threads','2',...sources,join(dir,'metadata.swift'),join(dir,'settings-page-style.swift'),writeBrowserVisualTokens(dir),
+  const plugins=process.env.TATWO_TEST_SWIFT_PLUGIN_PATH ?? join(homedir(),'tatwo-build/toolchains.noindex/macosx-plugins');
+  const pluginArgs=existsSync(join(plugins,'libSwiftUIMacros.dylib')) ? ['-plugin-path',plugins] : [];
+  const compile=spawnSync('swiftc',[...pluginArgs,'-parse-as-library','-swift-version','6','-num-threads','2',...keychainFixtureFiles(dir, sources),join(dir,'metadata.swift'),join(dir,'settings-page-style.swift'),writeBrowserVisualTokens(dir),
     'tests/fixtures/browser-ai-vault-dependencies.swift','tests/fixtures/agent-accounts-checks.swift','-o',binary],{cwd:root,encoding:'utf8',timeout:150000});
   assert.equal(compile.status,0,compile.stdout+compile.stderr);
   const run=spawnSync(binary,[dir,...process.env.W59_RENDER==='1'?['--render']:[]],{encoding:'utf8',timeout:25000});

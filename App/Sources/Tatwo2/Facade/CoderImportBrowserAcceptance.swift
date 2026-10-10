@@ -374,7 +374,7 @@ enum CoderImportBrowserAcceptance {
                     "Esc closes only the sheet; the main window never gets the key or cancelOperation (\(escapeWindows.count) Esc seen)")
         } else { t.check(false, "sheet for Esc") }
 
-        // 按住 Esc（自動重複）、快速連按兩下：sheet 關掉後主視窗變 key，後面的 Esc 也不能落到主視窗（主視窗的 Esc 會關整個 TATWO）。
+        // Sheet 關掉後，新的 Esc 與自動重複照常送給主視窗；主視窗不關窗。
         if let sheet = await present() {
             let start = ProcessInfo.processInfo.systemUptime
             postKey(.keyDown, window: sheet.windowNumber, at: start)
@@ -382,7 +382,7 @@ enum CoderImportBrowserAcceptance {
             postKey(.keyDown, window: parent.windowNumber, at: start + 0.09, repeat: true)
             postKey(.keyUp, window: parent.windowNumber, at: start + 0.12)
             await settle()
-            t.check(closedOnlySheet(), "holding Esc (key repeat after the sheet closed) never reaches the main window")
+            t.check(parent.isVisible && parent.attachedSheet == nil && parent.closes == 0 && parent.escapes == 2, "held Esc reaches main responder after sheet closes and keeps window visible")
         } else { t.check(false, "sheet for held Esc") }
         if let sheet = await present() {
             let start = ProcessInfo.processInfo.systemUptime
@@ -392,14 +392,14 @@ enum CoderImportBrowserAcceptance {
             postKey(.keyDown, window: parent.windowNumber, at: start + 0.08)
             postKey(.keyUp, window: parent.windowNumber, at: start + 0.1)
             await settle()
-            t.check(closedOnlySheet(), "Esc pressed twice within 0.1 s closes the sheet only; the second press is eaten")
-            // 過一會兒再重新按的 Esc 照常送到主視窗（不會一直吃掉）；替身主視窗只記數，不會真的關。
+            t.check(parent.isVisible && parent.attachedSheet == nil && parent.closes == 0 && parent.escapes == 1, "Esc within 0.1 s after closing sheet reaches main responder")
+            // 再按一次仍送到主視窗；替身主視窗只記數，不關窗。
             parent.makeKeyAndOrderFront(nil)
             let later = ProcessInfo.processInfo.systemUptime
             postKey(.keyDown, window: parent.windowNumber, at: later)
             postKey(.keyUp, window: parent.windowNumber, at: later + 0.03)
             await settle()
-            t.check(parent.escapes == 1 && !CoderSheetEscapeGuard.isArmed, "a fresh Esc later goes to the main window as before (guard disarmed)")
+            t.check(parent.escapes == 2 && parent.closes == 0, "a later fresh Esc also reaches main responder without closing window")
             parent.reset()
         } else { t.check(false, "sheet for double Esc") }
 
@@ -446,7 +446,7 @@ enum CoderImportBrowserAcceptance {
     }
 
     /// 真的 App 情境：真的 Island 面板（同一個類別、層級、位置，跟 App 一樣沒設 ignoresMouseEvents）＋真的 TATWO 主視窗
-    /// （TatwoWorkOSWindow，Esc 會關掉它）貼在螢幕上緣，靠左與置中兩種擺法。用 WindowServer 的點擊判定
+    /// （TatwoWorkOSWindow）貼在螢幕上緣，靠左與置中兩種擺法。用 WindowServer 的點擊判定
     /// （windowNumber(at:)：哪個視窗會收到這一點的滑鼠按下）確認 ✕／完成那一點收到點擊的是 sheet；Esc 不會關掉主視窗。
     @MainActor private static func appContextChecks(_ t: Tally, _ world: Fixture, model: ChatPageModel) async {
         guard let screen = NSScreen.main else { t.check(false, "a screen for the app-context checks"); return }
@@ -495,19 +495,18 @@ enum CoderImportBrowserAcceptance {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 t.check(CoderSheetPresenter.current == nil && main.attachedSheet == nil && main.isVisible,
                         "Esc (held) on the sheet over a real TatwoWorkOSWindow closes only the sheet; the TATWO window stays open")
-                // 對照：過一會兒重新按的 Esc 真的會關掉這個主視窗（證明上面那條不是因為 Esc 根本到不了主視窗才過）。
+                // W290：保護期過後，新的 Esc 到主視窗也不會關窗。
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 main.makeFirstResponder(content)
                 let later = ProcessInfo.processInfo.systemUptime
                 postKey(.keyDown, window: main.windowNumber, at: later)
                 postKey(.keyUp, window: main.windowNumber, at: later + 0.03)
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                t.check(!main.isVisible, "control: a fresh Esc later does close the real TatwoWorkOSWindow (the check above is not vacuous)")
+                t.check(main.isVisible, "a fresh Esc later keeps the real TatwoWorkOSWindow visible")
             }
             if CoderSheetPresenter.current != nil { CoderSheetPresenter.close() }
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
-        CoderSheetEscapeGuard.disarm()
     }
 
     @MainActor private static func postKey(_ type: NSEvent.EventType, window: Int, at time: TimeInterval, repeat isRepeat: Bool = false) {

@@ -1,3 +1,4 @@
+import { keychainFixtureFiles } from './helpers/w255b-keychain-fixture.mjs';
 import { testScratch } from './helpers/test-scratch.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -142,7 +143,7 @@ test('W57c real Swift coordinator/vault/planners: Island allow/deny, save/update
   writeFileSync(join(dir, 'metadata.swift'), 'import Foundation\nimport WebKit\n' + metadata);
   const binary = join(dir, 'fixture');
   const result = spawnSync('swiftc', ['-parse-as-library', '-swift-version', '6', '-num-threads', '2',
-    app + 'BrowserPasswordVault.swift', app + 'BrowserPasswordAssist.swift', app + 'BrowserGeneralSettings.swift', app + 'BrowserShortcuts.swift',
+    ...keychainFixtureFiles(dir, [app + 'BrowserPasswordVault.swift']), app + 'BrowserPasswordAssist.swift', app + 'BrowserGeneralSettings.swift', app + 'BrowserShortcuts.swift',
     join(dir, 'metadata.swift'), 'tests/fixtures/browser-password-fill-checks.swift', '-o', binary],
   {cwd: root, encoding: 'utf8', timeout: 120000});
   assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);

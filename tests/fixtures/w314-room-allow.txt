@@ -1,0 +1,6 @@
+App/Sources/Tatwo2/Facade/EngineInstall.swift # Claude accepts verified actual version at or above checked latest
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift # Preserve rows for unselected vendors
+App/Sources/Tatwo2/Facade/W298bAcceptance.swift # Extend existing fake CLI and selection acceptance
+App/Sources/Tatwo2/Facade/W298cAcceptance.swift # Align existing skipped vendor assertions with preserved row requirement
+tests/w298b-ai-install.test.mjs # Require W314 native acceptance results
+tests/fixtures/w314-room-allow.txt # Room boundary allow list

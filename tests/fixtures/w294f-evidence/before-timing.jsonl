@@ -1,0 +1,2 @@
+{"cmd":"connectorDelete","elapsedMS":14673,"timeoutMS":12018,"routes":[{"path":"/","ms":7},{"path":"/plugins/asdk_app_original","ms":9585}],"result":{"deleted":false,"reason":"名稱／帳號區／Connect 按鈕未確認"}}
+{"cmd":"connectorReconnect","elapsedMS":14670,"timeoutMS":12015,"routes":[{"path":"/","ms":8},{"path":"/plugins/asdk_app_original","ms":9586}],"result":{"status":"not_found","step":"verify"}}

@@ -3,6 +3,20 @@ import Foundation
 @MainActor final class EngineModelCatalogProbe {
     static let shared = EngineModelCatalogProbe()
     private var probes: [ClaudeSidecar.Kind: ClaudeSidecar] = [:]
+    func read(_ kind: ClaudeSidecar.Kind, executable: URL? = nil) async -> EngineModelCatalog.Catalog? {
+        let sidecar = ClaudeSidecar(kind: kind)
+        var result: EngineModelCatalog.Catalog?
+        var ended = false
+        sidecar.onEvent = { event in
+            if case .sdk(let message) = event { result = EngineModelCatalog.decode([message]).first; if result != nil { ended = true } }
+            if case .closed = event { ended = true }
+            if case .error = event { ended = true }
+        }
+        defer { sidecar.onEvent = nil; sidecar.close() }
+        do { try sidecar.start(cwd: ClaudeSidecar.engineHomeRoot().path, resume: nil, model: nil, catalogOnly: true, runtimeOverride: executable.map { .init(executable: $0, version: nil, source: "本機", reason: nil) }) } catch { return nil }
+        for _ in 0..<200 { if ended || Task.isCancelled { break }; try? await Task.sleep(for: .milliseconds(100)) }
+        return result
+    }
     func refresh(force: Bool = false, onChange: @escaping () -> Void) {
         guard !NativeStagingIsolation.isEnabled(ProcessInfo.processInfo.environment) else { return }
         if force {

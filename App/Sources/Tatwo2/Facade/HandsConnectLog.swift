@@ -105,10 +105,13 @@ final class HandsConnectLog: @unchecked Sendable {
         return String(clipped.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
     }
 
-    /// 第二道：信箱、Bearer／長 token、網址的查詢字串與片段、看起來像 8 碼配對碼的字，一律遮掉。
+    /// 第二道：帳號區與名稱、信箱、Bearer／長 token、網址的查詢字串與片段、看起來像 8 碼配對碼的字，一律遮掉。
     static func scrub(_ text: String) -> String {
         var out = text
         let rules: [(String, String)] = [
+            (#"(?im)^([ ]*)(?:section|div)[^\n]*\n\1 +[^\n]*"(?:connected accounts|accounts|已連線帳號|已連接帳號|連線帳號|帳號)"[^\n]*(?:\n\1 +[^\n]*)*"#, "$1(account)"),
+            (#"(?im)^[^\n]*(?:account(?:[_ -]?name)?|帳號(?:名稱)?)\s*[:=][^\n]*"#, "(account)"),
+            (#"(?im)^[^\n]*['’]s [^\n]* account[^\n]*"#, "(account)"),
             (#"(?i)bearer\s+[A-Za-z0-9._~+/=-]+"#, "Bearer <token>"),
             (#"(https?://[^\s?#⟦⟧"']+)[?#][^\s⟦⟧"']*"#, "$1?<…>"),
             (#"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#, "<email>"),

@@ -1,14 +1,17 @@
 import Combine
 import Foundation
 
-/// 模型資料只快取在記憶體。選模或送出時喚醒；送出須就緒，登入狀態與可用目錄分開。
+/// 模型資料只快取在記憶體；讀失敗保留清單，送出須重新確認。
 enum ChatGPTTapModelCatalog {
     private final class Cache: @unchecked Sendable {
         let lock = NSLock()
         var models: [TapModel] = []
         var rememberedTitles: [String: String] = [:]
         var currentEffortID: String?
+        var defaultModelID: String?
         var fetchedAt: Date?
+        var loading = false
+        var failureReason: String?
         var revision: UInt64 = 0
     }
     private static let cache = Cache()
@@ -31,24 +34,48 @@ enum ChatGPTTapModelCatalog {
         defer { cache.lock.unlock() }
         return cache.fetchedAt.map { Date().timeIntervalSince($0) < maxAge } ?? false
     }
-    static func replace(_ models: [TapModel], currentEffortID: String? = nil, fetchedAt: Date = Date()) {
+    static func replace(_ models: [TapModel], currentEffortID: String? = nil, defaultModelID: String? = nil, fetchedAt: Date = Date()) {
         cache.lock.lock()
         defer { cache.lock.unlock() }
-        if cache.models != models || cache.currentEffortID != currentEffortID { cache.revision &+= 1 }
-        for model in models { cache.rememberedTitles[model.id] = modelTitle(model.title) }
+        if cache.models != models || cache.currentEffortID != currentEffortID || cache.defaultModelID != defaultModelID { cache.revision &+= 1 }
+        for model in models { cache.rememberedTitles[model.id] = model.title }
         cache.models = models
         cache.currentEffortID = currentEffortID
+        cache.defaultModelID = defaultModelID
         cache.fetchedAt = models.isEmpty ? nil : fetchedAt
+        cache.failureReason = nil
+    }
+    static func recordFailure(_ error: Error) {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        cache.failureReason = ChatGPTTap.modelReadFailureReason(error)
+        cache.fetchedAt = nil
+        cache.revision &+= 1
+    }
+    static func loading(_ value: Bool) {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        cache.loading = value
+    }
+    @MainActor static func readModels(_ tap: any ConversationTap) async throws -> (items: [TapModel], defaultID: String?, currentEffortID: String?) {
+        do { return try await tap.models() }
+        catch { try Task.checkCancellation(); try await Task.sleep(for: .seconds(1)); return try await tap.models() }
+    }
+    static var failureReason: String? {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        return cache.loading ? "ChatGPT 模型讀取中" : cache.failureReason
+    }
+    static func effectiveModel(_ routeID: String) -> TapModel? {
+        cache.lock.lock(); defer { cache.lock.unlock() }
+        return ChatGPTModelMenu.effectiveModel(.init(models: cache.models.filter(isCoderModel), defaultModelID: cache.defaultModelID),
+                                              .init(modelID: modelID(routeID)))
     }
     /// 回覆紀錄只回填名稱；不讓歷史快照變成可送出的模型或推理能力。
     static func rememberDisplayName(_ title: String, routeID: String) {
         guard isRouteID(routeID), !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               title != "ChatGPT 模型" else { return }
         cache.lock.lock(); defer { cache.lock.unlock() }
-        let normalized = modelTitle(title)
         let id = modelID(routeID)
-        guard cache.rememberedTitles[id] != normalized else { return }
-        cache.rememberedTitles[id] = normalized
+        guard cache.rememberedTitles[id] != title else { return }
+        cache.rememberedTitles[id] = title
         cache.revision &+= 1
     }
     static func rememberedTitle(_ modelID: String) -> String? {
@@ -64,9 +91,10 @@ enum ChatGPTTapModelCatalog {
         case .starting: return "ChatGPT 啟動中；請稍候"
         case .failed: return "ChatGPT 連線失敗；請打開 ChatGPT 重新連線"
         case .ready:
-            guard isFresh, !snapshot.filter(isCoderModel).isEmpty else {
-                return "ChatGPT 模型目錄未就緒或已過期；開啟模型選單重新整理"
+            guard !snapshot.filter(isCoderModel).isEmpty else {
+                return failureReason ?? "ChatGPT 模型目錄未就緒或已過期；開啟模型選單重新整理"
             }
+            if !isFresh, failureReason == nil { return "ChatGPT 模型目錄已過期，待更新" }
             if let routeID, !snapshot.filter(isCoderModel).contains(where: { self.routeID($0.id) == routeID }) {
                 return "這個 ChatGPT 模型已不在目錄中；請重新選擇"
             }
@@ -81,9 +109,10 @@ enum ChatGPTTapModelCatalog {
             let models = try await tap.models()
             try Task.checkCancellation()
             guard tap.connection == .ready else { throw TapError.notReady }
-            replace(models.items, currentEffortID: models.currentEffortID)
-            guard isFresh else { throw TapError.remote("ChatGPT 模型目錄是空的") }
+            guard !models.items.filter(isCoderModel).isEmpty else { throw TapError.remote("ChatGPT 模型目錄是空的") }
+            replace(models.items, currentEffortID: models.currentEffortID, defaultModelID: models.defaultID)
         } catch {
+            recordFailure(error)
             throw TapError.remote("ChatGPT 模型目錄重新整理失敗，這句未送出：\(error.localizedDescription)")
         }
     }
@@ -105,9 +134,6 @@ enum ChatGPTTapModelCatalog {
         return !name.contains("deep research") && !name.contains("深入研究")
             && !id.contains("deep-research") && !id.contains("deepresearch")
     }
-    static func modelTitle(_ title: String) -> String {
-        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "o 3-pro" ? "o3-pro" : title
-    }
     static func effortTitle(_ effort: TapEffort) -> String {
         let titles = ["instant": "即時", "auto": "自動", "light": "輕量", "standard": "標準",
                       "extended": "延長", "thinking": "思考", "pro": "專業", "heavy": "深入",
@@ -115,11 +141,11 @@ enum ChatGPTTapModelCatalog {
                       "xhigh": "最高", "minimal": "最低"]
         if let title = titles[effort.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()]
             ?? titles[effort.id.lowercased()] { return title }
-        return effort.title.range(of: "[\\p{Han}]", options: .regularExpression) != nil ? effort.title : "其他強度"
+        return effort.title
     }
     static func choice(model: TapModel) -> ChatRouteChoice {
         ChatRouteChoice(profile: TatwoChatRouteProfile(
-            id: routeID(model.id), displayName: modelTitle(model.title), family: "ChatGPT",
+            id: routeID(model.id), displayName: model.title, family: "ChatGPT",
             engine: .codex, runtimeAdapter: .chatgptTap, canonicalModelSlug: routeID(model.id),
             modelArgument: routeID(model.id), contextWindowLabel: "ChatGPT 訂閱",
             supportsImageInput: false, pluginFit: "ChatGPT", sessionRisk: "獨立登入",
@@ -135,6 +161,7 @@ final class ChatGPTTapModelObservation {
     private var noticeWatch: AnyCancellable?
     private var refresh: Task<Void, Never>?
     private var generation = 0
+    private var isLoading = false
     private weak var tap: ChatGPTTap?
     private let onChange: () -> Void
     init(tap: ChatGPTTap? = nil, onNotice: @escaping (String) -> Void = { _ in }, onChange: @escaping () -> Void) {
@@ -148,7 +175,9 @@ final class ChatGPTTapModelObservation {
             let generation = self.generation
             self.refresh?.cancel()
             // Keep display choices in memory while sleeping or waking; send admission still requires ready.
-            if connection != .sleeping, connection != .starting { ChatGPTTapModelCatalog.replace([]) }
+            if connection == .needsLogin || connection == .off { ChatGPTTapModelCatalog.replace([]) }
+            self.isLoading = false
+            ChatGPTTapModelCatalog.loading(connection == .ready)
             onChange()
             guard connection == .ready else { return }
             self.reload(tap, generation: generation)
@@ -156,24 +185,33 @@ final class ChatGPTTapModelObservation {
         Self.current = self
     }
     func refreshIfNeeded() {
-        guard let tap, tap.connection == .ready,
-              !ChatGPTTapModelCatalog.isFresh else { return }
+        guard let tap, tap.connection == .ready, !ChatGPTTapModelCatalog.isFresh, !isLoading else { return }
         generation += 1
         refresh?.cancel()
         reload(tap, generation: generation)
     }
     private func reload(_ tap: ChatGPTTap, generation: Int) {
+        isLoading = true
+        ChatGPTTapModelCatalog.loading(true); onChange()
         refresh = Task { @MainActor [weak self, weak tap] in
             guard let tap else { return }
-            let models = try? await tap.models()
+            do {
+                let models = try await ChatGPTTapModelCatalog.readModels(tap)
+                guard !Task.isCancelled, self?.generation == generation, tap.connection == .ready else { return }
+                ChatGPTTapModelCatalog.replace(models.items, currentEffortID: models.currentEffortID, defaultModelID: models.defaultID)
+            } catch {
+                guard !Task.isCancelled, self?.generation == generation, tap.connection == .ready else { return }
+                ChatGPTTapModelCatalog.recordFailure(error)
+            }
             guard !Task.isCancelled, self?.generation == generation, tap.connection == .ready else { return }
-            ChatGPTTapModelCatalog.replace(models?.items ?? [], currentEffortID: models?.currentEffortID)
+            self?.isLoading = false
+            ChatGPTTapModelCatalog.loading(false)
             self?.onChange()
-            // 到期只刷新可用性，不喚醒 Pod，也不自動送出或重新整理。
+            // 到期只更新「待更新」標示；開選單才重讀，不喚醒 Pod。
             try? await Task.sleep(for: .seconds(ChatGPTTapModelCatalog.maxAge))
             guard !Task.isCancelled, self?.generation == generation else { return }
             self?.onChange()
         }
     }
-    deinit { refresh?.cancel() }
+    deinit { refresh?.cancel(); ChatGPTTapModelCatalog.loading(false) }
 }

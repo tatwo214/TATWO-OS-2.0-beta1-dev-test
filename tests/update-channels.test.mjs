@@ -181,6 +181,11 @@ test('release-train checksum verifier executes and rejects corrupt artifacts', (
 
 test('private installer executes authenticated adapter with tag-pinned shared guards and no public network', () => {
   const dir=mkdtempSync(join(tmpdir(),'w25-private-'));
+  // Compile the adapter fixture with an explicit fake, never a host security fallback.
+  assert.equal((installer.match(/\bsecurity\b/g) ?? []).length, 1);
+  const adapter=installer.replace(/\bsecurity\b/g, 'w255bFixtureSecurity');
+  assert.doesNotMatch(adapter, /\bsecurity\b/);
+  writeFileSync(join(dir,'install-private.sh'), adapter);
   const shared=read('install.sh').split('# RUNTIME-ASSEMBLY-BEGIN')[0];
   writeFileSync(join(dir,'install.sh'), shared + '\ncurl -o "$TEMP/archive.zip" "$ZIP_URL"\n');
   const url='https://github.com/tatwo214/TATWO-OS-2.0-private/releases/download/v2.0.5.001/';
@@ -188,7 +193,7 @@ test('private installer executes authenticated adapter with tag-pinned shared gu
     ['TATWO-OS.zip','TATWO-OS.zip.sha256','TATWO-OS.install-ready'].map(name=>({name,browser_download_url:url+name}))}));
   const r=spawnSync('bash',['-c',`
 set -euo pipefail
-security() { printf '%s' fixture-memory-only; }
+w255bFixtureSecurity() { printf '%s' fixture-memory-only; }
 gh() {
   [[ "$GH_TOKEN" == fixture-memory-only ]] || return 91
   printf '%s\\n' "$*" >> "$FIXTURE/calls"
@@ -198,8 +203,8 @@ gh() {
     while [[ $# -gt 0 ]]; do if [[ "$1" == --output ]]; then shift; printf bytes > "$1"; fi; shift; done
   else return 92; fi
 }
-export -f gh security
-TATWO_OS_VERSION=v2.0.5.001 TATWO_OS_GITHUB_USERNAME=fixture bash scripts/install-private.sh
+export -f gh w255bFixtureSecurity
+TATWO_OS_VERSION=v2.0.5.001 TATWO_OS_GITHUB_USERNAME=fixture bash "$FIXTURE/install-private.sh"
 `],{encoding:'utf8',env:{...process.env,FIXTURE:dir,GH_DEBUG:'api'}});
   assert.equal(r.status,0,r.stderr);
   const calls=readFileSync(join(dir,'calls'),'utf8');

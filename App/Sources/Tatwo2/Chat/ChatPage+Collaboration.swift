@@ -40,54 +40,6 @@ extension ChatPage {
         }
     }
 
-    var skillSuggestionRail: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                Label("$ skills", systemImage: "dollarsign.circle")
-                    .font(.caption2.weight(.black))
-                    .foregroundStyle(.secondary)
-                ForEach(Array(model.skillSuggestions.enumerated()), id: \.element.id) { idx, entry in
-                    let isSelected = model.skillSuggestionSelectedIndex == idx
-                    Button {
-                        model.applySkillSuggestion(entry)
-                    } label: {
-                        Text("$\(entry.id)")
-                            .font(.caption2.monospaced().weight(.bold))
-                            .lineLimit(1)
-                            .foregroundStyle(isSelected ? LiquidGlassTokens.brandAccent : .primary)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(
-                                LiquidGlassTokens.brandAccent.opacity(isSelected ? 0.20 : 0.08),
-                                in: Capsule())
-                            .overlay(
-                                Capsule().strokeBorder(
-                                    isSelected ? LiquidGlassTokens.brandAccent : Color.clear,
-                                    lineWidth: 1.5))
-                    }
-                    .buttonStyle(.plain)
-                    .help("→ 選取、Enter 插入，或點擊/右鍵插入 $\(entry.id)：\(entry.trigger)")
-                    // 使用者 #63：右鍵可選到對話筐，不用打整段。
-                    .contextMenu {
-                        Button {
-                            model.applySkillSuggestion(entry)
-                        } label: {
-                            Label("插入 $\(entry.id) 到輸入框", systemImage: "text.insert")
-                        }
-                        if !entry.trigger.isEmpty {
-                            Section("用途") { Text(entry.trigger) }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 9)
-        .frame(height: 30)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
-    }
-
-
     func collaborationStrengthSlider(level: ChatCollaborationLevel) -> some View {
         let options = ChatCollaborationLevel.allCases.filter { $0 != .off }
         let committedIsActive = level != .off

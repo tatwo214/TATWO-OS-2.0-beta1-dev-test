@@ -1,0 +1,11 @@
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+App/Sources/Tatwo2/Pages/PluginConnectionCard.swift
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Facade/W235MCPAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w235-mcp.test.mjs
+tests/plugins-liveness.test.mjs
+tests/fixtures/w235-room-allow.txt
+Engines/codex-sidecar/sidecar.mjs
+tests/w29b-ux-fixes.test.mjs

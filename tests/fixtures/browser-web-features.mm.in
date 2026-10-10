@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
+#include <functional>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -52,8 +55,18 @@ class CefDownloadItem {
   CefString GetOriginalUrl() { return original; }
   CefString GetFullPath() { return path; }
 };
+class CefDownloadItemCallback {
+ public:
+  int canceled = 0;
+  std::function<void()> beforeCancel;
+  void Cancel() { if (beforeCancel) beforeCancel(); ++canceled; }
+};
 class TatwoClient {
  public:
+  struct HumanDownload { NSString *path = nil; NSString *terminal_state = nil; };
+  std::map<uint32_t, HumanDownload> human_downloads_;
+  HumanDownload &HumanDownloadFor(CefDownloadItem *item) { return human_downloads_[item->GetId()]; }
+// INSERT activeDownloads
   TatwoCEFBrowserView *owner_;
   CefFileDialogCallback *file_dialog_callback_ = nullptr;
   uint64_t web_features_serial_ = 0, file_dialog_serial_ = 0, pdf_download_request_serial_ = 0;
@@ -64,6 +77,9 @@ class TatwoClient {
   void W57dCancel();
   void W57dFinishPDFDownload(NSString*);
   void W57dDownloadUpdate(CefDownloadItem*);
+  void DeniedDownloadUpdate(CefDownloadItem *download_item, CefDownloadItemCallback *callback) {
+// INSERT deniedDownload
+  }
   bool OnFileDialog(CefBrowser *, FileDialogMode, const CefString &, const CefString &,
     const std::vector<CefString> &, const std::vector<CefString> &,
     const std::vector<CefString> &, CefFileDialogCallback *);
@@ -195,6 +211,34 @@ int main() { @autoreleasepool {
   assert(pdfReplies==4 && client.pdf_download_completion_);
   client.W57dDownloadUpdate(&download);
   assert(pdfReplies==5 && !client.pdf_download_completion_);
+  char pattern[] = "/tmp/tatwo-w281-pdf-XXXXXX";
+  const char *dir = mkdtemp(pattern); assert(dir);
+  NSString *finalPDF = [NSString stringWithFormat:@"%s/document (1).pdf", dir];
+  int pdfFD = open(finalPDF.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+  assert(pdfFD >= 0 && write(pdfFD, "%PDF-valid", 10) == 10); close(pdfFD);
+  assert(W57dIsPDF(finalPDF));
+  download.interrupted=false; download.complete=true; download.path="/private/staging/document.pdf";
+  beginPDF(); client.pdf_download_path_=@"/downloads/document.pdf"; client.pdf_download_id_=7;
+  client.human_downloads_[7].path=finalPDF; client.human_downloads_[7].terminal_state=@"completed";
+  client.pdf_download_completion_=^(NSString *path) { assert([path isEqualToString:finalPDF]); ++*replyCount; };
+  client.W57dDownloadUpdate(&download); assert(pdfReplies==6);
+  beginPDF(); client.human_downloads_[7].terminal_state=@"failed";
+  client.W57dDownloadUpdate(&download); assert(pdfReplies==7);
+  download.complete=false; download.interrupted=true;
+  client.pdf_download_path_=nil; view.browserActor=TatwoCEFBrowserActorAgent;
+  download.id=8; assert(!client.human_downloads_.count(8));
+  beginPDF();
+  CefDownloadItemCallback denied;
+  denied.beforeCancel=[&] { assert(pdfReplies==8 && !client.pdf_download_completion_); };
+  const auto started = std::chrono::steady_clock::now();
+  client.DeniedDownloadUpdate(&download, &denied);
+  assert(denied.canceled==1 && pdfReplies==8);
+  assert(std::chrono::steady_clock::now() - started < std::chrono::seconds(1));
+  puts("W281b non-human PDF failure replied synchronously before Cancel, under 1 second");
+  assert(!client.human_downloads_.count(8) && !client.HasActiveHumanDownloads());
+  puts("L1 non-human PDF failure leaves no unfinished human download record, so the tab can sleep");
+  unlink(finalPDF.fileSystemRepresentation); rmdir(dir);
+  puts("W281 PDF final published path and failed-publication rejection passed");
   puts("W57d PDF failure fixture passed: early failure/destination failure/duplicates/reentrancy/exact item");
   puts("W57d UA and dialog fixture passed: agent/hidden/missing/revoked/duplicate/multiple/folder/save");
 } }

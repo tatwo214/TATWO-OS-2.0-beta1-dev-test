@@ -770,6 +770,7 @@ final class DMSecretCodeView: NSView {
     var text = "" {
         didSet { if text != oldValue { invalidateIntrinsicContentSize(); needsDisplay = true } }
     }
+    var qrImage: NSImage? { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -803,11 +804,17 @@ final class DMSecretCodeView: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
+        if qrImage != nil { return NSSize(width: 100, height: 100) }
         let size = attributed().size()
         return NSSize(width: ceil(size.width), height: ceil(size.height))
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let qrImage {
+            NSGraphicsContext.current?.imageInterpolation = .none
+            qrImage.draw(in: bounds)
+            return
+        }
         var text = attributed()
         if text.size().width > bounds.width, bounds.width > 0 {
             text = attributed(scale: max(0.6, bounds.width / text.size().width))

@@ -1,0 +1,11 @@
+# W263：僅 F1／F2 產品、相關隔離測試與 F3 文件；對 3b55095b 淨增上限 +20。
+App/Sources/Tatwo2/Facade/HandsFloors.swift # F1：交易分類檢查真實路徑的祖先段，保留包含比對與別名防線。
+App/Sources/Tatwo2/Facade/HandsBuildConfig.swift # F2：拒絕負 age；保留 45 秒窗口、levelGuard 與 revision。
+tests/w263-threatfix.test.mjs # F1／F2：編譯正式判斷函式，假 HOME、捷徑與時間正反案例。
+tests/w183-one-press.test.mjs # F1：舊契約斷言跟隨祖先段比對；原有其他斷言保留。
+tests/w255-hardening.test.mjs # F3：H2 名稱區分密碼核准與一鍵配對；斷言不變。
+docs/specs/185-chatgpt-tap-release/threat-review-20261006.md # F3：現況、使用者裁決、Pod 殘餘、逐列計數與牆上時鐘影響。
+docs/specs/185-chatgpt-tap-release/w255-room-report.md # F3：校正三列部分與 W255c 配對現況，保留歷史驗收事件。
+tests/fixtures/w255b-room-report.md # F3：H2 表格名稱跟隨改名，保留既有測試結果。
+tests/fixtures/w255b-f1-all.md # F3：完整 F1 表格同步 H2 名稱，保留歷史結果。
+tests/fixtures/w263-room-allow.txt # 收房：逐檔理由與允許範圍。

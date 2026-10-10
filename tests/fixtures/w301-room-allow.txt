@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/New/CrashRelaunch.swift
+App/Sources/Tatwo2/New/DisplaySettingsView.swift
+App/Sources/Tatwo2/Tatwo2App.swift
+App/Sources/Tatwo2/Shell/AppShell.swift
+docs/specs/301-relaunch/research.md
+tests/w301-relaunch.test.mjs
+tests/fixtures/w301-room-allow.txt
+tests/fixtures/w294f-evidence/*.txt
+tests/fixtures/w301-evidence.txt

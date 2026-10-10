@@ -121,10 +121,10 @@ enum JobsIndexAcceptance {
         try check(latest?.turnID == "acceptance", "out of order completion preserves latest")
         print("JOBSTEST PASS artifacts_list shared store, isolation, reload, latest ordering")
         try check(TurnArtifactsGit.paths("R  new name\0old name\0?? 中文.md\0") == ["new name", "中文.md"], "git NUL rename parsing")
-        try check(TurnArtifactsGit.run(["init", "--quiet"], cwd: workspace.path) != nil, "fixture git init")
-        let status = TurnArtifactsGit.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd: workspace.path)
+        try check(HandsGit.hostRead(["init", "--quiet"], cwd: workspace.path) != nil, "fixture git init")
+        let status = HandsGit.hostRead(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd: workspace.path)
         try check(status.map { TurnArtifactsGit.paths($0).contains("report.md") } == true, "bounded git subprocess")
-        try check(TurnArtifactsGit.run(["--not-a-valid-option"], cwd: workspace.path) == nil, "git failure remains visible")
+        try check(HandsGit.hostRead(["--not-a-valid-option"], cwd: workspace.path) == nil, "git failure remains visible")
         print("JOBSTEST PASS bounded git subprocess, failure, NUL paths including rename and Unicode")
 
         let child = Process()

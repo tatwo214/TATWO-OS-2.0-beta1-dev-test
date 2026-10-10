@@ -1,0 +1,6 @@
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift # Cache newest versions and reconcile locally at startup
+App/Sources/Tatwo2/New/EngineLoginCard.swift # Refresh local status whenever login opens
+App/Sources/Tatwo2/Facade/W298aAcceptance.swift # Run W315 regressions in the existing isolated selftest
+App/Sources/Tatwo2/Facade/W315Acceptance.swift # Fake CLI/defaults and actual login page acceptance
+tests/w315-ai-dot.test.mjs # Require native regression evidence
+tests/fixtures/w315-room-allow.txt # Room scope

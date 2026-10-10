@@ -5,7 +5,11 @@ struct ChatBrowserDownloadsView: View {
     @ObservedObject private var store = BrowserDownloadStore.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("下載項目").font(.headline)
+            HStack {
+                Text("下載項目").font(.headline)
+                Spacer()
+                Button("清除紀錄", action: store.clearDownloads).disabled(!store.downloads.contains { $0.state.isTerminal })
+            }
             if store.downloads.isEmpty {
                 Text("尚無下載項目").foregroundStyle(.secondary).padding(.vertical, 24)
             } else {

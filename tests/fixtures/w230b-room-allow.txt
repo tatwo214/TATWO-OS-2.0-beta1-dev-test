@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/Pets/**
+App/Sources/Tatwo2/Chat/ChatPage+Panels.swift
+App/Sources/Tatwo2/Chat/ChatPageConstants.swift
+App/Sources/Tatwo2/Chat/ChatPage+Sidebar.swift
+App/Sources/Tatwo2/Chat/ChatPage.swift
+App/Sources/Tatwo2/Shell/WorkspaceSidebarModePicker.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w230-*.test.mjs
+tests/fixtures/w230b-room-allow.txt

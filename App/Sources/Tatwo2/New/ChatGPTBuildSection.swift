@@ -4,7 +4,7 @@
 // - 一列：「ChatGPT build」＋ⓘ（說明只在這裡）＋狀態 pill＋開關；下面節點流程（New/ChatGPTBuildFlow.swift），再下面一次一個節點面板。
 // - 面板：GPT（Pod 帳號、開發者模式）；設備（每台一張勾選卡）；Cloudflare（沒帳號＝登入一顆；有＝帳號＋網域＋子網域＋套用）；
 //   ChatGPT Dev（連上後能做的那一行、專案、［連線］；W183 R12 拿掉 L0／L1／L2 那一排）。工程細節（步驟、帳號與網域、已連線與撤銷、沒用到的通道、換主機、診斷）收進右上「…」。
-// - 畫面只讀 HandsBuildModel（接口 HandsBuildModeling＋幾個接口外的確認列）、只叫它的動作（按鈕一律經 HandsBuildUIIntent）。
+// - 設定資料與動作經 HandsBuildModel／HandsBuildUIIntent；W292 的連線卡重用 HandsConnectCardContext／HandsConnectCardActions。
 // W183 R8 整合（接到 R8c 的多設備後端）：設備可以多選（取消勾有連線、在跑的那台先在卡片內確認）；Cloudflare 每台一個子網域欄位、
 // 每台自己的授權（沒有的那台一顆「替它登入」：授權頁開在這台私訊框的 Browser、授權存那台）；「套用」帶看到的那一版與每台的草稿；
 // ［連線］逐台排（多台時每台還有一顆）；那台安全停機＝設備面板一顆「解除安全鎖」（使用者對那台按）。換主機確認、交回主設備拿掉。
@@ -13,6 +13,10 @@ import SwiftUI
 
 struct ChatGPTBuildSection: View {
     @ObservedObject private var model = HandsBuildModel.shared
+    @ObservedObject var connectFlow = HandsConnectFlow.shared
+    @ObservedObject var connectPresenter = HandsConnectPresenter.shared
+    @ObservedObject var connectBrowser = DMBrowser.shared
+    var openConnection: (() -> Void)?
     var showsFlow = false
     #if DEBUG
     var testFrame: HandsBuildModel.Frame? = nil
@@ -31,6 +35,7 @@ struct ChatGPTBuildSection: View {
     /// W183 R8a 審查（GPT-6）：這張卡在畫面上＝Computer Use 不准以 TATWO 為目標（HandsBuildScreenGate）。
     @State private var screenToken = UUID()
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.tatwoWorkspaceVisible) private var workspaceVisible
 
     var body: some View {
         #if DEBUG
@@ -51,6 +56,18 @@ struct ChatGPTBuildSection: View {
             }
             }
             panelBox(panel, frame, more: more)
+            if connectPresenter.inSettings, connectPresenter.isShown, let card = connectFlow.card {
+                let webVisible = connectPresenter.podVisible || connectBrowser.activeTab?.isSensitive == true
+                HStack(spacing: 12) {
+                    HandsConnectSheetView(card: card, context: .live(connectFlow, revealsCode: connectPresenter.revealsCode(card), webOnRight: webVisible), actions: .live(connectFlow))
+                        .background(HandsConnectWindowProbe(presenter: connectPresenter))
+                    if webVisible {
+                        DMBrowserPageSurface(browser: connectBrowser)
+                    }
+                }
+                .frame(height: 540)
+                .accessibilityIdentifier("tap.chatgpt.build.connectionCard")
+            }
         }
         // 畫面開著：對這台的現況、後端一陣子內同步快一點（HandsBuildController.viewDidAppear）。
          .task {
@@ -67,7 +84,17 @@ struct ChatGPTBuildSection: View {
         // 已經是草稿那個字才清（存不成、版本衝突＝草稿留著，使用者打的字不會不見）。
         .onChange(of: frame.input.configRevision) { _, _ in pruneSavedDrafts(model.snapshot.devices) }
         .onAppear { HandsBuildScreenGate.appeared(screenToken) }
-        .onDisappear { HandsBuildScreenGate.disappeared(screenToken) }
+        .onChange(of: workspaceVisible) { _, visible in
+            if visible { HandsBuildScreenGate.appeared(screenToken) }
+            else {
+                HandsBuildScreenGate.disappeared(screenToken)
+                if connectPresenter.inSettings { connectFlow.dismiss(); connectPresenter.inSettings = false }
+            }
+        }
+        .onDisappear {
+            HandsBuildScreenGate.disappeared(screenToken)
+            if connectPresenter.inSettings { connectFlow.dismiss(); connectPresenter.inSettings = false }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("tap.chatgpt.build")
     }
@@ -418,7 +445,7 @@ struct ChatGPTBuildSection: View {
     @ViewBuilder private func loginForChip(_ device: HandsBuildDevice, _ input: HandsBuildInput) -> some View {
         if input.loginBusy.contains(device.id.lowercased()) {
             ProgressView().controlSize(.small).help(device.name)
-        } else {
+        } else if device.isThisDevice || (input.reported.contains(device.id.lowercased()) && !input.authorized.contains(device.id.lowercased())) {
             OSChipButton(title: device.isThisDevice ? HandsBuildCopy.loginCloudflare : HandsBuildCopy.loginFor(device.name), systemImage: "cloud") {
                 HandsBuildUIIntent.loginCloudflareFor(device.id).send(to: model)
             }
@@ -565,15 +592,19 @@ struct ChatGPTBuildSection: View {
     }
 
     /// ［連線］＝私訊框的原生［連線］卡（一次性連線意圖只在那張卡按下才建立；W183 R10：那一下就算同意，勾選與 8 碼由 TATWO 代做）；
-    /// 多台＝逐台排。已連線＝白底品牌色字，不能再按。
+    /// 多台＝逐台排。W292：已連線也能按，在設定頁原地管理同一張卡。
     private func connectButton(_ frame: HandsBuildModel.Frame) -> some View {
         let input = frame.input
         let dev = frame.snapshot.dev
         let connected = dev == .done
-        let usable = input.enabled && (dev == .waiting || dev == .failed)
+        let usable = input.enabled && (connected || dev == .waiting || dev == .failed)
         let filled = usable && !connected
         let accent = ChatGPTBuildPalette.accent
-        return Button { HandsBuildUIIntent.connect(nil).send(to: model) } label: {
+        return Button {
+            if !connectPresenter.inSettings { connectPresenter.hide() }
+            connectPresenter.inSettings = true
+            if let openConnection { openConnection() } else { HandsConnectEntry.shared.tap(valid: { connectPresenter.inSettings }) }
+        } label: {
             HStack(spacing: 6) {
                 if dev == .working { ProgressView().controlSize(.mini) }
                 Text(connected ? HandsBuildCopy.connectedShort : HandsBuildCopy.connect)

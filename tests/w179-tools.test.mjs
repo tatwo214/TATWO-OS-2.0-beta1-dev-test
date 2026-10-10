@@ -81,8 +81,8 @@ test('W179 real MCP transport: valid metadata injection and fail-closed argument
   });
   fs.writeFileSync(path.join(root, 'caller.log'), run.stdout + run.stderr);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(run.stdout, /bound all_tools=54/);   // W198（.056）兩個派工工具； W180 E1：加了三個記憶工具；E3b 兩個分類工具；W183 R3 兩個手腳設定工具
-  assert.match(run.stdout, /unbound all_tools=54/);
+  assert.match(run.stdout, /bound all_tools=57/);   // W187 adds exactly three assistant fleet tools; W198（.056）兩個派工工具； W180 E1：加了三個記憶工具；E3b 兩個分類工具；W183 R3 兩個手腳設定工具
+  assert.match(run.stdout, /unbound all_tools=57/);
 });
 
 test('W179 real Swift bridge: isolated goal_index and os_status metadata-only acceptance', { timeout: 120_000 }, () => {

@@ -5,7 +5,7 @@ import TatwoCEFBridge
 // W183 R6b：ChatGPT 手腳在 ChatGPT Space 的 Pod 裡建連接器（one-switch.md「ChatGPT 連接器（App 自動建）」「自動建連接器的保護」）。
 // - 只在使用者在私訊框按了［連線］之後跑（HandsConnectFlow）；在使用者已登入的那個 Pod（ChatGPTTap.shared），不換別的瀏覽器。
 // - 獨占 Pod：聊天中不硬換頁（有一則正在送、語音開著就等空檔）；拿著的時候新的送出先排隊、會換頁的指令一律拒絕（ChatGPTTap.beginConnectorHold）。
-// - 網頁腳本的指令只在 chatgpt.com 執行（ChatGPTTap.commandScript 的限制照舊）；TATWO 的配對頁不注入任何腳本。
+// - 網頁腳本的指令只在 chatgpt.com 執行（ChatGPTTap.commandScript 的限制照舊）；TATWO 的配對頁不注入網頁 world 的腳本。
 // - 配對頁是 Pod 主框架同頁跳轉、還是另開視窗（CEF popup）：都由原生瀏覽器回報實際載入的網址（不是網頁腳本說的）；
 //   popup 的手勢保護不放寬（沒有使用者手勢就被擋：私訊框請使用者在頁面上點一下）。
 // W183 R6b 審查（GPT-6、Claude）：
@@ -27,7 +27,7 @@ import TatwoCEFBridge
 //   已經開著的 popup）交給流程當來源證據的錨點（onPressDispatch），才送 connectorPress（腳本再核一次才按）。
 // - 代填（fillPairingCode）：只在綁住的那一頁——同一個畫面（主框架或那一個 popup）、同一份文件（導頁世代）、網址的授權參數就是綁住的那一組；
 //   用 CEF 的畫面快照（DevTools DOMSnapshot，不跑網頁的程式、不讀欄位的值）找「這台主機、POST、剛好一格文字欄＋一顆送出」的表單，
-//   原生點欄位、原生按鍵打 8 碼、原生點送出。每一下都綁那一份文件（換頁就送不出去）。碼只在記憶體、不寫任何紀錄。
+//   原生點欄位、隔離 world 的配對專用 typeText 綁節點填 8 碼並 requestSubmit；只讀回長度。每一步綁那一份文件。碼只在記憶體、不寫任何紀錄。
 
 /// Pod 的原生那一層（正式＝TapWebPod；自測＝假的，看得到「帶回首頁」有沒有照順序做）。
 @MainActor
@@ -106,8 +106,11 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     private var mainGeneration: UInt64 = 0
     private var mainSource: URL?
     private var mainLoading = false
-    /// 帶回首頁最多等多久（自測調短）。
+    private var mainHTTPStatus = 0
+    /// 整頁載入外掛頁、帶回首頁最多等多久（自測調短）。
     var restoreTimeout: TimeInterval = 20
+    /// W334：取得獨占時先整頁載入 /plugins（連線來源才不會是對話）。只量 Pod 尺寸的自測（W294E）關掉，免得真的去載入 chatgpt.com。
+    var preparesPluginsPage = true
     /// W183 R9c（GPT-6 C3）：連接器自己的指令正在跑幾個（在跑的時候換頁是指令自己做的，網頁腳本自己看得到；不另外通知）。
     private var commandsInFlight = 0
     /// 上一次原生看到的主框架路徑（percent-encoded，跟網頁的 location.pathname 同一個樣子）。
@@ -140,14 +143,15 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     private func mainFrame(_ raw: String?, _ generation: UInt64, _ loading: Bool, _ status: Int) {
         let url = raw.flatMap { URL(string: $0) }
         if let url, generation != mainGeneration, hold != nil { connectLog?.write("pod", "main page \(Self.logURL(url.absoluteString)) status=\(status)") }   // W183 R12
-        if let url, generation != mainGeneration {
-            // 新的一份（或同一份裡換了網址）：上一個網址＝從哪裡來。世代變小＝Pod 重開過（新的瀏覽器）：沒有「從哪裡來」。
+        if url != nil, generation != mainGeneration {
+            // 新的一份：上一個原生回報的網址＝從哪裡來。世代變小＝Pod 重開過（新的瀏覽器）：沒有「從哪裡來」。
             mainSource = generation > mainGeneration ? mainURL : nil
-            mainURL = url
             mainGeneration = generation
         }
+        if let url { mainURL = url }
         if let url { noteNavigation(url) }
         mainLoading = loading
+        mainHTTPStatus = status
         let frame = HandsPodFrame(url: url, generation: generation, loading: loading, httpStatus: status, source: mainSource)
         onFrame?(frame)
         onDisplayFrame?(frame)   // W183 R8b
@@ -173,6 +177,12 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
 
     /// 連接器自己的指令（算進 commandsInFlight）。
     private func request(_ command: String, _ arguments: [String: Any], hold: UUID?, timeout: Duration) async throws -> [String: Any] {
+        let pod = ["connectorScan", "connectorInspect", "connectorReconnect", "connectorDelete", "connectorCreate", "connectorDevMode", "connectorSettings"].contains(command) ? surface() as? TapWebPod : nil
+        pod?.beginConnectorViewport()
+        defer { pod?.endConnectorViewport() }
+        if command == "connectorScan", let view = pod?.nativeView, let before = pod?.connectorViewportBefore {
+            connectLog?.write("pod", "pod viewport before=\(Int(before.width))x\(Int(before.height)) during=\(Int(view.bounds.width))x\(Int(view.bounds.height))")
+        }
         commandsInFlight += 1
         defer { commandsInFlight -= 1 }
         return try await tap.connectorRequest(command, arguments, hold: hold, timeout: timeout)
@@ -315,7 +325,28 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if Task.isCancelled { return false }
-            if let id = tap.beginConnectorHold() { hold = id; return true }
+            if let id = tap.beginConnectorHold() {
+                hold = id
+                guard preparesPluginsPage else { return true }
+                let plugins = URL(string: "https://chatgpt.com/plugins")!
+                let generation = mainGeneration, hellos = tap.helloCount
+                let loadedBy = Date().addingTimeInterval(restoreTimeout)
+                if !tap.backgroundPageIsShared, let surface = surface() {
+                    attach()
+                    surface.loadMain(plugins)
+                    while Date() < loadedBy, hold == id, !Task.isCancelled {
+                        if mainGeneration > generation, mainURL == plugins, !mainLoading,
+                           (200..<300).contains(mainHTTPStatus), tap.helloCount > hellos {
+                            connectLog?.write("pod", "connector_prepare ready full_load=plugins")
+                            return true
+                        }
+                        do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
+                    }
+                }
+                connectLog?.write("pod", "connector_prepare refused reason=\(tap.backgroundPageIsShared ? "space_shared" : "plugins_load_unconfirmed") status=\(mainHTTPStatus)")
+                if hold == id { hold = nil; tap.endConnectorHold(id) }
+                return false
+            }
             do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return false }
         }
         return false
@@ -334,6 +365,15 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         }
     }
 
+    func probe(connectorName: String) async -> String {
+        guard let id = hold else { return "failed:hold" }
+        await restore(id)
+        guard hold == id, !Task.isCancelled else { return "failed:cancelled" }
+        let text = "OS呼叫請回答（請用「\(connectorName)」這個 app 的唯讀狀態工具 tatwo_status 回一句，不要做任何修改）"
+        let data = try? await request("connectorProbe", ["text": text], hold: id, timeout: .seconds(30))
+        return data?["probe"] as? String ?? "failed:transport"
+    }
+
     /// W183 R8b 審查：連接器沒拿著 Pod、帶回首頁也做完了就叫 body（現在就是＝馬上叫；否則等下一次放掉並帶回首頁之後）。
     /// 私訊框 Browser 放掉 Pod 的受保護呈現前等這個：配對頁、外站不會出現在別的畫面。
     func whenSettled(_ body: @escaping @MainActor () -> Void) {
@@ -349,23 +389,22 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     }
 
     private func restore(_ id: UUID) async {
-        guard tap.connection == .ready || tap.connection == .needsLogin else { return }   // Pod 沒在跑：沒有頁要帶回
+        guard !tap.backgroundPageIsShared, tap.connection == .ready || tap.connection == .needsLogin else { return }   // Pod 沒在跑：沒有頁要帶回
         if let url = mainURL, url.host?.lowercased() == "chatgpt.com", !mainLoading, tap.connection == .ready {
             _ = try? await request("connectorAbort", [:], hold: id, timeout: .seconds(3))
-            _ = try? await request("connectorHome", [:], hold: id, timeout: .seconds(15))
-            return
+            if let home = try? await request("connectorHome", [:], hold: id, timeout: .seconds(15)), home["ok"] as? Bool == true { return }
         }
         // 主框架不在 chatgpt.com（同頁跳到 TATWO 配對頁、外站）或還在載入：網頁腳本在那裡不執行——原生載回首頁，等新的網頁報到。
-        guard let surface = surface() else { return }
+        guard !Task.isCancelled, !tap.backgroundPageIsShared, let surface = surface() else { return }
         let hellos = tap.helloCount
-        surface.loadMain(ChatGPTTap.homeURL)
+        surface.loadMain((surface as? TapWebPod)?.homeURL ?? ChatGPTTap.homeURL)
         let deadline = Date().addingTimeInterval(restoreTimeout)
-        while Date() < deadline {
+        while Date() < deadline && !Task.isCancelled {
             if tap.helloCount != hellos, mainURL?.host?.lowercased() == "chatgpt.com" { return }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         // 等不到：重開 Pod（排隊的送出會明確失敗，不會被派進一個不執行指令的頁面）。
-        tap.restart()
+        if !Task.isCancelled { tap.restart() }
     }
 
     private(set) var resolvedConnector: HandsConnectorScan.Match?
@@ -375,7 +414,7 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         HandsConnectorScan.Match(id: (raw["id"] as? String).flatMap { $0.utf8.count <= 200 ? $0 : nil },
             name: String((raw["name"] as? String ?? "").prefix(80)),
             auth: ["oauth", "none"].contains(raw["auth"] as? String ?? "") ? raw["auth"] as! String : "unknown",
-            serverURL: raw["serverURL"] as? String, detailPath: raw["detailPath"] as? String, connected: raw["connected"] as? Bool)
+            serverURL: raw["serverURL"] as? String, detailPath: raw["detailPath"] as? String, connected: raw["connected"] as? Bool, needsReconnect: raw["needsReconnect"] as? Bool)
     }
 
     func inspect(_ connector: HandsConnectorScan.Match, url: String) async -> HandsConnectorAuthorization {
@@ -385,11 +424,12 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         var arguments: [String: Any] = ["url": url, "connectorID": id]
         if let path = connector.detailPath { arguments["detailPath"] = path }
         guard let data = try? await request("connectorInspect", arguments, hold: hold, timeout: .seconds(20)) else { return .unknown }
+        if data["authorization"] as? String == "unknown" { connectLog?.write("pod", "connectorInspect \(connector.name): \(data["reason"] as? String ?? "authorization")") }
         knownDetails[id] = connector
         if let raw = data["connector"] as? [String: Any] { resolvedConnector = Self.connector(raw) }
         switch data["authorization"] as? String {
         case "connected": result = .connected
-        case "needs_reconnect": result = .needsReconnect
+        case "not_connected", "needs_reconnect": result = .needsReconnect
         default: break
         }
         return result
@@ -398,10 +438,12 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     func deleteConnector(_ connector: HandsConnectorScan.Match, keeping: String, url: String) async -> Bool {
         var deleted = false
         defer { connectLog?.write("pod", "connectorDelete result=\(deleted) count=\(deleted ? 1 : 0)") }
-        guard let id = connector.id, id != keeping, connector.serverURL == url else { return false }
+        guard let id = connector.id, id != keeping, connector.serverURL == url, connector.connected == false else { return false }
         var arguments: [String: Any] = ["url": url, "connectorID": id, "name": connector.name, "keeping": keeping]
         if let path = connector.detailPath { arguments["detailPath"] = path }
-        deleted = (try? await request("connectorDelete", arguments, hold: hold, timeout: .seconds(25)))?["deleted"] as? Bool == true
+        let data = try? await request("connectorDelete", arguments, hold: hold, timeout: .seconds(25))
+        deleted = data?["deleted"] as? Bool == true
+        if !deleted { connectLog?.write("pod", "connectorDelete \(connector.name): \(data?["reason"] as? String ?? "刪除證據未確認")") }
         return deleted
     }
 
@@ -409,17 +451,27 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         do {
             let data = try await request("connectorScan", ["url": url], hold: hold, timeout: .seconds(30))
             if data["status"] as? String == "aborted" {
+                if let lease = hold { await snapshotPage("connectorScan", "aborted", lease: lease) }
                 return HandsConnectorScan(loggedIn: true, listKnown: false, devMode: nil, matches: [], failure: "已中止")
             }
             var scan = HandsConnectorScan()
             scan.loggedIn = data["loggedIn"] as? Bool ?? false
             scan.listKnown = data["listKnown"] as? Bool ?? false
             scan.devMode = data["devMode"] as? Bool
+            scan.failure = data["failure"] as? String
+            let candidates = data["candidates"] as? [[String: String]] ?? (data["matches"] as? [[String: Any]] ?? []).map { ["name": $0["name"] as? String ?? "(account)", "verdict": "相符"] }
+                + (data["conflictingNames"] as? [String] ?? []).map { ["name": $0, "verdict": "網址不同"] }
+            connectLog?.write("pod", "scan candidates=\(candidates.count) " + candidates.map { ($0["name"] ?? "(account)") + "：" + ($0["verdict"] ?? "讀不到") }.joined(separator: "；"))
+            if scan.failure != nil, let lease = hold {
+                if let outline = data["outline"] as? String { connectLog?.structure("pod", "connectorScan failure outline", outline) }
+                else { await snapshotPage("connectorScan", "failure", lease: lease) }
+            }
             scan.matches = (data["matches"] as? [[String: Any]] ?? []).prefix(256).map(Self.connector)
             scan.conflictingNames = data["conflictingNames"] as? [String] ?? []
             knownDetails = Dictionary(scan.matches.compactMap { match in match.id.map { ($0, match) } }, uniquingKeysWith: { _, b in b })
             return scan
         } catch {
+            if let lease = hold { await snapshotPage("connectorScan", "failure", lease: lease) }
             return HandsConnectorScan(loggedIn: tap.connection != .needsLogin, listKnown: false, devMode: nil, matches: [],
                                       failure: Self.plain(error))
         }
@@ -584,8 +636,8 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
             return await waitForUserPress(token, lease: lease, generation: generation)
         }
         guard let point = Self.domClickPoint(["status": "ok", "tick": aimed["rect"] ?? NSNull()], generation: generation, viewSize: view.bounds.size,
-                                             zoomLevel: view.zoomLevel), view.navigationGeneration == generation else {
-            connectLog?.write("pod", "create aim_failed why=point view=\(view.bounds.width)x\(view.bounds.height) zoom=\(view.zoomLevel)")
+                                             zoomLevel: view.zoomLevel, minimumHeight: 4), view.navigationGeneration == generation else {
+            connectLog?.write("pod", "create aim_failed why=point view=\(view.bounds.width)x\(view.bounds.height) zoom=\(view.zoomLevel) rect=\(String(describing: aimed["rect"]))")
             return await waitForUserPress(token, lease: lease, generation: generation)
         }
         let sent = view.sendClick(at: point, navigationGeneration: generation)
@@ -828,9 +880,9 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     }
 
     /// W183 R12：腳本量回來的位置 → CEF 的點（整數、在那一格裡）。狀態不是 ok、位置不合格、畫面大小對不上、有縮放＝nil（不點）。
-    nonisolated static func domClickPoint(_ aim: [String: Any]?, generation: UInt64, viewSize: NSSize, zoomLevel: Double) -> NSPoint? {
+    nonisolated static func domClickPoint(_ aim: [String: Any]?, generation: UInt64, viewSize: NSSize, zoomLevel: Double, minimumHeight: Double = 8) -> NSPoint? {
         guard let aim, aim["status"] as? String == "ok", zoomLevel == 0,
-              let fresh = HandsTickTarget(wire: aim["tick"], generation: generation),
+              let fresh = HandsTickTarget(wire: aim["tick"], generation: generation, minimumHeight: minimumHeight),
               sameViewport(viewSize, NSSize(width: fresh.viewportWidth, height: fresh.viewportHeight)) else { return nil }
         return NSPoint(x: fresh.point.x, y: fresh.point.y)
     }
@@ -856,36 +908,49 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
     func fillPairingCode(_ code: String, frame: HandsPodFrame, evidence: String, publicHost: String) async -> HandsCodeFill {
         guard code.count == 8, code.allSatisfy({ HandsAuth.codeAlphabet.contains($0) }) else { return .failed("code") }
         guard let view = boundView(frame) else { return .failed("no_view") }
-        // 綁住的是「那一個畫面上、那一組參數的配對頁」：同一頁重新載入（窗口剛好還沒開的那一次 403 重載）導頁世代會變、參數不變——
-        // 以現在這一份文件為準（參數要對得上），之後每一步都要還是這一份（換頁、換參數、換畫面＝不填）。
-        let generation = view.navigationGeneration
-        func stillBound() -> Bool {
-            guard view.navigationGeneration == generation, let current = view.currentURLString.flatMap({ URL(string: $0) }) else { return false }
+        let generation = view.navigationGeneration, viewport = view.bounds.size
+        func sameEvidence() -> Bool {
+            guard let current = view.currentURLString.flatMap({ URL(string: $0) }) else { return false }
             return HandsConnectFlow.authorizeEvidence(current, publicHost: publicHost).map { HandsAuth.constantTimeEqual($0, evidence) } ?? false
         }
-        guard stillBound(), view.zoomLevel == 0 else { return .failed("not_bound_page") }
+        func stillBound() -> Bool { view.navigationGeneration == generation && sameEvidence() && view.zoomLevel == 0 && Self.sameViewport(view.bounds.size, viewport) }
+        func boundFailure(_ step: String) -> HandsCodeFill {
+            .failed("\(step):bound:gen_changed_\(view.navigationGeneration != generation ? 1 : 0):url_changed_\(sameEvidence() ? 0 : 1):zoom_\(view.zoomLevel == 0 ? 0 : 1):viewport_\(Self.sameViewport(view.bounds.size, viewport) ? 0 : 1)")
+        }
+        guard stillBound(), view.zoomLevel == 0 else {
+            connectLog?.write("pod", "autofill refused source")
+            return boundFailure("source")
+        }
         guard let json = await Self.snapshot(view), let data = json.data(using: .utf8),
               let snapshot = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .failed("snapshot") }
-        guard stillBound(), let form = Self.pairingForm(snapshot, publicHost: publicHost, generation: generation, viewport: view.bounds.size) else {
+        guard stillBound() else { return boundFailure("form") }
+        guard let form = Self.pairingForm(snapshot, publicHost: publicHost, generation: generation, viewport: view.bounds.size) else {
             return .failed("form")
         }
         let field = NSPoint(x: form.field.midX.rounded(.down), y: form.field.midY.rounded(.down))
-        let submit = NSPoint(x: form.submit.midX.rounded(.down), y: form.submit.midY.rounded(.down))
-        guard view.sendClick(at: field, navigationGeneration: generation) else { return .failed("focus") }
+        let previousKey = NSApp.keyWindow
+        defer { previousKey?.makeKey() }
+        if let why = await Self.focusPairingView(view) { return .failed("key:no_focus:" + why) }
+        guard stillBound(), view.sendClick(at: field, navigationGeneration: generation) else { return .failed("focus") }
         try? await Task.sleep(nanoseconds: 150_000_000)
-        for character in code {
-            guard stillBound(), let key = Self.key(for: character) else { view.releaseAgentKey(); return .failed("key") }
-            for phase in 0...2 {
-                guard view.sendAgentKey(key.code, windowsCode: key.windowsCode, characters: key.characters, unmodified: key.unmodified,
-                                        modifiers: key.flags.rawValue, phase: Int32(phase), navigationGeneration: generation) else {
-                    view.releaseAgentKey()
-                    return .failed("key")
-                }
-            }
-            try? await Task.sleep(nanoseconds: 30_000_000)
+        view.releaseAgentKey()
+        defer { view.releaseAgentKey() }
+        guard stillBound() else { return boundFailure("key") }
+        let focus: String? = await withCheckedContinuation { continuation in
+            view.checkAgentFocus(withNavigationGeneration: generation, expectedRect: form.field, pairing: true, dispatchGate: { dispatch in
+                guard stillBound(), view.window?.isKeyWindow == true else { return false }
+                dispatch(); return true
+            }) { ok, why in continuation.resume(returning: ok ? nil : (why ?? "unavailable")) }
         }
-        try? await Task.sleep(nanoseconds: 120_000_000)
-        guard stillBound(), view.sendClick(at: submit, navigationGeneration: generation) else { return .failed("submit") }
+        if let focus { return .failed("key:no_focus:" + focus) }
+        guard stillBound() else { return boundFailure("type") }
+        let typed: String? = await withCheckedContinuation { continuation in
+            view.typeText(code, elementID: form.elementID, navigationGeneration: generation, submit: true, pairing: true, dispatchGate: { dispatch in
+                guard stillBound(), view.window?.isKeyWindow == true else { return false }
+                dispatch(); return true
+            }) { ok, why in continuation.resume(returning: ok ? nil : (why ?? "unavailable")) }
+        }
+        if let typed { return .failed("type:" + typed) }
         return .filled
     }
 
@@ -901,11 +966,12 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         abs(a.width - b.width) < 1 && abs(a.height - b.height) < 1
     }
 
-    /// 配對碼的一個字 → 原生按鍵（字母用 Shift 打大寫；字元集沒有 0、1、I、O）。
-    nonisolated static func key(for character: Character) -> BrowserNativeInput.Key? {
-        guard HandsAuth.codeAlphabet.contains(character) else { return nil }
-        let text = String(character).lowercased()
-        return try? BrowserNativeInput.parseKey(character.isLetter ? "shift+" + text : text)
+    static func focusPairingView(_ view: TatwoCEFBrowserView) async -> String? {
+        guard let window = view.window, let cef = view.subviews.first else { return "no_window" }
+        guard NSScreen.screens.contains(where: { $0.frame.intersects(window.frame) }) else { return "parked" }
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        return window.makeFirstResponder(cef) && window.isKeyWindow ? nil : "responder"
     }
 
     private static func snapshot(_ view: TatwoCEFBrowserView) async -> String? {
@@ -916,7 +982,7 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
 
     /// 畫面快照裡的配對表單（W183 R10 代填）：這一頁是這台主機（origin）、同一份文件（導頁世代）、畫面大小對得上；
     /// 送到這台主機的 POST 表單剛好一張，裡面剛好一格能打字的文字欄與一顆送出，兩個都整個在畫面裡、至少 8×8。其他一律 nil（不填）。
-    nonisolated static func pairingForm(_ snapshot: [String: Any], publicHost: String, generation: UInt64, viewport: NSSize) -> (field: NSRect, submit: NSRect)? {
+    nonisolated static func pairingForm(_ snapshot: [String: Any], publicHost: String, generation: UInt64, viewport: NSSize) -> (field: NSRect, submit: NSRect, elementID: String)? {
         let origin = "https://" + publicHost.lowercased()
         guard (snapshot["origin"] as? String)?.lowercased() == origin,
               (snapshot["navigationGeneration"] as? NSNumber)?.uint64Value == generation,
@@ -929,9 +995,10 @@ final class ChatGPTConnectorPod: HandsConnectPodDriving {
         func usable(_ field: [String: Any]) -> Bool { field["disabled"] as? Bool != true && field["readOnly"] as? Bool != true }
         let texts = fields.filter { $0["type"] as? String == "text" && usable($0) }
         let submits = fields.filter { $0["type"] as? String == "submit" && usable($0) }
-        guard texts.count == 1, submits.count == 1, let field = rect(texts[0]["rect"], within: viewport),
+        guard texts.count == 1, submits.count == 1, let elementID = texts[0]["elementID"] as? String,
+              let field = rect(texts[0]["rect"], within: viewport),
               let submit = rect(submits[0]["rect"], within: viewport) else { return nil }
-        return (field, submit)
+        return (field, submit, elementID)
     }
 
     private nonisolated static func rect(_ raw: Any?, within viewport: NSSize) -> NSRect? {

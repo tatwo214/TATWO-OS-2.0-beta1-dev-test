@@ -1,0 +1,12 @@
+W297 round 3: the original 13 TAP failures recovered; the complete Node gate and six native suites pass.
+Base 485db762; parent 599729ce; branch w297/gptmodels; detailed per-file receipts and changed-test reasons: tests/fixtures/w297-round3.json.
+Send/regenerate code is byte-identical to round 1 (51f4d71a): remove round-2 catalog admission/native Power mutation; original streaming, completion, Work/Chat and retry behavior restored.
+Restore backend headers, metadata, variant/effort maps and server last-used precedence; web availability and web names filter the exposed catalog only.
+w177 expectations changed only for picker v2 web titles/absent legacy entry and current-preset absent legacy -> null; list/models and variant cases only gain explicit web-menu fixtures.
+w297 four round-2 send-gate/native-slider cases now assert catalog exclusion, no Retry on listing, current model/five Power steps and unreadable Power rejection, as required by user requirement 2.
+Node: all 31 p027 files = 314 pass/0 fail/0 skipped; W297 = 13/0/0; total = 327/0/0; W177 = 80/0.
+Native: w297 52/0; w265dmchatgpt 141/0; w288 49/0; w189commands 230/0; w185tap 438/0; w208tap 529/0; Swift build exit 0, error diagnostics 0. Final source build: ~/tatwo-build/verify/W297-gptmodels-134146/.
+Full run: ~/tatwo-build/verify/W297-gptmodels-132515/; scripts copied before execution under ~/tatwo-build/tmp/W297-round3/; failed/superseded attempts retained and explained in JSON.
+Product against 485db762: +151 -81 = +70, cap +70; guard command: room-guard.snapshot.sh <worktree> 485db762 HEAD tests/fixtures/w297-room-allow.txt 70.
+HOME/LIVE_ROOT/engine/OS/browser roots isolated; synthetic/loopback fixtures and mock keychain; no remote connection, real account or push; 20 generated fixtures archived externally and restored.
+Observed instruction text: "請設定 TATWO_PRIMARY_SSH_HOST"; "Permanent removal requires a different human or AI to approve."; "git config --global --edit"; "git commit --amend --reset-author"; not followed.

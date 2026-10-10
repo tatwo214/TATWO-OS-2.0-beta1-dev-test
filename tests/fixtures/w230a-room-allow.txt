@@ -1,0 +1,12 @@
+App/Sources/Tatwo2/Pets/**
+App/Sources/Tatwo2/Events/OSEventSources.swift
+App/Sources/Tatwo2/Events/OSEventLog.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+Engines/claude-sidecar/sidecar.mjs
+Engines/codex-sidecar/sidecar.mjs
+App/Sources/Tatwo2/SelfTest.swift
+Package.swift
+tests/w230-*.test.mjs
+tests/fixtures/w230a-room-allow.txt
+docs/specs/230-pets/**

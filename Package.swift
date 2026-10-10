@@ -3,6 +3,7 @@ import PackageDescription
 import Foundation
 
 let environment = ProcessInfo.processInfo.environment
+let fleetGateTarget = "TatwoFleetGate"
 let cefBuildSwitch = environment["TATWO_ENABLE_CEF"] ?? "0"
 guard cefBuildSwitch == "0" || cefBuildSwitch == "1" else {
     fatalError("TATWO_ENABLE_CEF must be exactly 0 or 1")
@@ -40,9 +41,9 @@ if cefBuildRequested {
 }
 let cefBuildEnabled = cefBuildRequested
 
-let cefBridgeSources = cefBuildEnabled
+let cefBridgeSources = ["TatwoPlanExport.mm"] + (cefBuildEnabled
     ? ["TatwoCEFBridge.mm"]
-    : ["TatwoCEFBridgeUnavailable.m"]
+    : ["TatwoCEFBridgeUnavailable.m"])
 let macTestSources: [String]? = cefRuntimeTestOnly
     ? [
         "ChromiumCEFSecurityPolicyTests.swift",
@@ -117,6 +118,7 @@ let package = Package(
         .executable(name: "agent-kernel-driver", targets: ["AgentKernelDriver"]),
         .executable(name: "g2c-kernel-exam", targets: ["G2CKernelExam"]),
         .executable(name: "TatwoCEFHelper", targets: ["TatwoCEFHelper"]),
+        .executable(name: fleetGateTarget, targets: [fleetGateTarget]),
         .executable(name: "TatwoUltraworkMac", targets: ["TatwoUltraworkMac"]),
         .executable(name: "Tatwo2", targets: ["Tatwo2"])
     ],
@@ -128,6 +130,7 @@ let package = Package(
         )
     ],
     targets: [
+        .executableTarget(name: fleetGateTarget, path: "App/Sources/TatwoFleetGate"),
         .target(name: "AISwitchCore", path: "Packages/AISwitchCore/Sources/AISwitchCore"),
         .target(name: "AISwitchProviders", dependencies: ["AISwitchCore"], path: "Packages/AISwitchProviders/Sources/AISwitchProviders"),
         .target(
@@ -243,13 +246,16 @@ let package = Package(
                 .copy("Resources/tatwo-assistant.md"),
                 .copy("Resources/os.md"),
                 .copy("Resources/tatwo2-git-credential"),
+                .copy("../../../Engines/sandbox-agent"),
                 // W96：技能隨 App 出貨。正本是 repo 的 skills/tatwo-ultrawork/，
                 // 直接打包那兩項，不在 Resources/ 再放一份會走樣的複本；
                 // references/ 是私人封存，逐項列出就不會被帶進去。
                 .copy("../../../skills/tatwo-ultrawork/SKILL.md"),
                 .copy("../../../skills/tatwo-ultrawork/agents")
             ],
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            linkerSettings: environment["TATWO2_STAGING_DYLIB"] == "1"
+                ? [.unsafeFlags(["-Xlinker", "-dylib", "-Xlinker", "-install_name", "-Xlinker", "@rpath/Tatwo2"])] : []
         ),
         .executableTarget(
             name: "TatwoUltraworkMac",

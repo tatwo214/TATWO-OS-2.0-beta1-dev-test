@@ -267,6 +267,8 @@ final class HandsService: @unchecked Sendable {
 
     // MARK: - os.sock 入口
 
+    @MainActor lazy var sandboxLane = HandsSandboxLane(service: self)
+
     func handle(method: String, params raw: [String: Any]) throws -> [String: Any] {
         var params = raw
         params["callerThreadID"] = nil   // 接口 v2 §1：關口不綁對話，thread 參數一律忽略
@@ -300,14 +302,20 @@ final class HandsService: @unchecked Sendable {
             guard HandsConnectHost.attached(to: self)?.admit(grantID: grant.grantID) ?? true else { throw HandsWireError.unauthorized }
             let level = min(grant.grantLevel, current.level)
             defer { HandsConnectHost.attached(to: self)?.noteMCP(grantID: grant.grantID) }   // W183 R6b：這個 grant 的 /mcp 成功（連線意圖的成功證據）
-            return ["level": level, "tools": HandsTools.catalog(level: level).map(\.descriptor)]
+            return ["level": level, "tools": (grant.sandboxDeviceID == nil ? HandsTools.catalog(level: level) : HandsSandboxLane.tools).map(\.descriptor)]
         case "hands_call":
             guard Set(params.keys).isSubset(of: ["access_token", "name", "arguments", "request_id"]) else {
                 throw HandsWireError.invalidRequest("unexpected field")
             }
             let grant = try authorized(params, current)
             // W183 R6b 審查：擁有者還沒確認（核對 Pod 帳號）的暫時 grant 不能呼叫工具（只能拿工具清單）；請它稍後再試。
-            if grant.provisional { throw HandsWireError.rateLimited }
+            if grant.provisional {
+                // W333：重連沿用舊連接器時 ChatGPT 帶著舊工具清單直接呼叫、不再拿清單；這次 grant 的呼叫（核過世代、範圍、期限）
+                // 一樣算「ChatGPT 拿著這次的 token 來了」。工具照樣不給，轉正仍要擁有者的 Pod 確認。
+                guard HandsConnectHost.attached(to: self)?.admit(grantID: grant.grantID) ?? true else { throw HandsWireError.unauthorized }
+                HandsConnectHost.attached(to: self)?.noteMCP(grantID: grant.grantID)
+                throw HandsWireError.rateLimited
+            }
             guard let name = params["name"] as? String, name.utf8.count <= 64 else { throw HandsWireError.invalidRequest("name") }
             if params["arguments"] != nil, params["arguments"] as? [String: Any] == nil, !(params["arguments"] is NSNull) {
                 throw HandsWireError.invalidRequest("arguments")
@@ -320,6 +328,24 @@ final class HandsService: @unchecked Sendable {
             }
             try admit(grant.grantID)
             defer { release(grant.grantID) }
+            if grant.sandboxDeviceID != nil || HandsSandboxLane.names.contains(name) {
+                let access = params["access_token"] as? String ?? ""
+                let key = try onMain { Result { try self.sandboxLane.reserve(name, arguments, requestID: requestID, access: access, authorized: grant) } }.get()
+                defer { self.requests.complete(key, text: "沙盒請求已使用", isError: false) }
+                var checked: [ChangeProposalStore.File]?, sent = arguments
+                if grant.sandboxDeviceID != nil, name == "sandbox_post_result", let patch = arguments["patch"] as? String, !patch.isEmpty {
+                    do { let cwd = try onMain { Result { try self.sandboxLane.patchTarget(access, arguments) } }.get(); checked = try ChangeProposalStore.check(patch, cwd: cwd) }
+                    catch HandsToolError.invalid(let reason) where reason.hasPrefix("patch_does_not_apply") {
+                        // W348：沙盒工作時專案改了、補丁套不上，不算拒絕（拒絕會讓沙盒停機、這串什麼都看不到）：改成只有報告的交件，補丁原文附在報告裡。
+                        let report = arguments["report"] as? String ?? "", note = "\n\n（補丁套不上目前的專案，沒有套用；原文附在下面，只供參考。）\n"
+                        sent["patch"] = ""
+                        sent["report"] = report + note + String(decoding: Data(patch.utf8.prefix(max(0, 204_000 - report.utf8.count - note.utf8.count))), as: UTF8.self)
+                    }
+                    catch { return mcp(String(describing: error), isError: true) }
+                }
+                let text = name == "sandbox_post_result" ? HandsSandboxLane.resultText(report: sent["report"] as? String ?? "", artifacts: sent["artifacts"] as? [String: String] ?? [:]) : nil
+                return try onMain { Result { try self.sandboxLane.call(name, sent, access: access, checked: checked, authorized: grant, text: text) } }.get()
+            }
             return try call(name: name, arguments: arguments, requestID: requestID, grant: grant, settings: current)
         default:
             throw HandsWireError.invalidRequest("method")
@@ -331,6 +357,7 @@ final class HandsService: @unchecked Sendable {
         guard let access = params["access_token"] as? String, let grant = auth.grant(forAccess: access) else {
             throw HandsWireError.unauthorized
         }
+        if let device = grant.sandboxDeviceID, !onMain({ self.sandboxLane.allowed(device) }) { throw HandsWireError.unauthorized }
         return grant
     }
 
@@ -1021,14 +1048,15 @@ final class HandsService: @unchecked Sendable {
 
     func readSession(_ raw: String, cursor: String?, grant: HandsGrantAccess, settings: HandsSettings) throws -> String {
         let allowed = Set(allowedProjects(grant, settings).map(\.id))
-        guard let id = UUID(uuidString: raw), let snapshot = onMain({ self.engine?.handsSessionSnapshot(id) }),
+        guard let id = UUID(uuidString: raw), let snapshot = onMain({ () -> (LiveThreadRecord, LiveProjectRecord?, [ChatMessage], URL)? in
+            guard self.engine?.threadRecord(id)?.controllerCreatorFingerprint == nil else { return nil }
+            return self.engine?.handsSessionSnapshot(id)
+        }),
               snapshot.1.map({ allowed.contains($0.id) }) ?? ((snapshot.0.projectID == nil || onMain({ self.engine?.doc.generalProjectID == snapshot.0.projectID })) && settings.allProjects && grant.allProjects) else {
             throw HandsToolError.invalid("session_not_found_or_not_allowed: conversation unavailable")
         }
         // Memory notes and system summaries may contain private memory; omit them before paging.
-        let visible = snapshot.2.filter { !($0.status?.hasPrefix(TatwoMemoryUsageNote.status) ?? false)
-            && !($0.role == .system && [CoderImport.summaryStatus, "info|支線摘要"].contains($0.status ?? "")) }
-        let ordered = visible.enumerated().sorted { $0.element.createdAt == $1.element.createdAt ? $0.offset < $1.offset : $0.element.createdAt < $1.element.createdAt }.map(\.element)
+        let ordered = GroupSessionCursor.rows(snapshot.2)
         let prefix = id.uuidString + ":"
         var offset = 0
         if let cursor {
@@ -1110,6 +1138,7 @@ final class HandsService: @unchecked Sendable {
 
     /// grant 被撤銷（refresh／授權碼重用、畫面撤銷、關開關）：它的 job 收掉、工作區鎖住（保留不刪）。
     func grantsRevoked(_ ids: [String], reason: String) {
+        onMain { self.sandboxLane.abort(Set(ids)) }
         HandsComputerRevocations.shared.revoke(grants: Set(ids))
         publicationLock.lock(); defer { publicationLock.unlock() }   // W183 R1b：等進行中的發布做完再收尾
         let set = Set(ids)

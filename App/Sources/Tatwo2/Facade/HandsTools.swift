@@ -76,6 +76,11 @@ enum HandsTools {
                       description: "Read a Coder conversation for collaboration. Required thread_id is the OS thread UUID; optional cursor is next_cursor from the previous page. Returns project_name, title and chronological rows with speaker, redacted text, tool steps (name plus one-line stored status/summary) and filenames observed in the saved artifact index. Pages stop at 40 rows or 24 KB; truncated fields are marked. Only allowed projects are readable; standalone discussions require all-project access. Trading projects remain read-only. Missing or denied threads return the same error.",
                       properties: ["thread_id": text("OS Coder thread UUID", maxLength: 36), "cursor": text("next_cursor from this thread's previous page", maxLength: 80)],
                       required: ["thread_id"], mutates: false, readOnly: true, destructive: false),
+        HandsToolSpec(id: "propose_change", level: 1, label: "改動提案",
+                      description: "Submit a text unified diff to a collaborating Coder thread. The joined ChatGPT TAP may propose; only the user can apply it. No commands or project writes occur. Returns a proposal number waiting for the user's decision.",
+                      properties: ["thread_id": text("OS Coder thread UUID", maxLength: 36), "title": text("proposal title", maxLength: 80),
+                                   "summary": text("proposal summary", maxLength: 300), "patch": text("text unified diff, at most 200 KB", maxLength: 204800)],
+                      required: ["thread_id", "title", "summary", "patch"], mutates: false, readOnly: false, destructive: false),
         HandsToolSpec(id: "create_project", level: 1, label: "建立專案",
                       description: "Create a new OS project when the user asks in ChatGPT; no additional approval is needed. Required name is the project display name. Optional folder is a relative folder below the OS entry's projects directory; omitted uses the unique project name. Absolute paths, '..' components and symlinks are rejected. Existing directories are reused without overwriting files, even if another project uses the folder. New folders are not Git repositories; you cannot open a workspace until the folder is a Git repository root with a commit. Duplicate names receive numeric suffixes. Returns project_id, name and folder (reported with the existing <entry>/projects/ path alias); the Coder sidebar updates immediately.",
                       properties: ["name": text("new project name", maxLength: 120), "folder": text("relative folder below <OS entry>/projects, e.g. research/topic", maxLength: 1024)],
@@ -387,6 +392,10 @@ enum HandsTools {
                 return ok(json(["workspaces": workspaces.map(\.summary)]), "\(workspaces.count) 個工作區")
             case "read_session":
                 return ok(try service.readSession(string("thread_id") ?? "", cursor: string("cursor"), grant: grant, settings: settings), "讀取對話分頁（已遮敏）")
+            case "propose_change":
+                let sequence = try service.proposeChange(thread: string("thread_id") ?? "", title: string("title") ?? "",
+                                                        summary: string("summary") ?? "", patch: string("patch") ?? "", grant: grant, settings: settings)
+                return ok("收下了第 \(sequence) 號改動提案，等使用者決定。", "改動提案 #\(sequence)")
             case "create_project":
                 return ok(try service.createProject(name: string("name") ?? "", folder: string("folder"), grant: grant), "已建立 OS 專案")
             case "read_file", "list_dir", "search":

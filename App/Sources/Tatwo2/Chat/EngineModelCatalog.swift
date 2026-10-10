@@ -16,6 +16,7 @@ enum EngineModelCatalog {
         var identity: String
         var source: String
         var models: [Model]
+        var defaultModel: String? = nil
     }
     private final class State: @unchecked Sendable {
         let lock = NSLock()
@@ -24,6 +25,7 @@ enum EngineModelCatalog {
         var revisions: [String: UInt64] = [:]
     }
     private static let state = State()
+    static func engineID(_ profile: TatwoChatRouteProfile) -> String { profile.family == "本機模型" ? "ollama" : profile.runtimeAdapter == .grokCLI ? "grok" : profile.engine.rawValue.lowercased() }
     static func catalogs(deviceID: String = "local") -> [Catalog] {
         state.lock.lock(); defer { state.lock.unlock() }
         return state.devices[deviceID] ?? []
@@ -51,7 +53,7 @@ enum EngineModelCatalog {
         guard message["type"] as? String == "system", message["subtype"] as? String == "model_catalog",
               let data = try? JSONSerialization.data(withJSONObject: message),
               let catalog = try? JSONDecoder().decode(Catalog.self, from: data),
-              ["codex", "claude"].contains(catalog.engine), !catalog.models.isEmpty else { return false }
+              ["codex", "claude", "grok"].contains(catalog.engine), !catalog.models.isEmpty else { return false }
         var current = catalogs(deviceID: deviceID).filter { $0.engine != catalog.engine }
         current.append(catalog); replace(current, deviceID: deviceID)
         return true
@@ -63,26 +65,63 @@ enum EngineModelCatalog {
         guard let value, let data = try? JSONSerialization.data(withJSONObject: value) else { return [] }
         return (try? JSONDecoder().decode([Catalog].self, from: data)) ?? []
     }
+    static func modelKey(_ id: String, engine: String, catalog: Catalog) -> String {
+        let key = ChatProviderModelIdentity.lookupKey(id)
+        if engine == "grok", let fallback = TatwoChatRouteProfile.defaults.first(where: { engineID($0) == engine && ChatProviderModelIdentity.lookupKey($0.id) == key }) {
+            return ChatProviderModelIdentity.lookupKey(fallback.modelArgument ?? id)
+        }
+        guard engine == "claude" else { return key }
+        let native = key.hasPrefix("claude") ? String(key.dropFirst(6)) : key
+        if native == "default", let preferred = catalog.defaultModel, preferred != id {
+            return modelKey(preferred, engine: engine, catalog: catalog)
+        }
+        if ["fable", "sonnet", "opus", "haiku"].contains(native) {
+            let full = catalog.models.map { ChatProviderModelIdentity.lookupKey($0.model).replacingOccurrences(of: "^claude", with: "", options: .regularExpression) }
+                .filter { $0.hasPrefix(native) && $0 != native }
+            if Set(full).count == 1, let only = full.first { return only }
+            if let fallback = TatwoChatRouteProfile.defaults.first(where: { $0.engine == .claude && $0.canonicalModelSlug.hasPrefix(native + "-") }) {
+                return ChatProviderModelIdentity.lookupKey(fallback.canonicalModelSlug)
+            }
+        }
+        return native
+    }
+    private static func named(_ model: Model, engine: String, catalog: Catalog) -> Model {
+        guard engine == "claude" else { return model }
+        var result = model
+        let key = modelKey(model.model, engine: engine, catalog: catalog)
+        let code = catalog.models.first { $0.model.contains("-") && modelKey($0.model, engine: engine, catalog: catalog) == key }?.model
+            ?? TatwoChatRouteProfile.defaults.first { ChatProviderModelIdentity.lookupKey($0.canonicalModelSlug) == key }?.canonicalModelSlug ?? model.model
+        let clean = code.replacingOccurrences(of: #"^claude-|-[0-9]{8}$|\[1m\]$"#, with: "", options: .regularExpression)
+        if model.displayName.range(of: #"(?i)(fable|sonnet|opus|haiku)\s+[0-9]"#, options: .regularExpression) == nil,
+           clean.range(of: #"^(fable|sonnet|opus|haiku)[-_.]?[0-9]+(?:[-_.][0-9]+)*$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            let series = clean.prefix(while: { $0.isLetter }), version = clean.dropFirst(series.count).trimmingCharacters(in: CharacterSet(charactersIn: "-_ ."))
+            result.displayName = series.capitalized + " " + version.replacingOccurrences(of: "[-_]", with: ".", options: .regularExpression)
+        }
+        return result
+    }
     static func profiles(deviceID: String = "local") -> [TatwoChatRouteProfile] {
         let catalogs = catalogs(deviceID: deviceID)
         var result: [TatwoChatRouteProfile] = []
         for fallback in TatwoChatRouteProfile.defaults {
-            let kind = fallback.runtimeAdapter == .claudeCLI ? "claude" : fallback.runtimeAdapter == .codexExec ? "codex" : "other"
-            guard let catalog = catalogs.first(where: { $0.engine == kind }) else {
+            let kind = engineID(fallback)
+            guard let catalog = catalogs.first(where: { $0.engine == kind && (kind != "claude" || !$0.models.isEmpty) }) else {
                 result.append(copy(fallback, capability: nil, source: "備援表 · Codex 0.160.0 / Agent SDK 0.3.280（尚未取得引擎回報）"))
                 continue
             }
-            if let model = catalog.models.first(where: { ChatProviderModelIdentity.lookupKey($0.model) == ChatProviderModelIdentity.lookupKey(fallback.modelArgument ?? fallback.id) }) {
-                result.append(copy(fallback, capability: model, source: catalog.source + " · " + catalog.identity))
+            if let model = catalog.models.first(where: { modelKey($0.model, engine: kind, catalog: catalog) == modelKey(fallback.modelArgument ?? fallback.id, engine: kind, catalog: catalog) }) {
+                guard !result.contains(where: { engineID($0) == kind && modelKey($0.modelArgument ?? $0.id, engine: kind, catalog: catalog) == modelKey(model.model, engine: kind, catalog: catalog) }) else { continue }
+                result.append(copy(fallback, capability: named(model, engine: kind, catalog: catalog), source: catalog.source + " · " + catalog.identity))
             }
         }
         for catalog in catalogs {
-            for model in catalog.models where !result.contains(where: { $0.engine.rawValue == catalog.engine && $0.modelArgument == model.model }) {
-                let base = TatwoChatRouteProfile(id: model.model, displayName: model.displayName, family: catalog.engine == "claude" ? "Claude native" : "Codex/GPT",
-                    engine: catalog.engine == "claude" ? .claude : .codex, modelArgument: model.model,
+            for model in catalog.models where !result.contains(where: { engineID($0) == catalog.engine && modelKey($0.modelArgument ?? $0.id, engine: catalog.engine, catalog: catalog) == modelKey(model.model, engine: catalog.engine, catalog: catalog) }) {
+                if catalog.engine != "claude", catalogs.contains(where: { $0.engine == "claude" && !$0.models.isEmpty }),
+                   [model.model, model.displayName].contains(where: { $0.range(of: "^(claude|fable|haiku|sonnet|opus)", options: [.regularExpression, .caseInsensitive]) != nil }) { continue }
+                let base = TatwoChatRouteProfile(id: model.model, displayName: model.displayName, family: catalog.engine == "ollama" ? "本機模型" : catalog.engine == "claude" ? "Claude native" : "Codex/GPT",
+                    engine: TatwoNativeChatEngine(rawValue: catalog.engine.capitalized) ?? .codex, runtimeAdapter: catalog.engine == "ollama" ? .unavailable : catalog.engine == "grok" ? .grokCLI : nil, modelArgument: model.model,
                     contextWindowLabel: "引擎回報", supportsImageInput: model.images, pluginFit: "引擎支援", sessionRisk: "引擎回報",
                     defaultEffort: .low, allowedEfforts: [], notes: [])
-                result.append(copy(base, capability: model, source: catalog.source + " · " + catalog.identity))
+                result.append(copy(base, capability: named(model, engine: catalog.engine, catalog: catalog), source: catalog.source + " · " + catalog.identity))
             }
         }
         return result

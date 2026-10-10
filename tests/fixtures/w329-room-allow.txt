@@ -1,0 +1,12 @@
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift
+App/Sources/Tatwo2/TAP/W328PairfillAcceptance.swift
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridgeUnavailable.m
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoCEFBridge.h
+tests/fixtures/w328-pairfill-checks.swift
+tests/fixtures/w329-pairfocus-checks.swift
+tests/fixtures/w329-room-allow.txt
+tests/w329-pairfocus.test.mjs
+tests/agent-accounts.test.mjs
+tests/browser-ai-vault.test.mjs

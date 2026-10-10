@@ -9,6 +9,9 @@ import Darwin
 enum ChatGPTTapAcceptance {
     /// 真正走 ChatGPTTap 的排隊、完成與停止回執，不啟動 CEF 或連外。
     private static func visibilityChecks(_ check: (Bool, String) -> Void) {
+        let webFlag = UserDefaults.standard.object(forKey: ChatGPTWebSpace.enabledKey)
+        UserDefaults.standard.set(false, forKey: ChatGPTWebSpace.enabledKey)
+        defer { UserDefaults.standard.set(webFlag, forKey: ChatGPTWebSpace.enabledKey) }
         let pod = VisibilityPod(running: true)
         for visible in [false, true] {
             for active in [false, true] {
@@ -53,6 +56,40 @@ enum ChatGPTTapAcceptance {
         withExtendedLifetime([first, second, third, fourth]) {}
     }
 
+    private static func w318CoderChecks(_ check: (Bool, String) -> Void, root: URL, environment: [String: String]) async throws {
+        let tap = W185FakeConversationTap()
+        let previous = ChatGPTTapModelCatalog.snapshot
+        ChatGPTTapModelCatalog.replace(try await tap.models().items)
+        defer { ChatGPTTapModelCatalog.replace(previous) }
+        let folder = root.appendingPathComponent("w318-live")
+        let engine = ChatLiveEngine(store: ChatLiveStore(root: folder), environment: environment, tap: tap)
+        defer { engine.shutdownAll() }
+        let id = engine.newThread(in: nil)
+        let route = ChatGPTTapModelCatalog.routeID("fixture-model")
+        check(engine.send(threadID: id, text: "W318 first", model: route, engine: .codex), "W318 Coder starts renderer turn")
+        try await wait { tap.sent.count == 1 }
+        tap.emit(.conversation(id: "w318-conversation"))
+        tap.emit(.text(messageID: "page", full: "page snapshot"))
+        let full = "第一節\n第二節\n第三節\n第四節\n第五節\n伺服器完整結尾\nEND-W318-SERVER"
+        tap.emit(.text(messageID: "server-answer", full: full))
+        tap.finish()
+        try await wait { !engine.isRunning(id) }
+        let saved = ChatLiveStore(root: folder).load().threads.first { $0.id == id }?.messages.last
+        check(saved?.text == full && saved?.status == "done", "W318 server full text survives Coder store reopen")
+        check(engine.send(threadID: id, text: "W318 stop", model: route, engine: .codex), "W318 second turn starts")
+        try await wait { tap.sent.count == 2 }
+        engine.stop(threadID: id)
+        try await wait { !engine.isRunning(id) }
+        check(!engine.tapSelfTestHasRunner(id) && engine.transcript(for: id).last?.status == "cancelled|已停止", "W318 stop clears Coder runner and running state")
+        check(engine.send(threadID: id, text: "END-W318-S2", model: route, engine: .codex), "W318 same thread accepts sentence after stop")
+        try await wait { tap.sent.count == 3 }
+        check(tap.sent[2].conversationID == "w318-conversation" && tap.sent[2].text.hasSuffix("END-W318-S2"), "W318 next sentence reaches same server conversation")
+        tap.emit(.notSubmitted("W318 送出鍵不可用，沒有送出"))
+        try await wait { !engine.isRunning(id) }
+        check(engine.tapTurn[id]?.failure?.message == "W318 送出鍵不可用，沒有送出"
+              && engine.transcript(for: id).last?.status == "error|沒有送出", "W318 failed follow-up displays Coder error")
+    }
+
     private final class VisibilityPod: FakeTapPod {
         var visibleAtDispatch: [Bool] = []
         var stopID: String?
@@ -77,12 +114,17 @@ enum ChatGPTTapAcceptance {
             return false
         }
         let root = URL(fileURLWithPath: live).appendingPathComponent("w185-\(UUID().uuidString)")
+        try await W222Acceptance.archiveChecks(root: root.appendingPathComponent("w222-archive"), environment: env, check: check)
+        try await W222Acceptance.restoreChecks(root: root.appendingPathComponent("w222-restore"), environment: env, check: check)
+        try await W222Acceptance.sharedFolderChecks(root: root.appendingPathComponent("w222-shared"), environment: env, check: check)
+        try await W222Acceptance.lifecycleChecks(root: root.appendingPathComponent("w222-lifecycle"), environment: env, check: check)
         visibilityChecks(check)
         try await W196MappingAcceptance.run(check)
         try await W194FixAcceptance.run(check)
         try await W195WakeAcceptance.run(check)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try await w203CoderChecks(check, root: root, environment: env)
+        try await w318CoderChecks(check, root: root, environment: env)
         let tap = W185FakeConversationTap()
         let catalog = try await tap.models()
         let previousCatalog = ChatGPTTapModelCatalog.snapshot
@@ -101,6 +143,27 @@ enum ChatGPTTapAcceptance {
               && ChatGPTTapModelCatalog.choices[0].title == "打開後選擇模型", "unavailable placeholder data")
         check(ChatRouteChoice.resolve(route).runtimeAdapter == .chatgptTap, "sleeping TAP never resolves to Codex")
         ChatGPTTapModelCatalog.replace(catalog.items)
+
+        // W221b: reject managed TAP before constructing a runner or calling any ChatGPT method.
+        for mode in ["explicit", "stored", "direct"] {
+            let managedTap = W185FakeConversationTap()
+            let managed = ChatLiveEngine(store: ChatLiveStore(root: root.appendingPathComponent("managed-" + mode)), environment: env, tap: managedTap)
+            let id = managed.newThread(in: nil)
+            managed.markControllerThread(id, fingerprint: "synthetic-controller")
+            managed.setRequestedModel(route, threadID: id)
+            let accepted = mode == "direct" ? managed.tapSelfTestSendDirect(id, route: route)
+                : managed.send(threadID: id, text: "synthetic", model: mode == "stored" ? nil : route, engine: .codex)
+            check(!accepted, "W221b managed-\(mode)-rejected")
+            check(!managed.tapSelfTestHasRunner(id) && !managed.isRunning(id) && managed.tapTurn[id] == nil,
+                  "W221b managed-\(mode)-no-runner-or-turn")
+            try await Task.sleep(for: .milliseconds(30))
+            check(managedTap.requestCalls == 0 && managedTap.sent.isEmpty && managedTap.createdNames.isEmpty && managedTap.modelCalls == 0 && managedTap.folders.isEmpty,
+                  "W221b managed-\(mode)-zero-ChatGPT-requests")
+            check(managed.transcript(for: id).count == 1 && managed.transcript(for: id).first?.role == .system
+                  && managed.transcript(for: id).first?.text == "受管對話不能使用 ChatGPT TAP，因為它會使用這台的私人 ChatGPT 帳號與記憶。",
+                  "W221b managed-\(mode)-one-inline-reason")
+            managed.shutdownAll()
+        }
 
         let store = ChatLiveStore(root: root.appendingPathComponent("live"))
         let engine = ChatLiveEngine(store: store, environment: env, tap: tap)
@@ -131,9 +194,18 @@ enum ChatGPTTapAcceptance {
         try await wait { engine.transcript(for: thread).last?.text == "one two" }
         check(engine.transcript(for: thread).last?.id == replyID && engine.transcript(for: thread).count == 2,
               "full text replaces the same assistant row")
+        let pageFull = "有必修\n\n" + (1...5).map { "必修 \($0)｜完整正文" }.joined(separator: "\n")
+            + "\n建議 1\n建議 2\n建議 3\n結論：全文保存"
+        tap.emit(.text(messageID: "page", full: pageFull))
         tap.finish()
         try await wait { !engine.isRunning(thread) }
         check(delivery == .delivered && engine.transcript(for: thread).last?.status == "done", "finished releases running state")
+        let savedReply = ChatLiveStore(root: root.appendingPathComponent("live")).load().threads.first(where: { $0.id == thread })?.messages.last
+        check(savedReply?.text == pageFull && savedReply?.status == "done" && engine.transcript(for: thread).last?.id == replyID,
+              "W302 final page text replaces partial stream and survives document reopen")
+        let unfinished = ChatGPTTurnFailure(message: "ChatGPT 回答逾時，這句未完成", reason: "timeout", draft: "fixture")
+        check(unfinished.storedStatus == "error|未完成" && ChatGPTTurnFailure.restored(status: unfinished.storedStatus, draft: "fixture")?.category == "未完成",
+              "W302 timeout persists and reopens as unfinished")
         let file = TapProjectMapStore.mapFile(at: projectFolder)
         let map = try JSONDecoder().decode(TapProjectMap.self, from: Data(contentsOf: file))
         let fileMode = (try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber)?.intValue
@@ -488,6 +560,7 @@ enum ChatGPTTapAcceptance {
         let defaults = UserDefaults.standard
         let previous = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         var overrides = previous
+        overrides["tatwo2.disabledEngines"] = [String]()
         for kind in ClaudeSidecar.Kind.allCases { overrides["tatwo2.sidecarPath.\(kind.rawValue)"] = script.path }
         defaults.setVolatileDomain(overrides, forName: UserDefaults.argumentDomain)
         defer { defaults.setVolatileDomain(previous, forName: UserDefaults.argumentDomain) }
@@ -972,10 +1045,17 @@ final class W185FakeConversationTap: ConversationTap {
     var conversationFailure = false
     var modelFailure = false
     var modelCalls = 0
+    var modelFixture: (items: [TapModel], defaultID: String?, currentEffortID: String?)?
+    var modelGate: (() async -> Void)?
+    var projectGate: (() async -> Void)?
+    var requestCalls = 0
     private var continuation: AsyncStream<TapStreamEvent>.Continuation?
     private var conversationsByProject: [String: [TapConversation]] = [:]
     func seedConversation(_ id: String, in project: String) {
         conversationsByProject[project, default: []].append(TapConversation(id: id, title: "fixture", updatedAt: Date()))
+    }
+    func removeConversation(_ id: String) {
+        for project in conversationsByProject.keys { conversationsByProject[project]?.removeAll { $0.id == id } }
     }
     func emit(_ event: TapStreamEvent) {
         if case .conversation(let id) = event, let project = sent.last?.gizmoID {
@@ -989,6 +1069,8 @@ final class W185FakeConversationTap: ConversationTap {
     }
     func finish() { continuation?.yield(.finished); continuation?.finish() }
     func createProject(name: String, description: String) async throws -> TapFolder {
+        await projectGate?()
+        requestCalls += 1
         createdNames.append(name)
         if failNames.contains(name) { throw TapError.remote("quota fixture") }
         let folder = TapFolder(id: "g-p-fixture-\(createdNames.count)", title: name, kind: .project, description: description)
@@ -996,16 +1078,21 @@ final class W185FakeConversationTap: ConversationTap {
         return folder
     }
     func projects() async throws -> [TapFolder] {
+        requestCalls += 1
         if projectFailure { throw TapError.remote("HTTP 503 fixture") }
         return folders
     }
     func conversations(inProject projectID: String) async throws -> [TapConversation] {
+        requestCalls += 1
         if conversationFailure { throw TapError.remote("HTTP 503 fixture") }
         return conversationsByProject[projectID] ?? []
     }
     func models() async throws -> (items: [TapModel], defaultID: String?, currentEffortID: String?) {
+        requestCalls += 1
         modelCalls += 1
+        await modelGate?()
         if modelFailure { throw TapError.remote("HTTP 503 fixture") }
+        if let modelFixture { return modelFixture }
         return ([TapModel(id: "fixture-model", title: "Fixture", detail: "",
                    efforts: [TapEffort(id: "tap-heavy", title: "Heavy"), TapEffort(id: "tap-light", title: "Light"),
                              TapEffort(id: "ultra", title: "Native Extra")]),
@@ -1013,6 +1100,7 @@ final class W185FakeConversationTap: ConversationTap {
     }
     func send(text: String, conversationID: String?, model: String?, effort: String?, attachments: [TapAttachment],
               tool: String?, gizmoID: String?, temporary: Bool, parentID: String?) -> AsyncStream<TapStreamEvent> {
+        requestCalls += 1
         let requestID = "fixture-request-\(sent.count)"
         sent.append(Send(requestID: requestID, text: text, conversationID: conversationID, model: model, effort: effort, gizmoID: gizmoID))
         let pair = AsyncStream.makeStream(of: TapStreamEvent.self)

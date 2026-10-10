@@ -14,6 +14,9 @@ test('W83 production transfer: signed dual-device roundtrip, interruption, four 
     writeFileSync(join(root, 'owned-fixture'), 'synthetic only\n');
     const result = spawnSync(process.env.TATWO2_TEST_BINARY, [], {
       env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR, HOME: home, CFFIXED_USER_HOME: home,
+        TATWO2_AUTHORIZED_KEYS: join(root, "unused-authorized"), TATWO2_SSH_KNOWN_HOSTS: join(root, "unused-known"),
+        TATWO2_SSH_KEY_PATH: join(root, "unused-key"), TATWO2_SSH_HOST_KEY_PUB: join(root, "unused-host.pub"),
+        SSH_AUTH_SOCK: join(root, "absent-agent"),
         TATWO2_W83_TEST_ROOT: root, TATWO2_LIVE_ROOT: join(root, 'unused-live'),
         TATWO_OS_ROOT: join(root, 'unused-entry'), TATWO2_OS_ROOT: join(root, 'unused-entry'),
         TATWO2_OS_UPSTREAM_PATH: join(root, 'unused-upstream.md'),
@@ -21,6 +24,7 @@ test('W83 production transfer: signed dual-device roundtrip, interruption, four 
       encoding: 'utf8', timeout: 150_000, maxBuffer: 1024 * 1024,
     });
     const output = result.stdout + result.stderr;
+    writeFileSync(join(root, 'w83-transfer.log'), output);
     assert.equal(result.status, 0, output);
     for (const label of [
       'offline-primary-cannot-start', 'offline-target-cannot-start',
@@ -57,3 +61,14 @@ test('W83 production transfer: signed dual-device roundtrip, interruption, four 
     assert.ok(existsSync(join(root, 'w83-four-statuses.png')));
     console.log(output.trim());
   });
+
+test('non-fleet legacy ACK retains signed authentication, handoff ledger and all refusal guards', async () => {
+  const { runNative } = await import('./w221c-ack.test.mjs');
+  const output = runNative();
+  assert.match(output, /W221D ACK SUMMARY checks=12 failures=0/);
+  for (const label of ['non-fleet-old-handoff-authenticates', 'old-ack-ledger-still-required',
+    'non-fleet-replay', 'non-fleet-signature', 'non-fleet-unpinned-sender', 'non-fleet-epoch',
+    'non-fleet-revoked-key', 'phase-mismatch-fleet', 'phase-mismatch-converged', 'missing-claimed-phase']) {
+    assert.ok(output.includes('W221D ACK PASS ' + label), output);
+  }
+});

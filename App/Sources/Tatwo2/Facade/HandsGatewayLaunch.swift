@@ -512,6 +512,7 @@ struct HandsTunnelKeychain: HandsTunnelTokenStore {
             if status == errSecItemNotFound || status == -34018 { continue }
             if status == errSecInteractionNotAllowed || status == errSecAuthFailed { throw Failure.locked }
             guard status == errSecSuccess, let data = result as? Data, let value = String(data: data, encoding: .utf8) else { throw Failure.unreadable }
+            DeviceOnlyKeychain.harden(query)
             return value
         }
         return nil

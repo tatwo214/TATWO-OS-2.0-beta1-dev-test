@@ -1,0 +1,10 @@
+App/Sources/Tatwo2/Chat/ChatPage+Sidebar.swift # S1：網頁旗標開時不建立原生清單與底部，保留選鈕。
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # 預設開；S2：使用 Browser 既有容器借用 Pod 的 human sibling。
+App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift # S2：共用掛載幾何步驟，新增不移轉所有權的借用與解除；DEBUG 隔離 W248 使用 staging 目錄。
+App/Sources/Tatwo2/Chat/ChatComposerSuggestionCatalog.swift # S3：新增 /goal list，僅此子指令允許空白部分提示。
+App/Sources/Tatwo2/Facade/ChatPageModel.swift # S3：分開兩列說明，抽出既有清單開啟處理，選清單直接共用，不受加目標的計畫限制。
+App/Sources/Tatwo2/Chat/CommandModeAcceptance.swift # S3：兩列、部分輸入、Enter 不增目標與其他指令回歸。
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift # S1/S2：真實側欄、兩種尺寸 viewport 對照、四張主題截圖。
+tests/w248-webspace.test.mjs # 更新預設開的契約與既有容器借用接線檢查。
+tests/fixtures/w256-room-allow.txt # 逐檔列出本房變更理由與範圍。
+tests/w189-commands.test.mjs # S3：原生 Goal 分支探針載入真正的共用清單處理，保留 native dispatch 斷言。

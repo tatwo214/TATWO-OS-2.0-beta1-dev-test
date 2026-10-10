@@ -50,17 +50,36 @@ enum DevicePairingAuth {
 
     static func requestFields(
         nonce: String, publicKey: String, name: String, user: String?, deviceID: String?,
-        clientKeyFingerprint: String?, hostKeyFingerprint: String?
+        clientKeyFingerprint: String?, hostKeyFingerprint: String?, fleet: String? = nil
     ) -> [String] {
         [nonce, publicKey, name, user ?? "", deviceID ?? "", clientKeyFingerprint ?? "", hostKeyFingerprint ?? ""]
+            + (fleet.map { ["fleet-v1", $0] } ?? [])
     }
 
     static func responseFields(
         nonce: String, ok: Bool, deviceID: String?, hostName: String?, hostUser: String?,
-        hostDeviceID: String?, hostKeyFingerprint: String?, clientKeyFingerprint: String?, reason: String?
+        hostDeviceID: String?, hostKeyFingerprint: String?, clientKeyFingerprint: String?, reason: String?, fleet: String? = nil, previewOnly: Bool? = nil
     ) -> [String] {
         [nonce, ok ? "1" : "0", deviceID ?? "", hostName ?? "", hostUser ?? "", hostDeviceID ?? "",
          hostKeyFingerprint ?? "", clientKeyFingerprint ?? "", reason ?? ""]
+            + (fleet.map { ["fleet-v1", $0] } ?? [])
+            + (previewOnly.map { ["preview-v1", $0 ? "1" : "0"] } ?? [])
+    }
+
+    private static func responseKey(_ key: SymmetricKey) -> SymmetricKey {
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: key, salt: Data("tatwo-pair-response-v3".utf8),
+                              info: Data("AES-GCM reply".utf8), outputByteCount: 32)
+    }
+    static func sealResponse(_ data: Data, key: SymmetricKey) throws -> Data {
+        let box = try AES.GCM.seal(data, using: responseKey(key))
+        return try JSONEncoder().encode(["sealed": box.combined!.base64EncodedString()])
+    }
+    static func openResponse(_ data: Data, key: SymmetricKey) throws -> Data {
+        let wire = try JSONDecoder().decode([String: String].self, from: data)
+        guard let encoded = wire["sealed"], let bytes = Data(base64Encoded: encoded) else {
+            throw NSError(domain: "pairing_response_unauthenticated", code: 1)
+        }
+        return try AES.GCM.open(AES.GCM.SealedBox(combined: bytes), using: responseKey(key))
     }
 
     /// 每欄前面加位元組長度，欄位內容怎麼變都不會跟別的組合撞在一起。

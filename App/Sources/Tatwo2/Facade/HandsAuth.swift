@@ -45,6 +45,7 @@ struct HandsWireError: Error, CustomStringConvertible, Equatable {
     }
 
     static let unauthorized = HandsWireError(code: "unauthorized", message: "unauthorized")
+    static let sandboxToolNotAllowed = HandsWireError(code: "sandbox_tool_not_allowed", message: "沙盒只能領工、交件、回報心跳。")
     static let rateLimited = HandsWireError(code: "rate_limited", message: "try later")
     static let windowClosed = HandsWireError(code: "pairing_window_closed", message: "open pairing in TATWO first")
     static let pairingBusy = HandsWireError(code: "pairing_busy", message: "another pairing is pending")
@@ -88,6 +89,7 @@ struct HandsAuthState: Codable, Equatable {
         var generation: Int? = nil
         /// W183 R10：這個 grant 核准的是「這台全部專案」（新專案自動包含；projectIDs 只是核准當下的清單）。nil／false＝舊 grant：照舊只有 projectIDs。
         var allProjects: Bool? = nil
+        var sandboxDeviceID: String? = nil
         var isActive: Bool { revokedAt == nil }
     }
     struct Token: Codable, Equatable {
@@ -140,6 +142,7 @@ struct HandsGrantScope: Equatable, Sendable {
     var allProjects: Bool = false
     /// W183 R10 底線 B：清單裡交易實盤類的（只能看；顯示用，擋在主機的工具入口）。
     var readOnlyProjectIDs: [String] = []
+    var sandboxDeviceID: String? = nil
 
     static func memoryText(level: Int) -> String {
         level >= 1 ? "讀正式記憶（標「不給 ChatGPT」的除外、遮蔽敏感內容）；只寫 ChatGPT 專屬收件匣" : "不碰記憶"
@@ -194,6 +197,7 @@ struct HandsGrantAccess: Equatable, Sendable {
     var provisional: Bool = false
     /// W183 R10：核准的是這台全部專案（新專案自動包含）。
     var allProjects: Bool = false
+    var sandboxDeviceID: String? = nil
 }
 
 struct HandsGrantSummary: Equatable, Sendable, Identifiable {
@@ -278,6 +282,7 @@ final class HandsAuth: @unchecked Sendable {
         var attemptID: String? = nil
         /// W183 R8c：這個授權碼是給哪個 resource 的（grant 蓋上）。
         var resource: String? = nil
+        var sandboxDeviceID: String? = nil
     }
 
     let url: URL
@@ -352,6 +357,16 @@ final class HandsAuth: @unchecked Sendable {
         lock.unlock()
         if hadTransaction { cardChanged?(nil) }
         windowChanged?(expires)
+    }
+
+    func openSandboxWindow(deviceID: String) {
+        lock.lock()
+        window = Window(openedAt: now(), expiresAt: now().addingTimeInterval(Self.windowLifetime),
+                        scope: HandsGrantScope(level: 0, projects: [], memory: "沙盒（只能領工、交件）；不碰記憶", sandboxDeviceID: deviceID))
+        transaction = nil
+        let expires = window?.expiresAt
+        lock.unlock()
+        onPairingCard?(nil); onWindowChange?(expires)
     }
 
     /// W183 R6b：使用者在私訊框按［連線］（HandsConnectHost.begin）：開一個綁這個 attempt 的 10 分鐘窗口，範圍用按下時的快照。
@@ -535,7 +550,8 @@ final class HandsAuth: @unchecked Sendable {
     }
 
     private func registerClient(_ params: [String: Any], context: Context) throws -> [String: Any] {
-        try requireKeys(params, ["redirect_uris", "client_name"])
+        try requireKeys(params, ["redirect_uris", "client_name", "scope"])
+        guard params["scope"] == nil || params["scope"] as? String == "sandbox" else { throw HandsWireError.invalidRequest("scope") }
         guard let uris = params["redirect_uris"] as? [String], (1...5).contains(uris.count) else {
             throw HandsWireError.invalidRequest("redirect_uris")
         }
@@ -545,7 +561,9 @@ final class HandsAuth: @unchecked Sendable {
         let name = String(rawName.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
             .trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)
         lock.lock(); defer { lock.unlock() }
-        guard allow("all", max: 300, per: 60), allow("register", max: 10, per: 3600) else { throw HandsWireError.rateLimited }
+        let lane = params["scope"] as? String == "sandbox" ? "sandbox:" : ""
+        if !lane.isEmpty { guard let window, window.expiresAt > now(), window.scope?.sandboxDeviceID != nil else { throw HandsWireError.windowClosed } }
+        guard allow(lane + "all", max: 300, per: 60), allow(lane + "register", max: 10, per: 3600) else { throw HandsWireError.rateLimited }
         pruneLocked()
         // 待處理（沒有有效 grant）的 client 數上限：先清掉超過一小時的，還是滿就拒。
         let active = Set(state.grants.filter(\.isActive).map(\.clientID))
@@ -587,7 +605,7 @@ final class HandsAuth: @unchecked Sendable {
             resource = expected
         }
         if let scope = params["scope"] {
-            guard let text = scope as? String, text.split(separator: " ").allSatisfy({ $0 == Self.scope[...] }) else {
+            guard let text = scope as? String, [Self.scope, "sandbox"].contains(text) else {
                 throw HandsWireError.invalidRequest("scope")
             }
         }
@@ -595,6 +613,9 @@ final class HandsAuth: @unchecked Sendable {
         guard allow("all", max: 300, per: 60), allow("begin", max: 20, per: 600) else { lock.unlock(); throw HandsWireError.rateLimited }
         let current = now()
         guard let window, window.expiresAt > current else { self.window = nil; lock.unlock(); throw HandsWireError.windowClosed }
+        guard (params["scope"] as? String ?? Self.scope) == ((window.scope?.sandboxDeviceID == nil) ? Self.scope : "sandbox") else {
+            lock.unlock(); throw HandsWireError.invalidRequest("scope")
+        }
         if let transaction, transaction.expiresAt > current { lock.unlock(); throw HandsWireError.pairingBusy }
         guard let client = state.clients.first(where: { $0.id == clientID }) else { lock.unlock(); throw HandsWireError.invalidClient }
         guard client.redirectURIs.contains(redirect), context.callbacks.contains(redirect) else {
@@ -667,13 +688,14 @@ final class HandsAuth: @unchecked Sendable {
                                           allProjects: pending.scope.allProjects,   // W183 R10
                                           expiresAt: current.addingTimeInterval(Self.codeLifetime), attemptID: pending.attemptID,
                                           resource: pending.resource)
+        codes[Self.hash(code)]?.sandboxDeviceID = pending.scope.sandboxDeviceID
         lock.unlock()
         cardChanged?(nil); windowChanged?(nil)
         return ["authorization_code": code, "redirect_uri": pending.redirectURI, "state": pending.state]
     }
 
     private func token(_ params: [String: Any]) throws -> [String: Any] {
-        try requireKeys(params, ["grant_type", "code", "code_verifier", "client_id", "redirect_uri", "refresh_token"])
+        try requireKeys(params, ["grant_type", "code", "code_verifier", "client_id", "redirect_uri", "refresh_token", "scope"])
         guard let clientID = params["client_id"] as? String else { throw HandsWireError.invalidRequest("client_id") }
         let currentBinding = binding?()   // W183 R8c：鎖外讀（binding 不准叫回 HandsAuth）
         lock.lock()
@@ -692,7 +714,10 @@ final class HandsAuth: @unchecked Sendable {
 
     private func tokenLocked(_ params: [String: Any], clientID: String, revoked: inout [String],
                              attemptGrant: inout (String, String)?) throws -> [String: Any] {
-        guard allow("all", max: 300, per: 60), allow("token", max: 60, per: 60), allow("token:" + clientID, max: 20, per: 60) else {
+        let record = state.tokens.first { Self.constantTimeEqual($0.refreshHash, Self.hash(params["refresh_token"] as? String ?? "")) }
+        let sandbox = params["scope"] as? String == "sandbox" || codes[Self.hash(params["code"] as? String ?? "")]?.sandboxDeviceID != nil || state.grants.first(where: { $0.id == record?.grantID })?.sandboxDeviceID != nil
+        let lane = sandbox ? "sandbox:" : ""
+        guard allow(lane + "all", max: 300, per: 60), allow(lane + "token", max: 60, per: 60), allow(lane + "token:" + clientID, max: 20, per: 60) else {
             throw HandsWireError.rateLimited
         }
         guard state.clients.contains(where: { $0.id == clientID }) else { throw HandsWireError.invalidClient }
@@ -702,6 +727,7 @@ final class HandsAuth: @unchecked Sendable {
                   let redirect = params["redirect_uri"] as? String else { throw HandsWireError.invalidRequest("code") }
             let key = Self.hash(code)
             guard var entry = codes[key], entry.clientID == clientID else { throw HandsWireError.invalidGrant }
+            guard params["scope"] == nil || params["scope"] as? String == (entry.sandboxDeviceID == nil ? Self.scope : "sandbox") else { throw HandsWireError.invalidRequest("scope") }
             if entry.used {
                 // 授權碼被用第二次：用它換到的 grant 一起撤銷（存不了檔＝全部撤銷、刪授權檔）。
                 if let grant = entry.grantID, revokeLocked([grant], reason: "code_reused") { revoked.append(grant) }
@@ -726,7 +752,7 @@ final class HandsAuth: @unchecked Sendable {
                                              projectIDs: entry.projectIDs, createdAt: now(), lastUsedAt: nil,
                                              pendingAttempt: entry.attemptID, hostDeviceID: bindingForIssue?.hostDeviceID.lowercased(),
                                              issuer: bindingForIssue?.issuer, resource: entry.resource ?? bindingForIssue?.resource,
-                                             generation: bindingForIssue?.generation, allProjects: entry.allProjects ? true : nil)   // W183 R10
+                                             generation: bindingForIssue?.generation, allProjects: entry.allProjects ? true : nil, sandboxDeviceID: entry.sandboxDeviceID)   // W183 R10
             state.grants.append(grant)
             entry.used = true
             entry.grantID = grant.id
@@ -751,6 +777,7 @@ final class HandsAuth: @unchecked Sendable {
                   let grant = state.grants.first(where: { $0.id == state.tokens[index].grantID }),
                   grant.isActive, grant.clientID == clientID, Self.bound(grant, to: bindingForIssue) else { throw HandsWireError.invalidGrant }
             // W183 R1b：用過的 refresh 在偵測期內一筆都不丟；存滿了就先不換新（停止核發），不能拿掉舊的證據。
+            guard params["scope"] == nil || params["scope"] as? String == (grant.sandboxDeviceID == nil ? Self.scope : "sandbox") else { throw HandsWireError.invalidRequest("scope") }
             let grantID = state.tokens[index].grantID
             guard state.usedRefresh.count < Self.maxUsedRefresh,
                   state.usedRefresh.lazy.filter({ $0.grantID == grantID }).count < usedRefreshCapPerGrant else {
@@ -782,18 +809,19 @@ final class HandsAuth: @unchecked Sendable {
         let changed = onChange
         DispatchQueue.global(qos: .utility).async { changed?() }
         return ["access_token": access, "token_type": "Bearer", "expires_in": Int(Self.accessLifetime),
-                "refresh_token": refresh, "scope": Self.scope]
+                "refresh_token": refresh, "scope": state.grants.first { $0.id == grant }?.sandboxDeviceID == nil ? Self.scope : "sandbox"]
     }
 
     private func checkOp(_ params: [String: Any], levelCap: Int) throws -> [String: Any] {
         try requireKeys(params, ["access_token"])
         guard let access = params["access_token"] as? String else { throw HandsWireError.invalidRequest("access_token") }
+        let found = grant(forAccess: access)
         lock.lock()
-        let allowed = allow("check", max: 1200, per: 60)
+        let allowed = allow(found?.sandboxDeviceID == nil && found != nil ? "check" : "sandbox:check", max: 1200, per: 60)
         lock.unlock()
         guard allowed else { throw HandsWireError.rateLimited }
-        guard let found = grant(forAccess: access) else { return ["ok": false] }
-        return ["ok": true, "grant_id": found.grantID, "client_id": found.clientID, "level": min(found.grantLevel, levelCap)]
+        guard let found else { return ["ok": false] }
+        return ["ok": true, "grant_id": found.grantID, "client_id": found.clientID, "level": min(found.grantLevel, levelCap), "scope": found.sandboxDeviceID == nil ? Self.scope : "sandbox"]
     }
 
     // MARK: - App 內用
@@ -810,7 +838,17 @@ final class HandsAuth: @unchecked Sendable {
               let grant = state.grants.first(where: { $0.id == token.grantID }), grant.isActive,
               state.clients.contains(where: { $0.id == grant.clientID }), Self.bound(grant, to: currentBinding) else { return nil }
         return HandsGrantAccess(grantID: grant.id, clientID: grant.clientID, grantLevel: grant.level, projectIDs: grant.projectIDs,
-                                provisional: grant.pendingAttempt != nil, allProjects: grant.allProjects == true)   // W183 R10
+                                provisional: grant.pendingAttempt != nil, allProjects: grant.allProjects == true, sandboxDeviceID: grant.sandboxDeviceID)   // W183 R10
+    }
+
+    /// 沙盒發布與 revokeLocked 同鎖；body 只存工作／提案資料，不回呼授權。
+    func withSandboxAccess<T>(_ access: String, _ body: () throws -> T) throws -> T {
+        let hashed = Self.hash(access), currentBinding = binding?()
+        lock.lock(); defer { lock.unlock() }
+        guard persistenceFailure == nil, let token = state.tokens.first(where: { Self.constantTimeEqual($0.accessHash, hashed) }), token.accessExpires > now(),
+              let grant = state.grants.first(where: { $0.id == token.grantID }), grant.isActive, grant.sandboxDeviceID != nil,
+              Self.bound(grant, to: currentBinding) else { throw HandsWireError.unauthorized }
+        return try body()
     }
 
     func grantRecord(_ id: String) -> HandsAuthState.Grant? {
@@ -872,6 +910,20 @@ final class HandsAuth: @unchecked Sendable {
             if !revoked.isEmpty { callback?(revoked, reason) }
             changed?()
         })
+    }
+
+    func revokeSandboxDevice(_ device: String) {
+        lock.lock()
+        let pending = window?.scope?.sandboxDeviceID == device || transaction?.scope.sandboxDeviceID == device
+        guard pending || codes.values.contains(where: { $0.sandboxDeviceID == device }) || state.grants.contains(where: { $0.sandboxDeviceID == device && $0.isActive }) else { lock.unlock(); return }
+        if pending { window = nil; transaction = nil }
+        codes = codes.filter { $0.value.sandboxDeviceID != device }
+        var ids = state.grants.filter { $0.sandboxDeviceID == device && $0.isActive }.map(\.id)
+        _ = revokeLocked(ids, reason: "sandbox_removed")
+        ids += persistRevocationLocked().revoked
+        lock.unlock()
+        if pending { onPairingCard?(nil); onWindowChange?(nil) }
+        if !ids.isEmpty { onGrantsRevoked?(ids, "sandbox_removed"); onChange?() }
     }
 
     /// W183 R11（GPT-6 R11 審查 1，高：「自動遷移會讓曾經被降級的舊 L2 grant 恢復」）：把現有的 grant 封頂在 maxLevel（寫進授權檔）——

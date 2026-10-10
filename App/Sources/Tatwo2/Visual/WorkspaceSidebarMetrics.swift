@@ -133,6 +133,7 @@ enum BrowserSidebarMetrics {
     static let downloadsWidth: CGFloat = 226
     static let downloadsMaxListHeight: CGFloat = 420
     static let downloadsMinimumListHeight: CGFloat = 32
+    static let downloadsScrollThreshold = 5
     static let downloadsCornerRadius: CGFloat = 12
     static let downloadsPadding: CGFloat = 10
     static let downloadsSpacing: CGFloat = 8

@@ -870,6 +870,7 @@ final class IPadUseController: ObservableObject {
     }
 
     private static func signingTeams() async throws -> [String] {
+        guard !NativeStagingIsolation.isW276Bundle else { throw IPadUseError(description: "Staging 停用系統簽署憑證查詢。") }
         var teams: [String] = []
         let profiles = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Developer/Xcode/UserData/Provisioning Profiles", isDirectory: true)

@@ -91,6 +91,11 @@ enum PluginsSource {
         return "SOURCETEST plugins skills=\(entries.filter { $0.kind == .skill }.count) mcp=\(entries.filter { $0.kind == .mcp }.count) fixture=\(isExport(environment))"
     }
 
+    /// W345：技能根常是捷徑（例：~/.claude/skills 連到外接卷）；URL 版列目錄遇到捷徑回 ENOTDIR，先解開再列（同 TatwoSkillsDirectoryCatalog）。
+    static func skillFolders(_ root: URL) -> [URL]? {
+        try? FileManager.default.contentsOfDirectory(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
+    }
+
     private static func skillEntries(environment: [String: String]) -> [PluginRegistryEntry] {
         let manager = FileManager.default
         let staging = NativeStagingIsolation.isEnabled(environment)
@@ -109,7 +114,7 @@ enum PluginsSource {
         for root in roots {
             if staging && !NativeStagingIsolation.allowsRead(root, within: paths.enginesRoot) { continue }
             if ExternalWorkspacePolicy.contains(root) { continue }   // W183 R6c 審查：技能根連到入口 chatgpt/（外部 AI 的工作區）＝整個不收
-            guard let children = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { continue }
+            guard let children = skillFolders(root) else { continue }
             for child in children {
                 let manifest = child.appendingPathComponent("SKILL.md")
                 if staging && !NativeStagingIsolation.allowsRead(manifest, within: root) { continue }
@@ -147,9 +152,10 @@ enum PluginsSource {
             githubMCPName(username: $0.username)
         }
         let brainNames = GBrainService.definition(environment: environment) == nil ? [] : ["gbrain_allai"]
+        let imported = Array(OSMCPRegistry(environment: environment).servers().keys)
         switch engine {
-        case .codex: return Array(Set(codexServerNames(environment: environment) + githubNames + brainNames)).sorted()
-        case .claude: return Array(Set(Array(claudeConfiguredServers(environment: environment).keys) + githubNames + brainNames)).sorted()
+        case .codex: return Array(Set(imported + codexServerNames(environment: environment) + githubNames + brainNames)).sorted()
+        case .claude: return Array(Set(imported + Array(claudeConfiguredServers(environment: environment).keys) + githubNames + brainNames)).sorted()
         case .grok: return Array(Set(Array(configuredServers(engine: .grok, environment: environment).keys) + brainNames)).sorted()
         }
     }
@@ -221,7 +227,10 @@ enum PluginsSource {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> String? {
         guard NativeStagingIsolation.validationError(environment) == nil else { return nil }
-        let enabled = effectiveEnabledNames(stored: stored, engine: engine, environment: environment)
+        let registry = OSMCPRegistry(environment: environment)
+        let imported = registry.servers()
+        let blocked = Set(((try? registry.load()) ?? []).map(\.name)).subtracting(imported.keys)
+        let enabled = effectiveEnabledNames(stored: stored, engine: engine, environment: environment).filter { !blocked.contains($0) }
         let brain = GBrainService.definition(environment: environment)
         var object: [String: Any]
         switch engine {
@@ -256,6 +265,19 @@ enum PluginsSource {
             if let brain { servers["gbrain_allai"] = brain }
             object = ["engine": engine.rawValue, "configured": Array(servers.keys), "enabled": enabled, "servers": servers]
         }
+        if engine != .grok {
+            var servers = object["servers"] as? [String: Any] ?? [:]
+            for (name, definition) in imported where enabled.contains(name) {
+                if engine == .claude, let definition = definition as? [String: Any] {
+                    var transport = definition.filter { ["type", "command", "args", "env", "url", "headers", "headersHelper", "oauth"].contains($0.key) }
+                    if !(transport["headersHelper"] is String) { transport.removeValue(forKey: "headersHelper") }
+                    if let oauth = transport["oauth"] as? [String: Any] { transport["oauth"] = oauth.filter { ["clientId", "callbackPort", "authServerMetadataUrl", "scopes"].contains($0.key) } }
+                    if transport["headers"] == nil { transport["headers"] = definition["http_headers"] }
+                    servers[name] = transport
+                } else if let definition = definition as? [String: Any] { servers[name] = definition.filter { ["type", "command", "args", "env", "env_vars", "cwd", "url", "headers", "http_headers", "env_http_headers", "bearer_token_env_var", "startup_timeout_sec", "tool_timeout_sec", "enabled_tools", "disabled_tools", "enabled"].contains($0.key) } }
+            }
+            object["servers"] = servers
+        }
         if let threadID { object["threadID"] = threadID.uuidString }
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -264,13 +286,15 @@ enum PluginsSource {
     }
 
     private static func mcpEntries(environment: [String: String]) -> [PluginRegistryEntry] {
-        MCPEngine.allCases.flatMap { engine in
+        let registry = OSMCPRegistry(environment: environment)
+        let imported = (try? registry.load()) ?? []
+        return osMCPEntries(environment: environment) + MCPEngine.allCases.flatMap { engine in
             let definitions = configuredServers(engine: engine, environment: environment)
             let statuses = livenessCache.value(for: probeKey(engine: engine, environment: environment)) ?? [:]
-            return mcpNames(for: engine, environment: environment).map { name in
+            return mcpNames(for: engine, environment: environment).filter { name in !imported.contains { $0.name == name } }.map { name in
                 let enabled = definitions[name]?.enabled ?? true
                 return PluginRegistryEntry(
-                    id: pluginID(engine: engine, name: name), name: name, kind: .mcp,
+                    id: pluginID(engine: engine, name: name), name: name == "tatwo2_os" ? "TATWO OS" : name, kind: .mcp,
                     purpose: "\(engine.rawValue.capitalized)・外部 MCP",
                     path: "mcp:\(engine.rawValue):\(name)",
                     trigger: "由 \(engine.rawValue) sidecar 啟動時載入。",
@@ -279,6 +303,18 @@ enum PluginsSource {
                     liveness: enabled ? (statuses[name] ?? .init(state: .unknown)) : .init(state: .disabled),
                     availableTo: [engine.rawValue.capitalized])
             }
+        }
+    }
+
+    static func osMCPEntries(environment: [String: String]) -> [PluginRegistryEntry] {
+        let registry = OSMCPRegistry(environment: environment)
+        return ((try? registry.load()) ?? []).map { item in
+            let reason = registry.failureReason(item)
+            return PluginRegistryEntry(id: "os-mcp:" + item.id, name: item.displayName, kind: .mcp,
+                purpose: item.commandLine, path: item.source, trigger: reason == "來源設定變了，請重新帶入" ? (registry.changeNotice(item) ?? "勾選後由引擎載入。") : "勾選後由引擎載入。",
+                safetyLevel: .medium, installState: reason == nil ? .installed : .missing, smokeCommand: nil,
+                publicInstallHint: (item.source as NSString).abbreviatingWithTildeInPath,
+                liveness: .init(state: .unknown, detail: reason == "來源設定變了，請重新帶入" ? "請重新帶入" : reason), availableTo: ["Codex", "Claude"])
         }
     }
 

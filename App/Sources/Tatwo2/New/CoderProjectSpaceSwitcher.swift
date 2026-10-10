@@ -161,7 +161,7 @@ enum CoderSheetPresenter {
 }
 
 /// W181 R1：匯入、專案空間的 sheet。Esc、⌘W、系統的「取消」都只關這個 sheet，
-/// 不往主視窗傳（主視窗的 Esc 會關整個 TATWO 視窗）。中文輸入法選字時的 Esc 照常給輸入法。
+/// 不往主視窗傳。中文輸入法選字時的 Esc 照常給輸入法。
 @MainActor
 final class CoderSheetWindow: NSWindow {
     var onDismiss: (() -> Void)?
@@ -185,77 +185,7 @@ final class CoderSheetWindow: NSWindow {
     private var isComposingText: Bool { (firstResponder as? NSTextView)?.hasMarkedText() == true }
 
     private func dismissSheet() {
-        // 因為 Esc 關的：同一下按住的自動重複、或緊接著再按一下，不能落到主視窗（W181 審查：只擋第一下不夠）。
-        if let event = NSApp.currentEvent, Self.isPlainEscape(event) { CoderSheetEscapeGuard.arm(after: event) }
         if let onDismiss { onDismiss() } else if let parent = sheetParent { parent.endSheet(self) } else { orderOut(nil) }
-    }
-}
-
-/// Esc 關掉 sheet 之後，主視窗變成 key：這時還在按住的 Esc（自動重複）或 0.4 秒內再按的一下會送到主視窗，
-/// 主視窗的 Esc 會關掉整個 TATWO 視窗。用一次性的本機事件監聽吃掉這些 Esc；之後重新按的 Esc 照常。
-@MainActor
-enum CoderSheetEscapeGuard {
-    static let window: TimeInterval = 0.4
-    private static var monitor: Any?
-    private static var until: TimeInterval = 0
-    private static var held = false
-    private static var protectNextEscape = false
-    private static var mainWindowOnly = false
-
-    static func arm(after event: NSEvent) {
-        protectNextEscape = false
-        mainWindowOnly = false
-        until = event.timestamp + window
-        held = event.type == .keyDown
-        guard monitor == nil else { return }
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { event in
-            guard event.keyCode == 53 else { return event }
-            // DM 的 keyDown 先給輸入法、輸入框與卡片；只有真的走到主視窗關閉才攔。
-            if mainWindowOnly, event.type == .keyDown { return event }
-            return swallows(event) ? nil : event
-        }
-    }
-
-    /// 私訊框收起後，下一下 Esc（即使已過短暫保護時間）也不能關掉主視窗。
-    /// 只保護主視窗；其他視窗的輸入、卡片與輸入法照自己的 Esc 路由。
-    static func armForDM(after event: NSEvent) {
-        arm(after: event)
-        protectNextEscape = true
-        mainWindowOnly = true
-    }
-
-    /// 吃掉：關掉 sheet 那一下之後 0.4 秒內的 Esc，和同一下按住的自動重複。放開（keyUp）照常送出；
-    /// 過了時間又重新按下去的 Esc 照常送出，監聽也就拆掉。
-    static func swallows(_ event: NSEvent) -> Bool {
-        if mainWindowOnly, !(event.window is TatwoWorkOSWindow) { return false }
-        if event.type == .keyUp {
-            held = false
-            if event.timestamp > until, !protectNextEscape { disarm() }
-            return false
-        }
-        if protectNextEscape || event.timestamp <= until || (held && event.isARepeat) {
-            protectNextEscape = false
-            held = true
-            return true
-        }
-        disarm()
-        return false
-    }
-
-    static var isArmed: Bool { monitor != nil }
-
-    static func preventsDMWindowClose(_ event: NSEvent?) -> Bool {
-        guard mainWindowOnly, isArmed, let event, event.type == .keyDown, event.keyCode == 53,
-              event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return false }
-        return swallows(event)
-    }
-
-    static func disarm() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        held = false
-        protectNextEscape = false
-        mainWindowOnly = false
     }
 }
 

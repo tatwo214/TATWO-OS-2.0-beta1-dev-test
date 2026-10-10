@@ -640,10 +640,12 @@ final class HandsConnectHost: @unchecked Sendable {
         }
     }
 
-    /// 某個 grant 的工具清單（/mcp）成功：是這個 attempt 的 grant、還沒終止＝工具連上了（tools_ready；還要擁有者確認才是已連線）。
+    /// 某個 grant 的 /mcp 到了（拿工具清單成功，或暫時 grant 呼叫工具被請稍後）：是這個 attempt 的 grant、還沒終止＝工具連上了（tools_ready；還要擁有者確認才是已連線）。
     func noteMCP(grantID: String) {
         locked { _ in
-            guard var attempt = current, attempt.terminal == nil, attempt.grantID == grantID else { return }
+            // W333 審查：驗過 token 之後 grant 才被撤銷或到期＝不算（轉正那一步也會再擋）。
+            guard var attempt = current, attempt.terminal == nil, attempt.grantID == grantID,
+                  service.auth.grantRecord(grantID)?.isActive == true else { return }
             attempt.mcpSeen = true
             current = attempt
         }

@@ -53,7 +53,10 @@ import Foundation
 test('W160 dispatch carries the optional entry files and the primary refreshes agents.md first', () => {
   const dispatch = read('Facade/DeviceDispatch.swift');
   assert.match(dispatch, /optionalFiles = \["agents\.md", "user\.md", "todo\.md", "issue\.md"\]/);
-  assert.match(dispatch, /Self\.optionalFiles\.contains\(path\)/, 'apply allowlist accepts optional files');
+  // W187 validates the whole signed bundle through a shared validator.
+  const validation = dispatch.slice(dispatch.indexOf('static func validateFiles('), dispatch.indexOf('private func', dispatch.indexOf('static func validateFiles(')));
+  assert.match(validation, /optionalFiles\.contains\(path\)/, 'apply allowlist accepts optional files');
+  assert.match(dispatch, /try Self\.validateFiles\(bundle\.files\)/, 'apply invokes the same allowlist');
   assert.match(dispatch, /AgentsFile\.refresh\(entry: entry, role: local\.role\)[\s\S]*try snapshot\(\)/, 'refresh before snapshot');
   const generator = read('Facade/RuleGenerator.swift');
   assert.match(generator, /AgentsFile\.userPreferences/, 'built-in engines receive user.md');

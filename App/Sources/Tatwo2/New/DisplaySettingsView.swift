@@ -89,6 +89,12 @@ struct DisplaySettingsView: View {
                     ForEach(externalDisplays) { display in displayCard(display) }
                 }
                 keyboardCard
+                if CrashRelaunch.available {
+                    Toggle("當機自動重開", isOn: Binding(get: { CrashRelaunch.enabled }, set: CrashRelaunch.change))
+                        .toggleStyle(.switch).tint(LiquidGlassTokens.brandAccent)
+                    Text("當機會自動重開；登入時也會自動開啟 App。關閉後，下次正常結束 App 後生效。")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                }
                 if monitorControl.isRunning {
                     Text("MonitorControl 也在執行，兩邊同時調會互搶。確認這裡好用後，可以把它關掉。")
                         .font(.system(size: 11.5))

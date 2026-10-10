@@ -86,6 +86,10 @@ enum AssistantPlacement {
 enum AssistantPrimaryResolver {
     /// 這台是副設備時回主設備 id（小寫）；主設備、單機、還沒指派或身分檔讀不到都是 nil。只讀，不修任何東西。
     static func primaryDeviceID(environment: [String: String]) -> String? {
+        let registry = DeviceRegistry(environment: environment)
+        let fleet = DeviceFleetStore(registry: registry, environment: environment)
+        do { if let trust = try fleet.trust(), trust.kind != .owner { return nil } }
+        catch { return nil }
         guard let identity = try? DeviceIdentityStore.readLocal(entry: TatwoEntry(environment: environment)),
               identity.role == .secondary,
               let primary = identity.primaryDeviceID?.lowercased(),
@@ -95,9 +99,7 @@ enum AssistantPrimaryResolver {
 
     /// 配對清單裡的主設備：先照 id 對；舊紀錄 id 對不上時，只有一台標主設備才用它。沒配對過就是 nil（當單機）。
     static func device(primaryID: String, in records: [DeviceRecord]) -> DeviceRecord? {
-        if let exact = records.first(where: { $0.id.lowercased() == primaryID }) { return exact }
-        let marked = records.filter { $0.role == .primary }
-        return marked.count == 1 ? marked[0] : nil
+        return records.first { $0.id.lowercased() == primaryID }
     }
 }
 
@@ -137,6 +139,7 @@ enum AssistantModelRouting {
     /// 選單上的名字：路由名本來就是給人看的（有大寫或空白）就照用；
     /// 全小寫的原始路由名補成首字大寫、字母和版本號之間空一格（例「abc5.1」→「Abc 5.1」）。
     static func friendlyName(_ route: ChatRouteChoice) -> String {
+        if route.brandGroup == .local { return route.title }
         let title = route.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, title == title.lowercased(), !title.contains(" "),
               let first = title.first, first.isLetter else { return title }
@@ -152,6 +155,7 @@ enum AssistantModelRouting {
 
     /// 玻璃 chip 上放得下的短名（照 Coder chip：GPT 系列去掉「GPT-」前綴，Claude 去掉品牌字）。
     static func chipName(_ route: ChatRouteChoice) -> String {
+        if route.runtimeAdapter == .chatgptTap { return route.commandLabel }
         var name = friendlyName(route)
         if name.hasPrefix("Claude ") { name.removeFirst("Claude ".count) }
         if name.hasPrefix("GPT-"), name.contains(" ") { name.removeFirst("GPT-".count) }

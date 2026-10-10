@@ -1,0 +1,3 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w331b-expiredfirst.test.mjs
+tests/fixtures/w331b-room-allow.txt

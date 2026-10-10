@@ -1,0 +1,28 @@
+# 信任快取：保留 DeviceFleetStore；devices/fleet-state 的路徑、mtime、大小變更時重算。
+App/Sources/Tatwo2/Facade/PrimaryOfflineSync.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+# 引擎路徑與登入判斷快取；DEBUG 實際讀檔計數。
+App/Sources/Tatwo2/Facade/EngineAPIKeyPolicy.swift
+# 橋接在背景比較、存檔、轉 JSON；保存上次讀寫版本、避免舊快照覆蓋，短鎖保護讀取狀態。
+App/Sources/Tatwo2/Facade/ChatLiveStore.swift
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift
+# 關閉的 Plan inspector 不建構 Coder 卡；DEBUG 求值計數。
+App/Sources/Tatwo2/Chat/ChatPage.swift
+App/Sources/Tatwo2/Chat/ChatPage+Composer.swift
+# 一般人類捲輪事件提早返回；保留 agent 恢復路徑。
+App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift
+# 原生隔離驗收與自測入口；沒有真帳號、真 Keychain 或外部網頁。
+App/Sources/Tatwo2/Facade/W295Acceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+# 隔離 launcher、離線 CEF 建置與回歸腳本。
+tests/w295-xsmooth.test.mjs
+tests/fixtures/w295-verify.sh
+# 建置、Node 與各自測輸出（帳號路徑正規化、建置略去原碼摘錄；房外保留原始輸出）；收房白名單。
+tests/fixtures/w295-build.log
+tests/fixtures/w295-node.log
+tests/fixtures/w295-w295.log
+tests/fixtures/w295-w292.log
+tests/fixtures/w295-w288.log
+tests/fixtures/w295-w258download.log
+tests/fixtures/w295-w248webspace.log
+tests/fixtures/w295-room-allow.txt

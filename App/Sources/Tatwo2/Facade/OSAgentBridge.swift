@@ -2,11 +2,13 @@ import AppKit
 import Foundation
 import CoreFoundation
 import Darwin
+import os
 
 /// App-local OS 派工橋（ultrawork 2.0 第 2 步）。跟 BrowserAgentBridge 同款寫法：0600 UNIX socket，
 /// 只轉房間／討論串中繼資料（標題、引擎、活性、worktree 路徑），不帶任何密鑰。
 final class OSAgentBridge: @unchecked Sendable {
     static let shared = OSAgentBridge()
+    private let documentQueue = DispatchQueue(label: "tatwo2.bridge.document", qos: .utility)
 
     static func pullThreadFiles(threadID: UUID, artifactsRoot: URL, workdir: String) throws -> [RemoteThreadTransferFile] {
         let candidates = try RemoteThreadTransfer.candidates(
@@ -22,6 +24,51 @@ final class OSAgentBridge: @unchecked Sendable {
             in: workdir, paths: paths, baselines: baselines, observedHashes: observed)
     }
 
+    #if DEBUG
+    // Inject only storage/dispatch dependencies; the production handle and caller checks still run.
+    static func fleetFixtureBridge() -> OSAgentBridge { OSAgentBridge() }
+    private var fleetTestDispatch: DeviceDispatch?
+    private var fleetTestMemory: TatwoMemorySyncEngine?
+    /// Replace only the model process launch after production permission/creator/parameter checks.
+    static var fixtureJSON: (() -> Void)?
+    var fixtureSend: ((UUID, String) -> Void)?
+    func fixtureMemory(_ engine: TatwoMemorySyncEngine) { fleetTestMemory = engine }
+    private final class FixtureResponse: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bytes = Data()
+        func put(_ data: Data) { lock.withLock { bytes = data } }
+        func get() -> Data { lock.withLock { bytes } }
+    }
+    @MainActor func fixtureModel(_ model: ChatPageModel) { self.model = model }
+    func fixtureHandle(dispatch: DeviceDispatch, method: String, params: [String: Any],
+                       handshake: [String: Any]? = nil, fingerprint: String? = nil, caller: OSSocketCaller = .ssh) throws -> [String: Any] {
+        fleetTestDispatch = dispatch
+        var pair: [Int32] = [-1, -1]
+        guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else { throw BridgeError.invalidParams }
+        defer { close(pair[1]) }
+        var request: [String: Any] = ["id": "fixture", "method": method, "params": params]
+        if let handshake { request["deviceHandshake"] = handshake }
+        let input = try JSONSerialization.data(withJSONObject: request)
+        // A handoff response can exceed the socket buffer. Drain concurrently like a real client;
+        // sequential write-then-read fixtures deadlock before testing the production checkpoint.
+        let response = FixtureResponse(), complete = DispatchSemaphore(value: 0)
+        let reader = FileHandle(fileDescriptor: pair[1], closeOnDealloc: false)
+        DispatchQueue.global().async {
+            response.put(reader.readDataToEndOfFile()); complete.signal()
+        }
+        handle(clientFD: pair[0], input: input, caller: caller, sshFingerprint: fingerprint,
+               acceptedAt: ProcessInfo.processInfo.systemUptime, release: {})
+        guard complete.wait(timeout: .now() + 60) == .success else { throw BridgeError.invalidParams }
+        let result = response.get()
+        return try JSONSerialization.jsonObject(with: result) as! [String: Any]
+    }
+    #endif
+    private var requestDispatch: DeviceDispatch {
+        #if DEBUG
+        if let fleetTestDispatch { return fleetTestDispatch }
+        #endif
+        return DeviceDispatch.shared
+    }
     private weak var model: ChatPageModel?
     private var botTestLibrary: BotLibrary?
     // In-process test fixture only; does not expose an environment-enabled confirmation bypass.
@@ -92,7 +139,7 @@ final class OSAgentBridge: @unchecked Sendable {
         return bridge
     }
 
-    private func jobsCaller(_ params: [String: Any], bound: UUID? = nil) throws -> (id: UUID, source: String) {
+    private func jobsCaller(_ params: [String: Any], bound: UUID? = nil, allowSelected: Bool = true) throws -> (id: UUID, source: String) {
         let id: UUID
         let source: String
         if let raw = params["callerThreadID"] {
@@ -102,7 +149,7 @@ final class OSAgentBridge: @unchecked Sendable {
             // W178：綁定對話的引擎沒帶就用它自己的對話，不退回「目前選中的對話」。
             id = bound; source = "caller"
         } else {
-            if jobsTestArtifacts != nil { throw BridgeError.noParentThread }
+            if !allowSelected || jobsTestArtifacts != nil { throw BridgeError.noParentThread }
             guard let selected = onMain({ [weak self] in self?.model?.selectedThreadID }) else { throw BridgeError.noParentThread }
             id = selected; source = "selected"
         }
@@ -208,7 +255,7 @@ final class OSAgentBridge: @unchecked Sendable {
         let path = socketPath
         let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
         do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try HandsFiles.ensureDirectory(directory)
         } catch {
             fputs("os_agent_bridge_error=create_directory_failed\n", stderr)
             return
@@ -245,12 +292,17 @@ final class OSAgentBridge: @unchecked Sendable {
             fputs("os_agent_bridge_error=bind_or_listen_failed\n", stderr)
             return
         }
-        _ = chmod(path, S_IRUSR | S_IWUSR)
+        guard chmod(path, S_IRUSR | S_IWUSR) == 0 else { close(fd); _ = unlink(path); return }
         stateLock.lock(); listenerFD = fd; stateLock.unlock()
         fputs("os_agent_bridge_socket=\(path)\n", stderr)
         while true {
             let client = accept(fd, nil, nil)
             if client < 0 { continue }
+            autoreleasepool { acceptClient(client) }
+        }
+    }
+
+    private func acceptClient(_ client: Int32) {
             // cli_open may fork before this request returns; otherwise Node waits for the shell to close its inherited socket.
             _ = fcntl(client, F_SETFD, FD_CLOEXEC)
             // 客戶端提早斷線時，寫回應不可以讓整個 App 吃 SIGPIPE 死掉（實機驗收 2026-09-04 踩到）
@@ -263,21 +315,22 @@ final class OSAgentBridge: @unchecked Sendable {
             // 連線當下就認人：之後對方換掉或結束也不影響這次判斷。
             let acceptedAt = ProcessInfo.processInfo.systemUptime
             let caller = OSSocketCaller.classify(fd: client)
+            let sshFingerprint = OSSocketCaller.sshFingerprint(fd: client, caller: caller)
             guard connectionSlots.wait(timeout: .now()) == .success else {
                 let busy = FileHandle(fileDescriptor: client, closeOnDealloc: true)
                 write(["id": NSNull(), "ok": false, "error": "os_bridge_busy"], to: busy)
-                continue
+                return
             }
             let release: @Sendable () -> Void = { [connectionSlots] in connectionSlots.signal() }
             readerQueue.async { [self] in
                 let input = Self.readRequest(client)
                 handlerQueue.async { [self] in
                     autoreleasepool {
-                        handle(clientFD: client, input: input, caller: caller, acceptedAt: acceptedAt, release: release)
+                        handle(clientFD: client, input: input, caller: caller, sshFingerprint: sshFingerprint,
+                               acceptedAt: acceptedAt, release: release)
                     }
                 }
             }
-        }
     }
 
     /// 只讀第一行（請求只用第一行）；送完關寫端的舊客戶端照樣相容。每次讀最多等 10 秒、整體 30 秒、上限 16 MB。
@@ -308,11 +361,42 @@ final class OSAgentBridge: @unchecked Sendable {
 
     /// W178：不是 TATWO OS 自己人（見 OSSocketCaller）也能用的方法——只回狀態、只成為待核准的提案，
     /// 或本來就要設備簽章。其餘會讀對話、送訊息、操作電腦、讓 App 結束的方法一律要自己人。
+    /// These handlers always call DeviceDispatch.authenticate before using their payload.
+    static let signedDeviceMethods: Set<String> = ["dispatch_fetch", "dispatch_ack", "document_propose",
+        "document_inspect", "inbox_target", "inbox_receive", "memory_propose", "memory_list", "memory_decide",
+        "memory_sync_target", "memory_sync_receive", "memory_sync_export", "memory_sync_import", "remote_hands_status", "remote_hands_action", "hands_build",
+        "job_submit", "job_status"]
+
+    /// Each socket handles one request. Its first frame is the signed handshake for that exact method/payload.
+    /// Never infer a key from --device, a UUID, or a cached SSH tunnel.
+    private func authenticateSSHRequest(method: String, params: [String: Any], handshake: [String: Any]?,
+                                        fingerprint: String?) throws -> (params: [String: Any], fingerprint: String?) {
+        if let handshake {
+            let (_, payload) = try requestDispatch.authenticate(method: method, proof: handshake)
+            guard let publicKey = handshake["publicKey"] as? String else { throw BridgeError.invalidParams }
+            let verified = try DeviceRegistry.fingerprint(publicKey: publicKey)
+            guard fingerprint == nil || fingerprint == verified else { throw BridgeError.invalidParams }
+            // v2 signs a canonical parameter digest so a large frame is transmitted once.
+            if payload["handshakeVersion"] as? Int == 2 {
+                guard Set(payload.keys) == ["handshakeVersion", "paramsSHA256"],
+                      let digest = payload["paramsSHA256"] as? String,
+                      digest == DeviceDispatch.hash(try JSONSerialization.data(withJSONObject: params, options: [.sortedKeys])) else {
+                    throw BridgeError.invalidParams
+                }
+                return (params, verified)
+            }
+            // Existing full-payload proofs remain compatible; dispatch only signed parameters.
+            return (payload, verified)
+        }
+        if !Self.signedDeviceMethods.contains(method) { throw DeviceFleetError.capabilityDenied }
+        return (params, fingerprint)
+    }
+
     static let untrustedCallerMethods: Set<String> = [
         "device_status", "dispatch_wake", "user_remember",
         "dispatch_fetch", "dispatch_ack", "document_propose", "document_inspect", "inbox_target", "inbox_receive",
         "memory_propose", "memory_list", "memory_decide",
-        "memory_sync_target", "memory_sync_receive", // W180 E1b：記憶自動同步，一樣要設備簽章
+        "memory_sync_target", "memory_sync_receive", "memory_sync_export", "memory_sync_import", // W180 E1b：記憶自動同步，一樣要設備簽章
         "remote_hands_status", "remote_hands_action", // W183 R3：副設備看主機的 ChatGPT 手腳、遠端開始配對／撤銷，一樣要設備簽章
     ]
 
@@ -348,6 +432,7 @@ final class OSAgentBridge: @unchecked Sendable {
     }
 
     static func allows(caller: OSSocketCaller, method: String, params: [String: Any], staging: Bool) -> Bool {
+        if method == "sandbox_dispatch" { switch caller { case .app, .engine: return true; default: return false } }
         if ChatGPTDispatch.methods.contains(method) { return ChatGPTDispatch.allows(caller) }
         // W183 R1：ChatGPT 手腳的關口只准 HandsContract.externalAIMethods（不退回任何既有清單）；
         // 這三個方法也只給它——App 自己、引擎、背景工作、SSH 都不能拿來繞過 token 與開關。
@@ -361,6 +446,7 @@ final class OSAgentBridge: @unchecked Sendable {
         if DistillRemoteRequest.methods.contains(method) { return caller == .ssh }
         // W182 R5：補回助理那條也只給已配對設備；這台自己的 AI 引擎、背景工作不能往助理那條塞字。
         if method == AssistantOfflineWire.method { return caller == .ssh }
+        if AssistantFleetTools.methods.contains(method) { return AssistantFleetTools.allows(caller) }
         switch caller {
         case .app, .engine, .job, .helper:
             return true
@@ -387,7 +473,8 @@ final class OSAgentBridge: @unchecked Sendable {
         return resolved.hasPrefix("/private/tmp/") || resolved.hasPrefix("/private/var/folders/")
     }()
 
-    private func handle(clientFD: Int32, input: Data?, caller: OSSocketCaller, acceptedAt: TimeInterval,
+    private func handle(clientFD: Int32, input: Data?, caller: OSSocketCaller, sshFingerprint: String?,
+                        acceptedAt: TimeInterval,
                         release: @escaping @Sendable () -> Void) {
         var releaseOnReturn = true
         defer { if releaseOnReturn { release() } }
@@ -417,7 +504,26 @@ final class OSAgentBridge: @unchecked Sendable {
             write(["id": id, "ok": false, "error": "missing_method"], to: handle)
             return
         }
-        let params = request["params"] as? [String: Any] ?? [:]
+        var params = request["params"] as? [String: Any] ?? [:]
+        var verifiedFingerprint = sshFingerprint
+        if caller == .ssh {
+            do {
+                let bound = try authenticateSSHRequest(method: method, params: params,
+                    handshake: request["deviceHandshake"] as? [String: Any], fingerprint: sshFingerprint)
+                params = bound.params; verifiedFingerprint = bound.fingerprint
+                if let verifiedFingerprint,
+                   !OSSocketCaller.sshMethodAllowed(fingerprint: verifiedFingerprint, method: method, registry: requestDispatch.registry) {
+                    throw DeviceFleetError.capabilityDenied
+                }
+                // Missing fingerprint has no SSH authority. Only the explicitly signed handlers may proceed.
+                if verifiedFingerprint == nil, !Self.signedDeviceMethods.contains(method) { throw DeviceFleetError.capabilityDenied }
+            } catch {
+                if (error as? DeviceDispatch.Failure)?.reason == "rpc_proof_expired" {
+                    write(["id": id, "ok": false, "error": "rpc_proof_expired"], to: handle)
+                } else { write(["id": id, "ok": false, "error": "fleet_capabilityDenied"], to: handle) }
+                return
+            }
+        }
         guard Self.allows(caller: caller, method: method, params: params, staging: Self.isStagingInstance) else {
             write(["id": id, "ok": false, "error": "caller_not_trusted",
                    "message": "這個方法只接受 TATWO OS 裡的 AI 引擎，或經 SSH 轉進來的已配對設備"], to: handle)
@@ -445,6 +551,9 @@ final class OSAgentBridge: @unchecked Sendable {
         }
         let context = RequestContext(
             boundThread: caller.boundThread,
+            isAppOrSSH: caller == .app || caller == .ssh,
+            isSSH: caller == .ssh,
+            controllerFingerprint: caller == .ssh ? verifiedFingerprint : nil,
             approvalDeadline: acceptedAt + Self.approvalWindow,
             clientAlive: { ComputerUseConnection.isAlive(handle.fileDescriptor) })
         if method == "chatgpt_dispatch" {
@@ -471,7 +580,7 @@ final class OSAgentBridge: @unchecked Sendable {
                 let result = try perform(method: method, params: params, computerConnection: connected, context: context)
                 write(["id": id, "ok": true, "result": result], to: handle)
             } catch {
-                write(["id": id, "ok": false, "error": (error as? LocalizedError)?.errorDescription ?? String(describing: error)], to: handle)
+                write(["id": id, "ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)], to: handle)
             }
             return
         }
@@ -488,7 +597,7 @@ final class OSAgentBridge: @unchecked Sendable {
                     let result = try perform(method: method, params: params, context: context)
                     write(["id": id, "ok": true, "result": result], to: handle)
                 } catch {
-                    write(["id": id, "ok": false, "error": String(describing: error)], to: handle)
+                    write(["id": id, "ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)], to: handle)
                 }
             }
             return
@@ -510,7 +619,7 @@ final class OSAgentBridge: @unchecked Sendable {
                     let result = try perform(method: method, params: params, computerConnection: connected, context: context)
                     write(["id": id, "ok": true, "result": result], to: handle)
                 } catch {
-                    write(["id": id, "ok": false, "error": (error as? LocalizedError)?.errorDescription ?? String(describing: error)], to: handle)
+                    write(["id": id, "ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)], to: handle)
                 }
             }
             return
@@ -528,7 +637,7 @@ final class OSAgentBridge: @unchecked Sendable {
                     let result = try perform(method: method, params: params, context: context)
                     write(["id": id, "ok": true, "result": result], to: handle)
                 } catch {
-                    write(["id": id, "ok": false, "error": String(describing: error)], to: handle)
+                    write(["id": id, "ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)], to: handle)
                 }
             }
             return
@@ -537,7 +646,7 @@ final class OSAgentBridge: @unchecked Sendable {
         do {
             response = ["id": id, "ok": true, "result": try perform(method: method, params: params, context: context)]
         } catch {
-            response = ["id": id, "ok": false, "error": String(describing: error)]
+            response = ["id": id, "ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)]
         }
         write(response, to: handle)
     }
@@ -602,22 +711,24 @@ final class OSAgentBridge: @unchecked Sendable {
     /// 要給使用者核准的指令文字上限：再長就看不完，請 AI 縮短或寫成腳本檔。
     static let approvalTextLimit = 2000
 
+    /// FE0F only after a visible emoji selects its presentation; standalone selectors remain invisible.
+    static func hasInvisibleCharacters(_ text: String, allowLineBreaks: Bool = false) -> Bool {
+        let scalars = Array(text.unicodeScalars)
+        return scalars.enumerated().contains { index, scalar in
+            if allowLineBreaks && (scalar == "\n" || scalar == "\t") { return false }
+            if scalar.value == 0xFE0F, index > 0, scalars[index - 1].value > 0x7F, scalars[index - 1].properties.isEmoji { return false }
+            return scalar.properties.isDefaultIgnorableCodePoint || scalar.value == 0x2800 || [.control, .format, .lineSeparator, .paragraphSeparator].contains(scalar.properties.generalCategory) || (scalar.properties.isWhitespace && scalar != " ")
+        }
+    }
+
     /// 指令文字能不能拿去給人核准／送進終端機：不能含看不見或會改變顯示順序的字元（使用者看到的必須就是要執行的）；
     /// 單行（終端機分頁）連換行、Tab、ESC 這些控制字元都不行——貼上時就會被當成按鍵執行。
     static func approvalTextProblem(_ text: String, singleLine: Bool) -> String? {
         guard text.unicodeScalars.count <= approvalTextLimit else { return "command_too_long_for_approval" }
-        for scalar in text.unicodeScalars {
-            switch scalar.properties.generalCategory {
-            case .control:
-                if !singleLine && (scalar == "\n" || scalar == "\t") { continue }
-                return singleLine ? "cli_send_single_line_without_control_characters" : "command_has_control_characters"
-            case .format, .lineSeparator, .paragraphSeparator:
-                return "command_has_invisible_characters"
-            default:
-                continue
-            }
+        if text.unicodeScalars.contains(where: { $0.properties.generalCategory == .control && (singleLine || ($0 != "\n" && $0 != "\t")) }) {
+            return singleLine ? "cli_send_single_line_without_control_characters" : "command_has_control_characters"
         }
-        return nil
+        return hasInvisibleCharacters(text, allowLineBreaks: !singleLine) ? "command_has_invisible_characters" : nil
     }
 
     /// 從接到連線起算的核准期限；比 OS MCP 的 45 秒逾時短，排隊的時間也算在內。
@@ -626,6 +737,9 @@ final class OSAgentBridge: @unchecked Sendable {
     /// 一次請求的呼叫者資訊：綁定的對話、核准期限、呼叫端是否還連著。
     struct RequestContext {
         var boundThread: UUID?
+        var isAppOrSSH = false // Full list_devices records only for App and paired-device protocol.
+        var isSSH = false
+        var controllerFingerprint: String?
         var approvalDeadline: TimeInterval?
         var clientAlive: (@Sendable () -> Bool)?
     }
@@ -644,12 +758,18 @@ final class OSAgentBridge: @unchecked Sendable {
     static let approvalMethods: Set<String> = ["run_background", "cli_open", "cli_send"]
 
     /// 照這條對話的權限決定能不能代它執行指令：完整存取權直接過、唯讀副審拒絕、其他每次問使用者。
-    private func commandGate(owner: UUID?) -> BackgroundCommandGate? {
-        onMain { [weak self] in
-            guard let model = self?.model, let live = model.live, let owner,
+    private func commandAccess(owner: UUID?) throws -> (gate: BackgroundCommandGate, policy: ManagedEnginePolicy?)? {
+        try onMainThrowing { [weak self] in
+            guard let self, let model = self.model, let live = model.live, let owner,
                   let thread = live.threadRecord(owner) else { return nil }
-            return BackgroundCommandGate.resolve(user: model.permissionPreset, bot: thread.botPermissionPreset,
-                                                 readOnly: thread.roomReadOnly == true)
+            if let creator = thread.controllerCreatorFingerprint {
+                do {
+                    let policy = try ManagedEnginePolicy.forThread(owner, creator: creator, fleet: self.requestDispatch.fleet)
+                    return (thread.roomReadOnly == true ? .deny : .ask, policy)
+                } catch { throw DeviceDispatch.Failure(reason: ManagedEnginePolicy.refusal(error, fleet: self.requestDispatch.fleet)) }
+            }
+            return (BackgroundCommandGate.resolve(user: model.permissionPreset, bot: thread.botPermissionPreset,
+                                                  readOnly: thread.roomReadOnly == true), nil)
         }
     }
 
@@ -663,12 +783,14 @@ final class OSAgentBridge: @unchecked Sendable {
 
     /// 真正執行前（開分頁、按 Enter、開背景程序）最後一次：沒過期、呼叫端還連著、對話還在且不是唯讀；
     /// 原本完整存取權不用問、等待期間被改成要問的，這次不執行（請它重新要求，才會問使用者）。
-    private func ensureExecutable(owner: UUID?, approvedUnder: BackgroundCommandGate, context: RequestContext) throws {
+    @discardableResult
+    private func ensureExecutable(owner: UUID?, approvedUnder: BackgroundCommandGate, context: RequestContext) throws -> ManagedEnginePolicy? {
         try ensureStillWanted(context)
-        guard let current = commandGate(owner: owner), current != .deny else { throw BridgeError.backgroundCommandReadOnly }
-        if approvedUnder == .run && current != .run { throw BridgeError.backgroundCommandNeedsApproval }
+        guard let current = try commandAccess(owner: owner), current.gate != .deny else { throw BridgeError.backgroundCommandReadOnly }
+        if approvedUnder == .run && current.gate != .run { throw BridgeError.backgroundCommandNeedsApproval }
         // 讀權限要等主執行緒；等完再看一次期限與連線。
         try ensureStillWanted(context)
+        return current.policy
     }
 
     /// 回傳這次是在哪種權限下放行的（完整存取權直接過＝.run；使用者點了允許＝.ask）。
@@ -676,8 +798,8 @@ final class OSAgentBridge: @unchecked Sendable {
     /// `shown`：要給人看的各段文字（指令、位置），逐段檢查；沒給就檢查整個 detail。
     private func requireCommandApproval(owner: UUID?, title: String, detail: String,
                                         shown: [(text: String, singleLine: Bool)]? = nil,
-                                        context: RequestContext) throws -> BackgroundCommandGate {
-        guard let gate = commandGate(owner: owner) else { throw BridgeError.noParentThread }
+                                        gate: BackgroundCommandGate? = nil, context: RequestContext) throws -> BackgroundCommandGate {
+        guard let gate = try gate ?? commandAccess(owner: owner)?.gate else { throw BridgeError.noParentThread }
         switch gate {
         case .run:
             try ensureStillWanted(context)
@@ -701,7 +823,7 @@ final class OSAgentBridge: @unchecked Sendable {
             // 點了允許之後再確認一次：沒過期、呼叫端還連著、對話還在而且權限沒在等待期間被改成唯讀。
             guard ProcessInfo.processInfo.systemUptime < deadline else { throw BridgeError.backgroundCommandApprovalExpired }
             guard context.clientAlive?() ?? true else { throw BridgeError.backgroundCommandCallerGone }
-            guard let latest = commandGate(owner: owner), latest != .deny else { throw BridgeError.backgroundCommandReadOnly }
+            guard let latest = try commandAccess(owner: owner)?.gate, latest != .deny else { throw BridgeError.backgroundCommandReadOnly }
             return .ask
         }
     }
@@ -738,12 +860,21 @@ final class OSAgentBridge: @unchecked Sendable {
     private static let ownedMethods: Set<String> = [
         "whoami", "run_background", "background_status", "stop_background", "dispatch_rooms",
         "list_rooms", "stop_room", "stop_all_rooms", "merge_reports", "reclaim_room", "cli_open", "os_binding_status",
+        "background_list", "artifacts_list",
         "cli_send", "cli_tail", "cli_close",
     ]
 
     private func perform(method: String, params: [String: Any],
                          computerConnection: (@Sendable () -> Bool)? = nil,
                          context: RequestContext = RequestContext()) throws -> [String: Any] {
+        var context = context
+        if let bound = context.boundThread {
+            if let creator = onMain({ [weak self] in self?.model?.localLiveForBridge?.threadRecord(bound)?.controllerCreatorFingerprint }) {
+                context.controllerFingerprint = creator
+                // A remotely created engine cannot escape its creator's grants through local MCP tools.
+                guard try requestDispatch.fleet.methodAllowed(fingerprint: creator, method: method) else { throw DeviceFleetError.capabilityDenied }
+            }
+        }
         var resolved = params
         guard Self.callerThreadMatches(bound: context.boundThread, params: params) else { throw BridgeError.callerThreadMismatch }
         if Self.ownedMethods.contains(method) {
@@ -755,12 +886,18 @@ final class OSAgentBridge: @unchecked Sendable {
                 // W178：引擎沒帶就用它綁定的對話，不退回「目前選中的對話」。
                 owner = bound
             } else {
+                guard !context.isSSH else { throw BridgeError.noParentThread }
                 guard let selected = onMain({ [weak self] in self?.model?.selectedThreadID }) else { throw BridgeError.noParentThread }
                 owner = selected
             }
             // 無頭驗收（jobs-index 的 TurnArtifacts 測試）沒有 model；那時只信 callerThreadID，不進主執行緒查對話（合併時 Fable 加：dispatchMain 下 assumeIsolated 會炸）
             if model != nil {
                 guard onMain({ [weak self] in self?.model?.live?.threadRecord(owner) != nil }) else { throw BridgeError.invalidParams }
+            }
+            if let fingerprint = context.controllerFingerprint,
+               !DeviceFleetGate.ownerFallbackSafe(registry: requestDispatch.registry, fingerprint: fingerprint) {
+                guard onMain({ [weak self] in Self.controllerThread(self?.model?.localLiveForBridge?.threadRecord(owner), fingerprint: fingerprint) })
+                else { throw DeviceFleetError.capabilityDenied }
             }
             resolved["callerThreadID"] = owner.uuidString
             var result = try performResolved(method: method, params: resolved, context: context)
@@ -770,10 +907,23 @@ final class OSAgentBridge: @unchecked Sendable {
         return try performResolved(method: method, params: params, computerConnection: computerConnection, context: context)
     }
 
+    static func controllerThread(_ record: LiveThreadRecord?, fingerprint: String) -> Bool {
+        record?.controllerCreatorFingerprint == fingerprint
+    }
+
     private func performResolved(method: String, params: [String: Any],
                                  computerConnection: (@Sendable () -> Bool)? = nil,
                                  context: RequestContext = RequestContext()) throws -> [String: Any] {
         let owner = (params["callerThreadID"] as? String).flatMap(UUID.init(uuidString:))
+        if let fingerprint = context.controllerFingerprint,
+           !DeviceFleetGate.ownerFallbackSafe(registry: requestDispatch.registry, fingerprint: fingerprint),
+           ["send_message", "send_message_with_options", "stop_thread"].contains(method) {
+            guard let raw = params["threadID"] as? String, let id = UUID(uuidString: raw),
+                  onMain({ [weak self] in
+                      guard let live = self?.model?.localLiveForBridge, !live.doc.isAssistantThread(id) else { return false }
+                      return Self.controllerThread(live.threadRecord(id), fingerprint: fingerprint)
+                  }) else { throw DeviceFleetError.capabilityDenied }
+        }
         if Self.remoteMethods.contains(method) {
             let allowed = onMain { [weak self] in
                 !(self?.model?.deviceRecordsForBridge() ?? []).isEmpty
@@ -781,6 +931,23 @@ final class OSAgentBridge: @unchecked Sendable {
             guard allowed else { throw BridgeError.remoteAccessDisabled }
         }
         switch method {
+        case "fleet_overview", "fleet_open_card", "fleet_propose":
+            guard let bound = context.boundThread else { throw AssistantFleetTools.Failure(reason: "fleet_assistant_required") }
+            return try onMainThrowing { [weak self] in
+                try AssistantFleetTools.perform(method, params: params, caller: .engine(bound),
+                                                assistantThread: self?.model?.assistantThreadID, present: {
+                    GlobalDMStore.shared.select(.assistant)
+                    GlobalDMStore.shared.openDocked()
+                })
+            }
+        case "sandbox_dispatch":
+            guard let thread = context.boundThread ?? (context.isAppOrSSH && !context.isSSH ? (params["callerThreadID"] as? String).flatMap(UUID.init(uuidString:)) : nil), let device = params["device_id"] as? String, let instruction = params["instruction"] as? String,
+                  let files = params["files"] as? [String], let artifacts = params["artifacts"] as? [String] else { throw BridgeError.noParentThread }
+            let lane = try onMainThrowing { [self] in
+                guard let model else { throw BridgeError.noParentThread }
+                return HandsService.attached(to: model).sandboxLane
+            }
+            return ["job_id": try lane.queue(device, thread: thread, instruction: instruction, files: files, artifacts: artifacts)]
         case "chatgpt_dispatch", "chatgpt_dispatch_stop":
             guard let caller = context.boundThread else { throw ChatGPTDispatch.Failure("caller_required") }
             guard Self.callerThreadMatches(bound: caller, params: params) else { throw BridgeError.callerThreadMismatch }
@@ -818,14 +985,17 @@ final class OSAgentBridge: @unchecked Sendable {
             return receipt.wire
         case "dispatch_wake":
             // Notification only; no claimed sender, epoch, or content is trusted.
-            if (try? DeviceDispatch.shared.identity().role) == .secondary { DeviceDispatch.shared.align() }
+            let local = try requestDispatch.identity()
+            if local.role == .secondary || (local.transfer?.to == local.deviceID && local.transfer?.constitution == false) {
+                requestDispatch.align(targetDeviceID: nil)
+            }
             return ["scheduled": true]
         case "job_submit", "job_status":
             // W95：施工工作只是 W78 通道上多一種 payload，用同一套簽章／信任／指紋驗證（authenticate），
             // 這裡沒有第二條通道。沒有簽章證明的呼叫是本機 os.sock 呼叫：副設備轉發、主設備只准查詢。
             do {
                 if params["signature"] is String, params["body"] is String {
-                    let (sender, payload) = try DeviceDispatch.shared.authenticate(method: method, proof: params)
+                    let (sender, payload) = try requestDispatch.authenticate(method: method, proof: params)
                     if method == "job_submit" { return try JobQueue.shared.receive(payload, sender: sender) }
                     return try JobQueue.shared.statusResponse(payload)
                 }
@@ -834,19 +1004,23 @@ final class OSAgentBridge: @unchecked Sendable {
                 throw BridgeError.invalidParams
             }
         case "dispatch_fetch", "dispatch_ack", "document_propose", "document_inspect", "inbox_target", "inbox_receive",
-             "memory_propose", "memory_list", "memory_decide", "memory_sync_target", "memory_sync_receive":
-            let (sender, payload) = try DeviceDispatch.shared.authenticate(method: method, proof: params)
+             "memory_propose", "memory_list", "memory_decide":
+            let (sender, payload) = try requestDispatch.authenticate(method: method, proof: params)
             switch method {
             case "dispatch_fetch":
-                return try DeviceDispatch.object(DeviceDispatch.shared.offer(to: sender))
+                if Set(payload.keys) == ["identityOnly"], payload["identityOnly"] as? Bool == true {
+                    return try DeviceDispatch.object(requestDispatch.localFleetPresence())
+                }
+                guard payload.isEmpty else { throw BridgeError.invalidParams }
+                return try DeviceDispatch.object(requestDispatch.offer(to: sender))
             case "dispatch_ack":
-                try DeviceDispatch.shared.recordACK(DeviceDispatch.decode(DeviceDispatch.Receipt.self, payload), sender: sender)
+                try requestDispatch.recordACK(DeviceDispatch.decode(DeviceDispatch.Receipt.self, payload), sender: sender)
                 return ["recorded": true]
             case "document_propose":
                 return try DeviceInbox.shared.receiveDocument(payload, sender: sender)
             case "document_inspect":
                 guard let id = payload["id"] as? String else { throw BridgeError.invalidParams }
-                return ["text": try DeviceInbox.shared.inspectDocument(id)]
+                return ["text": try requestDispatch.inbox.inspectDocument(id)]
             case "inbox_target":
                 return ["repository": DeviceDispatch.shared.entry.repoRoot.path]
             // W163：任一台都能提、能看、能核准使用者記憶；主設備才寫 user.md。
@@ -860,12 +1034,15 @@ final class OSAgentBridge: @unchecked Sendable {
                 guard let id = payload["id"] as? String, let accept = payload["accept"] as? Bool else { throw BridgeError.invalidParams }
                 try UserMemoryStore.shared.decide(id: id, accept: accept, isPublic: payload["isPublic"] as? Bool ?? false)
                 return ["decided": true]
-            // W180 E1b：入口 memory/ 主副自動同步——主設備回記憶資料夾位置；收件先 commit 本機、驗樹只准一般檔、兩版都留地合併。
-            case "memory_sync_target", "memory_sync_receive":
-                return try TatwoMemorySyncEngine.shared.handle(method: method, payload: payload, sender: sender)
             default:
                 return try DeviceInbox.shared.receiveBranch(payload, sender: sender)
             }
+        case "memory_sync_target", "memory_sync_receive", "memory_sync_export", "memory_sync_import":
+            let (sender, payload) = try requestDispatch.authenticate(method: method, proof: params)
+            #if DEBUG
+            if let fleetTestMemory { return try fleetTestMemory.handle(method: method, payload: payload, sender: sender) }
+            #endif
+            return try TatwoMemorySyncEngine.shared.handle(method: method, payload: payload, sender: sender)
         #if DEBUG
         // W183 R7a 審查：自測走同一條處理路徑（認人、驗章、HandsRemote），只是驗章與主機換成測試的（handsRemoteTestBridge）；正式沒有這一條。
         case "remote_hands_status" where handsRemoteSeam != nil, "remote_hands_action" where handsRemoteSeam != nil:
@@ -880,7 +1057,7 @@ final class OSAgentBridge: @unchecked Sendable {
             return try HandsRemote.handle(method: method, payload: payload, sender: sender)
         // W183 R8c：ChatGPT build 多設備——副設備同步（信封、意圖、結果、全貌）、改設定（預期版本比對）、送意圖、交結果；設備簽章。
         case "hands_build":
-            let (sender, payload) = try DeviceDispatch.shared.authenticate(method: method, proof: params)
+            let (sender, payload) = try requestDispatch.authenticate(method: method, proof: params)
             return try HandsBuildRemote.handle(payload: payload, sender: sender)
         // W183 R3：標準設定流程給 OS 內的 AI（allows 已經只給 App 與這台的引擎）。
         case "hands_setup_status", "hands_setup_step":
@@ -892,15 +1069,15 @@ final class OSAgentBridge: @unchecked Sendable {
             let parentList = parentID.map { ThreadGoalStore.shared.list($0) }
             let roomGoal = parentList?.goals.first { $0.roomThread?.lowercased() == caller.uuidString.lowercased() }
             let (thread, actor): (UUID, ThreadGoalRules.Actor) = roomGoal != nil ? (parentID!, .sub) : (caller, .lead)
-            func render(_ list: ThreadGoalList) -> [[String: Any]] {
-                list.goals.map { ["id": $0.id, "title": $0.title, "status": $0.status.rawValue, "proposed": $0.proposed,
-                                  "parent": $0.parent as Any, "evidence": $0.evidence as Any] }
+            func render(_ list: ThreadGoalList) throws -> [[String: Any]] {
+                let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+                return try JSONSerialization.jsonObject(with: encoder.encode(list.goals)) as? [[String: Any]] ?? []
             }
             switch method {
             case "goal_list":
                 let list = ThreadGoalStore.shared.list(thread)
                 let (done, total) = ThreadGoalRules.progress(list)
-                return ["goals": render(list), "done": done, "total": total, "yours": roomGoal?.id as Any]
+                return ["goals": try render(list), "done": done, "total": total, "yours": roomGoal?.id as Any]
             case "goal_propose":
                 guard let title = params["title"] as? String else { throw BridgeError.invalidParams }
                 let goal = try ThreadGoalStore.shared.update(thread) {
@@ -908,15 +1085,34 @@ final class OSAgentBridge: @unchecked Sendable {
                 }
                 return ["id": goal.id, "hint": "已成為 AI 提議；使用者按「加入主線」後才算主線"]
             default:
-                guard let raw = params["status"] as? String, let status = ThreadGoal.Status(rawValue: raw) else { throw BridgeError.invalidParams }
+                let status = (params["status"] as? String).flatMap(ThreadGoal.Status.init(rawValue:))
+                let hasDetails = ["progress", "etaMinutes", "queue", "doneSteps", "branch", "device"].contains { params[$0] != nil }
+                guard (params["status"] == nil || status != nil), status != nil || hasDetails else { throw BridgeError.invalidParams }
+                for key in ["progress", "etaMinutes"] where params[key] != nil {
+                    guard let number = params[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          number.doubleValue.isFinite else { throw BridgeError.invalidParams }
+                }
+                for key in ["queue", "doneSteps"] where params[key] != nil {
+                    guard params[key] is [String] else { throw BridgeError.invalidParams }
+                }
+                for key in ["branch", "device"] where params[key] != nil {
+                    guard params[key] is String else { throw BridgeError.invalidParams }
+                }
                 let id = roomGoal?.id ?? (params["id"] as? Int) ?? -1
                 do {
+                    if let roomGoal, let requested = params["id"] as? Int, requested != roomGoal.id { throw ThreadGoalRules.Failure.subOnlyOwnGoal }
                     try ThreadGoalStore.shared.update(thread) {
-                        try ThreadGoalRules.setStatus(&$0, id: id, to: status, evidence: params["evidence"] as? String, actor: actor)
+                        if let status { try ThreadGoalRules.setStatus(&$0, id: id, to: status, evidence: params["evidence"] as? String, actor: actor) }
+                        if hasDetails {
+                            try ThreadGoalRules.updateDetails(&$0, id: id, progress: (params["progress"] as? NSNumber)?.doubleValue,
+                                etaMinutes: (params["etaMinutes"] as? NSNumber)?.doubleValue, queue: params["queue"] as? [String],
+                                doneSteps: params["doneSteps"] as? [String], branch: params["branch"] as? String,
+                                device: params["device"] as? String, actor: actor, ownGoalID: roomGoal?.id)
+                        }
                     }
                 } catch let failure as ThreadGoalRules.Failure { return ["ok": false, "reason": failure.description] }
                 let now = ThreadGoalStore.shared.list(thread).goals.first { $0.id == id }
-                return ["ok": true, "id": id, "status": now?.status.rawValue ?? raw]
+                return ["ok": true, "id": id, "status": now?.status.rawValue ?? "pending"]
             }
         case "memory_search", "memory_get", "memory_save":
             // W180 E1：記憶工具（只給 App 與 OS 裡的引擎；不在三份信任清單）。讀到的記進這輪的「用了 N 條記憶」。
@@ -1113,29 +1309,37 @@ final class OSAgentBridge: @unchecked Sendable {
                 return ["closed": true]
             }
         case "get_document":
-            let snapshot: (LiveDocumentRecord, URL, [String], [String])? = onMain { [weak self] in
+            let snapshot: (LiveDocumentRecord, ChatLiveStore, [String], [String], PolicyFileStamp)? = onMain { [weak self] in
                 guard let model = self?.model, let live = model.live else { return nil }
                 let snapshot = Self.snapshot(live)
-                if !Self.documentsEqual(snapshot, live.store.load()) {
-                    live.store.save(snapshot)
-                }
                 let runningThreadIDs = snapshot.threads
                     .filter { live.isRunning($0.id) }
                     .map { $0.id.uuidString }
                 // W184 H4 修正（審查 #9）：這台自己送不出的引擎（副設備的 Coder 走這台時，模型清單照這台的可用性標停用）。
                 let blockedEngines = ClaudeSidecar.Kind.allCases.filter { model.isEngineDisabled($0) }.map(\.rawValue)
-                return (snapshot, live.store.url, runningThreadIDs, blockedEngines)
+                return (snapshot, live.store, runningThreadIDs, blockedEngines, PolicyFileStamp(live.store.url))
             }
             guard let snapshot else { throw BridgeError.invalidParams }
-            let attributes = try? FileManager.default.attributesOfItem(atPath: snapshot.1.path)
-            let modifiedAt = attributes?[.modificationDate] as? Date ?? .distantPast
-            return [
-                "document": try Self.jsonObject(snapshot.0),
-                "revision": Int64(modifiedAt.timeIntervalSince1970 * 1_000),
-                "runningThreadIDs": snapshot.2,
-                "blockedEngines": snapshot.3,
-                "engineModelCatalogs": EngineModelCatalog.wire(),
-            ]
+            let finished = DispatchSemaphore(value: 0)
+            let response = OSAllocatedUnfairLock<Result<[String: Any], Error>?>(initialState: nil)
+            documentQueue.async {
+                let result = Result<[String: Any], Error> {
+                    snapshot.1.saveIfChanged(snapshot.0, expectedStamp: snapshot.4)
+                    let attributes = try? FileManager.default.attributesOfItem(atPath: snapshot.1.url.path)
+                    let modifiedAt = attributes?[.modificationDate] as? Date ?? .distantPast
+                    return [
+                        "document": try Self.jsonObject(snapshot.0),
+                        "revision": Int64(modifiedAt.timeIntervalSince1970 * 1_000),
+                        "runningThreadIDs": snapshot.2,
+                        "blockedEngines": snapshot.3,
+                        "engineModelCatalogs": EngineModelCatalog.wire(),
+                    ]
+                }
+                response.withLock { $0 = result }
+                finished.signal()
+            }
+            finished.wait()
+            return try response.withLock { try $0!.get() }
         case "transcript":
             guard
                 let rawThreadID = params["threadID"] as? String,
@@ -1166,7 +1370,10 @@ final class OSAgentBridge: @unchecked Sendable {
             let requestedEngine = params["engine"] as? String
             guard requestedEngine == nil || requestedEngine.flatMap(ClaudeSidecar.Kind.init(rawValue:)) != nil else { throw BridgeError.invalidParams }
             // W180 E1：副設備在 chip 選的記憶強度（只收四檔之一；不收的當沒帶，這句照常送）。
-            let memoryStrength = TatwoMemoryStrength.accepting(params["memoryStrength"])
+            let mayUseMemory = try context.controllerFingerprint.map {
+                try requestDispatch.fleet.methodAllowed(fingerprint: $0, method: "memory_sync_receive")
+            } ?? true
+            let memoryStrength = mayUseMemory ? TatwoMemoryStrength.accepting(params["memoryStrength"]) : .off
             // W184 H4 修正（審查 #2）：副設備這一輪的 ultrawork（檔位、主導、每一個副手；卡上的值）：帶進這台那一輪（接在那一句後面、
             // 記成那條的偏好）。認不得的當沒帶（這句照常送、照這台那條記住的）；舊版副設備沒帶也一樣。
             let ultrawork = UltraworkTurnSettings.accepting(params["ultrawork"])
@@ -1174,8 +1381,18 @@ final class OSAgentBridge: @unchecked Sendable {
                 guard let live = self?.model?.live, live.threadRecord(threadID) != nil else {
                     throw BridgeError.sendTurnRejected("thread_missing")
                 }
+                if let reason = ManagedConversationTAPPolicy.rejectionReason(model: modelArgument ?? live.threadRecord(threadID)?.requestedModel,
+                    creator: live.threadRecord(threadID)?.controllerCreatorFingerprint ?? context.controllerFingerprint.flatMap {
+                        DeviceFleetGate.ownerFallbackSafe(registry: self!.requestDispatch.registry, fingerprint: $0) ? nil : $0
+                    }) {
+                    live.appendSystemMessage(threadID: threadID, text: reason, status: "error|ChatGPT TAP")
+                    throw BridgeError.sendTurnRejected("managed_chatgpt_tap_forbidden")
+                }
                 // W180 E1：先把記憶強度記在那條（助理那條與一般的都是），這句就照它帶記憶。
                 if let memoryStrength { (live as? ChatLiveEngine)?.setMemoryStrength(threadID: threadID, memoryStrength) }
+                #if DEBUG
+                if let fixtureSend = self?.fixtureSend { fixtureSend(threadID, text); return }
+                #endif
                 // W179 F：副設備交給這台助理那條的一句：照這台自己的助理規則送（模型、登入檢查、人設），跳過這台停用的引擎。
                 if let model = self?.model,
                    Self.routesToAssistant(isAssistantThread: live.doc.isAssistantThread(threadID),
@@ -1252,9 +1469,13 @@ final class OSAgentBridge: @unchecked Sendable {
             let threadID: UUID = try onMainThrowing { [weak self] in
                 guard let live = self?.model?.live else { throw BridgeError.invalidParams }
                 if let projectID, live.projectRecord(projectID) == nil { throw BridgeError.invalidParams }
-                return live.newThread(
-                    in: projectID,
-                    title: rawTitle?.isEmpty == false ? rawTitle! : "新聊天")
+                let id = live.newThread(in: projectID, title: rawTitle?.isEmpty == false ? rawTitle! : "新聊天")
+                if let fingerprint = context.controllerFingerprint,
+                   !DeviceFleetGate.ownerFallbackSafe(registry: self!.requestDispatch.registry, fingerprint: fingerprint) {
+                    guard let engine = live as? ChatLiveEngine else { throw BridgeError.invalidParams }
+                    engine.markControllerThread(id, fingerprint: fingerprint)
+                }
+                return id
             }
             return ["threadID": threadID.uuidString]
         case "stop_thread":
@@ -1353,11 +1574,11 @@ final class OSAgentBridge: @unchecked Sendable {
                 return RoomSpec(title: title, engine: engine, model: row["model"] as? String, brief: brief,
                                 device: row["device"] as? String, readOnly: row["readOnly"] as? Bool ?? false)
             }
-            let dispatched: [DispatchedRoom] = try onMainThrowing { [weak self] in
+            let dispatched: [DispatchedRoom] = try awaitBot { @MainActor [weak self] in
                 guard let self, let model = self.model, let parent = owner else {
                     throw BridgeError.noParentThread
                 }
-                return try model.dispatchChecked(rooms: specs, parent: parent)
+                return try await model.dispatchChecked(rooms: specs, parent: parent)
             }
             guard !dispatched.isEmpty else { throw BridgeError.noParentThread }
             // W170：每一件派出去的工作是主導那條目前「進行中」目標底下的子目標；sub 只能把它標到「待驗收」。
@@ -1459,14 +1680,19 @@ final class OSAgentBridge: @unchecked Sendable {
             }
             guard let input else { throw BridgeError.unsupportedMethod }
             let jobs = try awaitBot { await self.backgroundJobSnapshot(includeLastLine: false) }
+            let deviceFleet = try? DeviceFleetStore(registry: DeviceRegistry(), environment: ProcessInfo.processInfo.environment).readGraph()
             let now = Date()
             let work = IslandWorkProvider.project(threads: input.doc.threads, pending: input.pending,
                 running: input.running, bots: input.bots, jobs: jobs, now: now, limit: nil)
             return Self.statusMetadata(doc: input.doc, work: work, jobs: jobs, sessions: input.sessions,
-                devices: input.devices, requestTitles: input.requestTitles, now: now)
+                devices: input.devices, requestTitles: input.requestTitles, now: now, deviceFleet: deviceFleet)
         case "list_devices":
             let devices: [DeviceRecord] = onMain { [weak self] in
                 self?.model?.deviceRecordsForBridge() ?? DeviceRegistry().list()
+            }
+            if !context.isAppOrSSH {
+                let payload = try? DeviceFleetStore(registry: DeviceRegistry(), environment: ProcessInfo.processInfo.environment).readGraph()
+                return ["devices": DeviceFleetStore.engineDeviceProjection(devices, payload: payload)]
             }
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
@@ -1490,34 +1716,48 @@ final class OSAgentBridge: @unchecked Sendable {
                 try await IPadUseController.shared.perform(method, params: params, caller: caller)
             }
         case "run_background":
-            guard params["requestKey"] == nil || params["requestKey"] is String, let command = params["cmd"] as? String else { throw BridgeError.invalidParams }
-            let target: (UUID, String)? = onMain { [weak self] in
+            guard params["requestKey"] == nil || params["requestKey"] is String, params["cwd"] == nil || params["cwd"] is String, let command = params["cmd"] as? String else { throw BridgeError.invalidParams }
+            let target: (UUID, LiveThreadRecord, LiveProjectRecord?)? = onMain { [weak self] in
                 guard let model = self?.model, let live = model.live, let threadID = owner,
                       let thread = live.threadRecord(threadID) else { return nil }
-                let cwd = (params["cwd"] as? String) ?? thread.cwdOverride ?? live.projectRecord(thread.projectID)?.workdir ?? NSHomeDirectory()
-                return (threadID, cwd)
+                return (threadID, thread, live.projectRecord(thread.projectID))
             }
             guard let target else { throw BridgeError.noParentThread }
             guard let manager = backgroundJobs else { throw BridgeError.unsupportedMethod }
+            guard let access = try commandAccess(owner: target.0) else { throw BridgeError.noParentThread }
+            let cwd: String?
+            do { cwd = try access.policy?.workDirectory(for: target.1, project: target.2, requested: params["cwd"] as? String)
+                ?? (params["cwd"] as? String) ?? target.1.cwdOverride ?? target.2?.workdir }
+            catch { throw DeviceDispatch.Failure(reason: ManagedEnginePolicy.refusal(error, fleet: requestDispatch.fleet)) }
             if let repeated = manager.existing(threadID: target.0, requestKey: params["requestKey"] as? String) {
                 return manager.response(repeated)
             }
-            let place = (target.1 as NSString).abbreviatingWithTildeInPath
-            let approved = try requireCommandApproval(owner: target.0, title: "允許 AI 在背景執行這個指令？",
-                                                      detail: command + "\n位置：" + place,
-                                                      shown: [(command, false), (place, true)], context: context)
             let title = (params["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            try ensureExecutable(owner: target.0, approvedUnder: approved, context: context)
             // 排隊、建記錄檔的時間也算：manager 真正開程序前再看一次期限與連線（不等主執行緒，避免互等）。
-            return manager.response(try manager.run(command: command, cwd: target.1, title: title?.isEmpty == false ? title! : command,
+            return manager.response(try manager.run(command: command, cwd: cwd, title: title?.isEmpty == false ? title! : command,
                                                     threadID: target.0, requestKey: params["requestKey"] as? String,
+                                                    memoryPolicy: access.policy,
+                                                    authorize: { cwd in
+                                                        let place = (cwd as NSString).abbreviatingWithTildeInPath
+                                                        let approved = try self.requireCommandApproval(owner: target.0, title: "允許 AI 在背景執行這個指令？",
+                                                            detail: command + "\n位置：" + place, shown: [(command, false), (place, true)], gate: access.gate, context: context)
+                                                        let current = try self.ensureExecutable(owner: target.0, approvedUnder: approved, context: context)
+                                                        guard (current != nil) == (access.policy != nil) else { throw BridgeError.backgroundCommandNeedsApproval }
+                                                        if let current {
+                                                            let latest = try self.onMainThrowing { () throws -> String in
+                                                                guard let live = self.model?.live, let thread = live.threadRecord(target.0) else { throw BridgeError.noParentThread }
+                                                                return try current.workDirectory(for: thread, project: live.projectRecord(thread.projectID), requested: params["cwd"] as? String)
+                                                            }
+                                                            guard latest == cwd else { throw BridgeError.backgroundCommandNeedsApproval }
+                                                        }
+                                                    },
                                                     beforeSpawn: { [context] in try self.ensureStillWanted(context) }))
         case "background_list":
-            let caller = try jobsCaller(params, bound: context.boundThread)
+            let caller = try jobsCaller(params, bound: context.boundThread, allowSelected: !context.isSSH)
             guard let manager = backgroundJobs else { throw BridgeError.unsupportedMethod }
             return ["jobs": manager.list(threadID: caller.id), "ownerSource": caller.source]
         case "artifacts_list":
-            let caller = try jobsCaller(params, bound: context.boundThread)
+            let caller = try jobsCaller(params, bound: context.boundThread, allowSelected: !context.isSSH)
             if let raw = params["turnID"], !(raw is String) { throw BridgeError.invalidParams }
             let turn = params["turnID"] as? String
             guard turn == nil || (turn!.utf8.count <= 1024 && !turn!.isEmpty) else { throw BridgeError.invalidParams }
@@ -1543,13 +1783,10 @@ final class OSAgentBridge: @unchecked Sendable {
             guard let roomIDText = params["roomID"] as? String, let roomID = UUID(uuidString: roomIDText) else { throw BridgeError.invalidParams }
             guard onMain({ [weak self] in self?.model?.live?.threadRecord(roomID)?.parentThreadID == owner }) else { throw BridgeError.invalidParams }
             let keepBranch = params["keepBranch"] as? Bool ?? true
-            let reclaimResult: Result<ReclaimedRoom, Error> = onMain { [weak self] in
-                Result {
-                    guard let model = self?.model else { throw BridgeError.invalidParams }
-                    return try model.reclaimRoom(roomID, keepBranch: keepBranch)
-                }
+            let reclaimed = try awaitBot { @MainActor [weak self] in
+                guard let model = self?.model else { throw BridgeError.invalidParams }
+                return try await model.reclaimRoom(roomID, keepBranch: keepBranch)
             }
-            let reclaimed = try reclaimResult.get()
             return [
                 "roomID": reclaimed.roomID,
                 "originalPath": reclaimed.originalPath,
@@ -1610,7 +1847,7 @@ final class OSAgentBridge: @unchecked Sendable {
     /// Explicit allowlist, not Codable records: no messages, brief, commands, cwd, logs, device endpoints or credentials.
     static func statusMetadata(doc: LiveDocumentRecord, work: IslandWorkSnapshot,
                                jobs: [BackgroundJobManager.Snapshot], sessions: [CLISessionStore.Record],
-                               devices: [DeviceRecord], requestTitles: [String], now: Date) -> [String: Any] {
+                               devices: [DeviceRecord], requestTitles: [String], now: Date, deviceFleet: DeviceFleetPayload? = nil) -> [String: Any] {
         let projects = Dictionary(uniqueKeysWithValues: doc.projects.map { ($0.id, $0.name) })
         let threads = Dictionary(uniqueKeysWithValues: doc.threads.map { ($0.id, $0) })
         func context(_ id: UUID?) -> [String: Any] {
@@ -1677,10 +1914,7 @@ final class OSAgentBridge: @unchecked Sendable {
              "projectID": session.projectID?.uuidString as Any? ?? NSNull(),
              "projectName": session.projectID.flatMap { projects[$0] }.map { String($0.prefix(200)) } as Any? ?? NSNull()]
         }
-        let deviceRows: [[String: Any]] = devices.map { device in
-            ["id": device.id, "name": String(device.name.prefix(200)),
-             "role": device.role?.rawValue as Any? ?? NSNull(), "lastSeenAt": iso8601.string(from: device.lastSeenAt)]
-        }
+        let deviceRows: [[String: Any]] = DeviceFleetStore.engineDeviceProjection(devices, payload: deviceFleet)
         var result: [String: Any] = groups
         result["device"] = "local"
         result["rooms"] = rooms
@@ -1864,8 +2098,8 @@ final class OSAgentBridge: @unchecked Sendable {
             response = Self.handsResponse(method: method, params: params)
         } else {
             do { response = ["ok": true, "result": try perform(method: method, params: params,
-                context: ChatGPTDispatch.methods.contains(method) ? RequestContext(boundThread: caller.boundThread) : RequestContext())] }
-            catch { response = ["ok": false, "error": String(describing: error)] }
+                context: method == "sandbox_dispatch" ? RequestContext(boundThread: caller.boundThread, isAppOrSSH: caller == .app || caller == .ssh, isSSH: caller == .ssh) : ChatGPTDispatch.methods.contains(method) ? RequestContext(boundThread: caller.boundThread) : RequestContext())] }
+            catch { response = ["ok": false, "error": DeviceFleetReason.code(error) ?? String(describing: error)] }
         }
         return (try? JSONSerialization.data(withJSONObject: response)) ?? Data()
     }
@@ -1888,6 +2122,9 @@ final class OSAgentBridge: @unchecked Sendable {
     private static let iso8601: ISO8601DateFormatter = ISO8601DateFormatter()
 
     private static func jsonObject<T: Encodable>(_ value: T) throws -> Any {
+        #if DEBUG
+        Self.fixtureJSON?()
+        #endif
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return try JSONSerialization.jsonObject(with: encoder.encode(value))
@@ -1904,16 +2141,27 @@ final class OSAgentBridge: @unchecked Sendable {
             from: JSONSerialization.data(withJSONObject: value))
     }
 
-    private static func documentsEqual(
+    private static let documentFingerprintLock = NSLock()
+    private static var documentFingerprints: [(document: LiveDocumentRecord, hash: String)] = []
+    static func documentsEqual(
         _ lhs: LiveDocumentRecord,
         _ rhs: LiveDocumentRecord
     ) -> Bool {
+        documentFingerprintLock.lock(); defer { documentFingerprintLock.unlock() }
+        if lhs == rhs { return true }
+        // The persisted ISO dates omit fractions; structural equality alone would rewrite every poll.
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys]
-        guard let left = try? encoder.encode(lhs), let right = try? encoder.encode(rhs) else {
-            return false
+        func fingerprint(_ document: LiveDocumentRecord) -> String? {
+            if let cached = documentFingerprints.first(where: { $0.document == document }) { return cached.hash }
+            guard let data = try? encoder.encode(document) else { return nil }
+            let hash = DeviceDispatch.hash(data)
+            documentFingerprints.append((document, hash))
+            if documentFingerprints.count > 2 { documentFingerprints.removeFirst() }
+            return hash
         }
+        guard let left = fingerprint(lhs), let right = fingerprint(rhs) else { return false }
         return left == right
     }
 

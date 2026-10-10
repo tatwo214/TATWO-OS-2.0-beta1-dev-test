@@ -1,0 +1,29 @@
+# W255 H1: credential attributes and read-time migration.
+App/Sources/Tatwo2/Browser/BrowserPasswordVault.swift
+App/Sources/Tatwo2/Facade/CloudflareAccounts.swift
+App/Sources/Tatwo2/Facade/HandsGatewayLaunch.swift
+tests/w255-hardening.test.mjs
+tests/fixtures/w255-*
+# W255 H2: native source and gesture gates; matching unavailable API and fakes.
+App/Sources/Tatwo2/Browser/BrowserPasswordAssist.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridgeUnavailable.m
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoCEFBridge.h
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoAutofillSource.h
+tests/fixtures/browser-password-fill-checks.swift
+tests/fixtures/browser-ai-vault-checks.swift
+# W255 H3: private file/socket permissions and Apple sshd identity.
+App/Sources/Tatwo2/Facade/HandsSettings.swift
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift
+App/Sources/Tatwo2/Facade/BrowserAgentBridge.swift
+App/Sources/Tatwo2/Facade/DeviceDispatch.swift
+App/Sources/Tatwo2/Facade/DeviceSignature.swift
+App/Sources/Tatwo2/Facade/DeviceRegistry.swift
+App/Sources/Tatwo2/Facade/OSSocketCaller.swift
+App/Sources/Tatwo2/Facade/W255HardeningAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+# W255 H4: evidence and remaining risks.
+docs/specs/185-chatgpt-tap-release/threat-review-20261006.md
+tests/helpers/fleet-rpc-compile-stubs.mjs
+docs/specs/185-chatgpt-tap-release/w255-room-report.md

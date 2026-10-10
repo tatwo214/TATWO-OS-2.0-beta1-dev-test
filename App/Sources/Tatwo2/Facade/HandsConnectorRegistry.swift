@@ -82,7 +82,7 @@ final class HandsConnectorCleanup {
               let keepID = current.connector.id, current.connector.serverURL == url,
               scan.matches.contains(where: { $0.id == keepID && $0.serverURL == url }),
               Set(scan.matches.compactMap(\.id)).count == scan.matches.count else { return nil }
-        let removing = scan.matches.filter { $0.id != nil && $0.id != keepID && $0.serverURL == url
+        let removing = scan.matches.filter { $0.id != nil && $0.id != keepID && $0.serverURL == url && $0.connected == false
             && HandsConnectorRegistry.isDeviceName($0.name, base: base) }
         return Preview(key: key, identity: identity, generation: generation, keeping: current.connector, removing: removing)
     }
@@ -107,6 +107,7 @@ final class HandsConnectorCleanup {
             for connector in preview.removing {
                 guard !Task.isCancelled, await pod.identity() == identity,
                       (currentGeneration?() ?? generation) == preview.generation else { throw CocoaError(.userCancelled) }
+                guard connector.connected == false, connector.serverURL == url, connector.id != keep else { break }
                 let removed = await pod.deleteConnector(connector, keeping: keep, url: url)
                 guard !Task.isCancelled, (currentGeneration?() ?? generation) == preview.generation,
                       await pod.identity() == identity else { throw CocoaError(.userCancelled) }

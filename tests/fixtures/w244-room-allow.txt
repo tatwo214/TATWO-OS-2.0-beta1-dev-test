@@ -1,0 +1,17 @@
+App/Sources/Tatwo2/Facade/ChangeProposalStore.swift
+App/Sources/Tatwo2/Facade/GroupCoderBridge.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+App/Sources/Tatwo2/Facade/GroupTurnEngine.swift
+App/Sources/Tatwo2/Facade/HandsSandbox.swift
+App/Sources/Tatwo2/Facade/HandsFloors.swift
+App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift
+App/Sources/Tatwo2/Chat/CoderTurnProjection.swift
+App/Sources/Tatwo2/Facade/CoderTurnProjection.swift
+App/Sources/Tatwo2/Facade/W244ProposalAcceptance.swift
+App/Sources/Tatwo2/Facade/W239ProposalAcceptance.swift
+App/Sources/Tatwo2/Facade/W243UXAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w244-proposal.test.mjs
+tests/fixtures/w244-room-allow.txt
+App/Sources/Tatwo2/Facade/SendFlowAcceptance.swift

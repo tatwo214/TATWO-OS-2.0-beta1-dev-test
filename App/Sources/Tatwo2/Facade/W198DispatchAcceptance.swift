@@ -125,6 +125,12 @@ enum W198DispatchAcceptance {
                                                    projectID: project, destination: nil)
         check(noteResult.status == "not_submitted" && noteResult.reason == "chatgpt_dispatch_credentials_rejected"
               && pod.sends.count == count, "W203-3 final OS-added room note is scanned before TAP send")
+        let homeNamed = root.appendingPathComponent(NSUserName())
+        check(ChatGPTDispatch.roomLabel(homeNamed) == "~" && ChatGPTDispatch.roomLabel(room) == room.lastPathComponent
+              && ChatGPTDispatch.roomLabel(unsafeRoom) == unsafeRoom.lastPathComponent
+              && ChatGPTDispatch.rejectionCategory("ticket" + ChatGPTDispatch.instructions.replacingOccurrences(of: "{{room}}", with: ChatGPTDispatch.roomLabel(homeNamed))) == nil,
+              "W342 home-named calling room is labelled ~ so the account name is neither sent nor blocks the ticket")
+        check(ChatGPTDispatch.roomLabel(root.appendingPathComponent("a\nb\u{2028}c")) == "a b c", "W344 room label drops control and line separator characters")
 
         var metadataSecret = arguments; metadataSecret["model"] = "password=short"
         let metadataResult = try await bridgeCall("chatgpt_dispatch", metadataSecret)["result"] as! [String: Any]

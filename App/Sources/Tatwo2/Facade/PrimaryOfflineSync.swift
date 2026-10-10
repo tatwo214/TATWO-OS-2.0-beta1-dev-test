@@ -152,7 +152,35 @@ extension ChatPageModel {
     var primaryOfflineSync: PrimaryOfflineSync? { primaryOfflineRoot.map { PrimaryOfflineSync.forRoot($0) } }
 
     /// 這台是副設備、主設備在配對清單裡時，主設備現在的連線；主設備、單機是 nil。
+    var managedAssistantIsLocal: Bool {
+        let fleet = primaryLocalCache?.fleet ?? DeviceFleetStore(
+            registry: DeviceRegistry(environment: fleetRoutingEnvironment), environment: fleetRoutingEnvironment)
+        let stamps = [fleet.url, fleet.registry.url].map(PolicyFileStamp.init)
+        if let cached = primaryLocalCache, cached.stamps == stamps { return cached.value }
+        let value: Bool
+        do { value = try fleet.trust().map { $0.kind != .owner } ?? false }
+        catch { value = true }
+        primaryLocalCache = (fleet, stamps, value)
+        return value
+    }
+    /// Clear stale colleague destinations after upgrading to display-only SUB roles. Local transcripts stay intact.
+    func clearNonOwnerPrimaryWork() async {
+        let fleet = DeviceFleetStore(registry: DeviceRegistry(environment: fleetRoutingEnvironment), environment: fleetRoutingEnvironment)
+        guard let payload = try? fleet.current() else { return }
+        let isManaged = managedAssistantIsLocal
+        if let store = assistantOfflineStore {
+            await store.ready()
+            store.update { rows in rows.removeAll { isManaged || payload.roster?.kind(of: $0.primaryDeviceID) != .owner } }
+        }
+        if let outbox = primaryOutbox {
+            await outbox.ready()
+            for item in outbox.items {
+                if isManaged || item.params["deviceID"].map({ payload.roster?.kind(of: $0) != .owner }) == true { outbox.remove(item.id) }
+            }
+        }
+    }
     func primaryLinkState() -> PrimaryLinkState? {
+        guard !managedAssistantIsLocal else { return nil }
         #if DEBUG
         if let double = assistantPrimaryTestDouble {
             return PrimaryLinkState(device: double.device, engine: double.engine(), connecting: double.connecting(), lastSeenAt: nil)
@@ -205,6 +233,7 @@ extension ChatPageModel {
     /// W182 R5：主設備那條連線有變化（onUpdate）、或每 10 秒一次：連得到時記下主設備那條最近的對話（斷線時當前情），
     /// 有東西等補回或等送出就同步一次。主設備、單機什麼都不做。
     func primaryOfflineTick() {
+        if managedAssistantIsLocal { Task { @MainActor [weak self] in await self?.clearNonOwnerPrimaryWork() }; return }
         guard let sync = primaryOfflineSync, let link = primaryLinkState() else { return }
         if let session = remoteSessions.first(where: { $0.device.id == link.device.id }), session.state != .connecting {
             sync.settledDeviceIDs.insert(link.device.id)
@@ -284,6 +313,7 @@ extension ChatPageModel {
     /// 別種的照送（一筆送不出去不會卡住別的事）；主設備說不能做的標失敗、不重試。
     func flushPrimaryOutbox(_ link: PrimaryLinkState, ignoreBackoff: Bool = false) async -> PrimaryOutboxFlushReport {
         var report = PrimaryOutboxFlushReport()
+        guard !managedAssistantIsLocal else { await clearNonOwnerPrimaryWork(); return report }
         guard let outbox = primaryOutbox else { return report }
         await outbox.ready()
         var held: Set<PrimaryOutboxItem.Kind> = []

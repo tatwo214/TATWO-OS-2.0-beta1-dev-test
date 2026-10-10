@@ -1,0 +1,8 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Facade/ChatGPTTapAcceptance.swift
+tests/w177-chatgpt-space.test.mjs
+tests/w185-pod-fixture.mjs
+tests/w208-tap-stress.test.mjs
+tests/w318-newrenderer.test.mjs
+tests/fixtures/w318-newrenderer.mjs
+tests/fixtures/w318-room-allow.txt

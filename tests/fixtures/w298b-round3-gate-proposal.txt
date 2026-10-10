@@ -1,0 +1,9 @@
+✔ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (5254.042292ms)
+ℹ tests 1
+ℹ suites 0
+ℹ pass 1
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5296.209333

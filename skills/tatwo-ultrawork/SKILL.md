@@ -20,10 +20,10 @@ description: Use when the user invokes TATWO Ultrawork, asks how to split work b
 |---|---|---|---|
 | 主導 | Fable 5.1 | 翻使用者的話成施工單、讀 diff、親跑驗證、對使用者報告、設計判斷 | 不親寫可規格化的功能，除非同一件事 sub 做壞兩次 |
 | loops | GPT-6.1 Sol（`gpt-6.1-sol`，fast／priority） | 整批施工單、寫碼、寫測試、跑測試、commit 到自己的分支 | 不改施工單範圍外的檔；不推 remote；不自升格 |
-| loops 備援 | Opus 5.5（子代理） | 主要 loops 引擎額度見底或連續 429 時接同一張施工單；建置仍送主設備 | 同 loops |
+| loops 備援 | Opus 5.5（子代理）；ChatGPT（TAP） | 主要 loops 引擎額度見底或連續 429 時接同一張施工單；建置仍送主設備；ChatGPT 經 §6c 派 | 同 loops |
 | 細修 | Opus 5.5 | 來回討論、小範圍修改、對主導的方案提反例 | 不接整批施工單 |
 | 機械工 | Grok 4.7 | 搬檔、轉檔、批次替換、跑既定腳本 | 不做需要判斷的事；不開 high effort |
-| 審查 | 另一家引擎（GPT 系優先） | 高風險 diff 的一輪唯讀審查 | 不自審：Claude 系不審 Claude 系 |
+| 審查 | 另一家引擎：審 Claude 系的工作先用 ChatGPT（TAP），審 GPT 系的工作用 Claude 系 | 高風險 diff 的一輪唯讀審查 | 不自審：同家不審同家 |
 
 GPT-5.6 系列不在預設名單。模型換代時先由主設備更新入口憲法 §4，再同步本技能 §2 表，不另訂預設。**模型名只出現在憲法 §4 與這張表**；訂閱或模型強度變了只改這兩處，其他章節一律用角色名（主導／loops／loops 備援／細修／機械工／審查），不寫死模型。
 
@@ -53,11 +53,20 @@ GPT-5.6 系列不在預設名單。模型換代時先由主設備更新入口憲
 5. 驗收命令（能機器跑的）＋主導會親跑的項目。
 6. 記憶體門檻寫「free＋inactive 合計」，不寫 raw free。
 7. 報告格式：首行一句結論；然後只列產物路徑、跑過的檢查、沒做的事；不誇報。
+8. **硬邊界**（2026-10-04 使用者裁決）：
+   - 檔案白名單（到檔，必要時到函式）與禁區；白名單外有任何改動＝整單退件，不挑著收。
+   - 只做清單上的 id；看到清單外的問題寫進報告「發現但沒做」，不准順手改。
+   - 產品程式淨行數上限（寫數字）；快超過就停下回報，不准硬塞。
+   - 不准刪掉任何流程唯一的入口（欄位、按鈕、指令、設定）；要刪先在報告寫替代入口。
+   - 不准改測試門檻、上限、斷言或刪空行來湊過關。
+   - 停止條件：清單全部 PASS 就停；同一項做法失敗兩次就停下回報；時間上限到就停。
+   - 一個 commit 對一個 id；報告逐 id 列。
+   - 主導合併前先跑 `room-guard.sh`（白名單＋淨行數上限），不過就不讀、直接退件。
 
 ## 6. 派工配方（codex exec，loops 引擎）
 
 ```bash
-# 一個房間；主導串鏈時一個接一個跑，不並行重型房間
+# 一個房間；同時開幾間照 §6d 算，重型建置一次一個（建置鎖排隊）
 export CODEX_HOME=<精簡家目錄，例如 ~/.tatwo2/codex-room-home>   # 無 MCP 的精簡家，auth 回連真家
 git -C <repo> worktree add <wt> -b <branch> <base>
 tmux new-session -d -s sol-<room> \
@@ -87,6 +96,23 @@ tmux new-session -d -s sol-<room> \
 - 收尾一律：主導讀 diff → 閘門（debug＋release＋focused 0 fail）→ 併入 → 合併樹閘門 → 打包候選 → 兩台安裝＋功能檢查 → 三輪全套對基準 0 新失敗 → 乾淨安裝閘門 → 才發版。
 - 程式化的下一步是 W95（`docs/specs/095-primary-job-queue/spec.md`）：這些腳本收進 `scripts/rooms/`，副設備經簽章通道提交白名單工作，主設備 GUI 排隊執行並回收據；`device_status` 加容量欄。
 
+## 6c. 派給 ChatGPT（TAP）（2026-10-07 使用者裁決 D3）
+
+- 前提：該設備已連線 ChatGPT（設定 › Plugin › TAP 顯示已連線）。從本機 Claude／Codex 房間呼叫 OS 工具 `chatgpt_dispatch`；停止用 `chatgpt_dispatch_stop`。
+- 參數：`title`（必填，200 字內）、`model`（必填，Coder 選單裡 ChatGPT（TAP）群組的代號）、`text`（施工單全文，64 KiB 內）或 `ticketPath`（施工單檔，二選一）、`projectID`（選填，OS 專案 UUID）、`timeoutSeconds`（1–1800，預設 600）、`callerThreadID`。
+- 施工單照 §5；審查單寫明「唯讀，只回報發現」。ChatGPT 的改動以提案卡交回，主導讀 diff、按「套用」才寫入；一次一張。
+- 用的是使用者的 ChatGPT 帳號與額度，不耗 Codex 額度；同家不審同家（GPT 系 loops 的成果不交 ChatGPT 審）。
+
+## 6d. 房間數、staging 位置與快速迴圈（2026-10-08 使用者校正）
+
+- 誰派：主導或副審（審查角色）都可以派 loops；一張單只由一個角色派，報告回到派單的人，合併仍由主導。
+- 房間數依設備算力動態決定，每次派單前重算，不寫死：可開房間數＝min(⌊(free＋inactive − 保留 − 8 GB) ÷ 1 GB⌋, ⌊核心數 ÷ 3⌋)，保留＝max(6 GB, 記憶體的 25%)；8 GB 是給同一時間唯一的重型建置（建置鎖排隊），每間房的代理與工具抓 1 GB；算出 ≤ 0 就不在這台開房。
+- staging App 同時開的個數＝min(⌊(free＋inactive − 保留) ÷ 2 GB⌋, 3)；小記憶體的移動端只開一個，不開房。
+- 位置：施工房、worktree、staging App、建置產物、證據一律放本機 `device.json` 的 `resources.staging`（入口底下的 `staging/`；入口放哪顆碟由各台決定）。先讀 device.json，不寫死路徑。路徑有空白時，建一個無空白的連結給建置工具用（§6b）。
+- 個人路徑（卷名、帳號名）只存在各台的 device.json 與私人倉；不進公開版的程式、文件與技能。
+- 快速迴圈：改程式 → staging App（固定身分、資料與正式版分開，`script/build_staging_app.sh`）→ 在目標設備實機看，一輪約 10 分鐘；正式打包只在一批要交使用者驗收或發版時做（一次交付一次驗收）。staging App 的 2.0 版修好前，照 §6b 打包。
+- 現況與搬遷待辦記在入口 `todo.md`，不寫進本技能。
+
 ## 7. 驗收鐵律
 
 - sub 的 DONE 永遠不算數：讀 diff 不讀報告；親跑測試；UI 要截圖。
@@ -99,7 +125,7 @@ tmux new-session -d -s sol-<room> \
 
 - 主導的額度花在四件事：施工單、讀 diff、驗證、報告。
 - 每批派工前看 loops 引擎的額度；週上限低於 15% 停派，主導自己收尾。
-- 一次一個重型房間；文字／審查類可並行。
+- 房間數照 §6d 依設備算力算；重型建置一次一個；文字／審查類可並行。
 
 ## 9. 本技能的維護
 

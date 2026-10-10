@@ -1,0 +1,22 @@
+✔ unfinished self-created connector is included alongside installed entries without pressing Create (193.634709ms)
+✔ missing, paginated, or unreadable self-created section stays unknown even when installed is empty (404.935792ms)
+✔ 20 reconnect cycles use one connector; transient failures never press Connect and expired authorization reuses its ID (531.616667ms)
+✔ namesake on another URL is reported as a conflict and cannot be reconnected or deleted (147.966667ms)
+✔ cleanup deletes a same-URL numbered duplicate, never the active connector or another URL (37.3555ms)
+✔ production browser script completes 200 turns in one conversation and releases each round (376.923667ms)
+✔ minute-scale thinking reports progress instead of prematurely completing the turn (105.64625ms)
+✔ manual namesake card can point to the existing self-created entry without pressing it (20.757167ms)
+✔ scan follows the visible Apps self-created tab and includes unfinished entries (133.390459ms)
+✔ installed namesake on another server stops creation even with an empty self-created list (134.001875ms)
+✔ closing the delete dialog is not success while the connector still appears in the complete list (19.498625ms)
+✔ scan exposes the actual connected detail state for migration instead of assuming installed means connected (134.6005ms)
+✔ W210-1 account A to B while connectorDelete waits never presses final Delete (19.076458ms)
+✔ account A to B and back to A while connectorDelete waits still voids the deletion (20.201417ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2433.534667

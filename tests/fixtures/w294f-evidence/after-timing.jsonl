@@ -1,0 +1,2 @@
+{"cmd":"connectorDelete","elapsedMS":20,"timeoutMS":null,"routes":[],"result":{"deleted":false,"reason":"About URL 與目標不同"}}
+{"cmd":"connectorReconnect","elapsedMS":18,"timeoutMS":null,"routes":[],"result":{"status":"not_found","step":"verify"}}

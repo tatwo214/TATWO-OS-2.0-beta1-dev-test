@@ -44,7 +44,7 @@ enum SpotifyConnectAcceptance {
         func stolen(web: Bool = true) {
             // librespot can send inactive before the cluster identifies the thief.
             event("inactive")
-            event("device", ["active": false, "web": web])
+            event("device", ["active": false, "web": web, "playing": true])
         }
     }
 
@@ -88,8 +88,10 @@ enum SpotifyConnectAcceptance {
         gesture.app.spotifyInput(click, host: SpotifyConnect.spotifyHost, isPageTarget: false)
         check(gesture.commands.isEmpty, "foreign host and browser chrome do not transfer")
         gesture.app.spotifyInput(click, host: SpotifyConnect.spotifyHost, isPageTarget: true)
+        check(gesture.commands.isEmpty, "S3 mouse click waits for web playback and cannot transfer a pause")
+        gesture.event("device", ["active": false, "web": true, "playing": true])
         check(gesture.commands.count == 1 && gesture.commands[0]["device_id"] as? String == "device-A"
-              && gesture.commands[0]["resume"] as? Bool == false, "page click transfers to live device, preserving playback state")
+              && gesture.commands[0]["resume"] as? Bool == false, "observed web playback after page click transfers to live device")
         gesture.app.spotifyInput(key, host: SpotifyConnect.spotifyHost, isPageTarget: true)
         check(gesture.commands.count == 1, "rapid gestures coalesce while a transfer is pending")
         gesture.complete()
@@ -108,11 +110,28 @@ enum SpotifyConnectAcceptance {
         check(gesture.commands.count == 3, "native media play key transfers")
         check(gesture.app.playbackNotice == nil, "normal gestures never show failure text")
 
+        for inactiveFirst in [false, true] {
+            let pause = Fixture(); pause.connect(); pause.event("active"); pause.event("playing")
+            if inactiveFirst { pause.event("inactive") }
+            pause.app.spotifyInput(click, host: SpotifyConnect.spotifyHost, isPageTarget: true)
+            pause.event("device", ["active": false, "web": true, "playing": false])
+            pause.event("paused")
+            check(pause.commands.isEmpty && !pause.app.isPlaying,
+                  "S3 pause click never transfers even while ownership is temporarily false")
+            check(!BrowserAudibleTabs.shared.playingElsewhere.contains(SpotifyConnect.spotifyHost),
+                  "S3 paused event clears browser audible state")
+            pause.app.spotifyInput(click, host: SpotifyConnect.spotifyHost, isPageTarget: true)
+            pause.event("device", ["active": false, "web": true])
+            check(pause.commands.isEmpty, "S3 missing remote playback confirmation cannot start playback")
+        }
+
         let deferred = Fixture()
         deferred.app.spotifyTabOpened()
         check(deferred.commands.isEmpty && deferred.app.playbackNotice == nil, "tab-open waits for helper without a false failure")
         deferred.connect()
         check(deferred.commands.count == 1, "tab-open transfers when connected, with no old four-second timer")
+        check(deferred.commands.last?["reason"] as? String == "tab-open", "S2 tab-open reason reaches helper")
+        check(gesture.commands.last?["reason"] as? String == "gesture", "S2 explicit gesture reason reaches helper")
         deferred.complete()
         deferred.stolen()
         check(deferred.commands.count == 1, "tab-open without a human gesture never retakes")
@@ -221,6 +240,7 @@ enum SpotifyConnectAcceptance {
         guardTest.app.spotifyGesture(host: SpotifyConnect.spotifyHost)
         guardTest.complete()
         for _ in 0..<3 { guardTest.stolen(); guardTest.complete() }
+        check(guardTest.commands.last?["reason"] as? String == "retake", "S2 retake reason reaches helper")
         check(guardTest.commands.count == 3, "web-player retake is capped at two per rolling minute")
         guardTest.time.addTimeInterval(61)
         guardTest.stolen(); guardTest.complete()
@@ -276,6 +296,39 @@ enum SpotifyConnectAcceptance {
         check(deferred.logs.contains { $0.contains("reason=tab-open result=success") }
               && gesture.logs.contains { $0.contains("reason=gesture result=success") },
               "tab-open and gesture results use the same transfer logging")
+        let unconfirmed = Fixture(); unconfirmed.app.spotifyTabOpened()
+        unconfirmed.event("connected", ["device_id": "unconfirmed-device", "unconfirmed": true, "resume": false])
+        check(unconfirmed.app.status == .connected && unconfirmed.commands.count == 1
+              && unconfirmed.logs.contains("helper event=connected unconfirmed=true"), "S1b unconfirmed registration enables transfer and records the fallback")
+        unconfirmed.event("transfer_failed", ["id": unconfirmed.lastID, "not_found": true])
+        check(unconfirmed.reconnects == 1, "S1b unconfirmed not-found uses the existing reconnect retry")
+        unconfirmed.event("connected", ["device_id": "retried-device", "unconfirmed": true, "resume": false])
+        check(unconfirmed.commands.count == 2 && unconfirmed.commands.last?["device_id"] as? String == "retried-device",
+              "S1b unconfirmed retry transfers to the current device")
+        unconfirmed.event("transfer_failed", ["id": unconfirmed.lastID, "not_found": true])
+        check(unconfirmed.reconnects == 1 && unconfirmed.app.playbackNotice != nil, "S1b unconfirmed registration cannot restart the one-retry budget")
+        let diagnostics = Fixture(); diagnostics.connect()
+        for kind in ["playing", "paused", "active", "inactive"] {
+            diagnostics.event(kind, ["name": "PRIVATE TRACK", "uri": "PRIVATE-URI", "account": "PRIVATE-ACCOUNT"])
+            check(diagnostics.logs.contains("helper event=" + kind), "S4 records helper event " + kind)
+        }
+        diagnostics.event("device", ["active": false, "web": true, "name": "PRIVATE DEVICE"])
+        check(diagnostics.logs.contains("helper event=device active=false web=true"), "S4 device log contains only booleans")
+        for fields in [["pause": true, "play": false], ["pause": false, "play": true], ["pause": false, "play": false]] {
+            diagnostics.event("transfer_options", fields)
+            check(diagnostics.logs.contains("helper event=transfer_options pause=\(fields["pause"]!) play=\(fields["play"]!)"),
+                  "S4 logs actual helper transfer options")
+        }
+        for reason in ["registration-timeout", "task-ended", "connect-failed", "requested", "session-invalid"] {
+            diagnostics.event("reconnecting", ["reason": reason])
+            check(diagnostics.logs.contains("helper event=reconnecting reason=" + reason), "S4 records reconnect reason " + reason)
+        }
+        diagnostics.event("reconnecting", ["reason": "PRIVATE-ACCOUNT"])
+        diagnostics.event("error", ["message": "PRIVATE-URI"])
+        diagnostics.app.spotifyGesture(host: SpotifyConnect.spotifyHost); diagnostics.connect()
+        diagnostics.event("transfer_failed", ["id": diagnostics.lastID, "message": "PRIVATE-URI"])
+        check(diagnostics.logs.contains("helper event=reconnecting reason=unknown")
+              && !diagnostics.logs.joined().contains("PRIVATE"), "S4 helper payload cannot leak private identifiers into app.log")
         print("W209SPOTIFY SUMMARY passed=\(passed) failures=\(failed)")
         return failed == 0
     }

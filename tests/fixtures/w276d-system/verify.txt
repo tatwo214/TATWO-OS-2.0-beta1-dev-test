@@ -1,0 +1,13 @@
+BUILD W276-staging @ b6673b7c (lock wait 0s)
+free+inactive 41.7GB
+swift build exit=0 seconds=80
+== node tests/w276-staging.test.mjs tests/public-privacy.test.mjs tests/w178-security.test.mjs
+ℹ tests 27
+ℹ pass 27
+ℹ fail 0
+ℹ skipped 0
+== selftest w216
+PASS lines: 60
+W216 SUMMARY failures=0 passed=60
+selftest w216 exit=0
+DONE /Users/fixture/tatwo-build/verify/W276-staging-041751

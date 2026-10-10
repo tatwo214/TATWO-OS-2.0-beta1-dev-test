@@ -36,6 +36,7 @@ private struct ChatBrowserPanel: View {
     let isPanelResizing: Bool
     let onClose: (() -> Void)?
     @State private var downloadsPresented = false
+    @ObservedObject private var downloadStore = BrowserDownloadStore.shared
     @ObservedObject private var registry: BrowserTabRegistry
     @ObservedObject private var runtime: BrowserWorkSpaceRuntime
     @State private var browserFocused = false
@@ -71,9 +72,11 @@ private struct ChatBrowserPanel: View {
             HStack(spacing: 12) {
                 Label("瀏覽器", systemImage: "globe").font(.caption.weight(.semibold))
                 Spacer()
-                Button { downloadsPresented.toggle() } label: { Image(systemName: "arrow.down.circle") }
-                    .help("下載項目").accessibilityLabel("下載項目")
-                    .popover(isPresented: $downloadsPresented) { ChatBrowserDownloadsView() }
+                if !downloadStore.downloads.isEmpty {   // 10-07 使用者：有下載才出現，留到清除
+                    Button { BrowserDownloadStore.shared.markDownloadsSeen(); downloadsPresented.toggle() } label: { BrowserDownloadIndicator(scope: panelID.uuidString) }
+                        .help("下載項目").accessibilityLabel("下載項目")
+                        .popover(isPresented: $downloadsPresented) { ChatBrowserDownloadsView() }
+                }
                 Menu {
                     Button("在網頁中尋找…") { performBrowserAction(.findInPage) }
                     Button("放大") { changeZoom(1) }
@@ -170,6 +173,7 @@ private struct ChatBrowserPanel: View {
                 BrowserWorkSpaceCEFSurface(tabID: tab.id, spaceID: BrowserTabRegistry.sessionSpaceID,
                     command: command, onPopup: { _, _ in }, runtime: runtime,
                     isGeometryDragInProgress: isPanelResizing, surfaceID: panelID)
+                    .modifier(BrowserDownloadSurface(scope: panelID.uuidString, floating: false))
                     .overlay {
                         if (tab.url == nil || tab.url?.absoluteString == "about:blank"),
                            !runtime.navigationState.isLoading,

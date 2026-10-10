@@ -114,7 +114,7 @@ final class HandsState: ObservableObject {
         guard let card else { return }
         // Island：交易編號、回到哪個網域、等級、配對碼；不放別的。
         IslandNotice.shared.info(title: "ChatGPT 手腳：授權這筆連線？",
-                                 detail: "交易 \(card.displayCode)・回到 \(card.callbackHost)・\(Self.levelLabel(card.scope.level))・配對碼 \(card.spacedPairingCode)（窗口到期前有效）",
+                                 detail: "交易 \(card.displayCode)・回到 \(card.callbackHost)・\(card.scope.sandboxDeviceID == nil ? Self.levelLabel(card.scope.level) : "沙盒（只能領工、交件）")・配對碼 \(card.spacedPairingCode)（窗口到期前有效）",
                                  duration: 60)
     }
 

@@ -1,0 +1,6 @@
+GET https://registry.npmjs.org/@openai/codex/latest (once)
+{"name":"@openai/codex","version":"0.161.0"}
+GET https://registry.npmjs.org/@anthropic-ai/claude-code/latest (once)
+{"name":"@anthropic-ai/claude-code","version":"2.1.293"}
+grok --no-auto-update update --check (once)
+A new version of Grok Build is available: 0.2.11 -> 1.0.46 [stable]

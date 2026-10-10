@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/Pets/**
+T/SelfTest.swift
+tests/w230-*.test.mjs
+tests/fixtures/w230c-room-allow.txt

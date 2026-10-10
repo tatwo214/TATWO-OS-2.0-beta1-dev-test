@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { supervise, delay } from '../Engines/gbrain-adapter/service.mjs';
@@ -22,6 +22,13 @@ test('W80b secondary refuses every local database mode before executing a helper
 });
 test('W80b SSH uses paired host trust, validates target/port and quotes remote wrapper arguments', () => {
   const config = { host: '127.0.0.1', user: 'fixture', sshPort: 2222, command: '/fixture/with spaces/wrapper', args: ["a'b"] };
+  // W187 composes manual and fleet pins; use synthetic stores, never ~/.ssh.
+  const root = testScratch('w80b-pins-');
+  const saved = Object.fromEntries(['HOME', 'TATWO2_LIVE_ROOT', 'TATWO2_SSH_KNOWN_HOSTS', 'TATWO2_SSH_CONFIG'].map(key => [key, process.env[key]]));
+  execFileSync('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', path.join(root, 'fixture-key')]);
+  fs.writeFileSync(path.join(root, 'known_hosts'), '[127.0.0.1]:2222 ' + fs.readFileSync(path.join(root, 'fixture-key.pub'), 'utf8'));
+  Object.assign(process.env, { HOME: root, TATWO2_LIVE_ROOT: root, TATWO2_SSH_KNOWN_HOSTS: path.join(root, 'known_hosts'), TATWO2_SSH_CONFIG: path.join(root, 'missing-config') });
+  try {
   const args = sshArguments(config);
   assert.ok(args.includes('StrictHostKeyChecking=yes')); assert.ok(args.includes('BatchMode=yes'));
   assert.ok(args.includes('2222')); assert.ok(args.includes('fixture'));
@@ -29,6 +36,12 @@ test('W80b SSH uses paired host trust, validates target/port and quotes remote w
   assert.throws(() => sshArguments({ ...config, host: '-oProxyCommand=bad' }));
   assert.throws(() => sshArguments({ ...config, user: 'bad user' }));
   assert.throws(() => sshArguments({ ...config, sshPort: 0 }));
+  assert.ok(args.includes('HostKeyAlias=[127.0.0.1]:2222'));
+  fs.writeFileSync(path.join(root, 'known_hosts'), '');
+  assert.throws(() => sshArguments(config), /paired_host_key_not_found/);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });
 test('W80b existing stdio service stays on its wrapper and never invokes the new helper', { timeout: 30000 }, async () => {
   const root = testScratch('w80b-legacy-');

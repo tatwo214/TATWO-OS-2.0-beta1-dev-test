@@ -102,14 +102,9 @@ test('關得掉：sheet 自己接 Esc／⌘W／取消，只關 sheet；第一下
   assert.match(switcher, /CoderImportBrowser\(model: model, roots: roots \?\? model\.coderImportRoots, focus: focus, onClose: \{ close\(\) \}\)/);
   assert.match(switcher, /Button\("看這條的原檔"\) \{ CoderSheetPresenter\.presentImport\(model: model, focus: source\) \}/);
   assert.match(switcher, /source \?\? focusPath\.flatMap \{ model\.coderImportSource\(path: \$0\) \}/);   // 串的右鍵只給路徑：先找回出處
-  // W181 審查：Esc 按住（自動重複）或連按兩下，後面的 Esc 也不能落到主視窗。
-  assert.match(sheet, /if let event = NSApp\.currentEvent, Self\.isPlainEscape\(event\) \{ CoderSheetEscapeGuard\.arm\(after: event\) \}/);
-  const guard = switcher.slice(switcher.indexOf('enum CoderSheetEscapeGuard'));
-  assert.match(guard, /static let window: TimeInterval = 0\.4/);
-  assert.match(guard, /if protectNextEscape \|\| event\.timestamp <= until \|\| \(held && event\.isARepeat\) \{\s*protectNextEscape = false\s*held = true\s*return true\s*\}\s*disarm\(\)\s*return false/);
-  assert.match(guard, /static func arm\(after event: NSEvent\) \{\s*protectNextEscape = false\s*mainWindowOnly = false\s*until = event\.timestamp \+ window\s*held = event\.type == \.keyDown/);
-  assert.match(guard, /if event\.type == \.keyUp \{\s*held = false[\s\S]{0,120}return false/);
-  assert.match(guard, /return swallows\(event\) \? nil : event/);
+  // W290 owns main-window safety; fresh Escape must stay available to the next card.
+  assert.doesNotMatch(switcher, /CoderSheetEscapeGuard|addLocalMonitorForEvents/);
+  assert.match(read('Shell/AppShell.swift'), /override func cancelOperation\(_ sender: Any\?\) \{\}/);
   // 沒有根因能證明的補丁標成防護性。
   assert.ok((switcher.match(/防護性/g) || []).length >= 3);
   assert.match(switcher, /if let parent = sheet\.sheetParent \{ parent\.endSheet\(sheet\) \} else \{ sheet\.orderOut\(nil\) \}/);
@@ -126,9 +121,9 @@ test('關得掉：sheet 自己接 Esc／⌘W／取消，只關 sheet；第一下
   assert.doesNotMatch(acceptance, /NSApp\.sendEvent\(/);   // 不繞過本機事件監聽
   for (const text of ['Esc closes only the sheet', '⌘W (performClose) closes only the sheet', 'even when the sheet is not key',
                       'is the topmost window at its spot', 'does not cover the sheet', 'real HID mouse click',
-                      'holding Esc (key repeat after the sheet closed) never reaches the main window', 'Esc pressed twice within 0.1 s',
-                      'a fresh Esc later goes to the main window as before', 'real Island + real main window', 'TatwoIslandShellPanel(',
-                      'the TATWO window stays open', 'the check above is not vacuous',
+                      'held Esc reaches main responder after sheet closes and keeps window visible', 'Esc within 0.1 s after closing sheet reaches main responder',
+                      'a later fresh Esc also reaches main responder without closing window', 'real Island + real main window', 'TatwoIslandShellPanel(',
+                      'the TATWO window stays open', 'a fresh Esc later keeps the real TatwoWorkOSWindow visible',
                       'two Claude Code folders with the same last name', 'another folder is not reused',
                       'shows as 已匯入 in the new browser', 'not by guessing from the path', 'instead of importing a blank duplicate',
                       'full record: whole file read'])

@@ -78,53 +78,16 @@ struct RemoteOfflineEmptyTranscript: View {
     }
 }
 
-/// 設定 › 設備 一台的展開區：這台存的離線副本＋「清除這台的離線副本」（卡片內確認列，玻璃 chip）。
+/// 設定 › 設備 一台的展開區：這台存的離線副本。
 struct RemoteOfflineCacheRow: View {
     @ObservedObject var model: ChatPageModel
     let device: DeviceRecord
-    @State private var confirming = false
-    @State private var message: String?
 
     var body: some View {
         if let usage = model.remoteOfflineUsageLine(deviceID: device.id) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Text(usage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    OSChipButton(title: "清除這台的離線副本") { confirming = true; message = nil }
-                        .disabled(confirming)
-                        .accessibilityIdentifier("tatwo.settings.devices.offlineCache.clear")
-                }
-                if confirming {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("清除「\(device.name)」的離線副本？")
-                            .font(.system(size: 13, weight: .semibold))
-                        Text("這台存的專案清單與讀過的內容會移到垃圾桶（可以放回）；\(device.name)上的原串不受影響。那台連不上時就看不到了，連著線時下次同步會再存一份。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        HStack(spacing: 8) {
-                            Spacer(minLength: 0)
-                            OSChipButton(title: "取消") { confirming = false }
-                            OSChipButton(title: "清除") {
-                                confirming = false
-                                model.clearRemoteOfflineCache(deviceID: device.id) { message = $0 }
-                            }
-                            .accessibilityIdentifier("tatwo.settings.devices.offlineCache.confirm")
-                        }
-                        .padding(.top, 2)
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .chatLiquidSection(cornerRadius: 12)
-                    .accessibilityElement(children: .contain)
-                }
-                if let message {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-            }
+            Text(usage)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 }

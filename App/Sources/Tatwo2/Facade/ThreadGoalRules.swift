@@ -14,6 +14,13 @@ struct ThreadGoal: Codable, Identifiable, Equatable {
     var createdAt: Date
     var updatedAt: Date
     var roomThread: String? = nil   // /plg 派出去的那條子討論串（sub 用它回報）
+    var progress: Double? = nil
+    var startedAt: Date? = nil
+    var etaAt: Date? = nil
+    var queue: [String]? = nil
+    var doneSteps: [String]? = nil
+    var branch: String? = nil
+    var device: String? = nil
 }
 
 struct ThreadGoalList: Codable, Equatable {
@@ -26,7 +33,7 @@ enum ThreadGoalRules {
     enum Actor: String { case user, lead, sub }
 
     enum Failure: Error, Equatable, CustomStringConvertible {
-        case notFound, proposedNeedsApproval, evidenceRequired, subCannotComplete, userOnly, emptyTitle
+        case notFound, proposedNeedsApproval, evidenceRequired, subCannotComplete, userOnly, emptyTitle, subOnlyOwnGoal, invalidDetails
         case openChildren(Int)
         var description: String {
             switch self {
@@ -36,6 +43,8 @@ enum ThreadGoalRules {
             case .subCannotComplete: "被派出去的工作只能標「待驗收」，要主導驗過才算完成"
             case .userOnly: "暫停、改文字或刪除要使用者自己來"
             case .emptyTitle: "目標不能是空的"
+            case .subOnlyOwnGoal: "被派出去的工作只能更新自己的目標"
+            case .invalidDetails: "進度與剩餘分鐘必須是有限數值"
             case .openChildren(let n): "還有 \(n) 條派出去的工作沒回報，等它們到「待驗收」再標完成"
             }
         }
@@ -80,11 +89,31 @@ enum ThreadGoalRules {
         list.goals[index].updatedAt = now
         // 同一時間只留一條「進行中」：新的開始，舊的退回待做（不是完成）。
         if target == .active {
+            if list.goals[index].startedAt == nil { list.goals[index].startedAt = now }
             for i in list.goals.indices where i != index && list.goals[i].status == .active && list.goals[i].parent == nil
                 && list.goals[index].parent == nil {
                 list.goals[i].status = .pending; list.goals[i].updatedAt = now
             }
         }
+    }
+
+    /// W252：OS 與 tatwo-goal mod 共用 loop 欄位；不覆蓋本次未提供的資料。
+    static func updateDetails(_ list: inout ThreadGoalList, id: Int, progress: Double? = nil,
+                              etaMinutes: Double? = nil, queue: [String]? = nil, doneSteps: [String]? = nil,
+                              branch: String? = nil, device: String? = nil, actor: Actor,
+                              ownGoalID: Int? = nil, now: Date = Date()) throws {
+        guard actor != .sub || ownGoalID == id else { throw Failure.subOnlyOwnGoal }
+        guard let i = list.goals.firstIndex(where: { $0.id == id }) else { throw Failure.notFound }
+        if list.goals[i].proposed && actor != .user { throw Failure.proposedNeedsApproval }
+        guard progress?.isFinite != false, etaMinutes?.isFinite != false,
+              etaMinutes.map({ now.addingTimeInterval($0 * 60).timeIntervalSince1970.isFinite }) != false else { throw Failure.invalidDetails }
+        if let progress { list.goals[i].progress = min(1, max(0, progress)) }
+        if let etaMinutes { list.goals[i].etaAt = now.addingTimeInterval(etaMinutes * 60) }
+        if let queue { list.goals[i].queue = queue.prefix(20).map { String($0.prefix(200)) } }
+        if let doneSteps { list.goals[i].doneSteps = doneSteps.prefix(20).map { String($0.prefix(200)) } }
+        if let branch { list.goals[i].branch = String(branch.prefix(200)) }
+        if let device { list.goals[i].device = String(device.prefix(200)) }
+        list.goals[i].updatedAt = now
     }
 
     /// 使用者對 AI 提議：收下＝變成主線；不要＝拿掉（它本來就不是主線）。

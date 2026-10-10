@@ -15,10 +15,10 @@ enum ChatSidebarLayoutPolicy {
 
 extension ChatPage {
     var isChatProjectRailPinned: Bool {
-        model.mode == .browser ? !browserWorkSpaceStore.focusMode : sidebarPinnedPref || Self.envRailPinned
+        (model.mode == .browser || usesBrowserTopChrome) ? !browserWorkSpaceStore.focusMode : sidebarPinnedPref || Self.envRailPinned
     }
     var isChatProjectRailInteractionActive: Bool {
-        model.mode == .browser && browserWorkSpaceStore.sidebarInteractionActive
+        (model.mode == .browser || usesBrowserTopChrome) && browserWorkSpaceStore.sidebarInteractionActive
     }
     var cliVisibleProjectIDs: Set<String> {
         Set(cliVisibleProjectIDsRaw.split(separator: ",").map(String.init))
@@ -321,7 +321,7 @@ extension ChatPage {
         }
     }
 
-    /// W177：ChatGPT Space 的側欄＝共用外殼＋分頁列＋ChatGPT 對話清單＋共用底部。
+    /// 網頁 Space 留選鈕與共用設定入口；原生 Space 保留既有清單。
     var chatGPTSidebar: some View {
         WorkspaceSidebarShell {
             VStack(alignment: .leading, spacing: WorkspaceSidebarMetrics.sectionSpacing) {
@@ -330,8 +330,12 @@ extension ChatPage {
                     .contextMenu {
                         workspaceUtilityContextMenu
                     }
-                ChatGPTSpaceSidebarList(model: ChatGPTSpaceModel.shared)
-                    .frame(maxHeight: .infinity)
+                if ChatGPTWebSpace.isEnabled {
+                    Spacer(minLength: 0)
+                } else {
+                    ChatGPTSpaceSidebarList(model: ChatGPTSpaceModel.shared)
+                        .frame(maxHeight: .infinity)
+                }
                 workspaceSidebarFooter
             }
             .frame(maxHeight: .infinity, alignment: .topLeading)

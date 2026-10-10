@@ -1,0 +1,2 @@
+GUARD_PROBE self=50347 records=[50347] other=[]
+GUARD_PROBE normal_exit

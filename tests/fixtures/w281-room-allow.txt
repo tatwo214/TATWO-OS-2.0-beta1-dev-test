@@ -1,0 +1,21 @@
+# W281：只准下載段、發布 helper、下載驗收與其本機假站／fixture。
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm # HumanDownload、暫存 Continue、完成發布、空目錄清理、W57d 最終路徑；W281b 編號保留名、S1–S3 與 DEBUG 發布失敗掛鉤。
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoDownloadReservation.h # 純 POSIX 原子發布、保留檔身份檢查、交換還原與不覆蓋撞名；下載前探測退路；W281b 共用候選名與換回失敗的 EXCL 復原位置。
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift # 同一組真 CEF human 自測納入 W281，移除 agent 測試覆蓋層；W281b 撞名先紅／後綠入口。
+App/Sources/Tatwo2/Browser/W268DownloadAcceptance.swift # 生命週期唯一檔名、umask／bytes／quarantine 證據、ls -lai 與既有卡片截圖。
+App/Sources/Tatwo2/Browser/W281DownloadAcceptance.swift # DEBUG 真 CEF 中途替換、取消／中斷／關分頁、強制退路與本機 PDF completion 驗收；W281b 撞名卡片／ls 證據與 S2 注入驗收。
+tests/fixtures/browser-download-reservation-checks.cc # 發布成功、使用者檔／連結／刪除、撞名上限、ENOTSUP／EINVAL 與換回失敗單元測；W281b 復原內容／inode／來源消失與候選名邊界。
+tests/fixtures/browser-web-features.mm.in # 既有 W57d fixture 對接 HumanDownload，測已發布最終路徑與發布失敗；W281b 非 human PDF 在 Cancel 前同步回報。
+tests/fixtures/w258-server.py # 本機 PDF 與 W281 限速／中斷資料案例；不連外網。
+tests/fixtures/w281-room-allow.txt # 本房逐檔白名單與修改理由。
+tests/browser-web-features.test.mjs # W281b 非 human 更新分支抽取到 W57d fixture，驗證 Cancel 前同步回報。
+App/Sources/Tatwo2/Browser/W282DownloadAcceptance.swift # W281c 退路沿用 Continue(final)；只將無發布步驟的完成期碰撞／URL 變更斷言標為 SKIP，主輪完整保留。
+tests/fixtures/w281c-report.md # W281c 先紅／後綠、TCC 未驗、原始證據與 guard 摘要。
+App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift # W281d 主導核准 Finder 補丁：完成／失敗且檔案存在時選取真正 fileURL。
+App/Sources/Tatwo2/Browser/BrowserDownloadFeedback.swift # W281d 主導核准 Finder 補丁：失敗卡片有保留檔才顯示 Finder 動作。
+App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift # W281d 主導核准 Finder 補丁：下載清單與選單依真正檔案提供 Finder 動作。
+tests/fixtures/browser-download-permissions-checks.swift # W281d 保留檔 Finder URL、非終態／取消／不存在檔案不提供 Finder 動作。
+tests/browser-download-no-directory-access.test.mjs # W281e 靜態守門：Downloads 下載段與 helper 禁止目錄讀取；可對基準執行先紅。
+tests/fixtures/w281e-report.md # W281e 報告、逐呼叫清單與隔離驗收證據。
+tests/browser-download-permissions-repair.test.mjs # W281f 純 C++ Unicode helper 連結 CoreFoundation。
+tests/fixtures/w281f-report.md # W281f 先紅／後綠、實際位元組長度與 guard 證據。

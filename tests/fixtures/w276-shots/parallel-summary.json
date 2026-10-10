@@ -1,0 +1,44 @@
+{
+  "scenario": "parallel",
+  "samples": [
+    {
+      "seconds": 2.176,
+      "processes": [
+        {
+          "pid": 50191,
+          "ppid": 1,
+          "command": "/Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging --staging-snapshot"
+        }
+      ],
+      "formalAlive": true
+    },
+    {
+      "seconds": 15.836,
+      "processes": [
+        {
+          "pid": 50191,
+          "ppid": 1,
+          "command": "/Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging --staging-snapshot"
+        }
+      ],
+      "formalAlive": true
+    },
+    {
+      "seconds": 31.593,
+      "processes": [
+        {
+          "pid": 50191,
+          "ppid": 1,
+          "command": "/Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging --staging-snapshot"
+        }
+      ],
+      "formalAlive": true
+    }
+  ],
+  "quitExit": 0,
+  "quitSeconds": 0.447,
+  "remaining": [],
+  "keychainUI": false,
+  "formalPID": 72148,
+  "formalStillAlive": true
+}

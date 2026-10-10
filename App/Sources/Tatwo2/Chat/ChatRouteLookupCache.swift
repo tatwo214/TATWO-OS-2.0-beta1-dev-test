@@ -38,8 +38,13 @@ final class ChatRouteLookupCache: @unchecked Sendable {
             return entry
         }
         lock.unlock()
-        let choices = EngineModelCatalog.profiles(deviceID: deviceID).map { ChatRouteChoice(profile: $0) }
-            + ChatGPTTapModelCatalog.choices
+        var seen = Set<String>()
+        var grokIDs = Set<String>()
+        let choices = (EngineModelCatalog.profiles(deviceID: deviceID).map { ChatRouteChoice(profile: $0) }
+            + ChatGPTTapModelCatalog.choices).filter {
+                ($0.brandGroup != .xAI || grokIDs.insert(ChatProviderModelIdentity.lookupKey($0.id)).inserted)
+                    && seen.insert($0.brandGroup.rawValue + ":" + ChatProviderModelIdentity.lookupKey($0.modelArgument ?? $0.canonicalModelSlug)).inserted
+            }
         let entry = Entry(version: version, choices: choices)
         lock.lock()
         defer { lock.unlock() }

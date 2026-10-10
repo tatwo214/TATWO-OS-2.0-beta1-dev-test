@@ -1,0 +1,12 @@
+# CU demand ownership, cancellation and 60-second expiration for own/other TATWO processes.
+App/Sources/Tatwo2/New/ComputerUseController.swift
+# Extend existing real CEF acceptance with lease assertions and diagnostics screenshots.
+App/Sources/Tatwo2/Browser/W257XSmoothAcceptance.swift
+# Small loopback CU page avoids observation truncation from the benchmark's 680 cards.
+tests/fixtures/w257-timeline.py
+# Keep W257's two native request paths checked after the setter becomes reversible.
+tests/w257-xsmooth.test.mjs
+# Execute the production lease block with isolated AX targets; verify foreign process ownership and release builds.
+tests/w257b-cuax.test.mjs
+# Room boundaries and per-file reasons.
+tests/fixtures/w257b-room-allow.txt

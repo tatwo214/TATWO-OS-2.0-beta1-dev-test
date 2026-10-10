@@ -1,0 +1,12 @@
+# W294：Plugins 新版面與舊版後備；產品淨增上限 200；不接真帳號。
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift # 辨識 Plugins 按鈕列、About 身分、Version dev mode、刪除與重連選單、Add 入口；舊路徑保留
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift # 將掃描卡點 failure 帶回原生流程
+App/Sources/Tatwo2/Facade/HandsConnect.swift # 連線與整理紀錄加入卡點；多份時沿用唯一連著的本設備外掛
+App/Sources/Tatwo2/Facade/HandsConnectorRegistry.swift # 整理預覽排除仍連著的重複份；既有刪前封存不變
+App/Sources/Tatwo2/Facade/HandsConnectAcceptance.swift # W208 假 Pod 可接本機新版 DOM 指令；原自測照留
+App/Sources/Tatwo2/Facade/W208TapAcceptance.swift # 原生流程實跑新版假頁：4 沿用、2／3 預覽與刪前封存、斷線重連
+tests/fixtures/w294-room-allow.txt # 本白名單與理由
+tests/fixtures/w294-plugins-page.mjs # 按新版 AX 摘錄構造本機 DOM；名稱／App ID／URL 全為假資料
+tests/fixtures/w294-native-pod.mjs # 原生 W208 與本機 Pod 假頁間的持久化指令橋；不連網
+tests/w294-plugins.test.mjs # 新版掃描、重連、Connect、Add、刪除、未知清單與帳號切換回歸
+tests/fixtures/w294-evidence/* # 本機驗收回條（機器路徑遮蔽）與收房證據

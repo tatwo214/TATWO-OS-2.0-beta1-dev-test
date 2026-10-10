@@ -42,6 +42,8 @@
 #     （helper 每輪：publish + ingest；數值只來自對端實報，不填假值）
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 # ---- 設定（env 可覆寫） ----
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RELEASE_BRANCH="${TATWO_RELEASE_BRANCH:-release/tatwo-os}"
@@ -543,7 +545,7 @@ cmd_db_pull() {
   [ -d "$APP_SUPPORT" ] || die "找不到本機 app-support：$APP_SUPPORT"
 
   # 先驗證能連到主設備（唯讀）
-  if ! ssh -o ConnectTimeout=8 -o BatchMode=yes "$from" "test -d \"$REMOTE_APP_SUPPORT\"" 2>/dev/null; then
+  if ! tatwo_pinned_run "$from" /usr/bin/ssh -o ConnectTimeout=8 -o BatchMode=yes "$from" "test -d \"$REMOTE_APP_SUPPORT\"" 2>/dev/null; then
     die "連不到主設備 $from 或遠端 app-support 不存在（tunnel 未通 / 未授權 / 路徑不符）"
   fi
 
@@ -555,7 +557,7 @@ cmd_db_pull() {
   for sub in "${DB_ALLOWLIST[@]}"; do
     local remote_dir="$REMOTE_APP_SUPPORT/$sub/" local_dir="$APP_SUPPORT/$sub/"
     # 遠端該子項不存在就跳過
-    if ! ssh -o ConnectTimeout=8 -o BatchMode=yes "$from" "test -e \"$REMOTE_APP_SUPPORT/$sub\"" 2>/dev/null; then
+    if ! tatwo_pinned_run "$from" /usr/bin/ssh -o ConnectTimeout=8 -o BatchMode=yes "$from" "test -e \"$REMOTE_APP_SUPPORT/$sub\"" 2>/dev/null; then
       log "skip（主設備無此項）：$sub"; continue
     fi
     if [ "$dry" != "1" ] && [ -e "$local_dir" ]; then
@@ -570,7 +572,9 @@ cmd_db_pull() {
     # 會被空格拆成多個字，遠端誤判找不到檔案。用 rsync 的路徑跳脫語法
     # （反斜線跳脫空格）確保遠端 shell 收到單一參數。
     local escaped_remote_dir="${remote_dir// /\\ }"
-    rsync "${rsync_flags[@]}" -e "ssh -o ConnectTimeout=10 -o BatchMode=yes" \
+    local transport
+    transport="$(tatwo_ssh_transport "$from")" || return 1
+    rsync "${rsync_flags[@]}" -e "$transport -o ConnectTimeout=10" \
       "$from:$escaped_remote_dir" "$local_dir"
   done
   if [ "$dry" = "1" ]; then

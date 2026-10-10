@@ -68,7 +68,7 @@ test('2. the queued self action re-verifies grant, connection, context, full acc
   const authority = code(between(cu, 'struct ComputerUseSelfAuthority', 'enum ComputerUseNative {'));
   assert.match(authority, /@MainActor func stillAuthorized\(\) -> Bool \{\s*guard \(try\? gate\.validate\(grant\)\) != nil, requestIsConnected\(\), contextIsCurrent\(\) else \{ return false \}\s*if grant\.pid == ProcessInfo\.processInfo\.processIdentifier \{\s*guard selfTargetPermitted\(\),\s*!ComputerUseController\.refusesSelf\(pid: grant\.pid, lane: grant\.lane, sensitivePageOpen: sensitivePageOpen\(\)\) else \{ return false \}\s*\}\s*return true\s*\}/);
   // 控制器把它們接進來：ChatPageModel 的 contextIsCurrent、requestIsConnected、selfTargetPermitted（現在的權限）、敏感頁閘門。
-  assert.match(cu, /ComputerUseSelfAuthority\(grant: grant, gate: session, requestIsConnected: requestIsConnected,\s*contextIsCurrent: contextIsCurrent, selfTargetPermitted: selfTargetPermitted,\s*sensitivePageOpen: \{ BrowserSensitivePageGate\.isActive \}\)/);
+  assert.match(cu, /ComputerUseSelfAuthority\(grant: grant, gate: session, requestIsConnected: requestIsConnected,\s*contextIsCurrent: contextIsCurrent, selfTargetPermitted: selfTargetPermitted,\s*sensitivePageOpen: \{ BrowserSensitivePageGate\.isActive \},\s*externalAI: externalOwner == grant\.owner, externalAdmission: externalAdmission\)/);
   assert.match(model, /selfTargetPermitted: \{ \[weak self\] in self\?\.permissionPreset == \.fullAccess \},/);
   // 撤銷（停止、換目標）＝佇列作廢：session.stop 之後馬上 cancelAll。
   const stop = code(between(cu, '    func stop(owner: UUID? = nil) {', '    /// W184 CU 第二輪（GPT-6 審查 #2）：權限預設'));
@@ -106,7 +106,7 @@ test('3. the direct (NSAccessibility) route needs element identity inside the no
   assert.match(schedule, /guard ComputerUseWindowPick\.stillUsable\(windowID: CGWindowID\(truncatingIfNeeded: windowNumber\), pid: getpid\(\)\),\s*let found = ComputerUseNative\.selfAccessibilityElement\(fingerprint, windowNumber: windowNumber\),\s*found === target else \{ return \}/);
   // backgroundInput／input：先直接（找得到唯一才算）、找不到才 AX；都經過閘門（dispatch）。
   const background = code(between(cu, 'static func backgroundInput(', 'static func menuItem('));
-  assert.match(background, /func direct\(_ name: String\) throws -> Bool \{\s*guard let action = selfDirectAction\(node, name, pid: grant\.pid, deadline: deadline\) else \{ return false \}\s*try gate\.dispatch\(observationID: observation\.id, for: grant\) \{ action\.schedule\(authority: authority\) \}\s*return true\s*\}/);
+  assert.match(background, /func direct\(_ name: String\) throws -> Bool \{\s*guard let action = selfDirectAction\(node, name, pid: grant\.pid, deadline: deadline\) else \{ return false \}\s*try externalCheck\(node\)\s*try gate\.dispatch\(observationID: observation\.id, for: grant\) \{ action\.schedule\(authority: authority\) \}\s*return true\s*\}/);
   assert.match(background, /case \.click:\s*if try direct\(kAXPressAction\) \{ return \.done\(center\(node\)\) \}\s*if try perform\(kAXPressAction\)/);
   assert.match(background, /case \.rightClick:\s*if try direct\(kAXShowMenuAction\) \{ return \.done\(center\(node\)\) \}\s*return try perform\(kAXShowMenuAction\)/);
   const axAction = code(between(cu, 'case .axAction(let index, let name):', 'case .focusWindow(let index):'));
@@ -176,7 +176,7 @@ test('2./5. window picking: three-valued protection + shield veto, usable on eve
     // 讀樹之前就決定（拒絕在 walk 之前）。
     'let bounds = try window.map', 'if windowID.flatMap({ facts[$0] })?.disclosable == true {', 'if includeTree, let window { try walk(window, depth: 0) }'], 'readState');
   assert.doesNotMatch(readState, /\?\.usable \?\? true/);
-  assert.match(readState, /serverFrame: chosenID\.flatMap \{ ComputerUseWindowPick\.serverFrame\(windowID: \$0, owner: pid\) \}\)/);
+  assert.match(readState, /serverFrame: chosenID\.flatMap \{ ComputerUseWindowPick\.serverFrame\(windowID: \$0, owner: pid\) \},\s*documentURL: externalAI/);
   // observe：正式的 read（w183-ui 也釘）→ choose → 擷取 → 同一個視窗編號 → 敏感頁 → 回傳當下的 facts：有視窗就要有編號、要可以用 →
   // publish → windows 經過輸出過濾。image:false 走同一條（讀樹在擷取之前、回傳前的驗證不看有沒有截圖）。
   const observe = code(between(cu, 'private func observe(_ grant', '/// A sheet abort'));
@@ -255,7 +255,7 @@ test('4. event targets: every synthesized event goes to a window resolved by num
   // 拖曳兩端要同一個視窗。
   const input = code(between(pointer, 'static func input(_ request: Request', undefined));
   ordered(input, ['func resolve(_ location: Location) throws -> (point: CGPoint, geometry: ComputerUseNative.EventGeometry) {',
-    'case .point(let x, let y):', 'imageHeight: observation.imageHeight, frame: bounds), geometry)', 'case .element(let index):',
+    'case .point(let x, let y):', 'imageHeight: observation.imageHeight, frame: bounds)', 'return (point, geometry)', 'case .element(let index):',
     'let node = try element(index)', 'return (CGPoint(x: rect.midX, y: rect.midY), try elementGeometry(node))', 'let (from, target) = try resolve(request.from)'], 'pointer resolve');
   assert.equal((input.match(/let receiver = try target\.target\(\)/g) ?? []).length, 3);
   assert.match(input, /let point = target\.serverPoint\(axPoint\)\s*guard let event = CGEvent\(mouseEventSource: source, mouseType: type,\s*mouseCursorPosition: point, mouseButton: button\)/);

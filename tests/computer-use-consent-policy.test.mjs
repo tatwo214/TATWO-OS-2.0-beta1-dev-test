@@ -69,7 +69,9 @@ test('both starts resolve before asking, gate monitors, and keep TCC checks', ()
     // /goal 101：start() 把兩個系統權限拆成各自的錯誤碼；兩個檢查都要在，寫在同一行或分開都算。
     assert.match(body, /AXIsProcessTrusted\(\)/);
     assert.match(body, /CGPreflightScreenCaptureAccess\(\)/);
-    assert.match(body, /expiresAt: \.greatestFiniteMagnitude/);
+    if (start === 'private func start(caller:') {
+      assert.match(body, /expiresAt: external\.map \{ ProcessInfo\.processInfo\.systemUptime \+ Double\(\$0\.minutes \* 60\) \}\s*\?\? \.greatestFiniteMagnitude/);
+    } else assert.match(body, /expiresAt: \.greatestFiniteMagnitude/);
     assert.match(body, /reserveConsent\(caller: caller, epoch: switchEpoch\)/);
     assert.match(body, /consentPolicyProvider\(caller\) == policy/);
     assert.doesNotMatch(body, /Int\(grant.expiresAt/);
@@ -147,4 +149,3 @@ test('/goal 101: operating TATWO OS itself never deadlocks the grant lock and su
   assert.match(model, /if !\(permissionPreset == \.fullAccess && ComputerUseController\.shared\.isOperatingSelf\(\)\) \{\s*ComputerUseController\.shared\.stop\(\)/);
   assert.match(read(app + 'New/ComputerUseController.swift'), /return granted\.pid == ProcessInfo\.processInfo\.processIdentifier/);
 });
-

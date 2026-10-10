@@ -96,6 +96,7 @@ enum TatwoDevicePairingCodeEngineV1 {
         against record: TatwoDevicePairingCodeRecordV1,
         expectedPrimary: String? = nil,
         expectedEpoch: UInt64? = nil,
+        expectedCreator: String? = nil,
         now: Date = Date()
     ) throws {
         guard isValidSeedFormat(seed) else {
@@ -112,7 +113,9 @@ enum TatwoDevicePairingCodeEngineV1 {
         }
         if let expectedPrimary {
             let want = expectedPrimary.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard record.authorityPrimary == want, record.createdBy == want else {
+            // 舊呼叫仍須由 primary 出碼；只有已驗主設備名單的 owner 呼叫端才傳明確 issuer。
+            let issuer = expectedCreator?.trimmingCharacters(in: .whitespacesAndNewlines) ?? want
+            guard record.authorityPrimary == want, record.createdBy == issuer else {
                 throw TatwoDevicePairingErrorV1.authorityMismatch
             }
         }
@@ -126,6 +129,7 @@ enum TatwoDevicePairingCodeEngineV1 {
         record: TatwoDevicePairingCodeRecordV1,
         expectedPrimary: String? = nil,
         expectedEpoch: UInt64? = nil,
+        expectedCreator: String? = nil,
         now: Date = Date()
     ) throws -> TatwoDevicePairingCodeRecordV1 {
         try validate(
@@ -133,6 +137,7 @@ enum TatwoDevicePairingCodeEngineV1 {
             against: record,
             expectedPrimary: expectedPrimary,
             expectedEpoch: expectedEpoch,
+            expectedCreator: expectedCreator,
             now: now)
         return TatwoDevicePairingCodeRecordV1(
             schema: record.schema,

@@ -18,6 +18,8 @@
 #   bash scripts/tatwo-lint-lane.sh --selftest
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
@@ -304,7 +306,7 @@ REMOTE
 
   set +e
   out_rc=0
-  "$SSH_CMD" "$TARGET_USERHOST" "bash -lc $(printf '%q' "$remote_cmd")" >"$log_file" 2>&1
+  tatwo_pinned_run "$TARGET_USERHOST" "$SSH_CMD" "$TARGET_USERHOST" "bash -lc $(printf '%q' "$remote_cmd")" >"$log_file" 2>&1
   out_rc=$?
   set -e
 

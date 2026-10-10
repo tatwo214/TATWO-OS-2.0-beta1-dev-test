@@ -38,8 +38,9 @@ enum W194FixAcceptance {
         coldSaved.modelDisplayName = "Fixture Cold Display"
         check(ChatGPTTapModelCatalog.rememberedTitle(coldModelID) == nil,
               "W194-11 cold persisted fixture has never populated the name cache")
-        _ = try JSONDecoder().decode(LiveMessageRecord.self, from: encoder.encode(coldSaved)).chatMessage
-        check(ChatRouteChoice.resolve(coldRoute).title == "Fixture Cold Display", "W194-11 restored reply seeds the remembered model name before a catalog exists")
+        let restoredCold = try JSONDecoder().decode(LiveMessageRecord.self, from: encoder.encode(coldSaved)).chatMessage
+        check(restoredCold.modelDisplayName == "Fixture Cold Display" && ChatGPTTapModelCatalog.rememberedTitle(coldModelID) == "Fixture Cold Display"
+              && ChatRouteChoice.resolve(coldRoute).id == route, "W194-11 restored reply preserves historical name while active selection uses the current catalog")
         let stopped = ChatErrorCardPresentation.resolve(ChatMessage(role: .system, text: "這句尚未送出，已停止", status: "error|沒送到"))
         check(stopped?.isStopped == true && stopped?.headline == "已停止", "W194-3 old stopped errors render neutrally too")
         let login = EngineFailurePresentation.make("token expired", alternative: "fixture")

@@ -17,6 +17,8 @@ struct OSEvent: Codable, Equatable, Sendable {
     var surface: String?
     var turn: String?
     var workspace: String?
+    var tokens: Int?
+    var estimated: Bool?
     var device: String?
 }
 
@@ -65,7 +67,7 @@ final class OSEventLog: @unchecked Sendable {
             .appendingPathComponent(String(Self.stamp(at).prefix(7)) + ".jsonl")
     }
     func append(project: UUID?, thread: UUID? = nil, actor: String, kind: String, at: Date = Date(), purpose: String? = nil,
-                used: [String]? = nil, result: String? = nil, size: Int? = nil, sizeText: String? = nil, note: String? = nil, id: String? = nil, origin: String? = nil, surface: String? = nil, turn: String? = nil, workspace: UUID? = nil) {
+                used: [String]? = nil, result: String? = nil, size: Int? = nil, sizeText: String? = nil, note: String? = nil, id: String? = nil, origin: String? = nil, surface: String? = nil, turn: String? = nil, workspace: UUID? = nil, tokens: Int? = nil, estimated: Bool? = nil) {
         queue.async { [self] in
             if let id, recordedIDs.contains(id) { return }
             let safe = note.map { text -> String in
@@ -74,7 +76,7 @@ final class OSEventLog: @unchecked Sendable {
             }
             var row = OSEvent(at: Self.stamp(at), project: project?.uuidString.lowercased() ?? "一般", thread: thread?.uuidString.lowercased(),
                               actor: actor, kind: kind, purpose: purpose, used: used, result: result, size: size ?? sizeText?.count, note: safe,
-                              origin: origin, surface: surface, turn: turn, workspace: workspace?.uuidString.lowercased(), device: device)
+                              origin: origin, surface: surface, turn: turn, workspace: workspace?.uuidString.lowercased(), tokens: tokens, estimated: estimated, device: device)
             if let id { row.id = id }
             do { try write(row, to: file(project: project, at: at)); if let id { recordedIDs.insert(id) } } catch { self.error = error; fputs("OS events write failed\n", stderr) }
         }
@@ -94,6 +96,16 @@ final class OSEventLog: @unchecked Sendable {
         try handle.seekToEnd(); var data = try encoder.encode(row); data.append(10); try handle.write(contentsOf: data)
     }
     func flush() throws { try queue.sync { for handle in handles.values { try handle.synchronize() }; if let error { throw error } } }
+    func revision(project: UUID) throws -> String {
+        try queue.sync {
+            let folder = file(project: project, at: Date()).deletingLastPathComponent()
+            guard FileManager.default.fileExists(atPath: folder.path) else { return "" }
+            return try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]).filter { $0.pathExtension == "jsonl" }.sorted { $0.path < $1.path }.map {
+                let value = try $0.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                return "\($0.lastPathComponent):\(value.fileSize ?? 0):\(value.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+            }.joined(separator: ";")
+        }
+    }
     func query(project: UUID?, from: Date, through: Date, kinds: Set<String> = []) throws -> [OSEvent] {
         try queue.sync {
             let folder = file(project: project, at: from).deletingLastPathComponent()

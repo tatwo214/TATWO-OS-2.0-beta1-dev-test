@@ -17,6 +17,11 @@ final class ChatGPTDispatch {
     完整交件也請放在最後回覆；OS 會把最後回覆存回施工房 {{reply}}。這個檔案由 OS 寫入，請勿自行覆蓋。
     不得呼叫 chatgpt_dispatch 或再派給自己；遇到缺少工具、檔案或授權就明確說明限制。
     """
+    /// W342：施工房的名字會寫進送給 ChatGPT 的說明。「一般」專案＝家目錄，名字就是帳號名，會被當成個人資料整單擋下；這種寫成「~」。
+    nonisolated static func roomLabel(_ room: URL) -> String {
+        let name = room.lastPathComponent.replacingOccurrences(of: "[\\p{Cc}\\p{Zl}\\p{Zp}]", with: " ", options: .regularExpression)
+        return HandsRedactor.redact(name) == name ? name : "~"
+    }
     nonisolated private static let credentialPattern = #"(?i)(?:\b(?:password|passwd|pwd|api[_-]?key|access[_-]?token|secret)\b|密碼|密码)\s*[:=]\s*[^\s]+"#
     nonisolated private static func sensitive(_ text: String) -> Bool {
         rejectionCategory(text) != nil
@@ -211,7 +216,7 @@ final class ChatGPTDispatch {
                     if request.projectID != nil, target.notice != nil { throw Failure("target_project_unavailable") }
                     try Task.checkCancellation()
                     guard active[caller] === work else { return }
-                    let note = Self.instructions.replacingOccurrences(of: "{{room}}", with: room.lastPathComponent)
+                    let note = Self.instructions.replacingOccurrences(of: "{{room}}", with: Self.roomLabel(room))
                         .replacingOccurrences(of: "{{caller}}", with: caller.uuidString)
                         .replacingOccurrences(of: "{{project}}", with: projectID.uuidString)
                         .replacingOccurrences(of: "{{reply}}", with: "chatgpt-dispatch/" + prepared.output.name)

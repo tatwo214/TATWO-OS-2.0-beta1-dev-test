@@ -4,7 +4,7 @@ import AppKit
 import CryptoKit
 import SwiftUI
 
-/// TATWO2_SELFTEST=1 時無頭跑一輪：開討論串 → 送一句 → 等結果 → 印出訊息 → 退出。給腳本驗證 Swift↔sidecar 通路用。
+/// TATWO2_SELFTEST=1 時拒絕真引擎通路；具名隔離自測仍可執行。
 enum SelfTest {
     @MainActor private static var headlessHostModel: ChatPageModel?
 
@@ -184,7 +184,14 @@ enum SelfTest {
     #endif
 
     @MainActor static func runIfRequested() {
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "1" {
+            fputs("W255B_BOUNDARY: live-engine selftest needs a synthetic adapter\n", stderr)
+            exit(78)
+        }
         #if DEBUG
+        if ["w248webspace", "w265dmchatgpt", "w269gptchrome", "w294e"].contains(ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] ?? "") { _ = TatwoCEFApplication.shared }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w248webspace" || ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w257xsmooth" { _ = TatwoCEFApplication.shared }
+        if ["w248webspace", "w258download", "w270dlfly"].contains(ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] ?? "") { _ = TatwoCEFApplication.shared }
         if !["w206closeall", "w202perf", "w209spotify"].contains(ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] ?? ""), TatwoThemeSelfTestScope.forceDark {
             // 先建好 NSApp：同步跑完就 exit 的自測（w191ui）不跑 run loop，NSApp 還沒建時主題的外觀會延到下一輪才套，
             // 第一個檢查前 App 就必須已經是 darkAqua。
@@ -192,23 +199,70 @@ enum SelfTest {
             TatwoThemeSelfTestScope().use(.aurora)
         }
         let asyncSuites: [String: (prefix: String, run: @MainActor () async throws -> Bool)] = [
+            "w298c": ("W298C", { try await W298cAcceptance.run() }),
+            "w298b": ("W298B", { try await W298bAcceptance.run() }),
+            "w298a": ("W298A", { try await W298aAcceptance.run() }),
+            "w297": ("W297", { try await W297Acceptance.run() }),
+            "w290esc": ("W290", { try await W290EscapeAcceptance.run() }),
+            "w257xsmooth": ("W257", { try await W257XSmoothAcceptance.run() }),
+            "w252goalloops": ("W252GOALLOOPS", { try await W252GoalLoopsAcceptance.run() }),
+            "w270dlfly": ("W270", { try await W258DownloadAcceptance.run() }),
+            "w258download": ("W258", { try await W258DownloadAcceptance.run() }),
+            "w250picker": ("W250PICKER", { try await W250PickerAcceptance.run() }),
+            "w248webspace": ("W248", { try await W248WebSpaceAcceptance.run() }),
+            "w265dmchatgpt": ("W265", { try await W248WebSpaceAcceptance.run() }),
+            "w294e": ("W294E", { try await W248WebSpaceAcceptance.run() }),
+            "w269gptchrome": ("W269", { try await W269GPTChromeAcceptance.run() }),
+            "w246tail": ("W246", { try await W246TailAcceptance.run() }),
+            "w244proposal": ("W244", { try await W244ProposalAcceptance.run() }),
+            "w343tapskill": ("W343", { try await W343TapSkillAcceptance.run() }),
+            "w239proposal": ("W239", { try await W239ProposalAcceptance.run() }),
+            "w236sigils": ("W236SIGILS", { try await W236SigilsAcceptance.run() }),
+            "w241pets": ("W241PETS", { try await W241PetsAcceptance.run() }),
+            "w243ux": ("W243UX", { try await W243UXAcceptance.run() }),
+            "w238tail": ("W238", { try await W238TailAcceptance.run() }),
+            "w245mcp": ("W245MCP", { try await W245MCPAcceptance.run() }),
+            "w242mcp": ("W242MCP", { try await W242MCPAcceptance.run() }),
+            "w240mcp": ("W240MCP", { try await W240MCPAcceptance.run() }),
+            "w235mcp": ("W235MCP", { try await W235MCPAcceptance.run() }),
+            "w232": ("W232", { try await W232Acceptance.run() }),
+            "w231managed": ("W231", { try await W231ManagedAcceptance.run() }),
+            "w229": ("W229", { try await GroupEventLogAcceptance.run() }),
+            "w225b5group": ("W225B5", { try await GroupPreflightAcceptance.run() }),
+            "w225b4group": ("W225B4", { try await GroupFixAcceptance.run() }),
+            "w225b3group": ("W225B3", { try await GroupReviewAcceptance.run() }),
+            "w225group": ("W225GROUP", { try await GroupCoderAcceptance.run() }),
+            "w225b2group": ("W225B2", { try await GroupReconnectAcceptance.run() }),
             "w225mcp": ("W225MCP", { try await W225MCPAcceptance.run() }),
             "w225read": ("W225MCP", { try await W225MCPAcceptance.run() }),
+            "w230pets": ("W230PETS", { try await W230PetsAcceptance.run() }),
+            "w230petsui": ("W230PETSUI", { try await W230PetsUIAcceptance.run() }),
             "w226": ("W226", { try await W226Acceptance.run() }),
             "w226a": ("W226a", { try await W226aAcceptance.run() }),
             "w224f": ("W224", { try await W224Acceptance.run() }),
+            "w221bdevices": ("W221BDEVICES", { try await W221bDevicesAcceptance.run() }),
             "w215": ("W215", { try await CoderTurnAcceptance.run() }),
             "w216": ("W216", { try await W216Acceptance.run() }),
+            "w255": ("W255", { try await W255HardeningAcceptance.run() }),
+            "w338sbxdispatch": ("W338SBXDISPATCH", { try await W264SandboxLaneAcceptance.run(ordinary: true) }),
+            "w264sandboxlane": ("W264SANDBOXLANE", { try await W264SandboxLaneAcceptance.run() }),
+            "w335sandboxagent": ("W335SANDBOXAGENT", { try await W335SandboxAgentAcceptance.run() }),
+            "w336vmdevice": ("W336VMDEVICE", { try await W336VMDeviceAcceptance.run() }),
+            "w335sandboxui": ("W335SANDBOXUI", { try await W335SandboxUIAcceptance.run() }),
+            "w253sandbox": ("W253SANDBOX", { try await W253SandboxAcceptance.run() }),
             "w214": ("W214", { try await W214Acceptance.run() }),
+            "w284": ("W284", { try await W284Acceptance.run() }),
             "w217voice": ("W217VOICE", { try await W217VoiceAcceptance.run() }),
             "w213scroll": ("W213SCROLL", { try await CoderScrollAcceptance.run() }),
             "w206closeall": ("W206CLOSEALL", { try await BrowserCloseAllAcceptance.run() }),
             "w202perf": ("W202PERF", { try await W202PerformanceAcceptance.run() }),
             "w198dispatch": ("W198", { try await W198DispatchAcceptance.run() }),
+            "w222c": ("W222C", { try await W222Acceptance.run() }),
             "w185tap": ("W185TAP", { try await ChatGPTTapAcceptance.run() }),
+            "w295": ("W295", { try await W295Acceptance.run() }),
+            "w292": ("W292", { try await W292ConnectAcceptance.run() }),
             "w208tap": ("W208", { try await W208TapAcceptance.run() }),
             "w209spotify": ("W209SPOTIFY", { try SpotifyConnectAcceptance.run() }),
-            "w197dots": ("W197DOTS", { try await checkedSuite(prefix: "W197DOTS", run: W197DotsAcceptance.run) }),
             "w199quiet": ("W199QUIET", { try await checkedSuite(prefix: "W199QUIET", run: W199QuietAcceptance.run) })
         ]
         if let name = ProcessInfo.processInfo.environment["TATWO2_SELFTEST"], let suite = asyncSuites[name] {
@@ -302,6 +356,54 @@ enum SelfTest {
             NSApplication.shared.run()
             return
         }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w187tools" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                var checks = 0, failures = 0
+                func check(_ value: Bool, _ label: String) {
+                    checks += 1; if !value { failures += 1 }
+                    print("W187TOOLS \(value ? "PASS" : "FAIL") \(label)")
+                }
+                let assistant = UUID()
+                check(AssistantFleetTools.methods == ["fleet_overview", "fleet_open_card", "fleet_propose"], "exact-three-tools-no-confirmation")
+                check(!AssistantFleetTools.openCards.contains("progress"), "tool-cannot-inject-progress-card")
+                for method in AssistantFleetTools.methods.sorted() {
+                    check(!OSAgentBridge.sshForwardMethods.contains(method)
+                          && !OSAgentBridge.untrustedCallerMethods.contains(method)
+                          && !OSAgentBridge.stagingReadOnlyMethods.contains(method), "no-external-whitelist-\(method)")
+                    for caller in [OSSocketCaller.externalAI, .ssh, .other(pid: nil), .app, .helper, .job(assistant)] {
+                        check(!OSAgentBridge.allows(caller: caller, method: method, params: [:], staging: true),
+                              "bridge-refuses-\(caller.label)-\(method)")
+                        do {
+                            _ = try AssistantFleetTools.perform(method, params: [:], caller: caller, assistantThread: assistant)
+                            check(false, "handler-refuses-\(caller.label)-\(method)")
+                        } catch {
+                            check((error as? AssistantFleetTools.Failure)?.reason == "fleet_assistant_required",
+                                  "handler-refuses-\(caller.label)-\(method)")
+                        }
+                    }
+                    do {
+                        _ = try AssistantFleetTools.perform(method, params: [:], caller: .engine(UUID()), assistantThread: assistant)
+                        check(false, "bound-assistant-required-\(method)")
+                    } catch {
+                        check((error as? AssistantFleetTools.Failure)?.reason == "fleet_assistant_required", "bound-assistant-required-\(method)")
+                    }
+                }
+                print("W187TOOLS SUMMARY checks=\(checks) failures=\(failures)")
+                exit(failures == 0 ? 0 : 1)
+            }
+            NSApplication.shared.run()
+            return
+        }
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w187dm" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DeviceFlowAcceptance.run() ? 0 : 1) }
+                catch { print("W187DM FAIL \(error)"); print("W187DM SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
         // W180：私訊框對象圖示列、模型 chip、附件、子討論串與所有配對設備、Island 定位（無頭、完整隔離）。
         if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w180dm" {
             setvbuf(stdout, nil, _IOLBF, 0)
@@ -312,7 +414,12 @@ enum SelfTest {
             NSApplication.shared.run()
             return
         }
-        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w189commands" {
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w288" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            do { exit(try W288Acceptance.run() ? 0 : 1) }
+            catch { print("W288 FAIL \(error)"); print("W288 SUMMARY failures=1"); exit(1) }
+        }
+        if ["w189commands", "commandmode"].contains(ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] ?? "") {
             do { exit(try CommandModeAcceptance.run() ? 0 : 1) }
             catch { print("W189COMMANDS FAIL \(error)"); print("W189COMMANDS SUMMARY failures=1"); exit(1) }
         }
@@ -489,6 +596,15 @@ enum SelfTest {
             return
         }
         // W183 R3：ChatGPT 手腳的畫面與標準設定流程（假 cloudflared、假鑰匙圈、不碰網路與真憑證；OS 工具與副設備 RPC 的界線）。
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w187ui" {
+            setvbuf(stdout, nil, _IOLBF, 0)
+            Task { @MainActor in
+                do { exit(try await DeviceFleetUIAcceptance.run() ? 0 : 1) }
+                catch { print("W187UI FAIL \(error)"); print("W187UI SUMMARY failures=1"); exit(1) }
+            }
+            NSApplication.shared.run()
+            return
+        }
         if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w183ui" {
             setvbuf(stdout, nil, _IOLBF, 0)
             Task { @MainActor in
@@ -572,6 +688,14 @@ enum SelfTest {
         #endif
         OSToolsAcceptance.runIfRequested()
         #if DEBUG  // primaryTransferChecks／deviceDispatchChecks 只在 DEBUG 編譯（見 extension 內 #if DEBUG）
+        if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w187fleet" {
+            do {
+                let root = try DeviceFleetAcceptance.isolatedRoot()
+                defer { if ProcessInfo.processInfo.environment["TATWO2_W187_TEST_ROOT"] == nil { try? FileManager.default.removeItem(at: root) } }
+                try DeviceFleetAcceptance.run(root: root); exit(0)
+            }
+            catch { print("W187FLEET FAIL \(error)"); print("W187FLEET SUMMARY failures=1"); exit(1) }
+        }
         if let root = ProcessInfo.processInfo.environment["TATWO2_W83_TEST_ROOT"] {
             do {
                 try primaryTransferChecks(root: URL(fileURLWithPath: root))
@@ -599,7 +723,16 @@ enum SelfTest {
         }
         #if DEBUG
         if ProcessInfo.processInfo.environment["TATWO2_SELFTEST"] == "w78" {
-            do { try deviceDispatchChecks(); print("W78TEST SUMMARY failures=0\nW78TEST ALL PASS"); exit(0) }
+            do {
+                if ProcessInfo.processInfo.environment["TATWO2_W78_TEST_ROOT"] == nil {
+                    let root = FileManager.default.temporaryDirectory.appendingPathComponent("w78-fixture-" + UUID().uuidString)
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    try Data("synthetic only\n".utf8).write(to: root.appendingPathComponent("owned-fixture"))
+                    setenv("TATWO2_W78_TEST_ROOT", root.path, 1)
+                }
+                unsetenv("TATWO2_DOCS_ROOT") // W78's document fixtures supply their own entry roots.
+                try deviceDispatchChecks(); print("W78TEST SUMMARY failures=0\nW78TEST ALL PASS"); exit(0)
+            }
             catch { print("W78TEST FAIL \(error)"); exit(1) }
         }
         if ProcessInfo.processInfo.environment["TATWO2_W78_TEST_ROOT"] != nil {
@@ -776,10 +909,10 @@ enum SelfTest {
         if ProcessInfo.processInfo.environment["TATWO2_LIVETEST"] == "1" { runLiveTest() }
         if ProcessInfo.processInfo.environment["TATWO2_COMPOSERTEST"] == "1" { runComposerTest(); return }
         if ProcessInfo.processInfo.environment["TATWO2_SOURCETEST"] == "1" { runSourceTest(); return }
-        if ProcessInfo.processInfo.environment["TATWO2_DISPATCHTEST"] == "1" { runDispatchTest(); return }
+        if ProcessInfo.processInfo.environment["TATWO2_DISPATCHTEST"] == "1" { runDispatchTest(); NSApplication.shared.run(); return }
         if ProcessInfo.processInfo.environment["TATWO2_BGTEST"] == "1" { runBackgroundTest(); return }
-        if ProcessInfo.processInfo.environment["TATWO2_RECLAIMTEST"] == "1" { runReclaimTest(); return }
-        if ProcessInfo.processInfo.environment["TATWO2_REMOTETEST"] == "1" { runRemoteTest(); return }
+        if ProcessInfo.processInfo.environment["TATWO2_RECLAIMTEST"] == "1" { runReclaimTest(); NSApplication.shared.run(); return }
+        if ProcessInfo.processInfo.environment["TATWO2_REMOTETEST"] == "1" { runRemoteTest(); NSApplication.shared.run(); return }
         if ProcessInfo.processInfo.environment["TATWO2_BINDTEST"] == "1" { runBindTest(); return }
         if ProcessInfo.processInfo.environment["TATWO2_GITHUBIMPORT"] == "1" { runGitHubImport(); return }
         if ProcessInfo.processInfo.environment["TATWO2_LOGINTEST"] == "1" { runLoginTest(); return }
@@ -2657,6 +2790,7 @@ extension SelfTest {
 extension SelfTest {
     /// TATWO2_RECLAIMTEST=1：驗手動回收會 stash 並保留分支，以及封存房間會自動回收。
     @MainActor static func runReclaimTest() {
+        Task { @MainActor in
         var env = ProcessInfo.processInfo.environment
         for key in [
             "TATWO_ULTRAWORK_EXPORT_WINDOW_SNAPSHOT",
@@ -2712,7 +2846,7 @@ extension SelfTest {
             exit(1)
         }
 
-        let first = model.dispatch(
+        let first = await model.dispatch(
             rooms: [RoomSpec(title: "手動回收", engine: "codex", model: nil, brief: "reclaim test")],
             parent: parentID).first
         guard let first, let firstID = UUID(uuidString: first.threadID) else {
@@ -2721,13 +2855,15 @@ extension SelfTest {
             exit(1)
         }
         model.stopDispatchRoom(firstID)
+        let firstStopDeadline = Date().addingTimeInterval(10)
+        while model.live?.isRunning(firstID) == true && Date() < firstStopDeadline { try? await Task.sleep(for: .milliseconds(50)) }
         check("工作樹建立", FileManager.default.fileExists(atPath: first.worktree), "path=\(first.worktree)")
         let dirtyPath = URL(fileURLWithPath: first.worktree).appendingPathComponent("未提交.txt").path
         try? Data("保留我\n".utf8).write(to: URL(fileURLWithPath: dirtyPath))
         check("寫入未提交檔", FileManager.default.fileExists(atPath: dirtyPath), "path=\(dirtyPath)")
 
         do {
-            let result = try model.reclaimRoom(firstID)
+            let result = try await model.reclaimRoom(firstID)
             check("手動回收工作樹", !FileManager.default.fileExists(atPath: first.worktree), "exists=\(FileManager.default.fileExists(atPath: first.worktree))")
             let stashList = git(["stash", "list"]).1.trimmingCharacters(in: .whitespacesAndNewlines)
             check("未提交內容進 stash", !stashList.isEmpty && result.stash != nil, "stash=\(result.stash ?? "nil") list=\(stashList)")
@@ -2739,7 +2875,7 @@ extension SelfTest {
             check("分支預設保留", false, "回收失敗")
         }
 
-        let second = model.dispatch(
+        let second = await model.dispatch(
             rooms: [RoomSpec(title: "封存回收", engine: "codex", model: nil, brief: "archive reclaim test")],
             parent: parentID).first
         guard let second, let secondID = UUID(uuidString: second.threadID) else {
@@ -2748,9 +2884,13 @@ extension SelfTest {
             exit(1)
         }
         model.stopDispatchRoom(secondID)
+        let secondStopDeadline = Date().addingTimeInterval(10)
+        while model.live?.isRunning(secondID) == true && Date() < secondStopDeadline { try? await Task.sleep(for: .milliseconds(50)) }
         check("第二工作樹建立", FileManager.default.fileExists(atPath: second.worktree), "path=\(second.worktree)")
         model.selectedThreadID = secondID
         model.archiveSelectedThread()
+        let reclaimDeadline = Date().addingTimeInterval(30)
+        while FileManager.default.fileExists(atPath: second.worktree) && Date() < reclaimDeadline { try? await Task.sleep(for: .milliseconds(50)) }
         check(
             "封存自動回收",
             model.live?.threadRecord(secondID)?.isArchived == true
@@ -2760,6 +2900,7 @@ extension SelfTest {
         print(failed ? "RECLAIMTEST FAILED" : "RECLAIMTEST ALL PASS")
         model.shutdownForContainerClose()
         exit(failed ? 1 : 0)
+        }
     }
 }
 
@@ -3251,7 +3392,7 @@ extension SelfTest {
         print("DISPATCHTEST UI PASS remote-return-block")
     }
 
-    @MainActor private static func runDispatchHygieneCases() throws {
+    @MainActor private static func runDispatchHygieneCases() async throws {
         func check(_ name: String, _ condition: Bool) throws {
             print("DISPATCHTEST HYGIENE \(condition ? "PASS" : "FAIL") \(name)")
             if !condition { throw DispatchGitFailure(message: name) }
@@ -3283,11 +3424,11 @@ extension SelfTest {
             let result = try git(args, cwd: root.path)
             guard result.status == 0 else { throw DispatchGitFailure(message: result.text) }
         }
-        let room = try ChatPageModel.prepareRoomWorktree(workdir: root.path, roomID: UUID().uuidString)
+        let room = try await DispatchGit.background { try ChatPageModel.prepareRoomWorktree(workdir: root.path, roomID: UUID().uuidString) }
         let exclude = root.appendingPathComponent(".git/info/exclude")
         let first = try String(contentsOf: exclude, encoding: .utf8)
         try check("exclude-entry", first.components(separatedBy: .newlines).contains(".tatwo2/"))
-        ChatPageModel.excludeRoomWorktrees(workdir: room)
+        try await DispatchGit.background { ChatPageModel.excludeRoomWorktrees(workdir: room) }
         try check("exclude-linked-worktree-idempotent", try String(contentsOf: exclude, encoding: .utf8) == first)
         let status = try git(["status", "--porcelain"], cwd: root.path)
         try check("main-repo-clean", status.status == 0 && status.text.isEmpty)
@@ -3305,9 +3446,10 @@ extension SelfTest {
     #endif
     /// TATWO2_DISPATCHTEST=1：無頭派 2 個房間（都用 codex），驗 dispatch_rooms → 各自 worktree 真的動工 → merge_reports 貼進主串。
     @MainActor static func runDispatchTest() {
+        Task { @MainActor in
         #if DEBUG
         if ProcessInfo.processInfo.environment["TATWO2_DISPATCH_HYGIENE_CASES"] == "1" {
-            do { try runDispatchHygieneCases(); exit(0) }
+            do { try await runDispatchHygieneCases(); exit(0) }
             catch { print("DISPATCHTEST HYGIENE FAIL \(error)"); exit(1) }
         }
         // Separate deterministic additions; no real AI calls or host repositories. DEBUG-only（release 不認這兩個旗標）。
@@ -3316,7 +3458,6 @@ extension SelfTest {
                 do { try await runDispatchUICases(); print("DISPATCHTEST UI PASS"); exit(0) }
                 catch { print("DISPATCHTEST UI FAIL \(error)"); exit(1) }
             }
-            NSApplication.shared.run()
             return
         }
         #endif
@@ -3350,7 +3491,7 @@ extension SelfTest {
             RoomSpec(title: "房間A", engine: "codex", model: "gpt-5.6-sol", brief: "在工作樹裡建立 hello-房間A.txt 寫入 ok 然後回報「完成」"),
             RoomSpec(title: "房間B", engine: "codex", model: "gpt-5.6-sol", brief: "在工作樹裡建立 hello-房間B.txt 寫入 ok 然後回報「完成」"),
         ]
-        let dispatched = model.dispatch(rooms: rooms, parent: parent)
+        let dispatched = await model.dispatch(rooms: rooms, parent: parent)
         guard dispatched.count == 2 else {
             print("DISPATCHTEST FAIL dispatch_rooms 沒回 2 個房間（回了 \(dispatched.count) 個）")
             model.shutdownForContainerClose(); exit(1)
@@ -3399,7 +3540,7 @@ extension SelfTest {
             try? await Task.sleep(for: .milliseconds(500))
             exit(allOK ? 0 : 1)
         }
-        NSApplication.shared.run()
+        }
     }
 }
 
@@ -3455,12 +3596,12 @@ extension SelfTest {
         model.prompt = "第一行\n/pl"
         check("/ 吃多行的最後一行", model.matchingSlashCommands.count == 2, "\(model.matchingSlashCommands.count) 筆")
 
-        // @ 提及（需要 issue 資料；沒有就只驗 query 解析）
-        model.prompt = "@"
+        // ! 提及（需要 issue 資料；沒有就只驗 query 解析）
+        model.prompt = "!"
         let q = model.issueAtMentionQuery
-        check("@ 觸發解析", q == "", "query=\(q ?? "nil")")
-        model.prompt = "@ 已經有空白"
-        check("@ 後有空白不觸發", model.issueAtMentionQuery == nil || model.issueAtMentionQuery == "",
+        check("! 觸發解析", q == "", "query=\(q ?? "nil")")
+        model.prompt = "! 已經有空白"
+        check("! 後有空白不觸發", model.issueAtMentionQuery == nil || model.issueAtMentionQuery == "",
               "query=\(model.issueAtMentionQuery ?? "nil")")
 
         // 打字重置高亮
@@ -3717,10 +3858,10 @@ extension SelfTest {
         try check("cancel-before-epoch-restores-normal-dispatch", try first.identity().transfer == nil
                   && second.identity().transfer == nil && first.identity().epoch == 7 && second.identity().epoch == 7)
         try first.beginTransfer(to: ids[1], signingName: "Synthetic Release")
-        try put(entries[1].noteDir.appendingPathComponent("nested/note.md"), "Mismatch")
+        try put(entries[1].constitution, "Mismatch")
         try check("hash-mismatch-keeps-epoch", rejects { try second.pullTransfer(from: peers[0]) })
         try check("hash-mismatch-no-partial-authority", try first.identity().epoch == 7 && second.identity().epoch == 7)
-        try put(entries[1].noteDir.appendingPathComponent("nested/note.md"), "Synthetic note\n")
+        try put(entries[1].constitution, "Synthetic constitution\n")
         loseReply = true
         try check("lost-reply-after-commit", rejects { try second.pullTransfer(from: peers[0]) })
         try check("old-primary-demoted-first", try first.identity().role == .secondary && first.identity().epoch == 8)
@@ -3775,7 +3916,7 @@ extension SelfTest {
         try pump(restarted, peers[0])
         try check("four-items-mirrored-complete", try first.identity().transfer?.complete == true && restarted.identity().transfer?.complete == true)
         let completed = try restarted.identity().transfer!
-        let host = NSHostingView(rootView: PrimaryTransferPanel(preview: try restarted.identity())
+        let host = NSHostingView(rootView: DeviceFlowTransferPanel(preview: try restarted.identity())
             .padding(24).frame(width: 760, height: 620).background(Color.white).environment(\.colorScheme, .light))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -4357,6 +4498,7 @@ extension SelfTest {
 
     /// TATWO2_REMOTETEST=1：用 localhost 驗 R3 Engines 同步、遠端 worktree、ssh sidecar 與 system/init。
     @MainActor static func runRemoteTest() {
+        Task { @MainActor in
         #if DEBUG
         if ProcessInfo.processInfo.environment["TATWO2_W72_TEST_ROOT"] != nil { runW72RemoteTest(); return }
         #endif
@@ -4513,9 +4655,9 @@ extension SelfTest {
                       let parentID = model.acceptanceNewThread(in: projectID, title: "主串") else { check("整鏈：建專案／主串", false, ""); throw RemoteEngineSyncError.fixtureBlocked("setup") }
                 // kind 反例：claude 遠端房間在 fixture 下必須 BLOCKED（dispatchChecked throw），不建房間
                 var chainKindBlocked = false
-                do { _ = try model.dispatchChecked(rooms: [RoomSpec(title: "claude 房", engine: "claude", model: nil, brief: "x", device: deviceID)], parent: parentID) } catch RemoteEngineSyncError.fixtureBlocked { chainKindBlocked = true } catch {}
+                do { _ = try await model.dispatchChecked(rooms: [RoomSpec(title: "claude 房", engine: "claude", model: nil, brief: "x", device: deviceID)], parent: parentID) } catch RemoteEngineSyncError.fixtureBlocked { chainKindBlocked = true } catch {}
                 check("整鏈：claude kind 在 fixture 下 dispatch 即 BLOCKED", chainKindBlocked, "")
-                let dispatched = try model.dispatchChecked(rooms: [RoomSpec(title: "遠端房間", engine: "codex", model: "gpt-5.6-sol", brief: "只回一個詞：乒", device: deviceID)], parent: parentID)
+                let dispatched = try await model.dispatchChecked(rooms: [RoomSpec(title: "遠端房間", engine: "codex", model: "gpt-5.6-sol", brief: "只回一個詞：乒", device: deviceID)], parent: parentID)
                 let room = dispatched.first
                 let roomThread = room.flatMap { UUID(uuidString: $0.threadID) }
                 let record = roomThread.flatMap { model.live?.threadRecord($0) }
@@ -4689,6 +4831,7 @@ extension SelfTest {
         print("REMOTETEST BLOCKED release build has no test fixture（不 ssh、不 rsync）")
         exit(1)
         #endif
+        }
     }
 }
 
@@ -4874,6 +5017,10 @@ extension SelfTest {
 
         func fakeHostReply(_ request: [String: Any], code: String, hostUser: String, hostKey: String,
                            signed: Bool) -> [String: Any] {
+            if let nonce = request["hello"] as? String {
+                guard signed, let key = DevicePairingAuth.key(code: code, nonce: nonce) else { return ["proof": "invalid"] }
+                return ["proof": DevicePairingAuth.mac(key: key, label: "host-proof", fields: [nonce])]
+            }
             let nonce = request["nonce"] as? String ?? ""
             var reply: [String: Any] = [
                 "ok": true, "deviceID": UUID().uuidString.lowercased(), "hostName": "Pairtest Fake Host",
@@ -4884,6 +5031,10 @@ extension SelfTest {
                     hostUser: hostUser, hostDeviceID: reply["hostDeviceID"] as? String, hostKeyFingerprint: hostKey,
                     clientKeyFingerprint: nil, reason: nil))
             }
+            if signed, let key = DevicePairingAuth.key(code: code, nonce: nonce),
+               let bytes = try? JSONSerialization.data(withJSONObject: reply),
+               let sealed = try? DevicePairingAuth.sealResponse(bytes, key: key),
+               let encrypted = try? JSONSerialization.jsonObject(with: sealed) as? [String: Any] { return encrypted }
             return reply
         }
         let fakeCode = "PAIR78"
@@ -4973,13 +5124,18 @@ extension SelfTest {
         let port = Int(UInt16(bigEndian: address.sin_port))
         Thread.detachNewThread {
             defer { close(fd) }
-            let client = accept(fd, nil, nil)
-            guard client >= 0 else { return }
-            defer { close(client) }
-            let request = readPairLine(client) ?? [:]
-            guard var reply = try? JSONSerialization.data(withJSONObject: respond(request)) else { return }
-            reply.append(0x0A)
-            _ = reply.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+            for _ in 0..<2 {
+                var pollFD = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+                guard poll(&pollFD, 1, 10_000) > 0 else { return }
+                let client = accept(fd, nil, nil)
+                guard client >= 0 else { return }
+                let request = readPairLine(client) ?? [:]
+                guard var reply = try? JSONSerialization.data(withJSONObject: respond(request)) else { close(client); return }
+                reply.append(0x0A)
+                _ = reply.withUnsafeBytes { write(client, $0.baseAddress, $0.count) }
+                close(client)
+                if request["hello"] == nil { break }
+            }
         }
         return port
     }
@@ -5249,6 +5405,7 @@ extension SelfTest {
         environment["TATWO2_SELFTEST"] = nil
         environment["TATWO2_LIVE_ROOT"] = liveRoot.path
         environment["TATWO2_LOGIN_FAKE_BIN"] = fakeBin.path
+        environment["TATWO2_LOGIN_TEST_ROOT"] = base.resolvingSymlinksInPath().path
         environment["TATWO2_LOGIN_SECURITY_SERVICE"] =
             "Claude Code-credentials-logintest-\(runID)"
         environment["TATWO2_OS_SOCKET"] = osSocket

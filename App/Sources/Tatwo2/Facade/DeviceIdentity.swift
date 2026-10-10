@@ -279,8 +279,13 @@ enum PrimaryTransferState {
         var previousTransferID: String?
         var revision: Int = 1
         var committed = false
+        var committedAt: Date? = nil
         var epochACKs: [String] = []
+        var beganAt: Date? = Date()
+        var skippedParticipants: [String]? = nil
+        var startedAt: Date { beganAt ?? .distantPast }
         var acknowledgedRevision: Int = 0
+        var localVerification: Bool? = nil
         var constitution = false
         var constitutionRevision = 0
         var sourceDeviceID: String
@@ -299,19 +304,16 @@ enum PrimaryTransferState {
         var targetEvidence: Evidence?
         var targetRoot: String?
 
-        var epochComplete: Bool { committed && Set(epochACKs).isSuperset(of: participants) }
-        var constitutionComplete: Bool {
-            constitution && constitutionRevision > 0 && acknowledgedRevision >= constitutionRevision
+        var epochComplete: Bool { committed && Set(epochACKs + (skippedParticipants ?? [])).isSuperset(of: participants) }
+        private func checkpointComplete(_ revision: Int) -> Bool {
+            revision > 0 && (localVerification == true || acknowledgedRevision >= revision)
         }
-        var brainComplete: Bool {
-            brain != .migrating && brainVerified && brainRevision > 0 && acknowledgedRevision >= brainRevision
-        }
-        var releaseComplete: Bool {
-            releaseChecked && release == .ready && releaseRevision > 0 && acknowledgedRevision >= releaseRevision
-        }
+        var constitutionComplete: Bool { constitution && checkpointComplete(constitutionRevision) }
+        var brainComplete: Bool { brain != .migrating && brainVerified && checkpointComplete(brainRevision) }
+        var releaseComplete: Bool { releaseChecked && release == .ready && checkpointComplete(releaseRevision) }
         var complete: Bool {
             epochComplete && constitutionComplete && brainComplete && releaseComplete
-                && acknowledgedRevision == revision
+                && (localVerification == true || acknowledgedRevision == revision)
         }
         var summary: String { complete ? "移交完成" : "移交未完成（epoch 成功不代表移交完成）" }
 
@@ -325,7 +327,10 @@ enum PrimaryTransferState {
                   participants.allSatisfy({ UUID(uuidString: $0) != nil }),
                   previousTransferID.map({ UUID(uuidString: $0) != nil }) ?? true,
                   Set(epochACKs).isSubset(of: participants),
+                  Set(skippedParticipants ?? []).isSubset(of: participants), !(skippedParticipants ?? []).contains(to),
+                  committed || (skippedParticipants ?? []).isEmpty,
                   committed || epochACKs.isEmpty,
+                  localVerification != true || (committed && constitution),
                   sourceDeviceID == (constitution ? to : from), sourceRoot.hasPrefix("/"),
                   hashes["os.md"] != nil, hashes["skillet.md"] != nil, hashes.count <= 512
             else { throw DeviceIdentityError.invalidIdentity }
@@ -335,7 +340,7 @@ enum PrimaryTransferState {
                         .allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
                     throw DeviceIdentityError.invalidIdentity
                 }
-                guard (path == "os.md" || path == "skillet.md" || path.hasPrefix("note/")),
+                guard (path == "os.md" || path == "skillet.md" || DeviceDispatch.optionalFiles.contains(path) || path.hasPrefix("note/")),
                       hash.count == 64, hash.allSatisfy({ $0.isHexDigit }) else {
                     throw DeviceIdentityError.invalidIdentity
                 }

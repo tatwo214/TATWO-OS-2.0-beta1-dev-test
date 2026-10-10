@@ -30,6 +30,10 @@ else
   mv "$OUT/tatwo2.app" "$OUT/TATWO OS.app"
 fi
 # --norsrc excludes AppleDouble without stripping approved candidate/ticket xattrs.
+[[ -x "$OUT/TATWO OS.app/Contents/Helpers/TatwoFleetGate" ]] || { echo 'Missing native fleet gate' >&2; exit 1; }
+# build-app signs this nested helper before the outer App; approved candidates
+# must already carry that signature (do not invalidate their notarization ticket).
+codesign --verify --strict "$OUT/TATWO OS.app/Contents/Helpers/TatwoFleetGate"
 codesign --verify --deep --strict "$OUT/TATWO OS.app"
 python3 -E scripts/package-release-gates.py candidate "$OUT/TATWO OS.app" "$VERSION"
 ditto -c -k --norsrc --keepParent "$OUT/TATWO OS.app" "$OUT/TATWO-OS.zip"

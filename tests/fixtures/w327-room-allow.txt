@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/fixtures/w327-aboutarea.mjs
+tests/w327-aboutarea.test.mjs
+tests/fixtures/w327-room-allow.txt

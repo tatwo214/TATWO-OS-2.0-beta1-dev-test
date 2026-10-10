@@ -1,0 +1,10 @@
+"TATWO OS Staging" ASN:0x0-0x2d1cd1a: 
+    bundleID="ai.tatwo.tatwo2.staging"
+    bundle path="/Users/fixture/tatwo-build/staging-app/TATWO OS Staging.app"
+    executable path="/Users/fixture/tatwo-build/staging-app/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging"
+    pid = 64593 token=[sess=100021 pid=64593 uid:501,501,501 g:20,20 pV:9052021] type="Foreground" flavor=2 Version="2.0.0-staging-b6673b7c" fileType="APPL" creator="????" Arch=ARM64 
+    coalition: 317820
+    launch time =  now-ish 2026/10/08 04:18:52 ( 0.728753 seconds ago )
+    checkin time = now-ish 2026/10/08 04:18:52 ( 0.704265 seconds ago )
+    launch to checkin time: 0.0244932 seconds
+

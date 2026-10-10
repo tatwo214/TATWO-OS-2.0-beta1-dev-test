@@ -1,0 +1,31 @@
+--- w295 ---
+W295 COUNTS updates=400 trustReads=1 policyReads=0 mainLoads=0 loads=0 mainJSON=0 JSON=200 coder=0 chatBodies=201 activityLines=1 hydratedBodies=201 workChanges=200 authorityUpdates=1 mode=browser preview=true
+W295 PASS Browser is visible throughout the measurement
+W295 PASS cold policy reads each input once; 200 updates reuse it
+W295 PASS 200 Browser updates and scroll events meet hot-path budgets
+W295 PASS 200 updates: activityLines <= 1; background work changes >= 200
+W295 OBSERVED hydratedBodies=201 authorityUnchanged=true probes=[(key: "ChatPage.body", value: 201), (key: "ChatPage.geometry", value: 201), (key: "RemoteOfflineMirror.activityLines", value: 1), (key: "TatwoHydratedPanelView.body", value: 201), (key: "TatwoModesIssuedAuthorityMonitor.revision", value: 1), (key: "authority.event.state", value: 2), (key: "authority.refreshSources.event", value: 1), (key: "presentation.6", value: 200)]
+W295 PASS offline sidebar keeps activity text
+W295 PASS wire fields and unchanged revision; JSON off main
+W295 PASS direct main caller still converts JSON and compares off main
+W295 DEVICE COUNTS reads=200 unchanged=0 changed=1
+W295 PASS 200 unchanged device reads publish zero changes; one edited list publishes once
+W295 PASS trust size edit invalidates even with unchanged mtime
+W295 PASS malformed trust retains fail-closed behavior
+W295 PASS missing trust retains standalone behavior
+W295 PASS external auth edit invalidates on next read
+W295 PASS external config creation invalidates on next read
+W295 PASS subscription remains usable with opt-out
+W295 PASS config edit immediately blocks API login
+W295 PASS settings toggle immediately permits engine
+W295 PASS stale snapshot does not overwrite; external CLI tabs preserved
+W295 PASS changed document persists and advances disk revision
+W295 PASS activity cache invalidates on mtime and size edits
+W295 PASS snapshot replacement and relative-time boundary refresh activity text
+W295 AUTHORITY revisions=1 hydratedBodies=1
+W295 PASS authorization file change recomputes mounted panel body once
+W295 SUMMARY failures=0
+--- w288 ---
+W288 SUMMARY checks=49 failures=0
+--- w292 ---
+W292 SUMMARY failures=0

@@ -327,8 +327,10 @@ extension ChatPageModel {
             cliRefreshTask = nil
         }
         // W177：ChatGPT 分頁關掉時，Pod 也收起來省記憶體（登入留著，再打開不用重登）。
-        if !spaces.allows(.chatgpt), ChatGPTTap.shared.pod.isRunning {
-            ChatGPTTap.shared.sleep()
+        if !ChatGPTWebSpace.isEnabled {
+            if !spaces.allows(.chatgpt), ChatGPTTap.shared.pod.isRunning {
+                ChatGPTTap.shared.sleep()
+            }
         }
         if !spaces.visibleModes.contains(mode) {
             mode = spaces.visibleModes.first ?? .bot

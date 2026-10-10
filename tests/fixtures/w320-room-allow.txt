@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/w319-installed-tilde.test.mjs
+tests/w320-installed-rowwhy.test.mjs
+tests/fixtures/w320-installed-rowwhy.mjs
+tests/fixtures/w320-room-allow.txt

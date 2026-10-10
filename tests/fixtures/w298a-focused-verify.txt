@@ -1,0 +1,17 @@
+BUILD W298a-aiupdate @ 2dcc0f65 (lock wait 0s)
+free+inactive 40.4GB
+swift build exit=0 seconds=26
+== node tests/w298a-ai-update.test.mjs tests/public-privacy.test.mjs
+✖ W61 exported tree passes safety scan and the exact personal-data grep (7058.608583ms)
+ℹ tests 16
+ℹ pass 15
+ℹ fail 1
+ℹ skipped 0
+✖ failing tests:
+✖ W61 exported tree passes safety scan and the exact personal-data grep (7058.608583ms)
+== selftest w298a
+PASS lines: 39
+W298A PASS defer preserves config and dispatch remains blocked
+W298A SUMMARY failures=0 passed=39
+selftest w298a exit=0
+DONE ~/tatwo-build/verify/W298a-aiupdate-121020

@@ -18,7 +18,7 @@ enum TatwoMemoryLock {
 /// 設定 › OS › 記憶 那一行（TatwoMemorySyncStatusRow）顯示的狀態。
 struct TatwoMemorySyncStatus: Equatable, Sendable {
     enum State: String, Sendable {
-        case starting, synced, offline, folderMissing, primaryFolderMissing, failed, held
+        case starting, synced, offline, folderMissing, primaryFolderMissing, failed, held, disabled
     }
 
     var state: State = .starting
@@ -31,7 +31,7 @@ struct TatwoMemorySyncStatus: Equatable, Sendable {
     var conflicts = 0
     /// 一句話的錯誤；沒有就是 nil。
     var error: String? = nil
-    /// 原始代碼（只放滑過提示，不放進那一行字）。
+    /// 原始代碼，供分類與 audit；畫面只顯示白話錯誤。
     var detail: String? = nil
     /// 先不套用的刪除有幾條（state == .held）；heldOutgoing＝這台刪的、先不送到主設備，否則＝另一台刪的、先不套用到這台。
     var held = 0
@@ -44,6 +44,7 @@ struct TatwoMemorySyncStatus: Equatable, Sendable {
         let both = conflicts > 0 ? "・兩版並存 \(conflicts) 條" : ""
         let waiting = pending > 0 ? "・待送 \(pending) 個變動" : ""
         switch state {
+        case .disabled: return ""
         case .starting: return "記憶同步準備中"
         case .folderMissing: return "記憶資料夾沒接上"
         case .primaryFolderMissing:
@@ -51,6 +52,9 @@ struct TatwoMemorySyncStatus: Equatable, Sendable {
         case .offline:
             return "連不上主設備" + (pending > 0 ? "・\(pending) 個變動先留在這台，連上再送" : "・下一輪再試")
         case .failed:
+            if detail == "rpc_parameters_too_large" || detail == "memory_bundle_too_large" {
+                return DeviceFleetReason.plain(DeviceDispatch.Failure(reason: detail!), context: .memory(pushing: false, offline: false))
+            }
             return "同步沒成功：" + (error ?? "原因不明") + "・下一輪再試"
         case .held:
             return heldOutgoing ? "這台刪了 \(held) 條記憶，先不送到主設備" : "另一台刪了 \(held) 條記憶，先不套用到這台"
@@ -267,11 +271,22 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
         }
         let paths = self.paths()
         let memory = paths.memory
+        let identity = try? dispatch.identity()
+        if identity?.role == .secondary {
+            do {
+                if let trust = try dispatch.fleet.trust() {
+                    guard trust.kind == .owner, let roster = try dispatch.fleet.current()?.roster,
+                          try roster.capabilities(from: trust.localID, to: trust.primaryID).contains("memory") else {
+                        return TatwoMemorySyncStatus(state: .disabled, isPrimary: false)
+                    }
+                }
+            } catch { return TatwoMemorySyncStatus(state: .disabled, isPrimary: false) }
+        }
         // 外接卷沒掛上、還沒接上記憶：安靜略過，不影響其他功能。
         guard FileManager.default.fileExists(atPath: memory.appendingPathComponent(".git").path) else {
             return TatwoMemorySyncStatus(state: .folderMissing, isPrimary: status.isPrimary)
         }
-        if let identity = try? dispatch.identity(), identity.role == .secondary {
+        if let identity, identity.role == .secondary {
             return secondaryRound(paths, identity: identity, reason: reason)
         }
         return primaryRound(memory)
@@ -301,9 +316,11 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
             next.conflicts = conflictCount(memory)
             return next
         }
-        func failed(_ error: Error) -> TatwoMemorySyncStatus {
-            Self.isTransport(error) ? finish(.offline, detail: Self.raw(error))
-                : finish(.failed, Self.short(error), detail: Self.raw(error))
+        func failed(_ error: Error, pushing: Bool = false) -> TatwoMemorySyncStatus {
+            dispatch.fleet.audit(Self.raw(error))
+            if Self.raw(error) == "primary_transferred" { return finish(.disabled) }
+            return Self.isTransport(error) ? finish(.offline, detail: Self.raw(error))
+                : finish(.failed, Self.short(error, pushing: pushing), detail: Self.raw(error))
         }
         // 1. 先 commit 這台的變動（Claude 可能正在寫）。
         let before = revParse(memory, "HEAD")
@@ -324,9 +341,9 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
             return finish(.failed, "主設備回的記憶位置看不懂")
         }
         guard target["available"] as? Bool == true else { return finish(.primaryFolderMissing) }
-        // 3. 用 pin 住主機金鑰的 SSH 拉主設備的記憶（主設備已經回過話，拉不到就不是離線）。
+        // 3. 用 pin 住主機金鑰的 SSH 拉主設備的記憶；問完位置後也可能失聯。
         do { try fetchPrimary(paths, repository: repository) } catch {
-            return finish(.failed, "拉不到主設備的記憶", detail: Self.raw(error))
+            return failed(error)
         }
         guard let primaryTip = revParse(memory, Self.primaryRef) else { return finish(.failed, "拉不到主設備的記憶") }
         if let problem = treeProblem(memory, commit: primaryTip, reference: committed) {
@@ -374,8 +391,7 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
             }
             let ref = Self.inboxRef(identity.deviceID)
             do { try pushPrimary(paths, repository: repository, commit: outgoing, ref: ref) } catch {
-                return Self.isTransport(error) ? finish(.offline, detail: Self.raw(error))
-                    : finish(.failed, "送到主設備沒成功", detail: Self.raw(error))
+                return failed(error, pushing: true)
             }
             var payload: [String: Any] = ["ref": ref, "commit": outgoing]
             if massive { payload["allowRemoving"] = removing }
@@ -407,6 +423,19 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
         case "memory_sync_target":
             guard payload.isEmpty else { throw Failure(reason: "invalid_memory_sync_target") }
             return ["repository": memory.path, "available": available]
+        case "memory_sync_export":
+            guard payload.isEmpty || Set(payload.keys) == ["base"], (try? dispatch.identity().role) == .primary, available,
+                  let commit = revParse(memory, "HEAD") else { throw Failure(reason: "memory_bundle_unavailable") }
+            if let raw = payload["base"] {
+                guard let base = raw as? String, DeviceStatusReader.validCommit(base) else { throw Failure(reason: "invalid_memory_bundle") }
+            }
+            return try exportBundle(memory: memory, commit: commit, base: payload["base"] as? String)
+        case "memory_sync_import":
+            guard Set(payload.keys) == ["bundle", "commit", "ref"],
+                  let ref = payload["ref"] as? String, ref == Self.inboxRef(sender),
+                  (try? dispatch.identity().role) == .primary, available else { throw Failure(reason: "invalid_memory_bundle") }
+            try importBundle(payload, memory: memory, ref: ref)
+            return ["received": true]
         case "memory_sync_receive":
             // allowRemoving：送件那台的使用者確認過的刪除（一次拿掉很多檔時才帶）。
             let keys = Set(payload.keys)
@@ -644,27 +673,107 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
 
     private func fetchPrimary(_ paths: EngineMemoryPaths, repository: String) throws {
         if let fetchOverride { return try fetchOverride(paths, repository) }
-        let fetched = EngineMemoryLinks.withPinnedPrimaryGit(paths: paths, environment: dispatch.environment) { pinned -> Bool? in
-            let result = EngineMemoryLinks.run("/usr/bin/git", ["-c", "core.hooksPath=/dev/null", "fetch", "-q", "--no-tags", "--",
-                                                                "\(pinned.destination):\(repository)", "+HEAD:" + Self.primaryRef],
-                                               in: paths.memory, environment: pinned.environment, timeout: 90)
-            return result.status == 0 ? true : nil
+        let peer = try dispatch.primary()
+        if try RemoteHostLink(environment: dispatch.environment).requiresFleetGate(peer) {
+            let base = revParse(paths.memory, Self.primaryRef)
+            let packet = try dispatch.callPrimary(method: "memory_sync_export", payload: base.map { ["base": $0] } ?? [:])
+            try importBundle(packet, memory: paths.memory, ref: Self.primaryRef)
+            return
         }
-        guard fetched == true else { throw Failure(reason: "fetch_failed") }
+        var failures: [Error] = []
+        let fetched = EngineMemoryLinks.withPinnedPrimaryGit(paths: paths, environment: dispatch.environment) { pinned -> Bool? in
+            let arguments = ["-c", "core.hooksPath=/dev/null", "fetch", "-q", "--no-tags", "--", "\(pinned.destination):\(repository)", "+HEAD:" + Self.primaryRef]
+            #if DEBUG
+            let result = fixtureFetchGit?(arguments, pinned.environment) ?? EngineMemoryLinks.run("/usr/bin/git", arguments, in: paths.memory, environment: pinned.environment, timeout: 90, captureDiagnostics: true)
+            #else
+            let result = EngineMemoryLinks.run("/usr/bin/git", arguments, in: paths.memory, environment: pinned.environment, timeout: 90, captureDiagnostics: true)
+            #endif
+            if result.status == 0 { return true }
+            // git exits 128 after an SSH failure; only explicit SSH network diagnostics prove offline.
+            failures.append(DeviceFleetGate.isSSHUnreachable(status: 255, diagnostics: result.output)
+                ? DeviceFleetGate.CallError.unreachable : Failure(reason: "fetch_failed"))
+            return nil
+        }
+        guard fetched == true else { throw DeviceFleetGate.rpcFailure(failures.isEmpty ? [Failure(reason: "fetch_failed")] : failures) }
     }
 
     /// 跟 DeviceDispatch.pushSubmission 同一套：同一條 pin 住主機金鑰的連線先問位置，再只推這個 commit 到收件分支。
     /// 問位置那一下自己簽章、自己送：包在 serializedRPC 裡，跟其他對主設備的簽章呼叫排成一列（序號才不會被當成重送）。
+    #if DEBUG
+    var fixturePushLink: (() -> RemoteHostLink)?
+    var fixtureFetchGit: (([String], [String: String]) -> (status: Int32, output: String))?
+    #endif
     private func pushPrimary(_ paths: EngineMemoryPaths, repository: String, commit: String, ref: String) throws {
         if let pushOverride { return try pushOverride(paths, repository, commit, ref) }
         let peer = try dispatch.primary()
-        let link = RemoteHostLink(environment: dispatch.environment)
-        let target = try dispatch.serializedRPC { () throws -> [String: Any] in
-            try link.callPinned(device: peer, method: "memory_sync_target",
-                                params: dispatch.signed(method: "memory_sync_target", payload: [:]))
-        }
+        var link = RemoteHostLink(environment: dispatch.environment)
+        #if DEBUG
+        link = fixturePushLink?() ?? link
+        #endif
+        let target = try dispatch.callPrimary(method: "memory_sync_target", payload: [:])
         guard target["repository"] as? String == repository else { throw Failure(reason: "primary_memory_moved") }
+        if try link.requiresFleetGate(peer) {
+            // This exact tip was fetched and authenticated in the same round. Never
+            // exclude an unconfirmed local commit merely to make a smaller packet.
+            var packet = try exportBundle(memory: paths.memory, commit: commit, base: revParse(paths.memory, Self.primaryRef)); packet["ref"] = ref
+            _ = try dispatch.callPrimary(method: "memory_sync_import", payload: packet)
+            return
+        }
         try link.pushPinned(device: peer, repository: repository, localRepository: paths.memory, commit: commit, ref: ref)
+    }
+
+    /// Restricted rows exchange one bounded Git bundle through authenticated memory RPC.
+    /// No remote command, repository path or arbitrary ref is supplied by a peer.
+    private func exportBundle(memory: URL, commit: String, base: String? = nil) throws -> [String: Any] {
+        let verifiedBase = base.flatMap { DeviceStatusReader.validCommit($0) && isAncestor(memory, $0, of: commit) ? $0 : nil }
+        if verifiedBase == commit { return ["unchanged": true, "commit": commit] }
+        guard DeviceStatusReader.validCommit(commit), treeProblem(memory, commit: commit, reference: verifiedBase) == nil else {
+            throw Failure(reason: "invalid_memory_bundle_tree")
+        }
+        return try TatwoMemoryLock.run {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("memory-bundle-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let file = folder.appendingPathComponent("memory.bundle"), ref = "refs/tatwo/export/" + UUID().uuidString
+            guard git(["update-ref", ref, commit], in: memory).status == 0 else { throw Failure(reason: "memory_bundle_export_failed") }
+            defer { _ = git(["update-ref", "-d", ref], in: memory) }
+            let exclusions = verifiedBase.map { ["^" + $0] } ?? []
+            guard git(["bundle", "create", file.path, ref] + exclusions, in: memory).status == 0 else { throw Failure(reason: "memory_bundle_export_failed") }
+            guard let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+                  size <= 2 * 1024 * 1024 else { throw Failure(reason: "memory_bundle_too_large") }
+            let bytes = try DeviceDispatchSafeFile.read(file, limit: 2 * 1024 * 1024)
+            return ["bundle": bytes.base64EncodedString(), "commit": commit]
+        }
+    }
+    private func importBundle(_ packet: [String: Any], memory: URL, ref: String) throws {
+        if packet["unchanged"] as? Bool == true {
+            guard Set(packet.keys) == ["unchanged", "commit"], let commit = packet["commit"] as? String,
+                  DeviceStatusReader.validCommit(commit), revParse(memory, ref) == commit else { throw Failure(reason: "invalid_memory_bundle") }
+            return
+        }
+        guard let commit = packet["commit"] as? String, DeviceStatusReader.validCommit(commit),
+              let encoded = packet["bundle"] as? String, encoded.utf8.count <= 3 * 1024 * 1024,
+              let bytes = Data(base64Encoded: encoded), !bytes.isEmpty, bytes.count <= 2 * 1024 * 1024 else {
+            throw Failure(reason: "invalid_memory_bundle")
+        }
+        try TatwoMemoryLock.run {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("memory-bundle-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let file = folder.appendingPathComponent("memory.bundle")
+            try bytes.write(to: file)
+            let heads = git(["bundle", "list-heads", file.path], in: memory)
+            let fields = heads.text.split(whereSeparator: \.isWhitespace)
+            guard heads.status == 0, fields.count == 2, fields[0] == commit,
+                  fields[1].hasPrefix("refs/tatwo/export/"), UUID(uuidString: String(fields[1].dropFirst("refs/tatwo/export/".count))) != nil,
+                  git(["bundle", "verify", file.path], in: memory).status == 0 else { throw Failure(reason: "invalid_memory_bundle") }
+            let quarantine = "refs/tatwo/quarantine/" + UUID().uuidString
+            defer { _ = git(["update-ref", "-d", quarantine], in: memory) }
+            guard git(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--", file.path, "+" + fields[1] + ":" + quarantine], in: memory).status == 0,
+                  revParse(memory, quarantine) == commit,
+                  treeProblem(memory, commit: commit, reference: revParse(memory, "HEAD")) == nil,
+                  git(["update-ref", ref, commit], in: memory).status == 0 else { throw Failure(reason: "invalid_memory_bundle_tree") }
+        }
     }
 
     // MARK: git 小工具（不在主執行緒跑；hooks 關掉；作者固定 TATWO OS）
@@ -863,61 +972,23 @@ final class TatwoMemorySyncEngine: @unchecked Sendable {
 
     /// 連線本身不通（SSH 隧道、socket、逾時、沒有可用的位址）才算離線；主設備回了話的錯誤不算。
     static func isTransport(_ error: Error) -> Bool {
+        if let gate = error as? DeviceFleetGate.CallError { return gate == .unreachable || gate == .appUnavailable }
         guard let link = error as? RemoteHostLinkError else { return false }
-        if case .remoteError(let detail) = link { return detail == "no_active_endpoints" }
-        return true
+        switch link {
+        case .remoteError(let detail): return detail == "no_active_endpoints"
+        case .invalidResponse, .socketPathTooLong: return false
+        default: return true
+        }
     }
 
-    /// 主設備或這台回的英文代碼 → 白話中文。
-    static let plainReasons: [String: String] = [
-        "caller_not_trusted": "主設備的 App 還沒更新，不認得記憶同步",
-        "unsupported_method": "主設備的 App 還沒更新，不認得記憶同步",
-        "unknown_method": "主設備的 App 還沒更新，不認得記憶同步",
-        "method_not_found": "主設備的 App 還沒更新，不認得記憶同步",
-        "unknown_memory_sync_method": "主設備的 App 還沒更新，不認得記憶同步",
-        "invalid_memory_sync_receipt": "主設備看不懂這次送的記憶（兩台的 App 版本可能不同）",
-        "invalid_memory_sync_target": "主設備看不懂這次的請求（兩台的 App 版本可能不同）",
-        "branch_not_received": "主設備沒收到這次送的記憶，下一輪重送",
-        "not_primary": "對方已經不是主設備",
-        "untrusted_rpc_sender": "主設備不認得這台的簽章，要重新配對",
-        "revoked_rpc_key": "這台的配對金鑰在主設備被撤銷了",
-        "invalid_ssh_proof": "主設備驗不過這台的簽章",
-        "stale_epoch_or_replayed_sequence": "主設備剛收過這台較新的請求，下一輪再送",
-        "paired_ssh_signing_unavailable": "這台的配對金鑰簽不了名",
-        "authority_unknown": "這台還不知道誰是主設備",
-        "primary_not_paired": "還沒跟主設備配對",
-        "paired_host_key_not_found": "找不到配對時記下的主設備金鑰，要重新配對",
-        "pairing_identity_changed": "主設備的配對資料變了，要重新配對",
-        "primary_memory_moved": "主設備的記憶資料夾換了位置，下一輪重來",
-        "branch_push_failed": "送到主設備沒成功",
-        "fetch_failed": "拉不到主設備的記憶",
-    ]
-
-    /// 錯誤的原始字樣（只給滑過提示）。
+    /// 錯誤的原始字樣，只供分類與 audit。
     static func raw(_ error: Error) -> String {
-        (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        DeviceFleetReason.code(error) ?? String(describing: error)
     }
 
     /// 錯誤變成一句短的白話：主設備回的中文原因直接用；英文代碼換成中文；`Failure(reason: "…")` 這種型別字樣拿掉。
-    static func short(_ error: Error) -> String {
-        if isTransport(error) { return "連不上主設備" }
-        var text = raw(error).trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("remote_error: ") { text = String(text.dropFirst("remote_error: ".count)) }
-        text = unwrapped(text)
-        if let plain = plainReasons[text] { return plain }
-        guard text.unicodeScalars.contains(where: { $0.value >= 0x4E00 && $0.value <= 0x9FFF }) else {
-            return "主設備沒收這次的記憶（原因不明）"
-        }
-        return text.count > 60 ? String(text.prefix(60)) + "…" : text
-    }
-
-    /// 別的型別（例如 DeviceDispatch.Failure）經 String(describing:) 變成 `Failure(reason: "…")`：只留引號裡那句。
-    static func unwrapped(_ text: String) -> String {
-        guard let range = text.range(of: #"^[A-Za-z]*Failure\(reason: "(.*)"\)$"#, options: .regularExpression),
-              range == text.startIndex..<text.endIndex,
-              let open = text.firstIndex(of: "\"") else { return text }
-        let inner = text[text.index(after: open)..<text.index(text.endIndex, offsetBy: -2)]
-        return inner.replacingOccurrences(of: "\\\"", with: "\"").replacingOccurrences(of: "\\\\", with: "\\")
+    static func short(_ error: Error, pushing: Bool = false) -> String {
+        DeviceFleetReason.plain(error, context: .memory(pushing: pushing, offline: isTransport(error)))
     }
 
     /// 主設備收件時的錯誤：中文的話用主設備的角度說（副設備會原樣顯示，才不會以為是自己的檔）。

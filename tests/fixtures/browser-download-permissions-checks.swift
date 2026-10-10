@@ -134,6 +134,32 @@ struct BrowserActorPolicy {
         precondition(store.downloads.count == 1 && store.downloads[0].id == "pending")
         store.update(event: event("finished", "completed"), controls: controls)
         precondition(store.downloads.count == 1, "hidden terminal entries must stay hidden")
+        // W268: a completion is unread only once and history alone never lights the badge.
+        precondition(restored.unreadCompletions.isEmpty && restored.feedback == nil)
+        let feedbackStore = BrowserDownloadStore(storageURL: nil)
+        var publications = 0
+        let observation = feedbackStore.$downloads.sink { _ in publications += 1 }
+        feedbackStore.update(event: event("one", "starting", received: 0), controls: controls)
+        feedbackStore.update(event: event("one", "downloading", received: 256), controls: controls)
+        for value in 257...512 { feedbackStore.update(event: event("one", "downloading", received: Int64(value)), controls: controls) }
+        precondition(publications == 3, "progress burst must be coalesced")
+        try! await Task.sleep(for: .milliseconds(130))
+        precondition(feedbackStore.downloads[0].received == 512 && publications == 4, "last progress must flush")
+        feedbackStore.update(event: event("two", "starting", received: 1024), controls: controls)
+        precondition(feedbackStore.feedbackID == "two" && feedbackStore.active.count == 2)
+        precondition(feedbackStore.aggregateProgress == 0.375, "aggregate weights bytes across downloads")
+        var unknown = event("two", "downloading", received: 1024); unknown["total"] = -1
+        feedbackStore.update(event: unknown, controls: controls)
+        precondition(feedbackStore.aggregateProgress == nil, "one unknown total makes the aggregate indeterminate")
+        feedbackStore.update(event: event("one", "completed", received: 2048), controls: controls)
+        precondition(feedbackStore.unreadCompletions == ["one"] && feedbackStore.completionID == "one")
+        feedbackStore.markDownloadsSeen(); precondition(feedbackStore.unreadCompletions.isEmpty)
+        feedbackStore.update(event: event("one", "completed", received: 2048), controls: controls)
+        precondition(feedbackStore.unreadCompletions.isEmpty, "duplicate completion is not new unread work")
+        feedbackStore.dismissFeedback("one"); precondition(feedbackStore.feedbackID == "two")
+        feedbackStore.dismissFeedback("two"); precondition(feedbackStore.feedback == nil)
+        observation.cancel()
+        print("PASS: W268 byte-weighted aggregate, unknown total, 10Hz burst coalescing, latest card, unread completion and seen/dismiss lifecycle")
         let attributes = try! FileManager.default.attributesOfItem(atPath: history.path)
         precondition((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
         let closingStore = BrowserDownloadStore(storageURL: nil)
@@ -154,6 +180,30 @@ struct BrowserActorPolicy {
         precondition(closingStore.downloads[0].state == .cancelled)
         closingStore.retry(closingStore.downloads[0])
         precondition(!closingStore.canRetry(closingStore.downloads[0]), "closed profile owner must not be replaced by another browser")
+        let revealStore = BrowserDownloadStore(storageURL: nil)
+        let hidden = directory.appendingPathComponent(".tatwo-dl-fixture")
+        try! FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        let retained = hidden.appendingPathComponent("fixture.bin")
+        try! Data("retained download".utf8).write(to: retained, options: .withoutOverwriting)
+        for state in ["starting", "downloading", "paused", "cancelled", "completed", "failed"] {
+            var retainedEvent = event("reveal-" + state, state)
+            retainedEvent["path"] = retained.path
+            revealStore.update(event: retainedEvent, controls: nil)
+            precondition(revealStore.revealURL(revealStore.downloads[0]) == (["completed", "failed"].contains(state) ? retained : nil))
+        }
+        let failed = revealStore.downloads[0]
+        precondition(revealStore.feedback == failed && revealStore.revealURL(failed) == retained,
+                     "failed card and list must select the actual hidden file, not the visible reservation")
+        try! FileManager.default.moveItem(at: retained, to: directory.appendingPathComponent("removed-retained.bin"))
+        precondition(revealStore.revealURL(failed) == nil, "missing failed file must remove Finder action")
+        precondition(revealStore.revealURL(revealStore.downloads.first { $0.done }!) == nil,
+                     "missing completed file must remove Finder action")
+        var missing = event("network-missing", "failed")
+        missing["path"] = directory.appendingPathComponent("absent.bin").path
+        revealStore.update(event: missing, controls: nil)
+        precondition(revealStore.revealURL(revealStore.downloads[0]) == nil,
+                     "network interruption without a file must have no Finder action")
+        print("PASS: W281d Finder selects retained hidden file; active/cancelled and missing failed/completed files have no Finder action")
         print("PASS: consent coalescing, allow cache, denial retry, six download states, controls, late callbacks, history privacy, restart ownership, clear/history permissions")
     }
 }

@@ -7,8 +7,9 @@ struct CoderTurnProjection {
     init(_ source: [ChatTranscriptDisplayItem], messages: [ChatMessage], isRunning: Bool = false) {
         var turns: [String: String] = [:], current = "legacy"
         for message in messages {
-            if message.role == .user { current = message.turnID ?? message.id }
-            turns[message.id] = message.turnID ?? current
+            let recorded = message.turnID.flatMap { $0.hasPrefix("group-read:") ? nil : $0 }
+            if message.role == .user { current = recorded ?? message.id }
+            turns[message.id] = recorded ?? current
         }
         func turn(_ item: ChatTranscriptDisplayItem) -> String {
             switch item {

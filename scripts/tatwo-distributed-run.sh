@@ -19,6 +19,8 @@
 #   --require-matching-toolchain = strict (mismatch → overall FAIL)
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tatwo-ssh-pins.sh"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
@@ -488,7 +490,7 @@ run_ssh_shard() {
   fi
 
   # scp filter list (T1 step)
-  "$SCP_CMD" -q "$filters_file" "${uh}:${remote_filters}"
+  tatwo_pinned_run "$uh" "$SCP_CMD" -q "$filters_file" "${uh}:${remote_filters}"
 
   # PATH correction proven in dual-machine / T1: non-login SSH lacks brew/node paths.
   # shellcheck disable=SC2089
@@ -541,7 +543,7 @@ REMOTE
 )
 
   # Launch nohup-equivalent: remote background job; do not wait for tests.
-  "$SSH_CMD" "$uh" "nohup bash -c $(printf '%q' "$remote_cmd") >/dev/null 2>&1 & echo launched"
+  tatwo_pinned_run "$uh" "$SSH_CMD" "$uh" "nohup bash -c $(printf '%q' "$remote_cmd") >/dev/null 2>&1 & echo launched"
   printf '%s\n' "$remote_log" >"$WORK_ROOT/meta/shard-${index}.remote_log_path"
   printf '%s\n' "$uh" >"$WORK_ROOT/meta/shard-${index}.userhost"
 }
@@ -590,8 +592,8 @@ poll_remote_done() {
   remote_log="$(cat "$WORK_ROOT/meta/shard-${index}.remote_log_path")"
 
   while (( elapsed <= POLL_TIMEOUT )); do
-    if "$SSH_CMD" "$uh" "grep -E '^RC=[0-9]+\$' $(printf '%q' "$remote_log") >/dev/null 2>&1"; then
-      "$SCP_CMD" -q "${uh}:${remote_log}" "$local_log"
+    if tatwo_pinned_run "$uh" "$SSH_CMD" "$uh" "grep -E '^RC=[0-9]+\$' $(printf '%q' "$remote_log") >/dev/null 2>&1"; then
+      tatwo_pinned_run "$uh" "$SCP_CMD" -q "${uh}:${remote_log}" "$local_log"
       return 0
     fi
     sleep "$POLL_INTERVAL"

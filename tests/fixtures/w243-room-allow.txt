@@ -1,0 +1,15 @@
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/GroupCoderBridge.swift
+App/Sources/Tatwo2/Facade/TapProjectMap.swift
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+App/Sources/Tatwo2/Chat/ChatComposerSuggestionCatalog.swift
+App/Sources/Tatwo2/Pets/UI/PetsViewModel.swift
+App/Sources/Tatwo2/Pets/UI/PetsRootView.swift
+App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift
+App/Sources/Tatwo2/Chat/ChatPage+Collaboration.swift
+App/Sources/Tatwo2/Facade/OS1Stubs.swift
+App/Sources/Tatwo2/Facade/W243UXAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+App/Sources/Tatwo2/Chat/W236SigilsAcceptance.swift
+tests/w243-ux.test.mjs
+tests/fixtures/w243-room-allow.txt

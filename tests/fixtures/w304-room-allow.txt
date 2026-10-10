@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+tests/fixtures/w294-plugins-page.mjs
+tests/fixtures/w304-pluginsettings-page.mjs
+tests/fixtures/w304-room-allow.txt
+tests/w304-pluginsettings.test.mjs

@@ -578,6 +578,9 @@ struct TatwoComposerModeCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(row.id.hasPrefix("role-") ? "ultrawork-role-model-picker" : "tatwo.composer.mode.models")
+        .onAppear {
+            if row.options.contains(where: { $0.brand == .chatgptTap }) { ChatGPTTapModelObservation.current?.refreshIfNeeded() }
+        }
     }
 
     private func listRow(_ option: TatwoComposerMode.ModelOption, row: TatwoComposerMode.ModelRow, keyed: Bool) -> some View {

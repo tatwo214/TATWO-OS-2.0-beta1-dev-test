@@ -68,7 +68,7 @@ test('no offline-cache file I/O on the main thread: one serial queue, the mirror
   assert.match(cache, /static var mainThreadIOCount: Int/);
 });
 
-test('clearing is archive-not-delete: the device folder goes to the Trash (restorable); self-test never touches the real Trash', () => {
+test('device removal archives offline copies; settings has no clear-copy button', () => {
   const cache = read('Facade/RemoteOfflineCache.swift');
   const clear = slice(cache, 'func clear(deviceID: String) throws -> Bool', '\n    }\n');
   assert.match(clear, /FileManager\.default\.trashItem\(at: target, resultingItemURL: nil\)/);
@@ -80,13 +80,9 @@ test('clearing is archive-not-delete: the device folder goes to the Trash (resto
   assert.match(card, /RemoteOfflineCacheRow\(model: model, device: device\)   \/\/ W182 R4/);
   const view = read('New/RemoteOfflineThreadView.swift');
   const row = slice(view, 'struct RemoteOfflineCacheRow: View', '\n}\n');
-  assert.match(row, /OSChipButton\(title: "清除這台的離線副本"\)/);
-  // In-card confirmation row with glass chips (W179 UI), no system dialog, no blue buttons.
-  assert.match(row, /if confirming \{/);
-  assert.match(row, /OSChipButton\(title: "取消"\) \{ confirming = false \}/);
-  assert.match(row, /OSChipButton\(title: "清除"\) \{/);
-  assert.match(row, /\.chatLiquidSection\(cornerRadius: 12\)/);
-  assert.match(row, /移到垃圾桶（可以放回）/);
+  assert.doesNotMatch(row, /清除這台的離線副本|confirming|offlineCache\.(clear|confirm)|OSChipButton/);
+  assert.match(row, /Text\(usage\)/);
+  assert.doesNotMatch(read('Facade/ChatPageModel+OfflineContinue.swift'), /func clearRemoteOfflineCache/);
   assert.doesNotMatch(code(view), /confirmationDialog|NSAlert|\.alert\(|borderedProminent|\.blue\b|accentColor/);
 });
 
@@ -215,7 +211,7 @@ test('the first message carries the context like E3 seedPrompt (data, not instru
   const engine = read('Facade/ChatLiveEngine.swift');
   const send = slice(engine, '@discardableResult func send(threadID: UUID, text: String, model: String?, engine: ClaudeSidecar.Kind = .claude', 'func savePastedAttachment(');
   // After E3's imported seed and the D3 engine-switch summary (both untouched), only when neither applied.
-  assert.match(send, /if outgoing == engineText,   \/\/ W182 R4[^\n]*\n\s*let seeded = offlineCopySeed\(threadID: threadID, engine: engine, userText: engineText, currentTurn: turn\) \{\s*outgoing = seeded\s*\}\s*(?:if let seeded = AssistantOfflineSeed\.take[^\n]*\n\s*if outgoing == engineText, let caughtUp[^\n]*\n\s*outgoing = caughtUp[^\n]*\n\s*\}\s*)?if let planBriefing/);   // W182 R5 的兩段接在後面
+  assert.match(send, /if outgoing == engineText,   \/\/ W182 R4[^\n]*\n\s*let seeded = offlineCopySeed\(threadID: threadID, engine: engine, userText: engineText, currentTurn: turn\) \{\s*outgoing = seeded\s*\}\s*(?:if let seeded = AssistantOfflineSeed\.take[^\n]*\n\s*if outgoing == engineText, let caughtUp[^\n]*\n\s*outgoing = caughtUp[^\n]*\n\s*\}\s*)?(?:if let personality = PetPersonality\.turnPrompt[^\n]*\n\s*)?if let planBriefing/);   // W182 R5 的兩段接在後面
   assert.ok(send.indexOf('importedSeed(') < send.indexOf('offlineCopySeed('));
   const file = read('Facade/ChatPageModel+OfflineContinue.swift');
   const seed = slice(file, 'func offlineCopySeed(threadID: UUID', '\n    }\n');
@@ -287,7 +283,17 @@ test('review fixes: LRU by last read, evicted threads written back, slim documen
   assert.match(helper, /session\.offlineMirror\.retire\(completion: report\)/);
   assert.match(helper, /cache\.run\(\{ cache in Result \{ try cache\.clear\(deviceID: deviceID\) \} \}, then: report\)/);
   assert.match(helper, /離線副本也移到垃圾桶了（可以放回）/);
-  assert.match(read('New/DevicesCard.swift'), /OSChipButton\(title: "移除"\)[^\n]*\n\s*\.help\("[^"]*離線副本一起移到垃圾桶（可以放回）"\)   \/\/ W182 R4/);
+  // W187 moves removal into a physical DM preview; keep disclosure before confirmation,
+  // and verify the revocation path retires the mirror instead of only stopping SSH.
+  { const flow = read('DM/DeviceFlowSession.swift'); const loop = flow.slice(flow.indexOf('for id in after.revoked where !before.revoked.contains(id) {'));
+    const revokeAt = loop.indexOf('撤銷設備：'), copyAt = loop.indexOf('」存在這台的離線副本一起移到垃圾桶（可以放回）');
+    assert.ok(revokeAt > 0 && copyAt > revokeAt && copyAt < loop.indexOf('func changed'), 'revoke preview names the device and lists its offline copy after the revoke line'); }
+  assert.match(read('New/DeviceFlowCards.swift'), /ForEach\(Array\(session\.previewLines\.enumerated\(\)\)[\s\S]*action\("確認", primary: true\) \{ await session\.confirmFromCard\(\$0\) \}/);
+  const session = read('Facade/RemoteDeviceSession.swift');
+  assert.match(session, /DeviceFleetConnections\.onRevoke\(device\.id, scope: scope\) \{ \[weak self\] in\s*Task \{ @MainActor in\s*self\?\.retireRevokedOfflineCache\(\)/, 'offline copy listens for revocation only');
+  assert.match(session, /private func retireRevokedOfflineCache\(\) \{\s*offlineMirror\.retire \{ \[weak self\] result in\s*if case \.failure = result \{ self\?\.onHint\?\("離線副本移到垃圾桶未完成。"\) \}\s*\}\s*shutdown\(\)/);
+  assert.match(read('DM/DeviceFlowSession.swift'), /for change in pending\.changes \{\s*if case \.revoke\(let id\) = change \{\s*do \{ try await Self\.archiveOfflineCopy\(id, environment: environment\) \}/);
+  assert.match(read('DM/DeviceFlowSession.swift'), /static func archiveOfflineCopy[\s\S]*?cache\.run\(\{ cache in Result \{ _ = try cache\.clear\(deviceID: id\) \} \}/);
 });
 
 test('W110: the offline copy is for the screen only — no OS tool or bridge method reads another device\'s history', () => {
@@ -298,7 +304,9 @@ test('W110: the offline copy is for the screen only — no OS tool or bridge met
       if (!name.endsWith('.swift') || name === 'RemoteOfflineCache.swift' || name === 'RemoteDeviceSession.swift'
           || name === 'ChatPageModel+OfflineContinue.swift' || name === 'ChatPageModel.swift' || name === 'RemoteOfflineAcceptance.swift'
           // W182 R4＋R5 併入：斷線接手讀主設備「助理那條」最近的問答當第一句前情（使用者 09-27 同意的做法；不是工具，AI 不能自己讀）。
-          || name === 'AssistantOfflineHandoff.swift') continue;
+          || name === 'AssistantOfflineHandoff.swift'
+          // W295 renders a synthetic offline sidebar for UI performance; it is a DEBUG self-test, not an OS tool.
+          || name === 'W295Acceptance.swift') continue;
       assert.doesNotMatch(read(`${dir}/${name}`), /offlineMirror|RemoteOfflineCache/, `${dir}/${name}`);
     }
   }

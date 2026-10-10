@@ -134,6 +134,11 @@ test('actual Swift registry + Island: fixture detection, dedupe, persistence and
   fs.writeFileSync(fixture, String.raw`
 import AppKit
 import Foundation
+// Island's default hold-open closure references this signal; the fixture injects holdOpen below.
+@MainActor final class HandsComputerUse {
+    static let shared = HandsComputerUse()
+    var isOperating = false
+}
 @MainActor enum IslandExceptionsNavigation {
     static var shell: Shell?
     final class Shell { func holdOpen(_ value: Bool) {} }

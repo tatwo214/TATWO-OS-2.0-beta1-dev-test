@@ -1,0 +1,21 @@
+✔ W61 exported tree passes safety scan and the exact personal-data grep (15623.282667ms)
+✔ W61 does not widen or rewrite any pre-existing allowlist entry (0.4305ms)
+✔ macOS account paths and user/name fields reject non-generic names (203.111625ms)
+✔ generic accounts and documentation/loopback addresses and example hosts pass (28.467459ms)
+✔ private IPv4 ranges include boundaries and mapped IPv6, but not adjacent public ranges (374.73925ms)
+✔ named personal domains and SSH aliases are rejected (521.785708ms)
+✔ all four new categories enforce exact file + regex and every value on a line (572.19825ms)
+✔ personal identifiers come only from the private list, also when split into fragments; the list never ships (195.912542ms)
+✔ legacy email, token and key detection remains enforced (84.036666ms)
+✔ SSH wrappers fail before any command or state write when host is unset or empty (84.822125ms)
+✔ gateway label discovery uses product default, explicit override, or unique legacy registration (read-only) (113.520583ms)
+✔ public blocklist serialization preserves the original non-personal ad domain (5.927167ms)
+✔ legacy V3 import directory discovery is local, unambiguous and prefers the new default (585.089333ms)
+ℹ tests 13
+ℹ suites 0
+ℹ pass 13
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 18468.542917

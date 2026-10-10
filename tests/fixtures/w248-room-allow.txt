@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift
+App/Sources/Tatwo2/TAP/TapWebPod.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Chat/ChatPage+Panels.swift
+App/Sources/Tatwo2/Space/SpaceWorkspaceController.swift
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w248-webspace.test.mjs
+tests/fixtures/w248-room-allow.txt

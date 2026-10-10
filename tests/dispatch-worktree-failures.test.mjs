@@ -42,26 +42,36 @@ for (let dir = scratch; ; dir = path.dirname(dir)) {
 }
 const root = fs.mkdtempSync(path.join(scratch, 'dispatch-worktree.'));
 const binary = path.join(root, 'probe');
+const hands = fs.readFileSync('App/Sources/Tatwo2/Facade/HandsRooms.swift', 'utf8');
+const handsGit = hands.slice(hands.indexOf('enum HandsGit {'), hands.indexOf('\n}\n', hands.indexOf('enum HandsGit {')) + 3);
 fs.writeFileSync(path.join(root, 'probe.swift'), `
 import Foundation
+import Darwin
+enum HandsToolError: Error { case invalid(String) }
+enum HandsRedactor { static func redactedPrefix(_ text: String, _ cap: Int) -> String { String(text.prefix(cap)) } }
+enum HandsFiles { static func writeAll(_ fd: Int32, _ data: Data) -> Bool { fatalError("fixture never supplies git stdin") } }
+${handsGit}
 struct DispatchGitFailure: Error, CustomStringConvertible {
     let message: String
     var description: String { message }
 }
 @MainActor final class ChatPageModel {
 ${section('    nonisolated static func excludeRoomWorktrees', '    /// 便利呼叫')}
-${section('    static func prepareRoomWorktree', '    /// 房間收尾')}
+${section('    nonisolated static func prepareRoomWorktree', '    /// 房間收尾')}
 }
-MainActor.assumeIsolated {
+// W187R13 moved the bounded production git runner off the main thread.
+Task.detached {
     do {
         let result = try ChatPageModel.prepareRoomWorktree(
             workdir: CommandLine.arguments[1], roomID: CommandLine.arguments[2])
         print("CREATED:" + result)
+        exit(0)
     } catch {
         print("REJECTED:" + String(describing: error))
         exit(2)
     }
 }
+dispatchMain()
 `);
 execFileSync('/bin/bash', ['-c', `
 set -euo pipefail

@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import SwiftUI
 import Foundation
 
 /// `TATWO2_SELFTEST=w182offline`：主設備（配對設備）斷線時，Coder 照樣列出最後同步的專案與對話、可以讀、
@@ -487,18 +488,15 @@ enum RemoteOfflineAcceptance {
         check(model.remoteSidebarSections.first { $0.deviceID == device.id }?.offlineSyncedAt != nil,
               "(12) offline again: no reconnect note, the offline copy is listed again")
 
-        // (13) 設定 › 設備「清除這台的離線副本」：移到垃圾桶（可放回），側欄回到只有「離線」一行。
-        var clearMessage: String?
-        model.clearRemoteOfflineCache(deviceID: device.id) { clearMessage = $0 }
-        _ = await settle { clearMessage != nil }
-        await RemoteOfflineCache.flush()
-        let retired = (try? fm.contentsOfDirectory(atPath: trash.path)) ?? []
-        section = model.remoteSidebarSections.first { $0.deviceID == device.id }
-        check(!fm.fileExists(atPath: cache.folder(device.id).path) && retired.contains { $0.hasPrefix("w182-primary-one") }
-              && clearMessage?.contains("垃圾桶") == true,
-              "(13) clearing moves this device's offline copy to the Trash (restorable), not deleted")
-        check(again.offlineMirror.snapshot == nil && section?.offlineSyncedAt == nil && section?.projects.isEmpty == true,
-              "(13) after clearing the sidebar is back to the plain offline line")
+        // (13) 設定 › 設備保留用量，沒有清除離線副本按鈕或確認列。
+        guard let offlineShot = GlobalDMChatAcceptance.renderSync(RemoteOfflineCacheRow(model: model, device: device).padding(20), size: CGSize(width: 800, height: 180), scheme: .light) else { throw TapError.notReady }
+        await W214Acceptance.settle(offlineShot)
+        let offlineText = W214Acceptance.text(offlineShot)
+        check(offlineText.contains("離線副本：") && !offlineText.contains("清除") && !offlineText.contains("取消"),
+              "(13) settings shows offline usage without clear-copy button or confirmation row")
+        offlineShot.close()
+        check(again.offlineMirror.snapshot != nil && fm.fileExists(atPath: cache.folder(device.id).path),
+              "(13) viewing settings preserves the offline copy")
 
         // (13) 設定 › 設備「移除」那台：它的離線副本一起移到垃圾桶，那台的連線物件停記（晚到的不寫回來）；
         //      沒有連線物件的也清得掉。重新配對同一個 id 不會冒出舊快照。
@@ -542,6 +540,32 @@ enum RemoteOfflineAcceptance {
         check(repaired.offlineMirror.diskLoaded && repaired.offlineMirror.snapshot == nil
               && model.remoteSidebarSections.first { $0.deviceID == removed.id }?.projects.isEmpty == true,
               "(13) pairing the same id again shows no old snapshot")
+
+        // Fleet revocation must use the same restorable archive path as removal.
+        let revoked = DeviceRecord(id: "w233-revoked", name: "Revoked Fixture", host: "192.0.2.13", user: "example", sshPort: 22,
+                                   publicKeyFingerprint: "SHA256:w233revoked", addedAt: now, lastSeenAt: now, workdirMap: [:])
+        let revokedSnapshot = RemoteOfflineSnapshot(deviceID: revoked.id, deviceName: revoked.name, syncedAt: Date(), revision: 3, document: remoteDoc).slimmed()
+        await Task.detached { _ = try? cache.writeSnapshot(revokedSnapshot) }.value
+        let revokedSession = RemoteDeviceSession(device: revoked, link: RemoteHostLink(environment: environment), environment: environment)
+        await RemoteOfflineCache.flush()
+        let loadedBeforeRevocation = revokedSession.offlineMirror.snapshot?.revision == 3
+        DeviceFleetConnections.revoke(revoked.id, scope: DeviceRegistry(environment: environment).root.path)
+        _ = await settle { revokedSession.offlineMirror.isRetired }
+        revokedSession.offlineMirror.record(document: remoteDoc, revision: 4, force: true)
+        await RemoteOfflineCache.flush()
+        check(loadedBeforeRevocation && revokedSession.offlineMirror.isRetired && revokedSession.offlineMirror.snapshot == nil
+              && !fm.fileExists(atPath: cache.folder(revoked.id).path)
+              && ((try? fm.contentsOfDirectory(atPath: trash.path)) ?? []).contains { $0.hasPrefix(revoked.id) },
+              "(13) fleet revocation archives the offline copy and late results cannot recreate it")
+
+        let unopenedID = "w233-unopened"
+        let unopened = RemoteOfflineSnapshot(deviceID: unopenedID, deviceName: "Unopened Fixture", syncedAt: Date(), revision: 1, document: remoteDoc).slimmed()
+        await Task.detached { _ = try? cache.writeSnapshot(unopened) }.value
+        do { try await DeviceFlowSession.archiveOfflineCopy(unopenedID, environment: environment) }
+        catch { check(false, "(13) unopened fleet copy archive failed") }
+        check(!fm.fileExists(atPath: cache.folder(unopenedID).path)
+              && ((try? fm.contentsOfDirectory(atPath: trash.path)) ?? []).contains { $0.hasPrefix(unopenedID) },
+              "(13) physical fleet removal archives an unopened offline copy")
 
         // (14) 主執行緒不碰離線副本的檔案。
         check(RemoteOfflineCache.mainThreadIOCount == mainIOBefore, "(14) no offline-cache file I/O on the main thread")

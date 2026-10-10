@@ -27,6 +27,24 @@ protocol BrowserSecretStore {
     func remove(_ id: UUID) throws
 }
 
+/// W255: attribute-only migration after a successful read; failures preserve the item.
+enum DeviceOnlyKeychain {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var migrated: Set<String> = []
+    static func harden(_ query: [String: Any]) {
+        var key = query
+        for field in [kSecReturnData, kSecMatchLimit] { key.removeValue(forKey: field as String) }
+        key[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        let identity = "\(key[kSecAttrService as String] ?? "")|\(key[kSecAttrAccount as String] ?? "")|\(key[kSecUseDataProtectionKeychain as String] ?? false)"
+        lock.lock(); defer { lock.unlock() }
+        guard !migrated.contains(identity) else { return }
+        let attributes = [kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
+        if SecItemUpdate(key as CFDictionary, attributes as CFDictionary) == errSecSuccess {
+            migrated.insert(identity)
+        }
+    }
+}
+
 struct KeychainSecretStore: BrowserSecretStore {
     let service: String
     let accountSuffix: String
@@ -56,11 +74,9 @@ struct KeychainSecretStore: BrowserSecretStore {
     }
 
     private func attributes(for variant: Variant, secret: String) -> [String: Any] {
-        var attributes: [String: Any] = [kSecValueData as String: Data(secret.utf8)]
-        if variant == .dataProtection {
-            attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        }
-        return attributes
+        // WhenUnlocked: credentials are needed only while the user is using the App.
+        [kSecValueData as String: Data(secret.utf8),
+         kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]
     }
 
     private func write(_ secret: String, for id: UUID, variant: Variant) -> OSStatus {
@@ -100,6 +116,7 @@ struct KeychainSecretStore: BrowserSecretStore {
                 guard let data = result as? Data, let secret = String(data: data, encoding: .utf8) else {
                     throw BrowserPasswordVaultError.secretUnavailable
                 }
+                DeviceOnlyKeychain.harden(query(id, variant: variant))
                 return secret
             }
             last = status
@@ -134,6 +151,7 @@ protocol BrowserVaultAuthenticator {
 
 struct LocalAuthenticator: BrowserVaultAuthenticator {
     func authenticate(reason: String) async throws {
+        guard !NativeStagingIsolation.isW276Bundle else { throw BrowserPasswordVaultError.authenticationFailed }
         let request = Request()
         defer { request.invalidate() }
         // A new context per operation: no app-side "recently unlocked" bypass.

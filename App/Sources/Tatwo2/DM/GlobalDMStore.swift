@@ -360,6 +360,7 @@ final class GlobalDMStore: ObservableObject {
     func attach(_ model: ChatPageModel) {
         guard self.model !== model else { return }
         self.model = model
+        DeviceFlowSession.shared.onPaired = { [weak model] in _ = model?.deviceRecordsForBridge() }
         // Space 設定（ChatGPT 分頁開關）變動時跟著 model 發佈；框開著時重新判斷要不要拿 ChatGPT 使用中租約。
         modelWatch = model.objectWillChange
             .receive(on: DispatchQueue.main)

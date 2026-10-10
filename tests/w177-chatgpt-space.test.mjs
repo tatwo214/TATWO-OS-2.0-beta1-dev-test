@@ -68,7 +68,7 @@ test('Space gets a ChatGPT tab wired like Browser, with its own sidebar and no C
   assert.match(read(app + 'Space/SpaceWorkspaceController.swift'), /if !spaces\.allows\(\.chatgpt\), ChatGPTTap\.shared\.pod\.isRunning \{\s*ChatGPTTap\.shared\.sleep\(\)/);
 });
 
-test('native conversation reuses OS components; only Dots presents its web page inside the Space', () => {
+test('native conversation reuses OS components; Dots remains in the web Space', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   for (const token of ['ChatAssistantTranscriptBlockView(', 'TatwoAssistantTranscriptPresentation.document(markdown:',
     'ChatComposerTextView(', 'ChatGPTSendSlot(', 'liquidGlassPanelSurface', 'chatGlassChip()',
@@ -86,7 +86,7 @@ test('native conversation reuses OS components; only Dots presents its web page 
   assert.match(space, /private var needsLogin: Bool \{ tap\.connection == \.needsLogin \}/);
   assert.match(space, /Button \{ model\.openTapSettings\(login: true\) \}/);
   assert.match(space, /NotificationCenter\.default\.post\(name: \.tatwoOpenSettingsSection, object: TatwoSettingsPage\.Section\.plugin\.rawValue\)/);
-  // W197：原生對話的 Pod 仍在畫面外；Dots 獨立的視圖只使用同一個 Pod。
+  // 原生對話的 Pod 仍在畫面外。
   assert.equal((space.match(/TapPodHostView\(pod:/g) || []).length, 1);
   assert.match(space, /TapPodHostView\(pod: tap\.pod, presentsPage: false\)\s*\.frame\(width: 1100, height: 800\)\s*\.offset\(x: -20_000\)\s*\.allowsHitTesting\(false\)\s*\.accessibilityHidden\(true\)/);
   assert.match(space, /pod\.claim\(view, presentsPage: presentsPage\)/);
@@ -101,13 +101,13 @@ test('native conversation reuses OS components; only Dots presents its web page 
   // 外層識別碼不能蓋掉子元件：先成為容器。
   assert.match(space, /\.accessibilityElement\(children: \.contain\)\s*\.accessibilityIdentifier\("chatgpt\.space"\)/);
   // Pod 放背景、平常在畫面外，不撐大版面；閒置 15 分鐘休眠。
-  // W197＋W199（.056 合併）：Dots 開著時不掛背景 Pod；W199 的假 Pod（原生截圖）沒有 webPod，同樣不建立 CEF。
+  // W199 的假 Pod（原生截圖）沒有 webPod，不建立 CEF。
   // 真 Pod 仍必須掛在背景、位移與互動／AX 隔離斷言照舊。
-  assert.match(space, /\.background\(alignment: \.topLeading\) \{\s*if !model\.dotsPresented, tap\.webPod != nil \{\s*TapPodHostView\(pod: tap\.pod, presentsPage: false\)/);
-  const dots = read(app + 'TAP/ChatGPTDots.swift');
-  assert.match(space, /if model\.dotsPresented \{\s*ChatGPTDotsPane\(model: model\)/);
-  assert.match(dots, /TapPodHostView\(pod: pod, presentsPage: true\)/);
-  assert.doesNotMatch(dots, /TapWebPod\(|ChatGPTWebSheet|webSheetPath/);
+  assert.match(space, /\.background\(alignment: \.topLeading\) \{\s*if tap\.webPod != nil \{\s*TapPodHostView\(pod: tap\.pod, presentsPage: false\)/);
+  assert.doesNotMatch(space, /ChatGPTDotsSidebarRow|ChatGPTDotsPane|dotsPresented|返回 Dots/);
+  const web = read(app + 'TAP/ChatGPTWebSpace.swift');
+  assert.match(web, /openDotsSpacePage\(\)/);
+  assert.match(read(app + 'TAP/ChatGPTDots.swift'), /https:\/\/chatgpt\.com\/dots/);
   assert.match(tapSwift, /var webPod: TapWebPod\? \{ transport as\? TapWebPod \}/);
   assert.match(space, /\.offset\(x: -20_000\)/);
   assert.match(space, /idleSleepDelay: Duration = \.seconds\(15 \* 60\)/);
@@ -205,6 +205,23 @@ const chatBox = (sandbox, text = '') => chatNode({
 // W200: request-option tests use completed replies. Bare [DONE] remains in the explicit empty/Pro tests.
 const completedSendSSE = ['data: ' + JSON.stringify({ message: { id: 'synthetic-completed-reply', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['合成完成回答'] }, status: 'finished_successfully', end_turn: true } }) + '\n\n', 'data: [DONE]\n\n'];
 
+// W302b: these three older fixtures end without a message completion status.
+// Keep every existing content/shape assertion; first prove EOF stays unfinished,
+// then let an explicit server completion provide the terminal event.
+const completionReply = (_url, init) => new Response('data: ' + JSON.stringify({ message: {
+  id: 'explicit-completion', author: { role: 'assistant' },
+  content: { content_type: 'text', parts: [JSON.parse(init.body).text] },
+  status: 'finished_successfully', end_turn: true,
+} }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+async function completeAfterUnfinishedEOF(pod, id, text) {
+  await pod.waitFor(r => r.type === 'stream' && r.id === id && r.kind === 'text' && r.full === text);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  assert.ok(!pod.reports.some(r => r.id === id && ['finished', 'failed'].includes(r.kind)), 'EOF without finished status must remain unfinished');
+  await pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation/completion', {
+    method: 'POST', body: JSON.stringify({ text }),
+  }).then(r => r.text());
+}
+
 function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/conversation', pageBody }) {
   const reports = [];
   const requests = [];
@@ -254,7 +271,7 @@ function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/con
     querySelector(selector) {
       if (selector === '#prompt-textarea') return composer;
       if (selector === '[data-testid="send-button"]') return sendButton;
-      if (selector === '[data-testid="stop-button"]') return state.stop ? { click() { state.stop = false; } } : null;
+      if (selector === '[data-testid="stop-button"]') return state.stop ? chatNode({ click() { state.stop = false; } }) : null;
       if (selector === '[data-message-author-role]') return {};
       return null;
     },
@@ -301,6 +318,21 @@ function makePod({ responses, onSendClick, setup, sendPath = '/backend-api/f/con
     }),
   };
   return pod;
+}
+
+// Explicit web availability for catalog tests; transport fixtures stay unchanged.
+function modelMenu(pod, title, items, power = null) {
+  const attrs = { 'aria-expanded': 'true', 'aria-controls': 'fixture-model-menu' };
+  const trigger = chatNode({ textContent: title, getAttribute: (k) => attrs[k] ?? null });
+  const nodes = items.map(([slug, name]) => chatNode({ textContent: name,
+    getAttribute: (k) => k === 'data-model-slug' ? slug : null }));
+  const slider = power && chatNode({ getAttribute: (k) => ({ 'aria-label': 'Power',
+    'aria-valuemin': '1', 'aria-valuemax': String(power), 'aria-valuenow': '1' })[k] ?? null });
+  const panel = chatNode({ getAttribute: (k) => k === 'id' ? 'fixture-model-menu' : null,
+    querySelectorAll: (sel) => sel.startsWith('[role="slider"]') ? (slider ? [slider] : []) : nodes });
+  const doc = pod.sandbox.document, qs = doc.querySelector, qsa = doc.querySelectorAll;
+  doc.querySelector = (sel) => sel === '[data-testid="model-switcher-dropdown-button"]' ? trigger : qs(sel);
+  doc.querySelectorAll = (sel) => sel === '[role="menu"], [role="dialog"]' ? [panel] : qsa(sel);
 }
 
 const noLeak = (pod) => {
@@ -356,6 +388,7 @@ test('pod script: list, get and models go through the page\'s own headers and re
       { title: 'no slug' },
     ] } },
   } });
+  modelMenu(pod, 'Auto', [['auto', 'Auto'], ['sol-b', 'GPT-X Sol'], ['gpt-x-thinking', 'GPT-X Thinking'], ['luna-c', 'GPT-X Luna']]);
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
 
@@ -444,16 +477,109 @@ test('pod script: send types into the page, swaps the model and streams v1 delta
   noLeak(pod);
 });
 
+test('W337: tool answer streamed with implicit patches and channel changes keeps the whole reply', async () => {
+  // 10-10 實機：用到 TATWO 工具的回答，Coder 只存到後半段。網頁的解碼：省略的 c/p/o 只沿用上一個最外層事件。
+  const d = (o) => 'event: delta\ndata: ' + JSON.stringify(o) + '\n\n';
+  const msg = (id, role, parts, extra = {}) => ({ message: { id, author: { role }, content: { content_type: 'text', parts }, status: 'in_progress', ...extra }, conversation_id: 'c337' });
+  const sse = [
+    'event: delta_encoding\ndata: "v1"\n\n',
+    d({ p: '', o: 'add', v: { ...msg('u1', 'user', ['查專案']), message: { ...msg('u1', 'user', ['查專案']).message, status: 'finished_successfully' } }, c: 0 }),
+    d({ v: msg('call', 'assistant', [''], { recipient: 'api_tool.call_tool' }), c: 1 }),
+    d({ p: '/message/content/parts/0', o: 'append', v: '{"path":"/TATWO/list_projects"}' }),
+    d({ p: '', o: 'patch', v: [{ p: '/message/status', o: 'replace', v: 'finished_successfully' }, { p: '/message/end_turn', o: 'replace', v: false }] }),
+    d({ p: '', o: 'add', v: msg('tool', 'tool', ['8 個專案'], { status: 'finished_successfully' }), c: 2 }),
+    d({ v: msg('a2', 'assistant', ['驗收 A'], { recipient: 'all' }), c: 3 }),
+    d({ p: '', o: 'patch', v: [{ p: '/message/content/parts/0', o: 'append', v: '\n驗收 B' }, { p: '/message/metadata', o: 'append', v: { k: 1 } }] }),
+    d({ v: [{ p: '/message/content/parts/0', o: 'append', v: '\nWUWA' }, { p: '/message/end_turn', o: 'replace', v: null }] }),
+    d({ p: '/message/metadata', o: 'append', v: { k: 2 }, c: 1 }),
+    d({ p: '/message/content/parts/0', o: 'append', v: '\nOpenClaw', c: 3 }),
+    d({ v: '\nHermes' }),
+    d({ p: '', o: 'patch', v: [{ p: '/message/content/parts/0', o: 'append', v: '\nEND' }, { p: '/message/status', o: 'replace', v: 'finished_successfully' }, { p: '/message/end_turn', o: 'replace', v: true }] }),
+    'data: [DONE]\n\n',
+  ];
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse } } });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'send', id: 'T', text: '查專案' });
+  await pod.waitFor((r) => r.type === 'stream' && r.id === 'T' && r.kind === 'finished');
+  const texts = pod.reports.filter((r) => r.type === 'stream' && r.id === 'T' && r.kind === 'text');
+  assert.ok(texts.every((e) => e.messageID === 'a2'), 'the tool call JSON is never shown as the answer');
+  assert.equal(texts.at(-1).full, '驗收 A\n驗收 B\nWUWA\nOpenClaw\nHermes\nEND');
+  noLeak(pod);
+});
+
+test('W337b: the expired connector card is read from the stream, not only from page buttons', async () => {
+  // ChatGPT 網頁畫「Reconnect …／connection has expired」卡＝串流裡的 tool 訊息帶 jit_plugin_data（oauth_required＋reauthentication_required）。
+  const d = (o) => 'event: delta\ndata: ' + JSON.stringify(o) + '\n\n';
+  const name = 'TATWO（Mac mini）4';
+  const auth = { type: 'oauth_required', body: { auth_reason: 'reauthentication_required', connector_id: 'connector_x', connector_name: name, actions: [] } };
+  const sse = [
+    'event: delta_encoding\ndata: "v1"\n\n',
+    d({ p: '', o: 'add', v: { message: { id: 'u1', author: { role: 'user' }, content: { content_type: 'text', parts: ['查專案'] }, status: 'finished_successfully' }, conversation_id: 'c338' }, c: 0 }),
+    d({ v: { message: { id: 'call', author: { role: 'tool' }, content: { content_type: 'text', parts: [''] }, status: 'in_progress', metadata: {} }, conversation_id: 'c338' }, c: 1 }),
+    d({ p: '/message/metadata', o: 'append', v: { jit_plugin_data: { from_server: auth } } }),
+    'data: [DONE]\n\n',
+  ];
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse } } });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'send', id: 'K', text: '查專案' });
+  const end = await pod.waitFor((r) => r.type === 'stream' && r.id === 'K' && (r.kind === 'finished' || r.kind === 'failed'), 5000);
+  assert.equal(end.kind, 'failed');
+  assert.equal(end.reason, 'connector_expired');
+  assert.match(end.message, /「TATWO（Mac mini）4」連線已過期/);
+  pod.command({ cmd: 'diagnostics', id: 'KD' });
+  const diag = await pod.waitFor((r) => r.type === 'result' && r.id === 'KD');
+  assert.equal(diag.data.turn, 'connector_expired source=stream name_len=' + Array.from(name).length);
+  noLeak(pod);
+});
+
+test('W344: a delta path into __proto__ is refused and the reply still completes', async () => {
+  const d = (o) => 'event: delta\ndata: ' + JSON.stringify(o) + '\n\n';
+  const sse = [
+    'event: delta_encoding\ndata: "v1"\n\n',
+    d({ p: '', o: 'add', v: { message: { id: 'a5', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['安全'] }, status: 'in_progress' }, conversation_id: 'c344' }, c: 0 }),
+    d({ p: '/__proto__/polluted', o: 'add', v: 'yes' }),
+    d({ p: '', o: 'patch', v: [{ p: '/message/content/parts/0', o: 'append', v: '回答' }, { p: '/message/status', o: 'replace', v: 'finished_successfully' }] }),
+    'data: [DONE]\n\n',
+  ];
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse } } });
+  await pod.signIn();
+  await pod.waitFor((r) => r.type === 'auth');
+  pod.command({ cmd: 'send', id: 'P', text: 'x' });
+  const end = await pod.waitFor((r) => r.type === 'stream' && r.id === 'P' && r.kind === 'finished');
+  const texts = pod.reports.filter((r) => r.type === 'stream' && r.id === 'P' && r.kind === 'text');
+  assert.equal(texts.at(-1).full, '安全回答');
+  assert.match(end.shape, /delta-error/);
+  assert.equal(({}).polluted, undefined);
+  noLeak(pod);
+});
+
+test('W302b: explicit finished reply completes without page completion signals and keeps server full text', async () => {
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } },
+    onSendClick(state) { state.stop = true; } });
+  await pod.signIn();
+  pod.command({ cmd: 'send', id: 'SERVER', text: 'x' });
+  const finished = await pod.waitFor(r => r.type === 'stream' && r.id === 'SERVER' && r.kind === 'finished');
+  const events = pod.reports.filter(r => r.id === 'SERVER');
+  assert.equal(pod.state.stop, true, 'a stale stop button cannot override authoritative completion');
+  assert.deepEqual(pod.state.assistantNodes, [], 'no rendered completion signal');
+  assert.equal(events.at(-2).full, '合成完成回答');
+  assert.equal(events.at(-1), finished, 'server full text immediately precedes finished');
+  noLeak(pod);
+});
+
 test('pod script: legacy full-message stream still shows the growing answer', async () => {
   const sse = [
     'data: {"message": {"id": "a2", "author": {"role": "assistant"}, "content": {"content_type": "text", "parts": ["舊"]}}, "conversation_id": "c8"}\n\n',
     'data: {"message": {"id": "a2", "author": {"role": "assistant"}, "content": {"content_type": "text", "parts": ["舊格式"]}}, "conversation_id": "c8"}\n\n',
     'data: [DONE]\n\n',
   ];
-  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse } } });
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse }, '/backend-api/f/conversation/completion': completionReply } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'O', text: 'x' });
+  await completeAfterUnfinishedEOF(pod, 'O', '舊格式');
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'O' && r.kind === 'finished');
   const post = pod.requests.find((r) => r.url.endsWith('/backend-api/f/conversation'));
   assert.equal(JSON.parse(post.init.body).model, 'auto', 'no model chosen → page default kept');
@@ -548,7 +674,7 @@ test('pod script: after a stream_handoff, a follow-up event stream from the page
     'data: [DONE]\n\n',
   ];
   const pod = makePod({
-    responses: { '/backend-api/f/conversation': { sse: handoff }, '/backend-api/f/conversation/resume': { sse: resume } },
+    responses: { '/backend-api/f/conversation': { sse: handoff }, '/backend-api/f/conversation/resume': { sse: resume }, '/backend-api/f/conversation/completion': completionReply },
     onSendClick(state) {
       state.stop = true;
       setTimeout(() => { pod.sandbox.window.fetch('https://chatgpt.com/backend-api/f/conversation/resume', { method: 'POST', body: '{}' }).then((r) => r.text()); }, 30);
@@ -558,6 +684,7 @@ test('pod script: after a stream_handoff, a follow-up event stream from the page
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'H', text: 'x' });
+  await completeAfterUnfinishedEOF(pod, 'H', '**交棒**之後');
   const finished = await pod.waitFor((r) => r.type === 'stream' && r.id === 'H' && r.kind === 'finished');
   const events = pod.reports.filter((r) => r.type === 'stream' && r.id === 'H');
   assert.equal(events.filter((e) => e.kind === 'text').at(-1).full, '**交棒**之後', 'markdown kept from the resumed stream');
@@ -648,6 +775,7 @@ test('pod script: model variants merge into one effort slider, Work-only models 
   } });
   // 網頁自己送出時帶的強度（使用者在網頁選過 Extra High）。
   pod.sandbox.document.querySelector = ((original) => (selector) => original(selector))(pod.sandbox.document.querySelector);
+  modelMenu(pod, 'GPT-X Nova', [['nova', 'GPT-X Nova'], ['plain', 'GPT-X Plain']]);
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'models', id: 'M' });
@@ -846,6 +974,7 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
       ] } },
     '/backend-api/f/conversation': { sse: completedSendSSE },
   } });
+  modelMenu(pod, 'GPT-X Sol', [['mini', 'GPT-X Mini']], 5);
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'models', id: 'V' });
@@ -854,9 +983,8 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
   // Pro 是最高檔（紫色）；最新版的名字不帶版本號，舊版帶（跟網頁一樣：High／5.5 High）。
   const p = (id, title, extra = {}) => ({ id, title, version: '', level: title, detail: '', max: false, showVersion: false, ...extra });
   assert.deepEqual(res.data.versions, [
-    { id: 'latest', title: 'Latest', presets: [
+    { id: 'latest', title: 'GPT-X Sol', presets: [
       p('sol-i', 'Instant'), p('sol-t|standard', 'Medium'), p('sol-t|extended', 'High'), p('sol-t|max', 'Extra High'), p('sol-pro', 'Pro', { max: true })] },
-    { id: '5.5', title: 'Legacy • 5.5', presets: [p('old-i', 'Instant', { showVersion: true }), p('old-t|extended', 'High', { showVersion: true })] },
   ]);
   // 模型清單用中文語言標頭要（網頁切成繁中時一樣），好拿到中文的檔位名稱與說明。
   const modelsRequest = pod.requests.find((r) => r.url.includes('/backend-api/models'));
@@ -875,7 +1003,7 @@ test('pod script: picker v2 turns versions × intelligence presets into the web\
   pod.command({ cmd: 'send', id: 'Q', text: 'x' });
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'Q' && (r.kind === 'finished' || r.kind === 'failed'));
   assert.deepEqual(pod.reports.find((r) => r.type === 'selection'),
-    { type: 'selection', model: 'version:latest', effort: 'sol-t|max', title: 'Latest' });
+    { type: 'selection', model: 'version:latest', effort: 'sol-t|max', title: 'GPT-X Sol' });
 });
 
 // 09-24 v2.0.19.014 實機：暫時對話的第二則沒帶旗標 → HTTP 404；網頁版每一則都帶。
@@ -1690,6 +1818,7 @@ test('pod script: the current preset comes from the server\'s last-used model co
       { slug: 'sol-pro', title: 'Sol Pro', reasoning_type: 'pro' }, { slug: 'old-t', title: 'Old', reasoning_type: 'reasoning' }] } };
   const run = async (settings) => {
     const pod = makePod({ responses: { '/backend-api/models': models, '/backend-api/settings/user': { json: { settings } } } });
+    modelMenu(pod, 'Sol', [], 4);
     await pod.signIn();
     await pod.waitFor((r) => r.type === 'auth');
     pod.command({ cmd: 'models', id: 'C' });
@@ -1704,12 +1833,12 @@ test('pod script: the current preset comes from the server\'s last-used model co
   const latest = pro.versions[0].presets;
   assert.deepEqual(latest.map((x) => [x.id, x.max, x.showVersion]), [
     ['sol-i', false, false], ['sol-t|extended', false, false], ['sol-t|max', false, false], ['sol-pro', true, true]]);
-  assert.deepEqual(pro.versions[1].presets.map((x) => [x.id, x.showVersion]), [['old-t|extended', true]]);
+  assert.equal(pro.versions.length, 1, 'only the current web version is selectable');
   const thinking = await run({ last_used_model_config: { slugs: { default: 'sol-t' },
     juices: { default: { 'sol-t': 'extended' }, web: { 'sol-t': 'max' } } } });
   assert.deepEqual(thinking.current, { version: 'latest', preset: 'sol-t|max' });
   const legacy = await run({ last_used_model_config: { slugs: { web: 'old-t' }, juices: { web: { 'old-t': 'extended' } } } });
-  assert.deepEqual(legacy.current, { version: '5.5', preset: 'old-t|extended' });
+  assert.equal(legacy.current, null, 'server legacy choice is absent from the current web menu');
   assert.equal((await run({ last_used_model_config: { slugs: { web: 'gone' } } })).current, null);
   assert.equal((await run({})).current, null);
 });
@@ -1847,7 +1976,7 @@ test('ChatGPT Space 09-25 #125: top-right controls live in the traffic-light row
   const space = read(app + 'TAP/ChatGPTSpace.swift');
   assert.match(panels, /ChatGPTSpaceMainPane\(model: ChatGPTSpaceModel\.shared, osModel: model, showsHeader: surface != \.window\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/);
   assert.doesNotMatch(panels, /ChatGPTSpaceMainPane\([^)]*\)\s*\.padding\(\.top, surface == \.window \? WindowChromeMetrics\.bandHeight/);
-  assert.match(page, /else if !isPanel && model\.mode == \.chatgpt \{[\s\S]{0,400}ChatGPTTopBarControls\(model: ChatGPTSpaceModel\.shared\)\s*\.frame\(height: 26\)\s*\.padding\(\.trailing, 14\)\s*\.offset\(y: -WindowChromeMetrics\.chromeRowLift\)/);
+  assert.match(page, /else if !isPanel && model\.mode == \.chatgpt && !ChatGPTWebSpace.isEnabled \{[\s\S]{0,400}ChatGPTTopBarControls\(model: ChatGPTSpaceModel\.shared\)\s*\.frame\(height: 26\)\s*\.padding\(\.trailing, 14\)\s*\.offset\(y: -WindowChromeMetrics\.chromeRowLift\)/);
   // 小面板沒有紅綠燈那一列才在對話上方放一列；視窗裡對話直接從那一列下面開始。
   assert.match(space, /if showsHeader \{ header \}/);
   assert.match(space, /\.padding\(\.top, showsHeader \? 8 : 16\)/);
@@ -2005,10 +2134,11 @@ test('pod script: the old /backend-api/conversation send path is intercepted too
     'event: delta\ndata: {"p": "/message/content/parts/0", "o": "append", "v": "好"}\n\n',
     'data: [DONE]\n\n',
   ];
-  const pod = makePod({ sendPath: '/backend-api/conversation', responses: { '/backend-api/conversation': { sse } } });
+  const pod = makePod({ sendPath: '/backend-api/conversation', responses: { '/backend-api/conversation': { sse }, '/backend-api/f/conversation/completion': completionReply } });
   await pod.signIn();
   await pod.waitFor((r) => r.type === 'auth');
   pod.command({ cmd: 'send', id: 'P', text: '專案裡問', model: 'gpt-x', gizmoID: 'g-p-abc123' });
+  await completeAfterUnfinishedEOF(pod, 'P', '好');
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'P' && r.kind === 'finished');
   assert.equal(pod.state.pathname, '/g/g-p-abc123/project');
   const post = pod.requests.find((r) => r.url.endsWith('/backend-api/conversation'));
@@ -2030,6 +2160,7 @@ test('pod script: the old /backend-api/conversation send path is intercepted too
   assert.match(diag['準備回應'], /^\d{3}$|^失敗$/);
   // 一般對話（沒有專案）不加 conversation_mode。
   pod.command({ cmd: 'send', id: 'Q', text: '一般', model: 'gpt-x' });
+  await completeAfterUnfinishedEOF(pod, 'Q', '好');
   await pod.waitFor((r) => r.type === 'stream' && r.id === 'Q' && r.kind === 'finished');
   const plain = pod.requests.filter((r) => r.url.endsWith('/backend-api/conversation')).at(-1);
   assert.equal('conversation_mode' in JSON.parse(plain.init.body), false);
@@ -2139,7 +2270,7 @@ test('pod script: a handed-off answer is polled from the conversation until it f
 
 test('ChatGPT Space: you can browse other conversations while a long answer runs; an old send cannot pull the view back', () => {
   const space = read(app + 'TAP/ChatGPTSpace.swift');
-  assert.match(space, /func select\(_ id: String\) \{\s*closeDots\(\)\s*guard id != selectedID \|\| page != nil else \{ return \}/);
+  assert.match(space, /func select\(_ id: String\) \{\s*guard id != selectedID \|\| page != nil else \{ return \}/);
   assert.doesNotMatch(space.slice(space.indexOf('func newChat(with gpt'), space.indexOf('var canSend: Bool')), /guard !isSending/);
   assert.match(space, /if selectedID == nil, viewEpoch == epoch \{ selectedID = id \}/);
   assert.match(space, /\(tap\.connection == \.ready \|\| tap\.connection == \.sleeping \|\| tap\.connection == \.starting\) && !isSending/);   // 送出中還是不能送第二則
@@ -2247,12 +2378,14 @@ test('pod script: the stop button vanishing while the send stream is still open 
   noLeak(pod);
 });
 
-test('pod script: while the page already shows this turn\'s answer bubble, polling does not give up after two minutes', () => {
+test('pod script: three-minute silence respects current thinking evidence until page completion', () => {
   const tap = read(app + 'TAP/ChatGPTTap.swift');
-  // W200: three minutes without evidence is failure; a page bubble remains positive thinking evidence.
-  assert.match(tap, /const thinkingEvidence = \(turn\) => turn\.hasThinkingProgress \|\| turn\.asyncThinking\s*\|\| \(!personalizedReadBlocked\(turn\) && \(stopVisible\(\) \|\| assistantNodes\(\)\.length > turn\.before\)\)/);
-  assert.match(tap, /turn\.accepted && thinkingEvidence\(turn\)\) turn\.lastActivity = Date\.now\(\)/);
-  assert.match(tap, /Date\.now\(\) - turn\.lastActivity >= 180000 && !turn\.confirmingSilence\) confirmSilence\(turn\)/);
+  assert.match(tap, /const thinkingEvidence = \(turn, nodes = assistantNodes\(\), stopping = stopVisible\(\)\) => Date\.now\(\) - turn\.lastActivity < 5000/);
+  assert.doesNotMatch(tap, /thinkingEvidence\(turn\)\) turn\.lastActivity = Date\.now\(\)/);
+  assert.match(tap, /fingerprint !== turn\.pageFingerprint/);
+  assert.match(tap, /!turn\.pageCompleted[\s\S]*turn\.asyncThinking \|\| turn\.serverInProgress/);
+  assert.doesNotMatch(tap.match(/const thinkingEvidence[\s\S]*?const NO_PROGRESS/)[0], /hasThinkingProgress/);
+  assert.match(tap, /Date\.now\(\) - turn\.lastActivity >= 180000 && !thinking && !turn\.confirmingSilence\) confirmSilence\(turn, thinking\)/);
 });
 
 test('voice: stopping while connecting voids the late start and ends the page session; the Pod auto-ends voice that starts after a stop', () => {
@@ -2453,4 +2586,51 @@ test('Tap: a send the page never answers fails after a silence watchdog instead 
   assert.match(tapSource, /pending\.yield\(\.failed\("ChatGPT 網頁沒有回應，這則可能沒有送出"\)\)/);
   assert.match(tapSource, /acceptedStreams\.insert\(id\)   \/\/ 回了任何事件都算有回應/);
   assert.match(tapSource, /send\(command\)\.catch\(failStream\)/);
+});
+
+for (const finish of [{ end_turn: true }, { metadata: { finish_details: { type: 'stop' } } }, {}]) test('W350 completed preamble waits for tool and full body: ' + JSON.stringify(finish), async () => {
+  const event = (id, role, text, extra = {}) => 'data: ' + JSON.stringify({ message: { id, author: { role }, content: { content_type: 'text', parts: [text] }, status: 'finished_successfully', end_turn: false, ...extra } }) + '\n\n';
+  const pod = makePod({ responses: { '/backend-api/f/conversation': () => new Response(new ReadableStream({ async start(controller) {
+    const push = text => controller.enqueue(new TextEncoder().encode(text));
+    push(event('preamble', 'assistant', '先查工具。'));
+    await new Promise(resolve => setTimeout(resolve, 450));
+    assert.equal(pod.reports.some(r => r.id === 'W350' && r.kind === 'finished'), false, 'completed preamble must survive several ticks');
+    push(event('tool', 'tool', '查詢結果'));
+    push(event('body', 'assistant', '正文第一段。\n正文第二段。', finish));
+    push('data: [DONE]\n\n'); controller.close();
+  } }), { headers: { 'content-type': 'text/event-stream' } }) } });
+  await pod.signIn(); pod.command({ cmd: 'send', id: 'W350', text: '查詢' });
+  await pod.waitFor(r => r.id === 'W350' && r.kind === 'finished');
+  assert.equal(pod.reports.filter(r => r.id === 'W350' && r.kind === 'text').at(-1).full, '正文第一段。\n正文第二段。');
+});
+
+for (const channel of ['__proto__', 'constructor', -1, 1025, 0.5, '0', null]) test('W350 stream ignores invalid channel: ' + channel, async () => {
+  const bad = 'data: ' + JSON.stringify({ c: channel, p: '', o: 'add', v: { message: { id: 'bad', author: { role: 'assistant' }, content: { content_type: 'text', parts: ['BAD CHANNEL'] }, status: 'finished_successfully', end_turn: true } } }) + '\n\n';
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: [bad, ...completedSendSSE] } } });
+  await pod.signIn(); pod.command({ cmd: 'send', id: 'channel', text: 'test' });
+  await pod.waitFor(r => r.id === 'channel' && r.kind === 'finished');
+  assert.equal(pod.reports.some(r => r.id === 'channel' && r.full === 'BAD CHANNEL'), false);
+  assert.equal(pod.sandbox.Object.prototype.message, undefined);
+});
+
+test('W350 connector diagnostic does not scan every node without Not now', async () => {
+  let allScans = 0;
+  const pod = makePod({ responses: { '/backend-api/f/conversation': { sse: completedSendSSE } }, setup(sandbox) {
+    const original = sandbox.document.querySelectorAll;
+    sandbox.document.querySelectorAll = selector => { if (selector === '*') allScans++; return original(selector); };
+  } });
+  await pod.signIn(); pod.command({ cmd: 'send', id: 'scan', text: 'test' });
+  await pod.waitFor(r => r.id === 'scan' && r.kind === 'finished');
+  assert.equal(allScans, 0);
+});
+
+test('W350 empty unfinished body prevents EOF from finishing the earlier preamble', async () => {
+  const message = (id, text, status) => 'data: ' + JSON.stringify({ message: { id, author: { role: 'assistant' }, content: { content_type: 'text', parts: [text] }, status, end_turn: false } }) + '\n\n';
+  const pod = makePod({ responses: {
+    '/backend-api/f/conversation': { sse: [message('pre', '前言', 'finished_successfully'), message('body', '', 'in_progress')] },
+    '/backend-api/f/conversation/completion': completionReply,
+  } });
+  await pod.signIn(); pod.command({ cmd: 'send', id: 'empty-body', text: 'test' });
+  await completeAfterUnfinishedEOF(pod, 'empty-body', '前言');
+  await pod.waitFor(r => r.id === 'empty-body' && r.kind === 'finished');
 });

@@ -22,6 +22,7 @@ enum W208TapAcceptance {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let artifacts = URL(fileURLWithPath: env["TATWO2_SELFTEST_ARTIFACTS"] ?? root.path)
         try await cleanupGate(check, artifacts: artifacts)
+        try await plugins(check, root: root)
         try await connectors(check, root: root, artifacts: artifacts)
         try await lowRisk(check, root: root)
         try await conversations(check, root: root, artifacts: artifacts, env: env)
@@ -85,6 +86,102 @@ enum W208TapAcceptance {
             try await Task.sleep(for: .milliseconds(5))
         }
         throw TapError.remote("W208 synthetic scenario timed out")
+    }
+
+    /// The native W208 flow now also uses the production script on the new Settings > Plugins DOM.
+    private static func plugins(_ check: (Bool, String) -> Void, root: URL) async throws {
+        typealias A = HandsConnectAcceptance
+        let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("tests/fixtures/w294-native-pod.mjs")
+        let state = root.appendingPathComponent("plugins-state.json")
+        let node = ProcessInfo.processInfo.environment["TATWO2_SELFTEST_NODE"] ?? "/usr/bin/env"
+        func command(_ values: [String: String]) async throws -> [String: Any] {
+            let process = Process(), pipe = Pipe()
+            process.executableURL = URL(fileURLWithPath: node)
+            let payload = String(decoding: try JSONSerialization.data(withJSONObject: values), as: UTF8.self)
+            process.arguments = (node == "/usr/bin/env" ? ["node"] : []) + [script.path, state.path, payload]
+            process.standardOutput = pipe
+            let status: Int32 = try await withCheckedThrowingContinuation { continuation in
+                process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+                do { try process.run() } catch { continuation.resume(throwing: error) }
+            }
+            guard status == 0 else { throw TapError.remote("W294 local fixture failed") }
+            return try JSONSerialization.jsonObject(with: pipe.fileHandleForReading.readDataToEndOfFile()) as! [String: Any]
+        }
+        func matches(_ data: [String: Any]) throws -> [HandsConnectorScan.Match] {
+            try JSONDecoder().decode([HandsConnectorScan.Match].self, from: JSONSerialization.data(withJSONObject: data["matches"] ?? []))
+        }
+        let registry = HandsConnectorRegistry(url: root.appendingPathComponent("plugins-registry.json"))
+        let accounts = HandsConnectAccounts(url: root.appendingPathComponent("plugins-accounts.json"))
+        let world = try A.World(root, "plugins", disconnect: { _, hosts in Dictionary(uniqueKeysWithValues: hosts.map { ($0.lowercased(), .revoked) }) }, accounts: accounts, connectors: registry)
+        let first = try await command(["cmd": "connectorScan"])
+        world.pod.scanResult = HandsConnectorScan(loggedIn: true, listKnown: first["listKnown"] as? Bool ?? false,
+            devMode: first["devMode"] as? Bool, matches: try matches(first))
+        check(world.pod.scanResult.listKnown && world.pod.scanResult.devMode == true
+            && world.pod.scanResult.matches.filter { $0.connected == true }.map(\.id) == ["asdk_app_fixture4"],
+            "W294 actual Plugins DOM scan: known list, dev mode, connected 4")
+        world.pod.fixtureScan = {
+            guard let data = try? await command(["cmd": "connectorScan"]), let entries = try? matches(data) else { return HandsConnectorScan() }
+            return HandsConnectorScan(loggedIn: true, listKnown: data["listKnown"] as? Bool ?? false, devMode: data["devMode"] as? Bool, matches: entries)
+        }
+        world.pod.fixtureInspect = { match in
+            let data = try? await command(["cmd": "connectorInspect", "connectorID": match.id ?? ""])
+            return data?["authorization"] as? String == "connected" ? .connected : .unknown
+        }
+        world.pod.fixtureReconnect = { id in
+            let data = try? await command(["cmd": "connectorReconnect", "connectorID": id])
+            let clicks = data?["clicks"] as? [String: Any]
+            return data?["status"] as? String == "pressed" && clicks?["continue"] as? [String] == [id] ? .pressed : .unknown
+        }
+        world.pod.beforeDelete = {
+            let archive = root.appendingPathComponent("connector-archive")
+            let files = (try? FileManager.default.contentsOfDirectory(at: archive, includingPropertiesForKeys: nil)) ?? []
+            return files.contains { file in
+                guard let data = try? Data(contentsOf: file), let saved = try? JSONDecoder().decode([HandsConnectorScan.Match].self, from: data) else { return false }
+                return saved.map(\.id) == ["asdk_app_fixture4", "asdk_app_fixture2", "asdk_app_fixture3"] && saved.allSatisfy { $0.serverURL == "https://" + A.publicHost + "/mcp" && $0.name.hasPrefix("TATWO（Primary One）") }
+            }
+        }
+        world.pod.fixtureDelete = { match, keeping in
+            let data = try? await command(["cmd": "connectorDelete", "connectorID": match.id ?? "", "name": match.name, "keeping": keeping])
+            return data?["deleted"] as? Bool == true
+        }
+        // No registry yet: one-click connection chooses the uniquely connected numbered entry.
+        try await finish(world)
+        check(world.pod.calls.contains("reconnect:asdk_app_fixture4") && world.pod.createdNames.isEmpty,
+            "W294 one-click uses 4 through Reconnect/Continue without Create")
+        world.flow.prepareConnectorCleanup()
+        try await wait { !world.flow.cleaningConnectors && world.flow.cleanupPreview != nil }
+        check(world.flow.cleanupPreview?.removing.map(\.name) == ["TATWO（Primary One）2", "TATWO（Primary One）3"],
+            "W294 native cleanup preview lists 2 and 3")
+        world.flow.confirmConnectorCleanup()
+        try await wait { !world.flow.cleaningConnectors }
+        check(world.pod.deletedConnectors == ["asdk_app_fixture2", "asdk_app_fixture3"], "W294 native cleanup completes both Delete app steps")
+        world.flow.disconnect()
+        try await wait { if case .disconnected? = world.flow.card { return true }; return false }
+        try await finish(world)
+        check(world.pod.calls.filter { $0 == "reconnect:asdk_app_fixture4" }.count == 2 && world.pod.createdNames.isEmpty,
+            "W294 reconnect after disconnect keeps App ID 4")
+        let key = HandsConnectorRegistry.key(device: A.hostID, identity: A.identity, mcpURL: "https://" + A.publicHost + "/mcp")
+        check(registry.record(key)?.connector.id == "asdk_app_fixture4" && (try? FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix("connector-archive") }) == true,
+            "W294 registry keeps 4 and archives name/App ID/URL before deletion")
+        let failureLog = HandsConnectLog(url: root.appendingPathComponent("plugins-failure-log.txt"))
+        let blocked = try A.World(root, "plugins-unreadable", connectLog: failureLog)
+        blocked.pod.scanResult = HandsConnectorScan(loggedIn: true, listKnown: false, devMode: nil, matches: [], failure: "找不到 Plugins 分頁")
+        blocked.flow.offer(); try await wait { A.isConfirm(blocked.flow.card) }; blocked.flow.connect()
+        try await wait { blocked.flow.phase == .needsManual }
+        check(failureLog.tail().contains { $0.contains("scan listKnown=false") && $0.contains("step=找不到 Plugins 分頁") },
+            "W294 scan failure writes the exact blocked step in one connection-log line")
+        blocked.flow.cancel(reason: "fixture_done")
+        for reason in ["busy:[aria-busy=\"true\"]", "stray-leaf:SPAN:20"] {
+            let world = try A.World(root, "installed-" + UUID().uuidString, connectLog: failureLog)
+            world.pod.scanResult = HandsConnectorScan(loggedIn: true, listKnown: false, devMode: nil, matches: [], failure: "Plugins 清單未完整載入（Installed 載入逾時）；" + reason)
+            world.flow.offer(); try await wait { A.isConfirm(world.flow.card) }; world.flow.connect()
+            try await wait { world.flow.phase == .needsManual }
+            check(failureLog.tail().contains { $0.contains("scan listKnown=false") && $0.contains("Installed 載入逾時）；" + reason) } && world.pod.createdNames.isEmpty,
+                  "W317 connect-log preserves " + reason + " and never creates")
+            world.flow.cancel(reason: "fixture_done")
+        }
     }
 
     private static func connectors(_ check: (Bool, String) -> Void, root: URL, artifacts: URL) async throws {
@@ -172,7 +269,7 @@ enum W208TapAcceptance {
         mismatch.flow.cancel(reason: "fixture_done")
 
         let cleanupWorld = try A.World(root, "cleanup", connectors: registry)
-        var duplicate = connector; duplicate.id = "fixture-duplicate"; duplicate.name += "12"
+        var duplicate = connector; duplicate.id = "fixture-duplicate"; duplicate.name += "12"; duplicate.connected = false
         var otherDevice = duplicate; otherDevice.id = "other-device"; otherDevice.name = "TATWO（Other Device）2"
         var otherURL = duplicate; otherURL.id = "other-url"; otherURL.serverURL = "https://other.example.com/mcp"
         otherDevice.connected = true; otherURL.connected = true
@@ -220,6 +317,12 @@ enum W208TapAcceptance {
         guard let preview = cleanup.preview(scan: cleanupWorld.pod.scanResult, key: key, identity: A.identity, generation: 0,
                                              base: connector.name, url: url) else { return check(false, "cleanup preview") }
         check(preview.removing.map(\.id) == [duplicate.id] && cleanupWorld.pod.deletedConnectors.isEmpty, "cleanup preview keeps active connector and does not delete until confirmation")
+        var unknownDuplicate = duplicate; unknownDuplicate.id = "fixture-unknown"; unknownDuplicate.connected = nil
+        cleanupWorld.pod.scanResult.matches.append(unknownDuplicate)
+        let guarded = cleanup.preview(scan: cleanupWorld.pod.scanResult, key: key, identity: A.identity, generation: 0, base: connector.name, url: url)
+        check(guarded?.removing.map(\.id) == [duplicate.id], "W294b cleanup requires connected=false and excludes unknown")
+        cleanupWorld.pod.scanResult.matches.removeLast()
+
         cleanupWorld.pod.beforeDelete = {
             let directory = registryURL.deletingLastPathComponent().appendingPathComponent("connector-archive")
             return (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil))?.contains { file in
@@ -387,7 +490,7 @@ enum W208TapAcceptance {
         let secondaryOffer = HandsConnectOffer(hostDeviceID: A.secondaryID, hostName: "Secondary Two", publicHost: "secondary.example.com",
             scope: primaryOffer.scope, callbackHosts: primaryOffer.callbackHosts, setupEpoch: primaryOffer.setupEpoch)
         var secondaryKeep = connector; secondaryKeep.id = "secondary-original"; secondaryKeep.name = "TATWO（Secondary Two）"; secondaryKeep.serverURL = secondaryOffer.mcpURL
-        var secondaryDuplicate = secondaryKeep; secondaryDuplicate.id = "secondary-duplicate"; secondaryDuplicate.name += "2"
+        var secondaryDuplicate = secondaryKeep; secondaryDuplicate.id = "secondary-duplicate"; secondaryDuplicate.name += "2"; secondaryDuplicate.connected = false
         for missing in [false, true] {
             let multiRegistry = HandsConnectorRegistry(url: root.appendingPathComponent("multi-\(missing).json"))
             try multiRegistry.remember(connector, key: key)
@@ -423,7 +526,7 @@ enum W208TapAcceptance {
         typealias A = HandsConnectAcceptance
         let url = "https://" + A.publicHost + "/mcp"
         let keep = HandsConnectorScan.Match(id: "private-keep", name: "TATWO（Primary One）", auth: "oauth", serverURL: url)
-        var duplicate = keep; duplicate.id = "private-delete"; duplicate.name += "2"
+        var duplicate = keep; duplicate.id = "private-delete"; duplicate.name += "2"; duplicate.connected = false
         for action in ["dismiss", "disconnect"] {
             let registry = HandsConnectorRegistry(url: root.appendingPathComponent("preview-" + action + ".json"))
             try registry.remember(keep, key: HandsConnectorRegistry.key(device: A.hostID, identity: A.identity, mcpURL: url))
@@ -446,7 +549,9 @@ enum W208TapAcceptance {
             return [:]
         }
         let tap = ChatGPTTap(transport: transport)
-        let driver = ChatGPTConnectorPod(tap: tap, surface: { nil }); driver.connectLog = log
+        let surface = A.LeaseSurface()
+        surface.onPluginsLoaded = { transport.emit(["type": "hello", "loggedIn": true]) }
+        let driver = ChatGPTConnectorPod(tap: tap, surface: { surface }); driver.connectLog = log
         defer { driver.releaseExclusive(); tap.sleep() }
         check(await driver.acquireExclusive(timeout: 1), "W210-L synthetic Pod acquires existing exclusive lease")
         _ = await driver.inspect(keep, url: url)
@@ -454,12 +559,12 @@ enum W208TapAcceptance {
         var unknown = keep; unknown.id = nil
         _ = await driver.inspect(unknown, url: url)
         _ = await driver.deleteConnector(keep, keeping: keep.id!, url: url)
-        let lines = log.tail()
+        let allLines = log.tail(), lines = allLines.filter { $0.contains("result=") }
         check(lines.count == 4 && lines.contains { $0.contains("connectorInspect result=connected count=1") }
               && lines.contains { $0.contains("connectorDelete result=true count=1") }
               && lines.contains { $0.contains("connectorInspect result=unknown count=0") }
               && lines.contains { $0.contains("connectorDelete result=false count=0") }
-              && lines.allSatisfy { !$0.contains("private-keep") && !$0.contains("private-delete") && !$0.contains(A.identity) && !$0.contains(A.publicHost) },
+              && allLines.allSatisfy { !$0.contains("private-keep") && !$0.contains("private-delete") && !$0.contains(A.identity) && !$0.contains(A.publicHost) },
               "W210-L each inspect/delete logs only result and count, including refusals")
         let world = try A.World(root, "entry-log")
         let loginState = CurrentValueSubject<TapConnection, Never>(.off)
@@ -606,18 +711,6 @@ enum W208TapAcceptance {
         try await wait { !space.isSending && !dm.isSending && !engine.isRunning(thread) }
         check(dm.messages.last?.text == "三處合成回覆 dm" && engine.transcript(for: thread).last?.text == "三處合成回覆 coder", "three surfaces receive their own visible answers")
 
-        await tap.openDots(returnURL: ChatGPTTap.homeURL)
-        check(tap.dotsState == .loaded(url: "https://chatgpt.com/dots", status: 200), "Dots borrows shared Pod")
-        let beforeDots = pod.sends.count
-        dm.send("Dots 期間排隊")
-        try await Task.sleep(for: .milliseconds(20))
-        check(pod.sends.count == beforeDots && dm.state == .queued, "DM submission remains queued while Dots owns Pod")
-        tap.closeDots()
-        try await wait { pod.sends.count == beforeDots + 1 }
-        complete(pod.sends.last!, in: "fixture-dm", answer: "Dots 交回後回覆")
-        try await wait { !dm.isSending }
-        check(dm.messages.last?.text == "Dots 交回後回覆", "Dots restore releases queued send")
-
         let beforeStop = pod.sends.count
         space.draft = "串流停止合成"; space.send(); try await wait { pod.sends.count == beforeStop + 1 }
         let stopped = pod.sends.last!["id"] as! String
@@ -692,11 +785,9 @@ enum W208TapAcceptance {
         check(thinking.seconds() >= 240 && thinking.label(at: Date()).contains("4 分"), "minute-scale progress presents server-thinking duration")
     }
 }
-/// Dispatch Pod plus the website operations the conversation stress drives: regenerate turns and Dots display frames.
+/// Dispatch Pod plus the website operations the conversation stress drives: regenerate turns.
 final class W208TapPod: DispatchTapPod {
     override var sends: [[String: Any]] { commands.filter { ["send", "regenerate"].contains($0["cmd"] as? String ?? "") } }
-    override func displayPage(_ javascript: String) throws { displayGeneration += 1; onDisplayFrame?("https://chatgpt.com/dots", displayGeneration, false, 200) }
-    override func restoreDisplayedPage(_ url: URL) { emit(["type": "hello", "loggedIn": true]) }
     override func respond(_ command: [String: Any], id: String, cmd: String) {
         if cmd == "regenerate" { return }
         if cmd != "send", cmd != "stop", let data = responder?(cmd, command) { emit(["type": "result", "id": id, "ok": true, "data": data]); return }

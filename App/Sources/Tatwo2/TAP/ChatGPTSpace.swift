@@ -157,13 +157,7 @@ final class ChatGPTSpaceModel: ObservableObject {
     @Published private(set) var branchLeaf: String?
     /// 側欄的頁面（跟網頁一樣：圖庫、排程、外掛、網站；帳號選單裡的個人化）；nil＝對話。
     @Published private(set) var page: ChatGPTPage?
-    var dotsPresented: Bool { tap.dotsState != .closed }
-    private var dotsTask: Task<Void, Never>?
 #if DEBUG
-    /// 無 Chromium 的隔離自測只替換網頁表面；導覽、租約與原生按鈕仍走正式碼。
-    var dotsPageForSelfTest: AnyView?
-    var dotsBrowserOpenForSelfTest: ((URL) -> Void)?
-    var dotsControlFramesForSelfTest: [String: CGRect] = [:]
     var failureNoticeForSelfTest: ((String) -> Void)?
 #endif
     var showingLibrary: Bool { page == .library }
@@ -308,6 +302,7 @@ final class ChatGPTSpaceModel: ObservableObject {
             self.pageEffortID = selection.effort
             UserDefaults.standard.set(selection.model, forKey: Self.pageModelKey)
             UserDefaults.standard.set(selection.effort, forKey: Self.pageEffortKey)
+            self.reconcileSavedModels()
         }
         // W184 G3：語音在正在看的那則；結束後照舊重讀清單、換上那則（voiceFinished）。
         voice.conversation = { [weak self] in self?.selectedID }
@@ -330,6 +325,8 @@ final class ChatGPTSpaceModel: ObservableObject {
     init(testTap: ChatGPTTap) {
         tap = testTap
         voice = ChatGPTVoiceMode(tap: testTap, holderNotice: "fixture")
+        pageModelID = UserDefaults.standard.string(forKey: Self.pageModelKey)
+        pageEffortID = UserDefaults.standard.string(forKey: Self.pageEffortKey)
         observeDirectoryConnection(skipInitial: true)
         observeForeground()
     }
@@ -423,8 +420,17 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     /// 記住的代號在目前的選單裡找得到才算數（選單結構改版後，舊的記錄會對不上，09-24 實機）。
     private func existing(_ id: String?) -> String? { id.flatMap { id in models.contains { $0.id == id } ? id : nil } }
-    var effectiveModelID: String? { existing(selectedModelID) ?? existing(pageModelID) ?? defaultModelID }
+    var effectiveModelID: String? { ChatGPTModelMenu.effectiveModel(modelCatalog, .init(modelID: selectedModelID ?? pageModelID))?.id }
     var currentModel: TapModel? { models.first { $0.id == effectiveModelID } }
+    private func reconcileSavedModels() {
+        guard !models.isEmpty else { return }
+        let model = effectiveModelID, effort = effectiveEffortID
+        if selectedModelID != nil, existing(selectedModelID) == nil { selectedModelID = model }
+        if let selectedEffortID, !(currentModel?.efforts.contains { $0.id == selectedEffortID } ?? false) { self.selectedEffortID = effort }
+        pageModelID = model; pageEffortID = effort
+        UserDefaults.standard.set(model, forKey: Self.pageModelKey)
+        UserDefaults.standard.set(effort, forKey: Self.pageEffortKey)
+    }
     /// 目前會用的強度選項：使用者選的；沒選且模型也沒換過，就是網頁自己的（都要在目前模型的檔位裡）。
     var effectiveEffortID: String? {
         let efforts = Set(currentModel?.efforts.map(\.id) ?? [])
@@ -629,7 +635,6 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     func disappear() {
-        closeDots()
         visible = false
         tap.setSpaceVisible(false)
         // W184 G3 第三輪（修正核對 #1）：Space 主畫面不在了（切到 Coder 等其他模式、關 ChatGPT 分頁）＝結束 Space 的即時語音，
@@ -656,6 +661,7 @@ final class ChatGPTSpaceModel: ObservableObject {
                 models = loaded.items
                 defaultModelID = loaded.defaultID
                 defaultEffortID = loaded.currentEffortID
+                reconcileSavedModels()
             }
         }
         refreshToolCatalog()
@@ -744,7 +750,6 @@ final class ChatGPTSpaceModel: ObservableObject {
 
     /// 送出中也能切到別則看（Pro 可能想好幾分鐘，跟網頁一樣邊等邊看別的）；只是不能再送第二則。
     func select(_ id: String) {
-        closeDots()
         guard id != selectedID || page != nil else { return }
         mappedConversationLoad?.cancel()
         mappedConversationLoad = nil
@@ -836,7 +841,6 @@ final class ChatGPTSpaceModel: ObservableObject {
     }
 
     func newChat(with gpt: TapFolder? = nil) {
-        closeDots()
         mappedConversationLoad?.cancel()
         mappedConversationLoad = nil
         viewEpoch += 1
@@ -859,6 +863,7 @@ final class ChatGPTSpaceModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend else { return }
+        reconcileSavedModels()
         let files = attachments
         draft = ""
         attachments = []
@@ -871,7 +876,7 @@ final class ChatGPTSpaceModel: ObservableObject {
         let tool = chosenTool?.id
         selectedTool = nil
         // 新版選單的「版本」不是模型代號，不能直接送；檔位代號本身就帶模型（代號|強度）。
-        let model = selectedModelID.flatMap { $0.hasPrefix("version:") ? nil : $0 }
+        let model = ChatGPTModelMenu.sendArguments(modelCatalog, .init(modelID: selectedModelID ?? pageModelID)).model
         // 暫時對話的每一則都要帶暫時旗標（新對話看開關；接著問看這則是不是暫時對話）。
         let temporary = selectedID == nil ? temporaryChat : selectedID == temporaryConversationID
         // 切換過版本：接在正在看的那一支後面（跟網頁版一樣）。
@@ -1042,7 +1047,7 @@ final class ChatGPTSpaceModel: ObservableObject {
         branchLeaf = nil
         // 畫面上膠囊顯示哪一檔就送哪一檔（沒特別選時是 ChatGPT 的「上次使用」），不讓網頁自己另外挑。
         let effort = effectiveEffortID
-        let model = selectedModelID.flatMap { $0.hasPrefix("version:") ? nil : $0 }
+        let model = ChatGPTModelMenu.sendArguments(modelCatalog, .init(modelID: selectedModelID ?? pageModelID)).model
         consume(tap.send(text: text, conversationID: conversationID, model: model, effort: effort, attachments: [],
                          tool: nil, gizmoID: nil, temporary: conversationID == temporaryConversationID, parentID: parent,
                          temporaryPersonalized: conversationID == temporaryConversationID && temporaryPersonalized),
@@ -1145,7 +1150,6 @@ final class ChatGPTSpaceModel: ObservableObject {
     /// 打開側欄的頁面；每次打開都重讀（排程、外掛等可能在網頁版改過）。
     func open(_ target: ChatGPTPage) {
         guard !isSending else { return }
-        closeDots()
         page = target
         pageFailure = nil
         pageNotice = nil
@@ -2205,37 +2209,6 @@ struct ChatGPTListStatusRow: View {
     }
 }
 
-extension ChatGPTSpaceModel {
-    func openDots() {
-        guard !dotsPresented else { return }
-        // Dots 的真網頁可見性由 presentsPage 宿主決定；返回原生對話後收回 hidden。
-        // 送出、停止與返回載入仍由原本的工作租約喚醒，不靠看不到的宿主維持可見。
-        tap.setSpaceVisible(false)
-        // 原生對話、草稿、分支與頁面都留在原位；返回直接顯示原畫面。
-        var target = URLComponents(url: ChatGPTTap.homeURL, resolvingAgainstBaseURL: false)!
-        if let selectedID { target.path = "/c/" + selectedID }
-        let returnURL = target.url ?? ChatGPTTap.homeURL
-        dotsTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            await tap.openDots(returnURL: returnURL)
-        }
-    }
-
-    func closeDots() {
-        guard dotsPresented else { return }
-        dotsTask?.cancel()
-        dotsTask = nil
-        tap.closeDots()
-    }
-
-    func openDotsInBrowser() {
-#if DEBUG
-        if let dotsBrowserOpenForSelfTest { dotsBrowserOpenForSelfTest(ChatGPTDotsState.url); return }
-#endif
-        NSWorkspace.shared.open(ChatGPTDotsState.url)
-    }
-}
-
 // MARK: - 側欄：釘選、專案、對話
 
 struct ChatGPTSpaceSidebarList: View {
@@ -2277,7 +2250,6 @@ struct ChatGPTSpaceSidebarList: View {
 
             // 跟網頁版側欄一樣：圖庫、排程、外掛、網站（使用者 09-25「2全要」）。
             VStack(spacing: 0) {
-                ChatGPTDotsSidebarRow(model: model)
                 ForEach(ChatGPTPage.sidebar) { page in ChatGPTSidebarNavRow(model: model, page: page) }
             }
             .padding(.horizontal, 12)
@@ -3193,7 +3165,6 @@ struct ChatGPTSpaceMainPane: View {
     /// W184 G3：聽寫綁在 Space 的輸入框上（可取消；畫面消失就取消）。
     @StateObject private var dictation = ChatGPTDictation()
 
-    /// 對話仍用原生畫面；W197 的 Dots 第一版使用同一個 Pod 的網頁。
     private var needsLogin: Bool { tap.connection == .needsLogin }
 
     /// ChatGPT 的字級（桌面版內文約 15pt、行高約 1.5 倍）；Coder 的回答維持原本 13pt。
@@ -3208,9 +3179,7 @@ struct ChatGPTSpaceMainPane: View {
         #endif
         GeometryReader { proxy in
             Group {
-                if model.dotsPresented {
-                    ChatGPTDotsPane(model: model)
-                } else if needsLogin {
+                if needsLogin {
                     loginCard
                 } else {
                     nativeContent
@@ -3219,7 +3188,7 @@ struct ChatGPTSpaceMainPane: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             // 原生 Space 使用同一個 Pod；離開且沒有回合時另設 hidden，位移只負責不露出網頁。
             .background(alignment: .topLeading) {
-                if !model.dotsPresented, tap.webPod != nil {
+                if tap.webPod != nil {
                     TapPodHostView(pod: tap.pod, presentsPage: false)
                         .frame(width: 1100, height: 800)
                         .offset(x: -20_000)
@@ -3887,8 +3856,8 @@ enum ChatGPTModelMenu {
     /// 清單還沒載入時都不帶（照網頁自己的）。
     static func sendArguments(_ catalog: ChatGPTModelCatalog, _ choice: ChatGPTModelChoice) -> (model: String?, effort: String?) {
         guard !catalog.models.isEmpty else { return (nil, nil) }
-        let model = choice.modelID.flatMap { id in
-            catalog.models.contains { $0.id == id } && !id.hasPrefix("version:") ? id : nil
+        let model = choice.modelID.flatMap { _ in effectiveModel(catalog, choice)?.id }.flatMap { id in
+            !id.hasPrefix("version:") ? id : nil
         }
         return (model, effectiveEffort(catalog, choice)?.id)
     }
@@ -3900,7 +3869,7 @@ enum ChatGPTModelMenu {
             return effort.showsVersion && !effort.version.isEmpty ? "\(effort.version) \(level)" : level
         }
         return effectiveModel(catalog, choice).map { $0.id.hasPrefix("version:") ? ChatGPTLabels.version($0.title) : $0.title }
-            ?? "預設"
+            ?? "ChatGPT"
     }
 
     /// 選單：目前模型的思考強度、版本、其他模型；選過東西才有「回到 ChatGPT 的預設」（放在最後一段）。

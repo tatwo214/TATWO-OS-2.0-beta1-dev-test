@@ -1,0 +1,9 @@
+App/Sources/Tatwo2/Facade/ThreadGoalRules.swift
+App/Sources/Tatwo2/Chat/ThreadGoalCard.swift
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift
+Engines/os-mcp/server.mjs
+App/Sources/Tatwo2/Chat/W252GoalLoopsAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w252-goal-loops.test.mjs
+tests/w170-goals.test.mjs
+tests/fixtures/w252-room-allow.txt

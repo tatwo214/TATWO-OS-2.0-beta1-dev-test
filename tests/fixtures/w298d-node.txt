@@ -1,0 +1,46 @@
+✔ W61 exported tree passes safety scan and the exact personal-data grep (13275.890875ms)
+✔ W61 does not widen or rewrite any pre-existing allowlist entry (0.412833ms)
+✔ macOS account paths and user/name fields reject non-generic names (190.544709ms)
+✔ generic accounts and documentation/loopback addresses and example hosts pass (27.683333ms)
+✔ private IPv4 ranges include boundaries and mapped IPv6, but not adjacent public ranges (354.705958ms)
+✔ named personal domains and SSH aliases are rejected (470.779833ms)
+✔ all four new categories enforce exact file + regex and every value on a line (508.320709ms)
+✔ personal identifiers come only from the private list, also when split into fragments; the list never ships (186.994833ms)
+✔ legacy email, token and key detection remains enforced (81.399916ms)
+✔ SSH wrappers fail before any command or state write when host is unset or empty (82.753167ms)
+✔ gateway label discovery uses product default, explicit override, or unique legacy registration (read-only) (107.026125ms)
+✔ public blocklist serialization preserves the original non-personal ad domain (5.7395ms)
+✔ legacy V3 import directory discovery is local, unambiguous and prefers the new default (311.530583ms)
+✔ W297 locked Select model and Power five steps expose one current web name (13.660375ms)
+✔ W297 names are copied from the web even when the backend title disagrees (1.024916ms)
+✔ W297 unlocked list admits only enabled visible model items, never legacy versions (1.419708ms)
+✔ W297 missing web name never falls back to backend title or slug (0.841875ms)
+✔ W297 Power count and current label override mismatched backend capabilities (1.649083ms)
+✔ W297 locked menu without Power only names the current model shown by the web (0.802209ms)
+✔ W297 retired or invisible selections never appear in the returned catalog (1.060584ms)
+✔ W297 allowed current Power step submits its explicit slug/effort mapping (3.713791ms)
+✔ W297 listing models does not press the retry button (0.803917ms)
+✔ W297 unrelated open menus cannot expand the available models (1.127125ms)
+✔ W297 ambiguous panel is rejected; plain backend labels cannot change web Power count (1.45725ms)
+✔ W297 backend containing only retired models still gives one web model and five Power steps (0.543958ms)
+✔ W297 an unreadable Power value fails the catalog without pressing submit (0.496542ms)
+✔ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (7071.008125ms)
+✔ native Codex catalog preserves new official ID and excludes hidden models without guessing capabilities (0.372167ms)
+✔ Claude native resolvedModel is authoritative and duplicate effort levels normalize once (0.076833ms)
+✔ W298b real installer gates fake registry and binary adoption, rollback, SDK and daily UI (16174.72475ms)
+✔ W298b selection, cancellation, renamed quota action and theme matrix (0.147333ms)
+✔ W298b changed Swift adds no hardcoded RGB or hexadecimal colors (41.624291ms)
+✔ W298b R1 failed Claude update restores full version tree and exact launcher (0.099167ms)
+✔ W298b R2 verification uses private snapshot despite source mutation (0.05625ms)
+✔ W298b R3 rollback validation waits for in-flight update (0.044292ms)
+✔ W298b R4 only user rollback records explicit version pin (0.074792ms)
+✔ W298b R5 failed current publication preserves exact previous pointer (0.061875ms)
+✔ W298c fake HTTP synchronizes local models through real comparison and native Coder groups (7300.934792ms)
+ℹ tests 38
+ℹ suites 0
+ℹ pass 38
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 46410.320625

@@ -3,6 +3,36 @@ import Darwin
 import Security
 
 enum EngineRuntimeSelection {
+    static let gates = Dictionary(uniqueKeysWithValues: ["codex", "claude", "grok"].map { ($0, DispatchSemaphore(value: 1)) })
+    @TaskLocal static var heldGates: Set<String> = []
+    static let busy = NSError(domain: "EngineInstall", code: 2, userInfo: [NSLocalizedDescriptionKey: "另一個更新正在進行"])
+    private static func wait(_ gate: DispatchSemaphore, cancellation: Cancellation?) -> Bool {
+        let end = Date().addingTimeInterval(3)
+        while cancellation?.isCancelled != true && Date() < end {
+            if gate.wait(timeout: .now() + 0.05) == .success { return true }
+        }
+        return false
+    }
+    static func acquire(_ gate: DispatchSemaphore) async throws {
+        let cancellation = Cancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                Thread {
+                    let acquired = wait(gate, cancellation: cancellation)
+                    if cancellation.isCancelled { if acquired { gate.signal() }; continuation.resume(throwing: CancellationError()) }
+                    else if acquired { continuation.resume() }
+                    else { continuation.resume(throwing: busy) }
+                }.start()
+            }
+        } onCancel: { cancellation.cancel() }
+    }
+    @MainActor static func withGate<T>(_ kind: ClaudeSidecar.Kind, _ body: () async throws -> T) async throws -> T {
+        guard !heldGates.contains(kind.rawValue) else { throw busy }
+        let gate = gates[kind.rawValue]!
+        try await acquire(gate); defer { gate.signal() }
+        try Task.checkCancellation()
+        return try await $heldGates.withValue(heldGates.union([kind.rawValue])) { try await body() }
+    }
     struct Candidate: Equatable, Sendable {
         var path: URL
         var version: String?
@@ -32,27 +62,29 @@ enum EngineRuntimeSelection {
     }
     static func isNewer(_ local: String, than bundled: String) -> Bool {
         func parts(_ value: String) -> [Int]? {
-            let pieces = value.split(separator: ".").map(String.init)
-            guard pieces.count == 3 else { return nil }
-            let numbers = pieces.compactMap(Int.init)
+            guard value.range(of: #"\A[0-9]+\.[0-9]+\.[0-9]+\z"#, options: .regularExpression) != nil else { return nil }
+            let numbers = value.split(separator: ".").compactMap { Int($0) }
             return numbers.count == 3 ? numbers : nil
         }
         guard let lhs = parts(local), let rhs = parts(bundled) else { return false }
         return rhs.lexicographicallyPrecedes(lhs)
     }
-    static func choose(bundled: Candidate, local: Candidate?) -> Choice {
+    static func choose(bundled: Candidate, local: Candidate?, pinned: Bool = false) -> Choice {
         var result = Choice(executable: bundled.path, version: bundled.version, source: "App 內附", reason: nil)
         guard let local else { return result }
         if let reason = trustFailure(bundled: bundled, local: local) {
             result.reason = reason; return result
         }
-        guard let version = local.version, let baseline = bundled.version,
-              isNewer(version, than: baseline) else {
+        guard let version = local.version, EngineAIUpdate.version(version) == version, let baseline = bundled.version,
+              (pinned || isNewer(version, than: baseline)) else {
             result.reason = "本機 CLI 版本未較新，或無法確認版本；仍使用 App 內附引擎。"; return result
         }
         return Choice(executable: local.path, version: version, source: "本機", reason: nil)
     }
-    // Used both before executing a candidate and when choosing it.
+    static func shouldRollback(bundled: Candidate, local: Candidate) -> Bool {
+        bundled.verified && bundled.developerID && bundled.teamID?.isEmpty == false
+            && (!local.verified || !local.developerID || local.teamID != bundled.teamID)
+    }
     private static func trustFailure(bundled: Candidate, local: Candidate) -> String? {
         guard bundled.verified, bundled.developerID, bundled.teamID?.isEmpty == false else {
             return "內附引擎沒有可驗證的 Developer ID，未採用本機 CLI。"
@@ -80,6 +112,7 @@ enum EngineRuntimeSelection {
     }
     static func resolveAsync(kind: ClaudeSidecar.Kind, bundled: URL, userHome: URL, engineHome: URL,
                              environment: [String: String], forceVerification: Bool = false) async throws -> Choice {
+        guard !heldGates.contains(kind.rawValue) else { throw busy }
         let cancellation = Cancellation()
         return try await withTaskCancellationHandler {
             let choice = await withCheckedContinuation { continuation in
@@ -108,10 +141,15 @@ enum EngineRuntimeSelection {
         guard !Thread.isMainThread else {
             return cached(kind: kind, bundled: bundled, userHome: userHome, engineHome: engineHome, environment: environment)
         }
-        let fm = FileManager.default
-        let baseline = baseline(kind: kind, bundled: bundled)
+        let gate = gates[kind.rawValue]!
+        guard !heldGates.contains(kind.rawValue), wait(gate, cancellation: cancellation) else {
+            var choice = cached(kind: kind, bundled: bundled, userHome: userHome, engineHome: engineHome, environment: environment)
+            choice.reason = busy.localizedDescription; return choice
+        }
+        defer { gate.signal() }
+        let fm = FileManager.default, baseline = baseline(kind: kind, bundled: bundled)
         let scopeKey = scope(baseline, userHome, engineHome, environment)
-        var paths = [userHome.appendingPathComponent(".local/bin/\(kind.rawValue)")]
+        var paths = [engineHome.appendingPathComponent("current"), userHome.appendingPathComponent(".local/bin/\(kind.rawValue)")]
         if kind == .grok { paths.append(userHome.appendingPathComponent(".grok/bin/grok")) }
         paths += (environment["PATH"] ?? "").split(separator: ":").filter { $0.hasPrefix("/") }
             .map { URL(fileURLWithPath: String($0)).appendingPathComponent(kind.rawValue) }
@@ -121,8 +159,8 @@ enum EngineRuntimeSelection {
         }
         let cacheKey = ([baseline] + candidates).map { url in
             let attrs = try? fm.attributesOfItem(atPath: url.path)
-            return url.path + ":" + String(describing: attrs?[.modificationDate]) + ":" + String(describing: attrs?[.size])
-        }.joined(separator: "|") + "|" + scopeKey
+            return url.path + ":" + String(describing: (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970) + ":" + String(describing: attrs?[.size])
+        }.joined(separator: "|") + "|" + scopeKey + "|" + ((try? fm.destinationOfSymbolicLink(atPath: engineHome.appendingPathComponent("rollback-pin").path)) ?? "")
         if !forceVerification {
             cache.lock.lock()
             let prior = cache.values[cacheKey]
@@ -134,13 +172,26 @@ enum EngineRuntimeSelection {
         let env = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": engineHome.path,
                    "CODEX_HOME": engineHome.path, "CLAUDE_CONFIG_DIR": engineHome.path,
                    "CLAUDE_SECURESTORAGE_CONFIG_DIR": engineHome.path,
-                   "TATWO2_GROK_HOME": engineHome.path, "LANG": "C", "LC_ALL": "C"]
+                   "TATWO2_GROK_HOME": engineHome.path, "LANG": "C", "LC_ALL": "C", "DISABLE_AUTOUPDATER": "1"]
         let base = inspect(baseline, environment: env, bundled: nil, cancellation: cancellation)
         var selected = choose(bundled: base, local: nil)
         for path in candidates {
             guard !Task.isCancelled && cancellation?.isCancelled != true else { return cached(kind: kind, bundled: bundled, userHome: userHome, engineHome: engineHome, environment: environment) }
             let candidate = inspect(path, environment: env, bundled: base, cancellation: cancellation)
             let choice = choose(bundled: base, local: candidate)
+            if path == engineHome.appendingPathComponent("current").resolvingSymlinksInPath() {
+                let pinned = (try? fm.destinationOfSymbolicLink(atPath: engineHome.appendingPathComponent("rollback-pin").path)) == path.path
+                let managed = choose(bundled: base, local: candidate, pinned: pinned)
+                if managed.source == "本機" { selected = managed; break }
+                if !shouldRollback(bundled: base, local: candidate) {
+                    if candidate.version == nil || base.version == nil { return cached(kind: kind, bundled: bundled, userHome: userHome, engineHome: engineHome, environment: environment) }
+                    continue
+                }
+                let prior = engineHome.appendingPathComponent("previous").resolvingSymlinksInPath()
+                let fallback = inspect(prior, environment: env, bundled: base, cancellation: cancellation)
+                let restored = choose(bundled: base, local: fallback)
+                if restored.source == "本機", (try? EngineInstall.pointers([("current", prior), ("previous", nil), ("rollback-pin", nil)], in: engineHome)) != nil { selected = restored; selected.reason = "新版驗證失敗，已退回"; break }
+            }
             if choice.source == "本機", selected.source != "本機" || isNewer(choice.version ?? "", than: selected.version ?? "") { selected = choice }
             else if selected.source != "本機", selected.reason == nil { selected.reason = choice.reason }
         }
@@ -149,7 +200,7 @@ enum EngineRuntimeSelection {
         return selected
     }
     /// Security.framework checks the signed code and certificate requirement directly. Displayed codesign text is never evidence.
-    private static func signingIdentity(_ path: URL, expectedTeam: String?) -> (verified: Bool, developerID: Bool, teamID: String?) {
+    static func signingIdentity(_ path: URL, expectedTeam: String?) -> (verified: Bool, developerID: Bool, teamID: String?) {
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(path as CFURL, [], &code) == errSecSuccess, let code else { return (false, false, nil) }
         let flags = SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckAllArchitectures)
@@ -174,14 +225,8 @@ enum EngineRuntimeSelection {
         var candidate = Candidate(path: path, version: nil, verified: signature.verified,
                                   developerID: signature.developerID, teamID: signature.teamID)
         guard bundled.map({ trustFailure(bundled: $0, local: candidate) == nil }) ?? true else { return candidate }
-        let versionText = output(path, ["--version"], environment: environment, deadline: deadline, cancellation: cancellation)?.text
-        let version = versionText.flatMap { text -> String? in
-            guard let range = text.range(of: #"\b\d+\.\d+\.\d+\b"#, options: .regularExpression) else { return nil }
-            // A prerelease is not evidence of a newer stable runtime.
-            if range.upperBound < text.endIndex, text[range.upperBound] == "-" { return nil }
-            return String(text[range])
-        }
-        candidate.version = version
+        let versionText = output(path, ["--version"], environment: environment, deadline: deadline, cancellation: cancellation).flatMap { $0.code == 0 ? $0.text : nil }
+        candidate.version = versionText.flatMap { EngineAIUpdate.version($0) }
         return candidate
     }
     private static func output(_ executable: URL, _ arguments: [String], environment: [String: String], deadline: Date, cancellation: Cancellation?) -> (code: Int32, text: String)? {

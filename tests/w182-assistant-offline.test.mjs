@@ -48,7 +48,7 @@ test('offline handoff: the local assistant runs here and its first turn carries 
   // 引擎那一側：組要送的字時拿走前情（不顯示在對話裡），在匯入前情與計畫之間。
   const engine = read('Facade/ChatLiveEngine.swift');
   const sendBody = slice(engine, '@discardableResult func send(threadID: UUID, text: String, model: String?, engine: ClaudeSidecar.Kind = .claude', 'func savePastedAttachment');
-  assert.match(sendBody, /append\(threadID, ChatMessage\(role: \.user, text: shown, turnID: turn\)\)[\s\S]*if let seeded = AssistantOfflineSeed\.take\(threadID, userText: outgoing\) \{ outgoing = seeded \}[\s\S]*if let planBriefing/);
+  assert.match(sendBody, /append\(threadID, ChatMessage\(role: \.user, text: shown, turnID: turn\), source: source\)[\s\S]*if let seeded = AssistantOfflineSeed\.take\(threadID, userText: outgoing\) \{ outgoing = seeded \}[\s\S]*if let planBriefing/);
   // 主設備那一側：補回的那段引擎沒看過，下一句帶上（資料不是指令，只帶一次；沒有別的前情時才帶）。
   assert.match(sendBody, /if outgoing == engineText, let caughtUp = offlineCatchUpSeed\(threadID: threadID, currentTurn: turn, userText: engineText\) \{\s*outgoing = caughtUp[\s\S]*if let planBriefing/);
   const catchUp = slice(handoff, 'func offlineCatchUpSeed(', '\n    }\n');

@@ -399,6 +399,11 @@ enum HandsBuildAcceptance {
             print("W183BUILD SUMMARY failures=\(check.failed) passed=\(check.passed)")
             return false
         }
+        if environment["TATWO2_W311_COPY_ONLY"] == "1" {
+            try await statusTruthChecks(check, base, keys)
+            print("W311 SUMMARY passed=\(check.passed) failures=\(check.failed)")
+            return check.failed == 0
+        }
         try migrationChecks(check, base, keys)
         try configChecks(check, base, keys)
         try await twoDevicesAndDisable(check, base, keys)

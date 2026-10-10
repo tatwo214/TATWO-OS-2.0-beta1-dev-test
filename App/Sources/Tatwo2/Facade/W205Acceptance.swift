@@ -14,6 +14,10 @@ enum W205Acceptance {
         let pod = DispatchTapPod(); pod.isRunning = true
         let tap = ChatGPTTap(transport: pod)
         let space = ChatGPTSpaceModel(testTap: tap)
+        let webFlag = UserDefaults.standard.object(forKey: ChatGPTWebSpace.enabledKey)
+        UserDefaults.standard.set(false, forKey: ChatGPTWebSpace.enabledKey)
+        defer { UserDefaults.standard.set(webFlag, forKey: ChatGPTWebSpace.enabledKey) }
+        check(!ChatGPTWebSpace.isEnabled, "W280 native sidebar screenshot uses web Space opt-out")
         defer { tap.sleep() }
         let failure = ChatGPTTurnFailure(message: "合成錯誤", reason: nil, draft: "合成草稿")
         for text in ["src/home/index.tsx", "/api/users/1", "src/Users/fixture/index.tsx", "1700000000", "2025550143"] {
@@ -66,7 +70,6 @@ enum W205Acceptance {
                     ("disabled-destructive", AnyView(OSChipButton(title: "停止", role: .destructive, action: {}).disabled(true)), CGRect(x: 170, y: 44, width: 20, height: 12)),
                     ("retained-foreground", AnyView(Text("合成標籤").foregroundStyle(retainedForeground).frame(width: 130, height: 28).chatGlassChip()), CGRect(x: 151, y: 44, width: 58, height: 12)),
                     ("sources-count", AnyView(ChatGPTSourcesButton(model: space, sources: [])), CGRect(x: 192, y: 44, width: 12, height: 12)),
-                    ("dots-icon", AnyView(ChatGPTDotsSidebarRow(model: space).frame(width: 130)), CGRect(x: 126, y: 43, width: 14, height: 14)),
                     ("notice", AnyView(HandsConnectEntryPill(text: "合成連線需確認", help: HandsConnectEntryState.partial(hosts: [], level: nil, text: "").help, action: {})), CGRect(x: 147, y: 44, width: 84, height: 12))
                 ]
                 var ratios: [String: Double] = [:], inks: [String: (Double, Double, Double)] = [:]
@@ -119,6 +122,9 @@ enum W205Acceptance {
                     ("error-row", AnyView(ChatGPTTurnFailureRow(failure: failure, recover: {}).padding(20)), CGSize(width: 500, height: 120))
                 ] {
                     guard let rendered = GlobalDMChatAcceptance.renderSync(view, size: size, scheme: scheme) else { check(false, "W205 screenshot " + name); continue }
+                    if name == "space-sidebar" {
+                        check(!GlobalDMChatAcceptance.identifiers(in: rendered).contains("chatgpt.dots"), "W280 native sidebar has no Dots row")
+                    }
                     GlobalDMChatAcceptance.save(rendered, prefix + "-" + name + ".png", to: out)
                     rendered.close()
                 }

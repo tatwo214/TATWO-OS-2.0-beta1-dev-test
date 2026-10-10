@@ -1,0 +1,46 @@
+[
+  {
+    "mode": "open",
+    "pid": 64593,
+    "window": {
+      "owner": "TATWO OS Staging",
+      "bounds": {
+        "X": 353,
+        "Height": 876,
+        "Y": 50,
+        "Width": 1214
+      },
+      "alpha": 1,
+      "id": 81357,
+      "layer": 0,
+      "visible": true,
+      "pid": 64593
+    },
+    "formalPID": 72148,
+    "launchExit": 0,
+    "quitExit": 0,
+    "residual": 0
+  },
+  {
+    "mode": "finder",
+    "pid": 64672,
+    "window": {
+      "owner": "TATWO OS Staging",
+      "bounds": {
+        "X": 352,
+        "Height": 876,
+        "Y": 50,
+        "Width": 1216
+      },
+      "alpha": 1,
+      "id": 81359,
+      "layer": 0,
+      "visible": true,
+      "pid": 64672
+    },
+    "formalPID": 72148,
+    "launchExit": 0,
+    "quitExit": 0,
+    "residual": 0
+  }
+]

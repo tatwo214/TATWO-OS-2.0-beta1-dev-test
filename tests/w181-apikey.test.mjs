@@ -100,11 +100,11 @@ test('sidecar 啟動環境拿掉被勾那家的金鑰；GBrain 不帶被勾那�
   // 設定在引擎啟動後改了：這條沒在回覆就重開（照新設定拿掉或帶金鑰），正在回覆的等這輪結束。
   const ensure = between(read('Facade/ChatLiveEngine.swift'), 'private func ensureSidecar(', 'guard let idx = doc.threads.firstIndex');
   assert.match(ensure, /let apiKeyOptOutMatches = s\.startedWithAPIKeyOptOut == !EngineDisableStore\.allowsAPIKey\(engine\)\s*\|\| runningThreads\.contains\(threadID\)/);
-  assert.match(ensure, /&& apiKeyOptOutMatches && runtimeMatches \{ return s \}/);
+  assert.match(ensure, /&& apiKeyOptOutMatches && runtimeMatches && s\.startedWithoutMemory == \(memoryPolicy != nil\) \{ return s \}/);
   // CLI 分頁啟動 claude／codex／grok 也拿掉被勾那家的金鑰變數。
-  const cli = between(read('Facade/ChatPageModel.swift'), 'private func launchForCLI(', 'private func cliBookEngine(');
+  const cli = between(read('Facade/ChatPageModel.swift'), 'func launchForCLI(', 'private func cliBookEngine(');
   assert.match(cli, /if let kind = ClaudeSidecar\.Kind\(rawValue: engine\.rawValue\) \{\s*EngineAPIKeyPolicy\.removeAPIKeys\(from: &environment, for: kind, optedOut: disabledEngines\)/);
-  assert.ok(cli.indexOf('removeAPIKeys') < cli.indexOf('return TatwoNativeTerminalLaunch('));
+  assert.ok(cli.indexOf('removeAPIKeys') < cli.indexOf('var launch = TatwoNativeTerminalLaunch('));
   assert.ok(prep > 0 && scrub > prep && scrub < start.indexOf('SidecarGroupedProcess.spawn('), 'scrub after homes, before spawn');
   const policy = read('Facade/EngineAPIKeyPolicy.swift');
   const keys = between(policy, 'static func apiKeyEnvironmentKeys(', 'static func removeAPIKeys(');

@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetRPCCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = fileURLToPath(new URL('../App/Sources/Tatwo2/', import.meta.url));
 const source = name => readFileSync(join(app, name), 'utf8');
@@ -20,7 +21,7 @@ function probe() {
     enum OSUpstream { static let overridePath = "/fixture-missing" }
     enum OSUpstreamRefresh { static let bundledURL: URL? = nil }
   `);
-  writeFileSync(join(root, 'Checks.swift'), String.raw`
+  writeFileSync(join(root, 'Checks.swift'), fleetRPCCompileStubs() + String.raw`
 import Foundation
 
 @main struct Checks {
@@ -183,7 +184,10 @@ import Foundation
             var result: DeviceStatusProbe?
             let done = DispatchSemaphore(value: 0)
             DispatchQueue.global(qos: .userInitiated).async {
-                result = RemoteHostLink(environment: [:]).queryDeviceStatus(device: record)
+                result = RemoteHostLink(environment: ["TATWO2_LIVE_ROOT": root.appendingPathComponent("isolated-live").path,
+                    "TATWO2_AUTHORIZED_KEYS": root.appendingPathComponent("authorized_keys").path,
+                    "TATWO2_SSH_KNOWN_HOSTS": root.appendingPathComponent("known_hosts").path,
+                    "SSH_AUTH_SOCK": root.appendingPathComponent("absent-agent").path]).queryDeviceStatus(device: record)
                 done.signal()
             }
             done.wait()
@@ -195,7 +199,7 @@ import Foundation
 `);
   binary = join(root, 'checks');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
-    ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DeviceStatus', 'RemoteHostLink'].map(n => join(app, 'Facade', n + '.swift')),
+    ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate', 'DeviceStatus', 'RemoteHostLink'].map(n => join(app, 'Facade', n + '.swift')),
     join(root, 'Resources.swift'), join(root, 'Presentation.swift'), join(root, 'Checks.swift'), '-o', binary],
     { encoding: 'utf8', timeout: 180_000 });
   return binary;

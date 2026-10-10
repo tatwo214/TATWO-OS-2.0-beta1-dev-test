@@ -73,6 +73,7 @@ enum ChatRunMode: RawRepresentable, CaseIterable, Identifiable, Hashable {
         if case .custom(let id) = self { return SpaceWorkspaceController.shared.displayName(for: id) }
         // W170（使用者 2026-09-22）：Chat 分頁改名 Coder；存檔用的 rawValue 仍是 "Chat"，舊設定不受影響。
         if case .chat = self { return "Coder" }
+        if case .bot = self { return "寵物" }
         if case .tatwo = self { return "TATWO" }
         return rawValue
     }

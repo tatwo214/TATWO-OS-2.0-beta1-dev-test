@@ -1,0 +1,8 @@
+# W282：App Finder 下載進度與隔離真 CEF 驗收。
+App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift # 每個 ID 發布檔案 Progress、未知大小、最終路徑、沿用取消控制與結束清理。
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift # 在既有真 CEF human 本機驗收插入 W282，W268／W281 原斷言保留。
+App/Sources/Tatwo2/Browser/W282DownloadAcceptance.swift # 同行程 Foundation 訂閱、單調進度、撞名、取消、失敗、多檔、結束與 Finder 原始截图。
+tests/fixtures/w282-room-allow.txt # 逐檔修改理由與禁區。
+tests/fixtures/w282-report.md # 25 行內驗收報告與證據位置。
+tests/fixtures/w282-subscriptions.json # W282 真 CEF 同行程 Foundation 訂閱的原始進度序列與移除回呼數。
+!Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm

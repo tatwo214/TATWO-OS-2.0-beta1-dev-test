@@ -144,8 +144,7 @@ export async function supervise({ root, helper, token = '', adminToken = randomB
   const policy = brainModePolicy(identity);
   if (policy.remote && (config.mode === 'remote' || config.discover === true)) {
     // Reuse paired SSH trust; discover the primary's random loopback port, not a public listener.
-    const ssh = sshArguments(config);
-    const remote = await execute('/usr/bin/ssh', [...ssh, config.host, 'cat "$HOME/AI/TATWO OS/gbrain/state.json"'], { timeout: 10000, maxBuffer: 65536 });
+    const remote = await execute('/usr/bin/ssh', [...sshArguments(config), config.host, 'cat "$HOME/AI/TATWO OS/gbrain/state.json"'], { timeout: 10000, maxBuffer: 65536 });
     const state = JSON.parse(remote.stdout);
     if (config.primaryID && state.deviceID?.toLowerCase() !== config.primaryID.toLowerCase()) throw new Error('primary_identity_mismatch');
     if (state.mode === 'legacy' && state.legacy?.command) {
@@ -160,7 +159,7 @@ export async function supervise({ root, helper, token = '', adminToken = randomB
       if (!token) {
         if (typeof state.entryRoot !== 'string' || !path.isAbsolute(state.entryRoot)) throw new Error('primary_entry_missing');
         const account = shellQuote(`bearer:${state.entryRoot}`);
-        const credential = await execute('/usr/bin/ssh', [...ssh, config.host,
+        const credential = await execute('/usr/bin/ssh', [...sshArguments(config), config.host,
           `/usr/bin/security find-generic-password -s TATWO.GBrain -a ${account} -w`], { timeout: 10000, maxBuffer: 8192 });
         token = credential.stdout.trim();
         if (!token) throw new Error('primary_credential_missing');

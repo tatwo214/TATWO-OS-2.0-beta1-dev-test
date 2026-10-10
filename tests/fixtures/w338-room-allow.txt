@@ -1,0 +1,14 @@
+# W338 ordinary Coder sandbox dispatch; W336 virtual device file is forbidden.
+App/Sources/Tatwo2/Facade/GroupCoderBridge.swift
+App/Sources/Tatwo2/Facade/HandsSandboxLane.swift
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/OSAgentBridge.swift
+App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift
+App/Sources/Tatwo2/New/ChatGPTHandsSection.swift
+App/Sources/Tatwo2/Facade/W264SandboxLaneAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+Engines/os-mcp/server.mjs
+tests/w264-sandboxlane.test.mjs
+tests/fixtures/w338-room-allow.txt
+docs/specs/186-sandbox-device/threat-w264.md
+!App/Sources/Tatwo2/New/SandboxDevicesSection.swift

@@ -1,6 +1,19 @@
 import Combine
 import Foundation
 
+/// File identity for small, synchronously queried policy inputs; missing files also invalidate on creation.
+struct PolicyFileStamp: Equatable {
+    let path: String
+    let modified: Date?
+    let size: UInt64?
+    init(_ url: URL) {
+        path = url.path
+        let attributes = try? FileManager.default.attributesOfItem(atPath: path)
+        modified = attributes?[.modificationDate] as? Date
+        size = attributes?[.size] as? UInt64
+    }
+}
+
 /// W181 R3：這家在這台是用哪一種登入跑。
 enum EngineLoginMethod: String, Sendable, Equatable {
     /// 訂閱／帳號登入（OAuth）：照常能跑，不會按量扣錢。
@@ -108,6 +121,12 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
 
     private let lock = NSLock()
     private var pathsOverride: EnginePaths?
+    private var pathsCache: (environment: [String: String], paths: EnginePaths)?
+    private var fileMethods: [String: (stamps: [PolicyFileStamp], method: EngineLoginMethod)] = [:]
+    #if DEBUG
+    private(set) var fixtureFileReads = 0
+    func resetFixtureFileReads() { lock.lock(); fixtureFileReads = 0; lock.unlock() }
+    #endif
     private var environmentOverride: [String: String]?
     private var statusTimeout: TimeInterval
     private var claudeCache: ClaudeCheck?
@@ -118,7 +137,7 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
     private let probeQueue = DispatchQueue(label: "tatwo2.engine-apikey-policy.claude", qos: .utility)
     /// Claude 的結果在背景查到（或變了）時送一次（主執行緒）：畫面據此重畫。
     let changes = PassthroughSubject<Void, Never>()
-    /// Claude 要跑一次 `claude auth status`（約 0.2 秒），結果記這麼久；Codex、Grok 每次看登入檔。
+    /// Claude 要跑一次 `claude auth status`（約 0.2 秒），結果記這麼久；登入檔依路徑、修改時間與大小快取。
     static let claudeFreshSeconds: TimeInterval = 60
     /// 查不到（逾時、跑不動）時多久再試。
     static let claudeRetrySeconds: TimeInterval = 10
@@ -133,11 +152,12 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
     }
 
     private func snapshot() -> (paths: EnginePaths, environment: [String: String], timeout: TimeInterval) {
-        lock.lock()
-        let paths = pathsOverride, override = environmentOverride, timeout = statusTimeout
-        lock.unlock()
-        let environment = override ?? ProcessInfo.processInfo.environment
-        return (paths ?? EnginePaths(environment: environment), environment, timeout)
+        lock.lock(); defer { lock.unlock() }
+        let environment = environmentOverride ?? ProcessInfo.processInfo.environment
+        if pathsOverride == nil, pathsCache?.environment != environment {
+            pathsCache = (environment, EnginePaths(environment: environment))
+        }
+        return (pathsOverride ?? pathsCache!.paths, environment, statusTimeout)
     }
 
     #if DEBUG
@@ -149,6 +169,7 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
         environmentOverride = environment
         self.statusTimeout = statusTimeout
         claudeCache = nil
+        fileMethods.removeAll(); pathsCache = nil; fixtureFileReads = 0
         generation += 1
         lock.unlock()
     }
@@ -156,7 +177,7 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
 
     /// 清掉 Claude 上次查的結果（之後第一次問會重查）。
     func invalidate() {
-        lock.lock(); claudeCache = nil; generation += 1; lock.unlock()
+        lock.lock(); claudeCache = nil; fileMethods.removeAll(); generation += 1; lock.unlock()
     }
 
     /// 在背景執行緒呼叫（登入、登出、重新檢查後）：勾了 Claude 才重查它的登入方式（沒勾不多跑任何東西）。
@@ -171,25 +192,40 @@ final class EngineAPIKeyPolicy: @unchecked Sendable {
         refreshClaudeInBackground()
     }
 
-    /// 這家在這台是哪一種登入。Codex、Grok 讀登入檔；Claude 的設定檔每次都讀，`claude auth status` 用記下的結果。
+    private func readPolicyFile<Value>(_ read: () throws -> Value) -> Value? {
+        #if DEBUG
+        fixtureFileReads += 1
+        #endif
+        return try? read()
+    }
+
+    /// 這家在這台是哪一種登入。登入與設定檔變更時重讀；`claude auth status` 用記下的結果。
     /// 主執行緒一律不起子程序（ChatPageModel 註解記的 03:41／03:52 兩次「當機」就是卡在這種地方）：
     /// 過期了先回上次的結果、背景重查；還沒查過回 `.checking`。
     /// 背景執行緒：過期了就在這裡查（allowStale＝有上次的結果就先用、背景重查）。
     func method(_ kind: ClaudeSidecar.Kind, allowStale: Bool = false) -> EngineLoginMethod {
         let (paths, _, _) = snapshot()
+        let urls: [URL]
         switch kind {
-        case .codex:
-            return Self.codexMethod(
-                authJSON: try? Data(contentsOf: paths.codexAuth),
-                config: try? String(contentsOf: paths.codexHome.appendingPathComponent("config.toml"), encoding: .utf8))
-        case .grok:
-            return Self.grokMethod(authJSON: try? Data(contentsOf: paths.grokAuth))
-        case .claude:
-            // 設定檔加了 apiKeyHelper／金鑰變數馬上算數（讀一個小檔，不等下次查）。
-            let settings = paths.claudeConfigDirectory.appendingPathComponent("settings.json")
-            if let data = try? Data(contentsOf: settings), Self.claudeSettingsUseAPIKey(data) { return .apiKey }
-            return claudeLogin(allowStale: allowStale)
+        case .codex: urls = [paths.codexAuth, paths.codexHome.appendingPathComponent("config.toml")]
+        case .grok: urls = [paths.grokAuth]
+        case .claude: urls = [paths.claudeConfigDirectory.appendingPathComponent("settings.json")]
         }
+        let stamps = urls.map(PolicyFileStamp.init)
+        lock.lock()
+        let method: EngineLoginMethod
+        if let cached = fileMethods[kind.rawValue], cached.stamps == stamps { method = cached.method }
+        else {
+            switch kind {
+            case .codex: method = Self.codexMethod(authJSON: readPolicyFile { try Data(contentsOf: urls[0]) },
+                config: readPolicyFile { try String(contentsOf: urls[1], encoding: .utf8) })
+            case .grok: method = Self.grokMethod(authJSON: readPolicyFile { try Data(contentsOf: urls[0]) })
+            case .claude: method = (readPolicyFile { try Data(contentsOf: urls[0]) }).map(Self.claudeSettingsUseAPIKey) == true ? .apiKey : .unknown
+            }
+            fileMethods[kind.rawValue] = (stamps, method)
+        }
+        lock.unlock()
+        return kind == .claude && method != .apiKey ? claudeLogin(allowStale: allowStale) : method
     }
 
     private func claudeLogin(allowStale: Bool) -> EngineLoginMethod {

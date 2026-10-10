@@ -1,0 +1,740 @@
+W208 PASS W210-6 confirmation separates keep/delete names and hides internal IDs and server URL
+W208 PASS W210-2 Computer Use denied for cleanup entry
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w208tap/w210-cleanup-false.png
+W208 PASS W210-2 Computer Use denied for cleanup confirmation
+W208 PASS W210-6 actual confirmation AX hides server address even when connected card has a host offer
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w208tap/w210-cleanup-true.png
+W208 PASS W210-2 cleanup card dismissal releases existing sensitive gate
+W208 PASS W294 actual Plugins DOM scan: known list, dev mode, connected 4
+W208 PASS W294 one-click uses 4 through Reconnect/Continue without Create
+W208 PASS W294 native cleanup preview lists 2 and 3
+W208 PASS W294 native cleanup completes both Delete app steps
+W208 PASS W294 reconnect after disconnect keeps App ID 4
+W208 PASS W294 registry keeps 4 and archives name/App ID/URL before deletion
+W208 PASS W294 scan failure writes the exact blocked step in one connection-log line
+W208 PASS first connection saves connector ID/name/URL locally
+W208 PASS a success without a website ID retains the pending marker and displays the persistence limitation
+W208 PASS restart after an unknown website ID only seeks the original name, never another Create
+W208 PASS gateway_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 1: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 1
+W208 PASS app_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 2: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 2
+W208 PASS envelope_expiry does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 3: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 3
+W208 PASS reconnect round 4: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 4
+W208 PASS page_reload does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 5: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 5
+W208 PASS gateway_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 6: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 6
+W208 PASS app_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 7: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 7
+W208 PASS envelope_expiry does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 8: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 8
+W208 PASS reconnect round 9: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 9
+W208 PASS page_reload does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 10: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 10
+W208 PASS gateway_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 11: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 11
+W208 PASS app_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 12: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 12
+W208 PASS envelope_expiry does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 13: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 13
+W208 PASS reconnect round 14: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 14
+W208 PASS page_reload does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 15: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 15
+W208 PASS gateway_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 16: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 16
+W208 PASS app_restart does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 17: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 17
+W208 PASS envelope_expiry does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 18: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 18
+W208 PASS reconnect round 19: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 19
+W208 PASS page_reload does not open an OAuth window while ChatGPT authorization remains
+W208 PASS reconnect round 20: one connector, original ID, no list read or Create
+W208 PASS W210-8 measured TATWO count is one at round 20
+W208 PASS W210-8 TSV detects an extra actual TATWO row and excludes another app instead of hardcoding one
+W208 PASS gateway stopped/recovered restores card without new connector
+W208 PASS manual fallback also respects the persisted connector ID
+W208 PASS unreadable authorization never replaces a remembered connector
+W208 PASS connector identity is scoped to the local installation, account and server
+W208 PASS unfinished OAuth connector is reused
+W208 PASS same name on a different server stops at manual card without mutation
+W208 PASS upgrade discovers the uniquely connected numbered original and only previews cleanup
+W208 PASS upgrade with two connected originals cannot choose one or delete
+W208 PASS account generation changing during migration cannot persist another account's connector
+W208 PASS a resolver returning another device cannot scan or migrate its connectors
+W208 PASS cleanup preview keeps active connector and does not delete until confirmation
+W208 PASS W294b cleanup requires connected=false and excludes unknown
+W208 PASS canceling native cleanup confirmation does not delete
+W208 PASS confirmed cleanup archives reconstruction metadata before deleting only same-device/same-URL duplicates
+W208 PASS changed-account confirmation cannot delete
+W208 PASS W210-1 account changes while deletion waits: deleted=false and no final Delete
+W208 PASS W210-1 generation changes while deletion waits: deleted=false and no final Delete
+W208 PASS W210-5 cancelled cleanup cannot release or overwrite a later connection run
+W208 PASS W210-1 cancelled validity read cannot release a later Pod lease
+W208 PASS W210-1 parent cancellation stops validity monitor before the next account lease
+W208 PASS archive failure aborts cleanup before any deletion
+W208 PASS native disconnect after App restart retains ID and records the need to pair again without opening ChatGPT
+W208 PASS native revoke reconnects the original connector even if the website still says Connected
+W208 PASS W210-3 host revoke verdict persists needsAuthorization
+W208 PASS W210-3 revoking current account leaves another account authorization unchanged
+W208 PASS W210-3 verdict-revoked reconnects original ID instead of trusting website Connected
+W208 PASS W210-3 host-missing-account reconnects original ID instead of trusting website Connected
+W208 PASS W210-4 unique OAuth Connected plus native grant adopts ID without pairing window
+W208 PASS W210-4 host revoke prevents adoption and keeps original pairing path
+W208 PASS W210-5 two devices preview in separate sections with both originals retained
+W208 PASS W210-5 one confirmation deletes only confirmed devices and keeps each original
+W208 PASS W210-5 unavailable device explained while known device still previews
+W208 PASS W210-5 one confirmation deletes only confirmed devices and keeps each original
+W208 PASS connector registry is private 0600
+W208 PASS W210-L stale cleanup preview cleared on dismiss without deleting
+W208 PASS W210-L stale cleanup preview cleared on disconnect without deleting
+W208 PASS W210-L synthetic Pod acquires existing exclusive lease
+W208 PASS W210-L each inspect/delete logs only result and count, including refusals
+W208 PASS W210-L entry tap/act log state and branch without changing hidden-entry behavior
+W208 PASS round 1 visible transcript and idle status
+W208 PASS round 2 stays in the same conversation
+W208 PASS round 2 visible transcript and idle status
+W208 PASS round 3 stays in the same conversation
+W208 PASS round 3 visible transcript and idle status
+W208 PASS round 4 stays in the same conversation
+W208 PASS round 4 visible transcript and idle status
+W208 PASS round 5 stays in the same conversation
+W208 PASS round 5 visible transcript and idle status
+W208 PASS round 6 stays in the same conversation
+W208 PASS round 6 visible transcript and idle status
+W208 PASS round 7 stays in the same conversation
+W208 PASS round 7 visible transcript and idle status
+W208 PASS round 8 stays in the same conversation
+W208 PASS round 8 visible transcript and idle status
+W208 PASS round 9 stays in the same conversation
+W208 PASS round 9 visible transcript and idle status
+W208 PASS round 10 stays in the same conversation
+W208 PASS round 10 visible transcript and idle status
+W208 PASS round 11 stays in the same conversation
+W208 PASS round 11 visible transcript and idle status
+W208 PASS round 12 stays in the same conversation
+W208 PASS round 12 visible transcript and idle status
+W208 PASS round 13 stays in the same conversation
+W208 PASS round 13 visible transcript and idle status
+W208 PASS round 14 stays in the same conversation
+W208 PASS round 14 visible transcript and idle status
+W208 PASS round 15 stays in the same conversation
+W208 PASS round 15 visible transcript and idle status
+W208 PASS round 16 stays in the same conversation
+W208 PASS round 16 visible transcript and idle status
+W208 PASS round 17 stays in the same conversation
+W208 PASS round 17 visible transcript and idle status
+W208 PASS round 18 stays in the same conversation
+W208 PASS round 18 visible transcript and idle status
+W208 PASS round 19 stays in the same conversation
+W208 PASS round 19 visible transcript and idle status
+W208 PASS round 20 stays in the same conversation
+W208 PASS round 20 visible transcript and idle status
+W208 PASS round 21 stays in the same conversation
+W208 PASS round 21 visible transcript and idle status
+W208 PASS round 22 stays in the same conversation
+W208 PASS round 22 visible transcript and idle status
+W208 PASS round 23 stays in the same conversation
+W208 PASS round 23 visible transcript and idle status
+W208 PASS round 24 stays in the same conversation
+W208 PASS round 24 visible transcript and idle status
+W208 PASS round 25 stays in the same conversation
+W208 PASS round 25 visible transcript and idle status
+W208 PASS round 26 stays in the same conversation
+W208 PASS round 26 visible transcript and idle status
+W208 PASS round 27 stays in the same conversation
+W208 PASS round 27 visible transcript and idle status
+W208 PASS round 28 stays in the same conversation
+W208 PASS round 28 visible transcript and idle status
+W208 PASS round 29 stays in the same conversation
+W208 PASS round 29 visible transcript and idle status
+W208 PASS round 30 stays in the same conversation
+W208 PASS round 30 visible transcript and idle status
+W208 PASS round 31 stays in the same conversation
+W208 PASS round 31 visible transcript and idle status
+W208 PASS round 32 stays in the same conversation
+W208 PASS round 32 visible transcript and idle status
+W208 PASS round 33 stays in the same conversation
+W208 PASS round 33 visible transcript and idle status
+W208 PASS round 34 stays in the same conversation
+W208 PASS round 34 visible transcript and idle status
+W208 PASS round 35 stays in the same conversation
+W208 PASS round 35 visible transcript and idle status
+W208 PASS round 36 stays in the same conversation
+W208 PASS round 36 visible transcript and idle status
+W208 PASS round 37 stays in the same conversation
+W208 PASS round 37 visible transcript and idle status
+W208 PASS round 38 stays in the same conversation
+W208 PASS round 38 visible transcript and idle status
+W208 PASS round 39 stays in the same conversation
+W208 PASS round 39 visible transcript and idle status
+W208 PASS round 40 stays in the same conversation
+W208 PASS round 40 visible transcript and idle status
+W208 PASS round 41 stays in the same conversation
+W208 PASS round 41 visible transcript and idle status
+W208 PASS round 42 stays in the same conversation
+W208 PASS round 42 visible transcript and idle status
+W208 PASS round 43 stays in the same conversation
+W208 PASS round 43 visible transcript and idle status
+W208 PASS round 44 stays in the same conversation
+W208 PASS round 44 visible transcript and idle status
+W208 PASS round 45 stays in the same conversation
+W208 PASS round 45 visible transcript and idle status
+W208 PASS round 46 stays in the same conversation
+W208 PASS round 46 visible transcript and idle status
+W208 PASS round 47 stays in the same conversation
+W208 PASS round 47 visible transcript and idle status
+W208 PASS round 48 stays in the same conversation
+W208 PASS round 48 visible transcript and idle status
+W208 PASS round 49 stays in the same conversation
+W208 PASS round 49 visible transcript and idle status
+W208 PASS round 50 stays in the same conversation
+W208 PASS round 50 visible transcript and idle status
+W208 PASS round 51 stays in the same conversation
+W208 PASS round 51 visible transcript and idle status
+W208 PASS round 52 stays in the same conversation
+W208 PASS round 52 visible transcript and idle status
+W208 PASS round 53 stays in the same conversation
+W208 PASS round 53 visible transcript and idle status
+W208 PASS round 54 stays in the same conversation
+W208 PASS round 54 visible transcript and idle status
+W208 PASS round 55 stays in the same conversation
+W208 PASS round 55 visible transcript and idle status
+W208 PASS round 56 stays in the same conversation
+W208 PASS round 56 visible transcript and idle status
+W208 PASS round 57 stays in the same conversation
+W208 PASS round 57 visible transcript and idle status
+W208 PASS round 58 stays in the same conversation
+W208 PASS round 58 visible transcript and idle status
+W208 PASS round 59 stays in the same conversation
+W208 PASS round 59 visible transcript and idle status
+W208 PASS round 60 stays in the same conversation
+W208 PASS round 60 visible transcript and idle status
+W208 PASS round 61 stays in the same conversation
+W208 PASS round 61 visible transcript and idle status
+W208 PASS round 62 stays in the same conversation
+W208 PASS round 62 visible transcript and idle status
+W208 PASS round 63 stays in the same conversation
+W208 PASS round 63 visible transcript and idle status
+W208 PASS round 64 stays in the same conversation
+W208 PASS round 64 visible transcript and idle status
+W208 PASS round 65 stays in the same conversation
+W208 PASS round 65 visible transcript and idle status
+W208 PASS round 66 stays in the same conversation
+W208 PASS round 66 visible transcript and idle status
+W208 PASS round 67 stays in the same conversation
+W208 PASS round 67 visible transcript and idle status
+W208 PASS round 68 stays in the same conversation
+W208 PASS round 68 visible transcript and idle status
+W208 PASS round 69 stays in the same conversation
+W208 PASS round 69 visible transcript and idle status
+W208 PASS round 70 stays in the same conversation
+W208 PASS round 70 visible transcript and idle status
+W208 PASS round 71 stays in the same conversation
+W208 PASS round 71 visible transcript and idle status
+W208 PASS round 72 stays in the same conversation
+W208 PASS round 72 visible transcript and idle status
+W208 PASS round 73 stays in the same conversation
+W208 PASS round 73 visible transcript and idle status
+W208 PASS round 74 stays in the same conversation
+W208 PASS round 74 visible transcript and idle status
+W208 PASS round 75 stays in the same conversation
+W208 PASS round 75 visible transcript and idle status
+W208 PASS round 76 stays in the same conversation
+W208 PASS round 76 visible transcript and idle status
+W208 PASS round 77 stays in the same conversation
+W208 PASS round 77 visible transcript and idle status
+W208 PASS round 78 stays in the same conversation
+W208 PASS round 78 visible transcript and idle status
+W208 PASS round 79 stays in the same conversation
+W208 PASS round 79 visible transcript and idle status
+W208 PASS round 80 stays in the same conversation
+W208 PASS round 80 visible transcript and idle status
+W208 PASS round 81 stays in the same conversation
+W208 PASS round 81 visible transcript and idle status
+W208 PASS round 82 stays in the same conversation
+W208 PASS round 82 visible transcript and idle status
+W208 PASS round 83 stays in the same conversation
+W208 PASS round 83 visible transcript and idle status
+W208 PASS round 84 stays in the same conversation
+W208 PASS round 84 visible transcript and idle status
+W208 PASS round 85 stays in the same conversation
+W208 PASS round 85 visible transcript and idle status
+W208 PASS round 86 stays in the same conversation
+W208 PASS round 86 visible transcript and idle status
+W208 PASS round 87 stays in the same conversation
+W208 PASS round 87 visible transcript and idle status
+W208 PASS round 88 stays in the same conversation
+W208 PASS round 88 visible transcript and idle status
+W208 PASS round 89 stays in the same conversation
+W208 PASS round 89 visible transcript and idle status
+W208 PASS round 90 stays in the same conversation
+W208 PASS round 90 visible transcript and idle status
+W208 PASS round 91 stays in the same conversation
+W208 PASS round 91 visible transcript and idle status
+W208 PASS round 92 stays in the same conversation
+W208 PASS round 92 visible transcript and idle status
+W208 PASS round 93 stays in the same conversation
+W208 PASS round 93 visible transcript and idle status
+W208 PASS round 94 stays in the same conversation
+W208 PASS round 94 visible transcript and idle status
+W208 PASS round 95 stays in the same conversation
+W208 PASS round 95 visible transcript and idle status
+W208 PASS round 96 stays in the same conversation
+W208 PASS round 96 visible transcript and idle status
+W208 PASS round 97 stays in the same conversation
+W208 PASS round 97 visible transcript and idle status
+W208 PASS round 98 stays in the same conversation
+W208 PASS round 98 visible transcript and idle status
+W208 PASS round 99 stays in the same conversation
+W208 PASS round 99 visible transcript and idle status
+W208 PASS round 100 stays in the same conversation
+W208 PASS round 100 visible transcript and idle status
+W208 PASS round 101 stays in the same conversation
+W208 PASS round 101 visible transcript and idle status
+W208 PASS round 102 stays in the same conversation
+W208 PASS round 102 visible transcript and idle status
+W208 PASS round 103 stays in the same conversation
+W208 PASS round 103 visible transcript and idle status
+W208 PASS round 104 stays in the same conversation
+W208 PASS round 104 visible transcript and idle status
+W208 PASS round 105 stays in the same conversation
+W208 PASS round 105 visible transcript and idle status
+W208 PASS round 106 stays in the same conversation
+W208 PASS round 106 visible transcript and idle status
+W208 PASS round 107 stays in the same conversation
+W208 PASS round 107 visible transcript and idle status
+W208 PASS round 108 stays in the same conversation
+W208 PASS round 108 visible transcript and idle status
+W208 PASS round 109 stays in the same conversation
+W208 PASS round 109 visible transcript and idle status
+W208 PASS round 110 stays in the same conversation
+W208 PASS round 110 visible transcript and idle status
+W208 PASS round 111 stays in the same conversation
+W208 PASS round 111 visible transcript and idle status
+W208 PASS round 112 stays in the same conversation
+W208 PASS round 112 visible transcript and idle status
+W208 PASS round 113 stays in the same conversation
+W208 PASS round 113 visible transcript and idle status
+W208 PASS round 114 stays in the same conversation
+W208 PASS round 114 visible transcript and idle status
+W208 PASS round 115 stays in the same conversation
+W208 PASS round 115 visible transcript and idle status
+W208 PASS round 116 stays in the same conversation
+W208 PASS round 116 visible transcript and idle status
+W208 PASS round 117 stays in the same conversation
+W208 PASS round 117 visible transcript and idle status
+W208 PASS round 118 stays in the same conversation
+W208 PASS round 118 visible transcript and idle status
+W208 PASS round 119 stays in the same conversation
+W208 PASS round 119 visible transcript and idle status
+W208 PASS round 120 stays in the same conversation
+W208 PASS round 120 visible transcript and idle status
+W208 PASS round 121 stays in the same conversation
+W208 PASS round 121 visible transcript and idle status
+W208 PASS round 122 stays in the same conversation
+W208 PASS round 122 visible transcript and idle status
+W208 PASS round 123 stays in the same conversation
+W208 PASS round 123 visible transcript and idle status
+W208 PASS round 124 stays in the same conversation
+W208 PASS round 124 visible transcript and idle status
+W208 PASS round 125 stays in the same conversation
+W208 PASS round 125 visible transcript and idle status
+W208 PASS round 126 stays in the same conversation
+W208 PASS round 126 visible transcript and idle status
+W208 PASS round 127 stays in the same conversation
+W208 PASS round 127 visible transcript and idle status
+W208 PASS round 128 stays in the same conversation
+W208 PASS round 128 visible transcript and idle status
+W208 PASS round 129 stays in the same conversation
+W208 PASS round 129 visible transcript and idle status
+W208 PASS round 130 stays in the same conversation
+W208 PASS round 130 visible transcript and idle status
+W208 PASS round 131 stays in the same conversation
+W208 PASS round 131 visible transcript and idle status
+W208 PASS round 132 stays in the same conversation
+W208 PASS round 132 visible transcript and idle status
+W208 PASS round 133 stays in the same conversation
+W208 PASS round 133 visible transcript and idle status
+W208 PASS round 134 stays in the same conversation
+W208 PASS round 134 visible transcript and idle status
+W208 PASS round 135 stays in the same conversation
+W208 PASS round 135 visible transcript and idle status
+W208 PASS round 136 stays in the same conversation
+W208 PASS round 136 visible transcript and idle status
+W208 PASS round 137 stays in the same conversation
+W208 PASS round 137 visible transcript and idle status
+W208 PASS round 138 stays in the same conversation
+W208 PASS round 138 visible transcript and idle status
+W208 PASS round 139 stays in the same conversation
+W208 PASS round 139 visible transcript and idle status
+W208 PASS round 140 stays in the same conversation
+W208 PASS round 140 visible transcript and idle status
+W208 PASS round 141 stays in the same conversation
+W208 PASS round 141 visible transcript and idle status
+W208 PASS round 142 stays in the same conversation
+W208 PASS round 142 visible transcript and idle status
+W208 PASS round 143 stays in the same conversation
+W208 PASS round 143 visible transcript and idle status
+W208 PASS round 144 stays in the same conversation
+W208 PASS round 144 visible transcript and idle status
+W208 PASS round 145 stays in the same conversation
+W208 PASS round 145 visible transcript and idle status
+W208 PASS round 146 stays in the same conversation
+W208 PASS round 146 visible transcript and idle status
+W208 PASS round 147 stays in the same conversation
+W208 PASS round 147 visible transcript and idle status
+W208 PASS round 148 stays in the same conversation
+W208 PASS round 148 visible transcript and idle status
+W208 PASS round 149 stays in the same conversation
+W208 PASS round 149 visible transcript and idle status
+W208 PASS round 150 stays in the same conversation
+W208 PASS round 150 visible transcript and idle status
+W208 PASS round 151 stays in the same conversation
+W208 PASS round 151 visible transcript and idle status
+W208 PASS round 152 stays in the same conversation
+W208 PASS round 152 visible transcript and idle status
+W208 PASS round 153 stays in the same conversation
+W208 PASS round 153 visible transcript and idle status
+W208 PASS round 154 stays in the same conversation
+W208 PASS round 154 visible transcript and idle status
+W208 PASS round 155 stays in the same conversation
+W208 PASS round 155 visible transcript and idle status
+W208 PASS round 156 stays in the same conversation
+W208 PASS round 156 visible transcript and idle status
+W208 PASS round 157 stays in the same conversation
+W208 PASS round 157 visible transcript and idle status
+W208 PASS round 158 stays in the same conversation
+W208 PASS round 158 visible transcript and idle status
+W208 PASS round 159 stays in the same conversation
+W208 PASS round 159 visible transcript and idle status
+W208 PASS round 160 stays in the same conversation
+W208 PASS round 160 visible transcript and idle status
+W208 PASS round 161 stays in the same conversation
+W208 PASS round 161 visible transcript and idle status
+W208 PASS round 162 stays in the same conversation
+W208 PASS round 162 visible transcript and idle status
+W208 PASS round 163 stays in the same conversation
+W208 PASS round 163 visible transcript and idle status
+W208 PASS round 164 stays in the same conversation
+W208 PASS round 164 visible transcript and idle status
+W208 PASS round 165 stays in the same conversation
+W208 PASS round 165 visible transcript and idle status
+W208 PASS round 166 stays in the same conversation
+W208 PASS round 166 visible transcript and idle status
+W208 PASS round 167 stays in the same conversation
+W208 PASS round 167 visible transcript and idle status
+W208 PASS round 168 stays in the same conversation
+W208 PASS round 168 visible transcript and idle status
+W208 PASS round 169 stays in the same conversation
+W208 PASS round 169 visible transcript and idle status
+W208 PASS round 170 stays in the same conversation
+W208 PASS round 170 visible transcript and idle status
+W208 PASS round 171 stays in the same conversation
+W208 PASS round 171 visible transcript and idle status
+W208 PASS round 172 stays in the same conversation
+W208 PASS round 172 visible transcript and idle status
+W208 PASS round 173 stays in the same conversation
+W208 PASS round 173 visible transcript and idle status
+W208 PASS round 174 stays in the same conversation
+W208 PASS round 174 visible transcript and idle status
+W208 PASS round 175 stays in the same conversation
+W208 PASS round 175 visible transcript and idle status
+W208 PASS round 176 stays in the same conversation
+W208 PASS round 176 visible transcript and idle status
+W208 PASS round 177 stays in the same conversation
+W208 PASS round 177 visible transcript and idle status
+W208 PASS round 178 stays in the same conversation
+W208 PASS round 178 visible transcript and idle status
+W208 PASS round 179 stays in the same conversation
+W208 PASS round 179 visible transcript and idle status
+W208 PASS round 180 stays in the same conversation
+W208 PASS round 180 visible transcript and idle status
+W208 PASS round 181 stays in the same conversation
+W208 PASS round 181 visible transcript and idle status
+W208 PASS round 182 stays in the same conversation
+W208 PASS round 182 visible transcript and idle status
+W208 PASS round 183 stays in the same conversation
+W208 PASS round 183 visible transcript and idle status
+W208 PASS round 184 stays in the same conversation
+W208 PASS round 184 visible transcript and idle status
+W208 PASS round 185 stays in the same conversation
+W208 PASS round 185 visible transcript and idle status
+W208 PASS round 186 stays in the same conversation
+W208 PASS round 186 visible transcript and idle status
+W208 PASS round 187 stays in the same conversation
+W208 PASS round 187 visible transcript and idle status
+W208 PASS round 188 stays in the same conversation
+W208 PASS round 188 visible transcript and idle status
+W208 PASS round 189 stays in the same conversation
+W208 PASS round 189 visible transcript and idle status
+W208 PASS round 190 stays in the same conversation
+W208 PASS round 190 visible transcript and idle status
+W208 PASS round 191 stays in the same conversation
+W208 PASS round 191 visible transcript and idle status
+W208 PASS round 192 stays in the same conversation
+W208 PASS round 192 visible transcript and idle status
+W208 PASS round 193 stays in the same conversation
+W208 PASS round 193 visible transcript and idle status
+W208 PASS round 194 stays in the same conversation
+W208 PASS round 194 visible transcript and idle status
+W208 PASS round 195 stays in the same conversation
+W208 PASS round 195 visible transcript and idle status
+W208 PASS round 196 stays in the same conversation
+W208 PASS round 196 visible transcript and idle status
+W208 PASS round 197 stays in the same conversation
+W208 PASS round 197 visible transcript and idle status
+W208 PASS round 198 stays in the same conversation
+W208 PASS round 198 visible transcript and idle status
+W208 PASS round 199 stays in the same conversation
+W208 PASS round 199 visible transcript and idle status
+W208 PASS round 200 stays in the same conversation
+W208 PASS round 200 visible transcript and idle status
+W208 PASS 200 rounds RSS start=97239040 end=103776256 growth=6537216 threshold=134217728 bytes; max latency=11 ms
+W208 PASS background completion produces the actual Island notification
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w208tap/w208-space-200.png
+W208 PASS 200-round actual Space UI rendered
+W208 PASS Space/Coder/DM queue concurrently and each consumer rejects a second send
+W208 PASS three surfaces receive their own visible answers
+W208 PASS stop preserves visible partial answer and stopped notice
+W208 PASS regenerate uses the website operation
+W208 PASS edit follows the old message parent
+W208 PASS branch switch displays the selected branch
+W208 PASS temporary conversation carries privacy flag
+W208 PASS temporary reply stays in the temporary conversation
+W208 PASS project send stays in its project
+W208 PASS conversation-too-long displays failure and recovery action
+W208 PASS too-long failure is present in actual UI accessibility tree
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294f-fastpath-121103/artifacts/w208tap/w208-space-too-long.png
+W208 PASS stream document reload keeps partial reply and never sends a second prompt
+W208 PASS stream reconnect delivers the complete answer
+W208 PASS page reload restores saved answer without resubmitting
+W208 PASS sleep/wake restores durable conversation
+W208 PASS minute-scale progress presents server-thinking duration
+2026-10-08 12:15:05.069 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.070 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.071 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.072 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.073 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+2026-10-08 12:15:05.074 Tatwo2[66096:20243098] IslandNotice: info skipped: Island host unavailable
+W208 SUMMARY failures=0 passed=529

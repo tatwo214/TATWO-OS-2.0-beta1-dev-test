@@ -204,11 +204,14 @@ test('W95 (a)(e) production Swift：kind 白名單、commit／tests 驗證、dev
   assert.ok(binary, 'Build current Tatwo2 first or set TATWO2_TEST_BINARY; never skip.');
   const temp = mkdtempSync(join(tmpdir(), 'w95-swift-'));
   const root = join(temp, 'fixture');
+  mkdirSync(root); mkdirSync(join(temp, 'home'));
   const environment = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => !key.startsWith('TATWO') && !key.startsWith('GIT_')));
   const result = spawnSync(binary, [], {
     env: {
-      ...environment, TMPDIR: temp + '/', HOME: join(temp, 'home'),
+      ...environment, TMPDIR: temp + '/', HOME: join(temp, 'home'), CFFIXED_USER_HOME: join(temp, 'home'),
+      TATWO2_AUTHORIZED_KEYS: join(root, 'unused-authorized'), TATWO2_SSH_KNOWN_HOSTS: join(root, 'unused-known'),
+      TATWO2_SSH_KEY_PATH: join(root, 'unused-key'), TATWO2_SSH_HOST_KEY_PUB: join(root, 'unused-host.pub'),
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
       TATWO2_W95_TEST_ROOT: root, TATWO_OS_ROOT: join(root, 'entry'),
       TATWO2_LIVE_ROOT: join(root, 'live'), TATWO2_ENGINES_ROOT: join(root, 'engines'),
@@ -238,7 +241,8 @@ test('W95 job_submit/job_status 只是 W78 通道上多一種 payload，沒有�
   const bridge = readFileSync(join(repo, 'App/Sources/Tatwo2/Facade/OSAgentBridge.swift'), 'utf8');
   const block = bridge.split('case "job_submit", "job_status":')[1]
     .split('case "dispatch_fetch", "dispatch_ack"')[0];
-  assert.match(block, /DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)/);
+  assert.match(block, /requestDispatch\.authenticate\(method: method, proof: params\)/);
+  assert.match(bridge, /private var requestDispatch: DeviceDispatch \{[\s\S]*?return DeviceDispatch\.shared\s*\}/);
   assert.doesNotMatch(block, /ssh-keygen|publicKeyFingerprint|authorizedKeys|signed\(/);
   const queue = readFileSync(join(repo, 'App/Sources/Tatwo2/Facade/JobQueue.swift'), 'utf8');
   assert.doesNotMatch(queue, /ssh-keygen|authorizedKeysURL|publicKeyFingerprint|Process\(/);

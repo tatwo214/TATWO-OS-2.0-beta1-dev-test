@@ -1,0 +1,614 @@
+W185TAP PASS A1 native visibility matrix Space=false turn=false page=false
+W185TAP PASS A1 native visibility matrix Space=false turn=false page=true
+W185TAP PASS A1 native visibility matrix Space=false turn=true page=false
+W185TAP PASS A1 native visibility matrix Space=false turn=true page=true
+W185TAP PASS A1 native visibility matrix Space=true turn=false page=false
+W185TAP PASS A1 native visibility matrix Space=true turn=false page=true
+W185TAP PASS A1 native visibility matrix Space=true turn=true page=false
+W185TAP PASS A1 native visibility matrix Space=true turn=true page=true
+W185TAP PASS A1 invisible idle DM lease must not keep the renderer visible
+W185TAP PASS A1 background turn wakes before send dispatch
+W185TAP PASS A1 hiding Space during a turn keeps renderer visible
+W185TAP PASS A1 first turn finishing keeps queued turn awake
+W185TAP PASS A1 stopping keeps renderer awake until acknowledgement
+W185TAP PASS A1 stop acknowledgement hides idle renderer even with DM lease
+W185TAP PASS A1 turn finishing while Space visible keeps renderer visible
+W185TAP PASS A1 hiding idle Space immediately hides renderer
+W185TAP PASS A1 failed send returns invisible renderer to hidden
+W185TAP PASS A1 voice wakes renderer before its first command
+W185TAP PASS A1 confirmed voice end hides invisible idle renderer
+W185TAP PASS W196 C2 existing four-field storage format retained
+W185TAP PASS W196 C4 same stored IDs resolve both directions
+W185TAP PASS W196 C4 unmapped OS thread resolves nothing
+W185TAP PASS W196 C4 unrelated ChatGPT conversation resolves nothing
+W185TAP PASS W196 C4 remote selection cannot reuse a local thread mapping
+W185TAP PASS W196 C4 mapped navigation wakes sleeping TAP before requesting messages, without flashing a read failure
+W185TAP PASS W196 C4 mapped navigation loads the correct saved messages after readiness and releases its lease
+W185TAP PASS W196 C2 standalone thread maps through the actual inbox location
+W185TAP PASS W196 C4 inbox mapping reverses to the standalone OS thread
+W185TAP PASS W196 C3 inbox preamble never invents an authorized OS project ID
+W185TAP PASS W196 C4 legacy map display is read-only and preserves old bytes
+W185TAP PASS W196 W207 both mapping rows fall back from a broken current map to the same safe legacy map
+W185TAP PASS W196 W207 both mapping rows reject a map without the expected name prefix
+W185TAP PASS W196 privacy map display refuses symlink folders
+W185TAP PASS W196 C4 malformed map is hidden
+W185TAP PASS W196 C4 actual rows display both project and thread in light
+W185TAP PASS W196 W207 direct title lookup follows a changed directory result
+W185TAP PASS W196 W207 removed directory title falls back to the fetched title without stale cache
+W185TAP PASS W196 C3 actual ChatGPT room row displays source project in light
+W185TAP PASS W196 C4 native click opens the mapped ChatGPT conversation in light
+W185TAP PASS W196 C4 native click opens the mapped OS thread in light
+W185TAP PASS W196 C4 switching to unmapped conversations hides both actual rows in light
+W185TAP PASS W196 C4 actual rows display both project and thread in dark
+W185TAP PASS W196 W207 direct title lookup follows a changed directory result
+W185TAP PASS W196 W207 removed directory title falls back to the fetched title without stale cache
+W185TAP PASS W196 C3 actual ChatGPT room row displays source project in dark
+W185TAP PASS W196 C4 dark evidence uses native dark appearance and readable glass theme
+W185TAP PASS W196 C4 native click opens the mapped ChatGPT conversation in dark
+W185TAP PASS W196 C4 native click opens the mapped OS thread in dark
+W185TAP PASS W196 C4 switching to unmapped conversations hides both actual rows in dark
+W185TAP PASS W196 C4 display and navigation leave stored map bytes unchanged
+W185TAP PASS W196 privacy tool argument audit omits titles
+W185TAP PASS W194-4 real offscreen NSWindow blocks capture before any background work
+W185TAP PASS W194-11 cached model title survives empty catalog
+W185TAP PASS W194-11 reply persists its display name
+W185TAP PASS W194-11 native empty catalog keeps the display name without stale capabilities
+W185TAP PASS W194-11 historical reply name survives serialization and catalog loss
+W185TAP PASS W194-11 cold persisted fixture has never populated the name cache
+W185TAP PASS W194-11 restored reply seeds the remembered model name before a catalog exists
+W185TAP PASS W194-3 old stopped errors render neutrally too
+W185TAP PASS W194-10 normalized login error card offers Model Login
+W185TAP PASS W194-1 stopped stream never fails streaming=false ack=false
+W185TAP PASS W194-1 deadline closes unknown Pod but leaves automatic recovery streaming=false ack=false
+W185TAP PASS W194-1 next send reopens and succeeds streaming=false ack=false
+W185TAP PASS W194-1 stopped stream never fails streaming=false ack=true
+W185TAP PASS W194-1 deadline closes unknown Pod but leaves automatic recovery streaming=false ack=true
+W185TAP PASS W194-1 next send reopens and succeeds streaming=false ack=true
+W185TAP PASS W194-1 stopped stream never fails streaming=true ack=false
+W185TAP PASS W194-1 deadline closes unknown Pod but leaves automatic recovery streaming=true ack=false
+W185TAP PASS W194-1 next send reopens and succeeds streaming=true ack=false
+W185TAP PASS W194-1 stopped stream never fails streaming=true ack=true
+W185TAP PASS W194-1 deadline closes unknown Pod but leaves automatic recovery streaming=true ack=true
+W185TAP PASS W194-1 next send reopens and succeeds streaming=true ack=true
+W185TAP PASS W194-1 delayed CEF close queues restart without reusing the held profile
+W185TAP PASS W194-1 delayed CEF lease release automatically resumes the next send
+W185TAP PASS W194-3 DM pre-submit stop retains draft and attachment
+W185TAP PASS W194-1 Coder-streaming=false-receipt=false connection remains recoverable
+W185TAP PASS W194-1 Coder-streaming=false-receipt=false cancelled turn retains model label
+W185TAP PASS W194-1 Coder-streaming=false-receipt=false recovery explanation
+W185TAP PASS W194-1 Coder-streaming=false-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Coder-streaming=false-receipt=true connection remains recoverable
+W185TAP PASS W194-1 Coder-streaming=false-receipt=true cancelled turn retains model label
+W185TAP PASS W194-1 Coder-streaming=false-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Coder-streaming=true-receipt=false connection remains recoverable
+W185TAP PASS W194-1 Coder-streaming=true-receipt=false cancelled turn retains model label
+W185TAP PASS W194-1 Coder-streaming=true-receipt=false recovery explanation
+W185TAP PASS W194-1 Coder-streaming=true-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Coder-streaming=true-receipt=true connection remains recoverable
+W185TAP PASS W194-1 Coder-streaming=true-receipt=true cancelled turn retains model label
+W185TAP PASS W194-1 Coder-streaming=true-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Space-streaming=false-receipt=false connection remains recoverable
+W185TAP PASS W194-3 Space-streaming=false-receipt=false neutral per-turn stop
+W185TAP PASS W194-1 Space-streaming=false-receipt=false recovery explanation
+2026-10-08 06:55:58.156 Tatwo2[54771:19497724] IslandNotice: info skipped: Island host unavailable
+W185TAP PASS W194-1 Space-streaming=false-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Space-streaming=false-receipt=true connection remains recoverable
+W185TAP PASS W194-3 Space-streaming=false-receipt=true neutral per-turn stop
+2026-10-08 06:55:58.213 Tatwo2[54771:19497724] IslandNotice: info skipped: Island host unavailable
+W185TAP PASS W194-1 Space-streaming=false-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Space-streaming=true-receipt=false connection remains recoverable
+W185TAP PASS W194-3 Space-streaming=true-receipt=false neutral per-turn stop
+W185TAP PASS W194-1 Space-streaming=true-receipt=false recovery explanation
+2026-10-08 06:55:58.308 Tatwo2[54771:19497724] IslandNotice: info skipped: Island host unavailable
+W185TAP PASS W194-1 Space-streaming=true-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 Space-streaming=true-receipt=true connection remains recoverable
+W185TAP PASS W194-3 Space-streaming=true-receipt=true neutral per-turn stop
+2026-10-08 06:55:58.368 Tatwo2[54771:19497724] IslandNotice: info skipped: Island host unavailable
+W185TAP PASS W194-1 Space-streaming=true-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-1 DM-streaming=false-receipt=false connection remains recoverable
+W185TAP PASS W194-3 DM-streaming=false-receipt=false neutral per-turn stop; unknown send is never restored
+W185TAP PASS W194-1 DM-streaming=false-receipt=false recovery explanation
+W185TAP PASS W194-1 DM-streaming=false-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 DM-streaming=false-receipt=true connection remains recoverable
+W185TAP PASS W194-3 DM-streaming=false-receipt=true neutral per-turn stop; unknown send is never restored
+W185TAP PASS W194-1 DM-streaming=false-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-1 DM-streaming=true-receipt=false connection remains recoverable
+W185TAP PASS W194-3 DM-streaming=true-receipt=false neutral per-turn stop; unknown send is never restored
+W185TAP PASS W194-1 DM-streaming=true-receipt=false recovery explanation
+W185TAP PASS W194-1 DM-streaming=true-receipt=false next send wakes exactly once and succeeds
+W185TAP PASS W194-1 DM-streaming=true-receipt=true connection remains recoverable
+W185TAP PASS W194-3 DM-streaming=true-receipt=true neutral per-turn stop; unknown send is never restored
+W185TAP PASS W194-1 DM-streaming=true-receipt=true next send wakes exactly once and succeeds
+W185TAP PASS W194-3 Coder proven pre-submit stop restores draft with a neutral note
+W185TAP PASS W194-3 Space proven pre-submit stop restores draft without an error
+W185TAP PASS W194-3 DM proven pre-submit stop restores the actual composer callback and removes unsent bubbles
+W185TAP PASS W194-11 successful login refreshes the model catalog
+W185TAP PASS W194-11 failed login never probes a model catalog
+W185TAP PASS W194-2 selected dormant model keeps send enabled failure=false
+W185TAP PASS W194-2 dormant send queues immediately failure=false
+W185TAP PASS W194-2 automatic dispatch replaces temporary startup without a permanent system row
+W185TAP PASS W194-11 successful login refreshes the model catalog
+W185TAP PASS W194-11 failed login never probes a model catalog
+W185TAP PASS W194-2 selected dormant model keeps send enabled failure=true
+W185TAP PASS W194-2 dormant send queues immediately failure=true
+W185TAP PASS W194-2 wake failure restores draft with explanation
+W185TAP PASS W195-D persisted .054 startup notice is hidden while user quotations and other notes remain
+W185TAP PASS W195-D legacy startup filtering preserves every stored record
+W185TAP PASS W195-A Coder wake keeps the background renderer awake before hello
+W185TAP PASS W195-E Coder waiting is running and selects the stop button
+W185TAP PASS W195-D queued reply remains running without reporting startup or appending a system row
+W195 PNG /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w195-waking.png
+W185TAP PASS W195-E waiting permits a local command without ending the TAP turn
+W195 PNG /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w195-waking-with-command.png
+W185TAP PASS W195-A Coder hidden-sensitive hello dispatches within five seconds of wake
+W185TAP PASS W195-A Coder preparation and metadata requests stay awake until stream dispatch
+W185TAP PASS W195-D successful Coder reply removes every startup hint
+W185TAP PASS W195-A Coder completion releases all background work and hides the idle renderer
+W185TAP PASS W195-A DM wake keeps the background renderer awake before hello
+W185TAP PASS W195-A DM hidden-sensitive hello dispatches within five seconds of wake
+W185TAP PASS W195-A DM preparation and metadata requests stay awake until stream dispatch
+W185TAP PASS W195-A DM dormant send completes through the shared TAP
+W185TAP PASS W195-A DM completion releases all background work and hides the idle renderer
+W185TAP PASS W195-A Space wake keeps the background renderer awake before hello
+W185TAP PASS W195-A Space hidden-sensitive hello dispatches within five seconds of wake
+W185TAP PASS W195-A Space preparation and metadata requests stay awake until stream dispatch
+2026-10-08 06:56:14.062 Tatwo2[54771:19497724] IslandNotice: info skipped: Island host unavailable
+W185TAP PASS W195-A Space dormant send completes through the shared TAP
+W185TAP PASS W195-A Space completion releases all background work and hides the idle renderer
+W185TAP PASS W195-B absent hello settles near 60 seconds elapsed=60.053759500000005 seconds
+W185TAP PASS W195-B startup timeout restores the actual Coder draft without submitting
+W185TAP PASS W195-B timeout explains failure, clears startup and enables retry
+W185TAP PASS W195-B timeout retry wakes again and delivers without selecting the model again
+W185TAP PASS W195-C cancel terminal receipt always clears startup and settles delivery
+W185TAP PASS W195-C cancel restores the draft before website submission
+W185TAP PASS W195-C cancel retains the W194 neutral stopped explanation
+W185TAP PASS W195-C cancel late hello never submits the cancelled turn
+W185TAP PASS W195-C immediate-cancel terminal receipt always clears startup and settles delivery
+W185TAP PASS W195-C immediate-cancel restores the draft before website submission
+W185TAP PASS W195-C immediate-cancel retains the W194 neutral stopped explanation
+W185TAP PASS W195-C immediate-cancel late hello never submits the cancelled turn
+W185TAP PASS W195-F late CLI closed cannot clear a waking TAP turn
+W185TAP PASS W195-F late CLI closed cannot admit a replacement turn and lose the original receipt
+W185TAP PASS W195-C late-closed terminal receipt always clears startup and settles delivery
+W185TAP PASS W195-F old receipt preserves the newer typed draft and retains the unsent original
+W185TAP PASS W195-C late-closed late hello never submits the cancelled turn
+W185TAP PASS W195-C shutdown terminal receipt always clears startup and settles delivery
+W185TAP PASS W195-C shutdown restores the draft before website submission
+W185TAP PASS W195-C shutdown retains the W194 neutral stopped explanation
+W185TAP PASS W195-C shutdown late hello never submits the cancelled turn
+W185TAP PASS W195-F old shutdown receipt settles its draft without ending a replacement TAP turn
+W185TAP PASS W195-F late terminal explanation remains attached to the original turn
+W185TAP PASS W195-F replacement turn receives exactly its own terminal notification
+W185TAP PASS W280 native sidebar screenshot uses web Space opt-out
+W185TAP PASS W205-6 native normal relative/API path or timestamp survives redaction and dispatch scan: src/home/index.tsx
+W185TAP PASS W205-6 native normal relative/API path or timestamp survives redaction and dispatch scan: /api/users/1
+W185TAP PASS W205-6 native normal relative/API path or timestamp survives redaction and dispatch scan: src/Users/fixture/index.tsx
+W185TAP PASS W205-6 native normal relative/API path or timestamp survives redaction and dispatch scan: 1700000000
+W185TAP PASS W205-6 native normal relative/API path or timestamp survives redaction and dispatch scan: 2025550143
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 native true local path or protected phone form remains protected
+W185TAP PASS W205-6 shared redactor keeps real file URL and absolute user names private without relative-path false positives
+W185TAP PASS W205 optional Coder recovery appends without overwriting current draft
+W185TAP PASS W205 optional Space recovery preserves existing draft
+W185TAP PASS W205 optional new-chat recovery carries both current and returned drafts
+W185TAP PASS W205 optional duplicate recovery does not duplicate the current draft
+W205 CONTRAST aurora light top-mode 12.62:1
+W185TAP PASS W205-1 w205-aurora-light top-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-top-mode.png
+W205 CONTRAST aurora light top-mode-unselected 12.53:1
+W185TAP PASS W205-1 w205-aurora-light top-mode-unselected text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-top-mode-unselected.png
+W205 CONTRAST aurora light input-model 12.53:1
+W185TAP PASS W205-1 w205-aurora-light input-model text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-input-model.png
+W205 CONTRAST aurora light input-model-suffix 12.53:1
+W185TAP PASS W205-1 w205-aurora-light input-model-suffix text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-input-model-suffix.png
+W205 CONTRAST aurora light input-mode 12.53:1
+W185TAP PASS W205-1 w205-aurora-light input-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-input-mode.png
+W205 CONTRAST aurora light input-mode-disabled 4.25:1
+W185TAP PASS W205-1 w205-aurora-light input-mode-disabled stays legible (>=3:1) and visibly fainter than input-mode
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-input-mode-disabled.png
+W205 CONTRAST aurora light space-search 12.53:1
+W185TAP PASS W205-1 w205-aurora-light space-search text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-space-search.png
+W205 CONTRAST aurora light error 12.56:1
+W185TAP PASS W205-1 w205-aurora-light error text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-error.png
+W205 CONTRAST aurora light retry 12.10:1
+W185TAP PASS W205-1 w205-aurora-light retry text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-retry.png
+W205 CONTRAST aurora light notice-dismiss 12.53:1
+W185TAP PASS W205-1 w205-aurora-light notice-dismiss text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-notice-dismiss.png
+W205 CONTRAST aurora light destructive 7.22:1
+W185TAP PASS W205-1 w205-aurora-light destructive text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-destructive.png
+W205 CONTRAST aurora light enabled 12.53:1
+W185TAP PASS W205-1 w205-aurora-light enabled text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-enabled.png
+W205 CONTRAST aurora light disabled 4.25:1
+W185TAP PASS W205-1 w205-aurora-light disabled stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-disabled.png
+W205 CONTRAST aurora light disabled-destructive 4.25:1
+W185TAP PASS W205-1 w205-aurora-light disabled-destructive stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-disabled-destructive.png
+W205 CONTRAST aurora light retained-foreground 12.53:1
+W185TAP PASS W205-1 w205-aurora-light retained-foreground text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-retained-foreground.png
+W205 CONTRAST aurora light sources-count 12.53:1
+W185TAP PASS W205-1 w205-aurora-light sources-count text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-sources-count.png
+W205 CONTRAST aurora light notice 12.53:1
+W185TAP PASS W205-1 w205-aurora-light notice text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-notice.png
+W185TAP PASS W205-1 w205-aurora-light destructive ink is visibly red
+W185TAP PASS W205-1 w205-aurora-light selected chip edge differs from unselected
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-chip-selected.png
+W185TAP PASS W205-1 w205-aurora-light chip rim is visible against surrounding canvas
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-chip-rim.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-coder.png
+W185TAP PASS W280 native sidebar has no Dots row
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-space-sidebar.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-light-error-row.png
+W205 CONTRAST aurora dark top-mode 10.96:1
+W185TAP PASS W205-1 w205-aurora-dark top-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-top-mode.png
+W205 CONTRAST aurora dark top-mode-unselected 15.81:1
+W185TAP PASS W205-1 w205-aurora-dark top-mode-unselected text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-top-mode-unselected.png
+W205 CONTRAST aurora dark input-model 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark input-model text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-input-model.png
+W205 CONTRAST aurora dark input-model-suffix 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark input-model-suffix text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-input-model-suffix.png
+W205 CONTRAST aurora dark input-mode 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark input-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-input-mode.png
+W205 CONTRAST aurora dark input-mode-disabled 8.97:1
+W185TAP PASS W205-1 w205-aurora-dark input-mode-disabled stays legible (>=3:1) and visibly fainter than input-mode
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-input-mode-disabled.png
+W205 CONTRAST aurora dark space-search 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark space-search text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-space-search.png
+W205 CONTRAST aurora dark error 9.61:1
+W185TAP PASS W205-1 w205-aurora-dark error text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-error.png
+W205 CONTRAST aurora dark retry 9.28:1
+W185TAP PASS W205-1 w205-aurora-dark retry text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-retry.png
+W205 CONTRAST aurora dark notice-dismiss 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark notice-dismiss text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-notice-dismiss.png
+W205 CONTRAST aurora dark destructive 7.80:1
+W185TAP PASS W205-1 w205-aurora-dark destructive text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-destructive.png
+W205 CONTRAST aurora dark enabled 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark enabled text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-enabled.png
+W205 CONTRAST aurora dark disabled 8.97:1
+W185TAP PASS W205-1 w205-aurora-dark disabled stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-disabled.png
+W205 CONTRAST aurora dark disabled-destructive 8.97:1
+W185TAP PASS W205-1 w205-aurora-dark disabled-destructive stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-disabled-destructive.png
+W205 CONTRAST aurora dark retained-foreground 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark retained-foreground text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-retained-foreground.png
+W205 CONTRAST aurora dark sources-count 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark sources-count text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-sources-count.png
+W205 CONTRAST aurora dark notice 15.00:1
+W185TAP PASS W205-1 w205-aurora-dark notice text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-notice.png
+W185TAP PASS W205-1 w205-aurora-dark destructive ink is visibly red
+W185TAP PASS W205-1 w205-aurora-dark selected chip edge differs from unselected
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-chip-selected.png
+W185TAP PASS W205-1 w205-aurora-dark chip rim is visible against surrounding canvas
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-chip-rim.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-coder.png
+W185TAP PASS W280 native sidebar has no Dots row
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-space-sidebar.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-aurora-dark-error-row.png
+W205 CONTRAST fable5 light top-mode 11.02:1
+W185TAP PASS W205-1 w205-fable5-light top-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-top-mode.png
+W205 CONTRAST fable5 light top-mode-unselected 11.92:1
+W185TAP PASS W205-1 w205-fable5-light top-mode-unselected text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-top-mode-unselected.png
+W205 CONTRAST fable5 light input-model 11.92:1
+W185TAP PASS W205-1 w205-fable5-light input-model text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-input-model.png
+W205 CONTRAST fable5 light input-model-suffix 11.92:1
+W185TAP PASS W205-1 w205-fable5-light input-model-suffix text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-input-model-suffix.png
+W205 CONTRAST fable5 light input-mode 11.92:1
+W185TAP PASS W205-1 w205-fable5-light input-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-input-mode.png
+W205 CONTRAST fable5 light input-mode-disabled 4.21:1
+W185TAP PASS W205-1 w205-fable5-light input-mode-disabled stays legible (>=3:1) and visibly fainter than input-mode
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-input-mode-disabled.png
+W205 CONTRAST fable5 light space-search 11.92:1
+W185TAP PASS W205-1 w205-fable5-light space-search text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-space-search.png
+W205 CONTRAST fable5 light error 11.92:1
+W185TAP PASS W205-1 w205-fable5-light error text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-error.png
+W205 CONTRAST fable5 light retry 11.49:1
+W185TAP PASS W205-1 w205-fable5-light retry text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-retry.png
+W205 CONTRAST fable5 light notice-dismiss 11.92:1
+W185TAP PASS W205-1 w205-fable5-light notice-dismiss text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-notice-dismiss.png
+W205 CONTRAST fable5 light destructive 6.75:1
+W185TAP PASS W205-1 w205-fable5-light destructive text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-destructive.png
+W205 CONTRAST fable5 light enabled 11.92:1
+W185TAP PASS W205-1 w205-fable5-light enabled text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-enabled.png
+W205 CONTRAST fable5 light disabled 4.21:1
+W185TAP PASS W205-1 w205-fable5-light disabled stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-disabled.png
+W205 CONTRAST fable5 light disabled-destructive 4.21:1
+W185TAP PASS W205-1 w205-fable5-light disabled-destructive stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-disabled-destructive.png
+W205 CONTRAST fable5 light retained-foreground 11.92:1
+W185TAP PASS W205-1 w205-fable5-light retained-foreground text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-retained-foreground.png
+W205 CONTRAST fable5 light sources-count 11.92:1
+W185TAP PASS W205-1 w205-fable5-light sources-count text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-sources-count.png
+W205 CONTRAST fable5 light notice 11.92:1
+W185TAP PASS W205-1 w205-fable5-light notice text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-notice.png
+W185TAP PASS W205-1 w205-fable5-light destructive ink is visibly red
+W185TAP PASS W205-1 w205-fable5-light selected chip edge differs from unselected
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-chip-selected.png
+W185TAP PASS W205-1 w205-fable5-light chip rim is visible against surrounding canvas
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-chip-rim.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-coder.png
+W185TAP PASS W280 native sidebar has no Dots row
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-space-sidebar.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-light-error-row.png
+W205 CONTRAST fable5 dark top-mode 11.02:1
+W185TAP PASS W205-1 w205-fable5-dark top-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-top-mode.png
+W205 CONTRAST fable5 dark top-mode-unselected 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark top-mode-unselected text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-top-mode-unselected.png
+W205 CONTRAST fable5 dark input-model 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark input-model text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-input-model.png
+W205 CONTRAST fable5 dark input-model-suffix 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark input-model-suffix text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-input-model-suffix.png
+W205 CONTRAST fable5 dark input-mode 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark input-mode text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-input-mode.png
+W205 CONTRAST fable5 dark input-mode-disabled 4.21:1
+W185TAP PASS W205-1 w205-fable5-dark input-mode-disabled stays legible (>=3:1) and visibly fainter than input-mode
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-input-mode-disabled.png
+W205 CONTRAST fable5 dark space-search 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark space-search text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-space-search.png
+W205 CONTRAST fable5 dark error 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark error text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-error.png
+W205 CONTRAST fable5 dark retry 11.49:1
+W185TAP PASS W205-1 w205-fable5-dark retry text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-retry.png
+W205 CONTRAST fable5 dark notice-dismiss 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark notice-dismiss text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-notice-dismiss.png
+W205 CONTRAST fable5 dark destructive 6.75:1
+W185TAP PASS W205-1 w205-fable5-dark destructive text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-destructive.png
+W205 CONTRAST fable5 dark enabled 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark enabled text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-enabled.png
+W205 CONTRAST fable5 dark disabled 4.21:1
+W185TAP PASS W205-1 w205-fable5-dark disabled stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-disabled.png
+W205 CONTRAST fable5 dark disabled-destructive 4.21:1
+W185TAP PASS W205-1 w205-fable5-dark disabled-destructive stays legible (>=3:1) and visibly fainter than enabled
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-disabled-destructive.png
+W205 CONTRAST fable5 dark retained-foreground 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark retained-foreground text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-retained-foreground.png
+W205 CONTRAST fable5 dark sources-count 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark sources-count text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-sources-count.png
+W205 CONTRAST fable5 dark notice 11.92:1
+W185TAP PASS W205-1 w205-fable5-dark notice text contrast >=4.5:1
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-notice.png
+W185TAP PASS W205-1 w205-fable5-dark destructive ink is visibly red
+W185TAP PASS W205-1 w205-fable5-dark selected chip edge differs from unselected
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-chip-selected.png
+W185TAP PASS W205-1 w205-fable5-dark chip rim is visible against surrounding canvas
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-chip-rim.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-coder.png
+W185TAP PASS W280 native sidebar has no Dots row
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-space-sidebar.png
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w205-fable5-dark-error-row.png
+W185TAP PASS W203-6 actual dark chip text contrast is at least 4.5:1 selected=false
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-chip-glass-dark.png
+W185TAP PASS W203-6 actual dark chip text contrast is at least 4.5:1 selected=true
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-chip-glass-selected-dark.png
+W185TAP PASS W203-6 actual dark chip text contrast is at least 4.5:1 selected=false
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-chip-matte-dark.png
+W185TAP PASS W203-6 actual dark chip text contrast is at least 4.5:1 selected=true
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-chip-matte-selected-dark.png
+W185TAP PASS W203-7 accepted native TAP triggers Coder thinking without a progress event
+W185TAP PASS W203-7 duplicate accepted does not restart the thinking clock
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.thinkingProgress
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-thinking-light.png
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.thinkingProgress
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-thinking-dark.png
+W185TAP PASS W203-7 remote Coder uses the remote transcript thinking status
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.thinkingProgress
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-remote-thinking-dark.png
+W185TAP PASS W203-7 actual Coder answer has completed thinking seconds
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.thoughtDuration
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-completed-dark.png
+W185TAP PASS W203-7 remote Coder restores completed thinking seconds
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.thoughtDuration
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-remote-completed-dark.png
+W185TAP PASS W203-4 Coder too-long failure has recovery action
+W185TAP PASS W203-4 Coder persists only fixed failure category
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.turnFailure
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-error-dark.png
+W185TAP PASS W203-4 remote Coder restores fixed too-long classification and action
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.turnFailure
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-remote-error-dark.png
+W185TAP PASS W203-4 reopened Coder restores too-long category and action without raw provider text
+W185TAP PASS W203-7 actual Coder transcript AX chatgpt.turnFailure
+W184CHAT NOTE evidence /Users/fixture/tatwo-build/verify/W294-plugins-065400/artifacts/w185tap/w203-coder-reopened-dark.png
+W185TAP PASS W207 Coder manual failed-turn recovery restores attachment and its original display name
+W185TAP PASS W203-4 notSubmitted exit persists category only
+W185TAP PASS W207 actual TAP website rejection restores draft, attachment and display name
+W185TAP PASS W207 Coder ChatGPT model reply followed by send at 0ms clears composer (elapsed=1.1920928955078125e-05)
+W185TAP PASS W207 Coder next prompt reaches website exactly once at 0ms
+W185TAP PASS W207 Coder ChatGPT model reply followed by send at 50ms clears composer (elapsed=0.05155301094055176)
+W185TAP PASS W207 Coder next prompt reaches website exactly once at 50ms
+W185TAP PASS W207 Coder ChatGPT model reply followed by send at 500ms clears composer (elapsed=0.5088150501251221)
+W185TAP PASS W207 Coder next prompt reaches website exactly once at 500ms
+W185TAP PASS W207 Coder ChatGPT model reply followed by send at 1000ms clears composer (elapsed=1.0058540105819702)
+W185TAP PASS W207 Coder next prompt reaches website exactly once at 1000ms
+W185TAP PASS W207 Coder ChatGPT model reply followed by send at 4500ms clears composer (elapsed=4.593142032623291)
+W185TAP PASS W207 Coder next prompt reaches website exactly once at 4500ms
+W185TAP PASS ChatGPT（TAP） group immediately after OpenAI
+W185TAP PASS TAP model/effort identity; no Codex controls
+W185TAP PASS unavailable placeholder data
+W185TAP PASS sleeping TAP never resolves to Codex
+W185TAP PASS W221b managed-explicit-rejected
+W185TAP PASS W221b managed-explicit-no-runner-or-turn
+W185TAP PASS W221b managed-explicit-zero-ChatGPT-requests
+W185TAP PASS W221b managed-explicit-one-inline-reason
+W185TAP PASS W221b managed-stored-rejected
+W185TAP PASS W221b managed-stored-no-runner-or-turn
+W185TAP PASS W221b managed-stored-zero-ChatGPT-requests
+W185TAP PASS W221b managed-stored-one-inline-reason
+W185TAP PASS W221b managed-direct-rejected
+W185TAP PASS W221b managed-direct-no-runner-or-turn
+W185TAP PASS W221b managed-direct-zero-ChatGPT-requests
+W185TAP PASS W221b managed-direct-one-inline-reason
+W185TAP PASS send accepted into TAP runner
+W185TAP PASS running/Island source without a sidecar
+W185TAP PASS first round has project and TAP effort
+W185TAP PASS hidden first preamble uses stable OS project ID
+W185TAP PASS Coder user bubble excludes hidden preamble
+W185TAP PASS full text replaces the same assistant row
+W185TAP PASS finished releases running state
+W185TAP PASS ID-only map atomically saved 0600 / folder 0700
+W185TAP PASS metadata only schema
+W185TAP PASS second send accepted
+W185TAP PASS second round reuses project and conversation ID
+W185TAP PASS only intervening engine turns summarized; preamble once
+W185TAP PASS stop targets this request ID; no other send stopped
+W185TAP PASS summary bounded to 1500 characters
+W185TAP PASS ChatGPT-only rounds add no collaboration summary
+W185TAP PASS M6 TAP source survives save and reopen
+W185TAP PASS M6 reopened TAP replies never become another model's summary
+W185TAP PASS M6 old files without source remain readable without guessing native adapters
+W185TAP PASS M6 explicit legacy TAP model prefix remains a TAP reply
+W185TAP PASS independent thread send accepted
+W185TAP PASS general/unbound OS thread goes to inbox project
+W185TAP PASS failed project preparation handled asynchronously
+W185TAP PASS W203 project preparation failure stays transient; storage has unsent category without inbox reroute
+W185TAP PASS never sends to general ChatGPT chat
+W185TAP PASS notSubmitted fixture starts
+W185TAP PASS notSubmitted returns draft
+W185TAP PASS failed fixture starts
+W185TAP PASS W200 Coder displays transient progress heading
+W185TAP PASS W200 Coder answer collapses thought duration; late heading cannot restart thinking
+W185TAP PASS failed displays local error without draft return
+W185TAP PASS W207 partial-answer failure retains thought duration alongside recovery
+W185TAP PASS W200 provider error never enters persisted transcript or memory
+W185TAP PASS missing mapped project fixture starts
+W185TAP PASS missing project uses a new inbox conversation, never old project conversation
+W185TAP PASS missing inbox fixture starts
+W185TAP PASS inbox failure returns draft without sending
+W185TAP PASS inbox failure has no general-chat fallback
+W185TAP PASS restored thread accepts TAP send
+W185TAP PASS conversation map and first-preamble marker survive engine restart
+W185TAP PASS M19 TAP archive fixture accepts a turn
+W185TAP PASS M19 TAP awaiting stop confirmation stays visible
+W185TAP PASS M19 TAP stop confirmation completes pending archive automatically
+W185TAP PASS concurrent metadata updates keep both thread mappings
+W185TAP PASS F2-7 stream closes without terminal event on stop: cancelled, never failed
+W185TAP PASS F2-8 regular bounded attachment admitted
+W185TAP PASS F2-8 refuses symlink/FIFO/directory/oversize: link.txt
+W185TAP PASS F2-8 refuses symlink/FIFO/directory/oversize: fifo.txt
+W185TAP PASS F2-8 refuses symlink/FIFO/directory/oversize: gates
+W185TAP PASS F2-8 refuses symlink/FIFO/directory/oversize: large.txt
+W185TAP PASS F2-8 aggregate attachment limit rejects two individually valid files
+W185TAP PASS F2-8 stalled reader times out before send
+W185TAP PASS F2-9 summary redacts complete secrets before truncation and reports count
+W185TAP PASS F2-9 notice send accepted
+W185TAP PASS F2-9 user-visible system notice in actual transcript
+W185TAP PASS F2-10 transient lookup propagates
+W185TAP PASS F2-10 transient lookup does not change map or create inbox
+W185TAP PASS F2-10 transient lookup propagates
+W185TAP PASS F2-10 transient lookup does not change map or create inbox
+W185TAP PASS F2-10 missing conversation repairs only that thread in original project
+W185TAP PASS F2-10 missing project persists inbox remap and reuses next conversation
+W185TAP PASS F2-10 ordinary project named inbox still validates its own project identity
+W185TAP PASS F2-11 stale catalog refreshes once; fresh send needs no extra lookup
+W185TAP PASS F2-11 refresh failure explains not sent
+W185TAP PASS F2-12 private headings suppress index-shaped body entries
+W185TAP PASS F2-12 private section skill cannot be read
+W185TAP PASS F2-12 private section skill cannot be read
+W185TAP PASS F2-12 private section skill cannot be read
+W185TAP PASS F2-13 legacy map migrates out of project git without losing conversation IDs
+W185TAP PASS F2-13 unreadable legacy metadata is an error, never an absent mapping
+W185TAP PASS F2-13 mapping stored only in TATWO data directory outside project git
+W185TAP PASS UI actual Coder mode lists every TAP model immediately after OpenAI
+W185TAP PASS UI selected TAP chip retains full brand/model in both wide and compact layouts
+W185TAP PASS UI only TAP efforts; no speed or CLI collaboration controls
+W185TAP PASS UI rejects Codex effort IDs not provided by TAP
+W185TAP PASS UI ready TAP can send without CLI login
+W185TAP PASS UI ChatPageModel.send reaches fake TAP with selected native model/effort
+W185TAP PASS UI TAP send checks no CLI login and starts no sidecar of any kind
+W185TAP PASS UI TAP accepted send clears composer and preserves ordinary user bubble
+W185TAP PASS UI existing TAP thread restores its TAP route and native effort without Codex normalization
+W185TAP PASS UI ChatPageModel.stop targets the TAP request, never CLI stop
+W185TAP PASS UI cold TAP thread keeps stored native effort while catalog is absent
+W185TAP PASS UI later catalog refresh and same-model selection preserve stored TAP effort
+W185TAP PASS UI TAP selection availability with reason: 請打開 ChatGPT 登入
+W185TAP PASS UI unavailable TAP blocks direct send and retains draft: 請打開 ChatGPT 登入
+W185TAP PASS UI TAP selection availability with reason: 休眠
+W185TAP PASS W194-2 dormant selected model allows queued send
+W185TAP PASS UI TAP selection availability with reason: 已停用
+W185TAP PASS UI unavailable TAP blocks direct send and retains draft: 已停用
+W185TAP PASS UI TAP selection availability with reason: 啟動中
+W185TAP PASS W194-2 dormant selected model allows queued send
+W185TAP PASS UI TAP selection availability with reason: 連線失敗
+W185TAP PASS UI unavailable TAP blocks direct send and retains draft: 連線失敗
+W185TAP PASS M15 selecting a sleeping model wakes ChatGPT once without sending or changing the draft
+W185TAP PASS M15 disabled or logged-out ChatGPT cannot be woken by model selection
+W185TAP PASS M15 disabled or logged-out ChatGPT cannot be woken by model selection
+W185TAP PASS M15 model card path: choosing while ChatGPT is still starting keeps the choice; sending waits for ready
+W185TAP PASS UI stale cached selection can send and refresh before dispatch
+W185TAP PASS UI expired catalog automatically refreshes once and sends without reopening menu
+W185TAP PASS UI empty catalog shows disabled placeholder; stored TAP never falls back to CLI
+W185TAP PASS UI unavailable TAP cannot be selected programmatically
+W185TAP PASS UI TAP model with no native efforts exposes no effort controls
+W185TAP PASS UI remote Coder cannot dispatch local TAP as Codex
+W185TAP PASS UI TAP notSubmitted uses ordinary draft restoration
+W185TAP PASS UI native mode card/chip screenshots exported (ready and needsLogin)
+W185TAP PASS UI switch back to Codex sends to Codex sidecar with CLI login, effort and speed as before
+W185TAP PASS UI Codex stop stays on CLI and does not stop TAP again
+W185TAP PASS UI switch back restores Codex controls and chip
+W185TAP SUMMARY failures=0 passed=438

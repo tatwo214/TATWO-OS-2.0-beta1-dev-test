@@ -6,6 +6,8 @@ import Foundation
 struct TapProjectMap: Codable, Equatable, Sendable {
     var chatgpt_project_id: String
     var name: String
+    var archived: Bool? = nil
+    var rename_error: String? = nil
     var threads: [String: String] = [:]
     var updated_at: String = ISO8601DateFormatter().string(from: Date())
 }
@@ -25,7 +27,7 @@ actor TapProjectMapStore {
                   object["archived"] as? Bool != true,
                   let id = object["chatgpt_project_id"] as? String, id.hasPrefix("g-p-"),
                   let name = object["name"] as? String, name.hasPrefix("TATWO · "), name.count <= 160,
-                  !name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }),
+                  !OSAgentBridge.hasInvisibleCharacters(name),
                   HandsRedactor.redact(name, context: .init(paths: [], hostName: nil, userName: nil)) == name else { continue }
             return TapProjectMap(chatgpt_project_id: id, name: name,
                 threads: object["threads"] as? [String: String] ?? [:], updated_at: object["updated_at"] as? String ?? "")
@@ -88,6 +90,12 @@ actor TapProjectMapStore {
         return map
     }
 
+    func update(at folder: URL, change: @Sendable (inout TapProjectMap) -> Void) throws {
+        guard var map = try load(at: folder) else { return }
+        change(&map)
+        try save(map, at: folder, mergeThreads: false)
+    }
+
     func save(_ map: TapProjectMap, at folder: URL, threadID: UUID? = nil, conversationID: String? = nil, mergeThreads: Bool = true) throws {
         let file = try Self.safeFile(folder)
         let directory = file.deletingLastPathComponent()
@@ -97,6 +105,7 @@ actor TapProjectMapStore {
         var merged = map
         if mergeThreads, let current = try load(at: folder), current.chatgpt_project_id == map.chatgpt_project_id {
             merged.threads.merge(current.threads) { _, current in current }
+            merged.name = current.name; merged.rename_error = current.rename_error; merged.archived = current.archived
         }
         if let threadID, let conversationID { merged.threads[threadID.uuidString] = conversationID }
         merged.updated_at = ISO8601DateFormatter().string(from: Date())
@@ -168,20 +177,46 @@ final class TapProjectMapper {
     let tap: any ConversationTap
     let storage: TapProjectMapStore
     let inboxFolder: URL
-    private var resolving: [UUID: Task<TapProjectMap, Error>] = [:]
+    private weak var lifecycleSource: TapProjectMapper?
+    private static var resolving: [UUID: Task<TapProjectMap, Error>] = [:]
     private static let inboxID = UUID(uuidString: "00000000-0000-0000-0000-000000000185")!
-    init(tap: any ConversationTap, storage: TapProjectMapStore = .shared, inboxFolder: URL) {
+    init(tap: any ConversationTap, storage: TapProjectMapStore = .shared, inboxFolder: URL, lifecycleSource: TapProjectMapper? = nil) {
         self.tap = tap
         self.storage = storage
         self.inboxFolder = inboxFolder
+        self.lifecycleSource = lifecycleSource
     }
+
+    private var lifecycle: Task<Void, Never>?
+    private var lifecycleGeneration = 0
+    private(set) var lifecycleErrors: [String: String] = [:]
+    func setArchived(_ folders: [URL], archived: Bool) {
+        let previous = lifecycle
+        lifecycleGeneration += 1; let generation = lifecycleGeneration
+        lifecycle = Task {
+            await previous?.value
+            for folder in folders {
+                let key = folder.standardizedFileURL.path
+                do { try await storage.update(at: folder) { $0.archived = archived ? true : nil }; lifecycleErrors[key] = nil }
+                catch { lifecycleErrors[key] = HandsRedactor.redact(error.localizedDescription, context: .init(paths: [], hostName: nil, userName: nil)).split(whereSeparator: { $0.isNewline }).joined(separator: " ") }
+            }
+            if lifecycleGeneration == generation { lifecycle = nil }
+        }
+    }
+    func waitForLifecycle() async throws { await lifecycle?.value }
 
     private enum ResolutionError: Error { case missingProject, missingConversation }
 
     func destination(project: TapProjectContext?, threadID: UUID) async throws -> TapProjectDestination {
+        let owner = lifecycleSource ?? self
+        try await owner.waitForLifecycle()
+        if let project, let reason = owner.lifecycleErrors[project.folder.standardizedFileURL.path] { throw TapError.remote(reason) }
+        if let project, try await storage.load(at: project.folder)?.archived == true {
+            return try await destination(project: nil, threadID: threadID)
+        }
         var notice: String?
         if let project {
-            do { return try await resolve(project, threadID: threadID, notice: nil) }
+            do { return try await resolve(project, threadID: threadID, notice: nil, tap: tap) }
             catch ResolutionError.missingProject {
                 try Task.checkCancellation()
                 notice = "對應的 ChatGPT 專案已不存在，這句改送「TATWO · 收件匣」"
@@ -190,19 +225,21 @@ final class TapProjectMapper {
                 // 專案還在，只清掉這一串的失效對話 ID，不改送其他專案。
                 guard var map = try await storage.load(at: project.folder) else { throw ResolutionError.missingConversation }
                 map.threads.removeValue(forKey: threadID.uuidString)
+                if let reason = (tap as? GroupGuardedTap)?.rejection() { throw TapError.remote(reason) }
                 try await storage.save(map, at: project.folder, mergeThreads: false)
-                return try await resolve(project, threadID: threadID, notice: "對應的 ChatGPT 對話已不存在，將在原專案開新對話")
+                return try await resolve(project, threadID: threadID, notice: "對應的 ChatGPT 對話已不存在，將在原專案開新對話", tap: tap)
             }
         }
         // 收件匣也失敗就明確未送出。沒有 gizmoID=nil 的一般聊天退路。
         let inbox = TapProjectContext(id: Self.inboxID, name: "收件匣", folder: inboxFolder)
         do {
             try await storage.prepareInbox(at: inboxFolder)
-            let destination = try await resolve(inbox, threadID: threadID, notice: notice)
+            let destination = try await resolve(inbox, threadID: threadID, notice: notice, tap: tap)
             if let project {
                 // 原專案的對應表跟著修正；下一輪沿用這次的收件匣對話。
                 var map = destination.map
                 map.threads = [:]
+                if let reason = (tap as? GroupGuardedTap)?.rejection() { throw TapError.remote(reason) }
                 try await storage.save(map, at: project.folder, mergeThreads: false)
                 return TapProjectDestination(folder: project.folder, map: map, conversationID: nil, notice: notice)
             }
@@ -213,11 +250,12 @@ final class TapProjectMapper {
         }
     }
 
-    private func resolve(_ project: TapProjectContext, threadID: UUID, notice: String?) async throws -> TapProjectDestination {
+    private func resolve(_ project: TapProjectContext, threadID: UUID, notice: String?, tap: any ConversationTap) async throws -> TapProjectDestination {
         let task: Task<TapProjectMap, Error>
-        if let existing = resolving[project.id] { task = existing }
+        if let existing = Self.resolving[project.id] { task = existing }
         else {
             task = Task { @MainActor [tap, storage] in
+                defer { Self.resolving[project.id] = nil }
                 let saved = try await storage.load(at: project.folder)
                 let projects = try await tap.projects()
                 try Task.checkCancellation()
@@ -247,16 +285,21 @@ final class TapProjectMapper {
                     throw TapError.remote("ChatGPT 沒有提供有效的專案 ID")
                 }
                 let map = TapProjectMap(chatgpt_project_id: folder.id, name: project.tapName)
+                if let reason = (tap as? GroupGuardedTap)?.rejection() { throw TapError.remote(reason) }
                 try await storage.save(map, at: project.folder)
                 return map
             }
-            resolving[project.id] = task
+            Self.resolving[project.id] = task
         }
-        defer { resolving[project.id] = nil }
         let map = try await task.value
         try Task.checkCancellation()
+        if let reason = (tap as? GroupGuardedTap)?.rejection() { throw TapError.remote(reason) }
         // 另一條正在回答時可能剛把 conversationID 記進表，重新讀最新值。
+        let owner = lifecycleSource ?? self
+        try await owner.waitForLifecycle()
+        if let reason = owner.lifecycleErrors[project.folder.standardizedFileURL.path] { throw TapError.remote(reason) }
         let latest = try await storage.load(at: project.folder) ?? map
+        if latest.archived == true { return try await destination(project: nil, threadID: threadID) }
         if let conversation = latest.threads[threadID.uuidString] {
             let conversations = try await tap.conversations(inProject: latest.chatgpt_project_id)
             guard conversations.contains(where: { $0.id == conversation }) else {
@@ -268,7 +311,11 @@ final class TapProjectMapper {
     }
 
     func record(_ conversationID: String, threadID: UUID, destination: TapProjectDestination) async throws {
+        let owner = lifecycleSource ?? self
+        try await owner.waitForLifecycle()
+        if let reason = owner.lifecycleErrors[destination.folder.standardizedFileURL.path] { throw TapError.remote(reason) }
         guard !conversationID.isEmpty else { throw TapError.remote("ChatGPT 沒有提供對話 ID") }
+        if let reason = (tap as? GroupGuardedTap)?.rejection() { throw TapError.remote(reason) }
         try await storage.save(destination.map, at: destination.folder, threadID: threadID, conversationID: conversationID)
     }
 }

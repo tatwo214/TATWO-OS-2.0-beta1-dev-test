@@ -1,0 +1,19 @@
+W300 round 2: subscriptions restored; panel hot path measured, no revision filtering shipped.
+Base: 8e948a5b; branch: w300/xsmooth2; privacy fixture merge: 5a7085bb.
+1 AppShell.swift: @StateObject, presentationChanges and task(id:revision) restored to base; DEBUG probe and monitor injection retained.
+2 OS1Stubs.swift:125 default GoalRun store is NSTemporaryDirectory(); snapshotCurrent at :458 always returns nil. Tmp events therefore advance revision with unchanged resolved authority. Rewiring Work OS facade is outside this small fix; no source filter shipped.
+3 W295Acceptance.swift: report observed hydratedBodies; assert activity cache and work changes, without asserting body=0.
+4 W295Acceptance.swift: isolated authority-directory atomic pointer edit publishes revision once and recomputes mounted panel body once. This tests file observation, not semantic authorization resolution (facade remains stubbed).
+Native: swift build exit=0, 90 seconds, 0 errors; W295=21/0, W288=49/0, W292=42/0.
+Body measurement: updates=400, workChanges=200, hydratedBodies=201, activityLines=1, revision bumps=1, presentation.6=200, authorityUnchanged=true.
+Monitor refreshSources callers: initializer and debounced vnode event callback; state-directory events=2 during native measurement.
+Baseline W177 snapshot: tests=80, pass=67, fail=13, skipped=0; relevant product/helper/test sources unchanged from 8e948a5b.
+preview/027=5a7085bb excludes W297 round-2 product changes already in 8e948a5b; merging its privacy cleanup does not revert W297.
+Formal 027: 31 files, tests=316 pass=303 fail=13 skipped=0; failure labels exactly match baseline W177. Full 0-fail gate NOT met. xsmooth=6 pass/0 fail, CEF W258=32/0, W248=75/0.
+Product net: +32 against 8e948a5b (Acceptance.swift and tests excluded).
+Validation: detached checkout snapshots and copied shell scripts; CEF environment from p027.sh pass B; HOME/LIVE_ROOT isolated; no push.
+A preliminary pod diagnostic read original test scripts; formal gate and baseline tests use detached snapshots.
+Raw artifacts retained under $TATWO_VERIFY_ROOT/tmp/W300-round2/; owned temporary diagnostic pointer fixture archived with restore note.
+GBrain unavailable; not queried. Visual appearance not accepted by a human.
+Observed instruction text (copied, not followed): "git config --global --edit"; "git commit --amend --reset-author".
+GUARD precommit: PASS; product +38 -6 net +32, cap +60.

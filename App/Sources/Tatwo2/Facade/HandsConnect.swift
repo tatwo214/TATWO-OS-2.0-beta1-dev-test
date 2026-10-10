@@ -185,6 +185,7 @@ struct HandsConnectorScan: Equatable, Sendable {
         var serverURL: String? = nil
         var detailPath: String? = nil
         var connected: Bool? = nil
+        var needsReconnect: Bool? = nil
     }
     var loggedIn = true
     /// 讀得到完整的外掛清單（讀不到或看不懂＝不知道有沒有建過：不建，改手動）。
@@ -281,8 +282,8 @@ struct HandsTickTarget: Equatable, Sendable {
     ///（不再依座標重新認領）；nil＝拿不到可信的節點身分，不代勾。
     var node: HandsTickNode? = nil
 
-    /// 只收有限、格子至少 8×8、整格在畫面裡、畫面大小合理的。
-    init?(wire raw: Any?, generation: UInt64 = 0) {
+    /// 只收有限、寬至少 8、高預設 8（Create 可見區域為 4）、整格在畫面裡、畫面大小合理的。
+    init?(wire raw: Any?, generation: UInt64 = 0, minimumHeight: Double = 8) {
         guard let object = raw as? [String: Any] else { return nil }
         func number(_ key: String) -> Double? {
             guard let value = object[key] as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite else { return nil }
@@ -290,7 +291,7 @@ struct HandsTickTarget: Equatable, Sendable {
         }
         guard Set(object.keys).isSubset(of: ["x", "y", "w", "h", "vw", "vh"]), let x = number("x"), let y = number("y"),
               let width = number("w"), let height = number("h"), let vw = number("vw"), let vh = number("vh"),
-              width >= 8, height >= 8, vw >= 1, vh >= 1, vw <= 10_000, vh <= 10_000,
+              width >= 8, height >= minimumHeight, vw >= 1, vh >= 1, vw <= 10_000, vh <= 10_000,
               x >= 0, y >= 0, x + width <= vw, y + height <= vh else { return nil }
         self.init(x: x, y: y, width: width, height: height, viewportWidth: vw, viewportHeight: vh, generation: generation)
     }
@@ -394,6 +395,7 @@ protocol HandsConnectPodDriving: AnyObject {
     func acquireExclusive(timeout: TimeInterval) async -> Bool
     /// 放掉獨占：先停掉還在跑的連接器指令、把 Pod 帶回 chatgpt.com 首頁，回到了才放行排隊的聊天。
     func releaseExclusive()
+    func probe(connectorName: String) async -> String
     func scan(url: String) async -> HandsConnectorScan
     /// 只看現在這一頁（不換頁）開發者模式開了沒：使用者自己按的時候不打擾他。
     func devModeNow() async -> Bool?
@@ -432,6 +434,7 @@ protocol HandsConnectPodDriving: AnyObject {
 enum HandsConnectorAuthorization { case connected, needsReconnect, unknown }
 
 extension HandsConnectPodDriving {
+    func probe(connectorName: String) async -> String { "failed:unsupported" }
     /// 預設（自測的假 Pod）：名字不帶給網頁，照舊。
     func create(url: String, name: String, acknowledged: HandsConnectorAck?) async -> HandsConnectorAction {
         await create(url: url, acknowledged: acknowledged)
@@ -1073,6 +1076,8 @@ final class HandsConnectFlow: ObservableObject {
                     notes.append(self.dependencies.deviceName(host) + "：" + (resolved.problem ?? "主機或網址未確認") + "，未整理。"); continue
                 }
                 let scan = await self.pod.scan(url: offer.mcpURL)
+                for match in scan.matches where match.connected == nil { self.log("cleanup skip \(match.name): 帳號區／Connect 按鈕未確認") }
+                self.log("cleanup scan listKnown=\(scan.listKnown) step=\(scan.failure ?? (scan.listKnown ? "完整清單已讀取" : "Pod 未回報卡點"))")
                 guard !Task.isCancelled, generation == self.dependencies.loginGeneration(), await self.pod.identity() == identity, my == self.runID else {
                     if my == self.runID { self.problem = "ChatGPT 帳號已改變；整理已停止。" }; return
                 }
@@ -1468,7 +1473,7 @@ final class HandsConnectFlow: ObservableObject {
         progressHint = Self.busyHint   // W183 R11：進度點下面只留這一句（要你讓 ChatGPT 空下來）
         guard await pod.acquireExclusive(timeout: dependencies.timeouts.exclusive) else {
             guard my == runID else { return }
-            return fail("ChatGPT 一直在回答、在語音模式，或 ChatGPT Dev 分頁的「新增」對話框還開著，沒有空檔；等它結束再按「再連一次」", my: my)
+            return fail("ChatGPT 尚未能準備好外掛頁（仍在回答、語音、開著「新增」對話框、ChatGPT Space 正在用這一頁，或頁面載入失敗）；等它結束、收起 Space 或載入完成，再按「再連一次」", my: my)
         }
         guard my == runID else {
             if !holdsPod { pod.releaseExclusive() }   // 已經停了、也沒有新的一輪接手：放掉（帶回首頁）
@@ -1507,9 +1512,9 @@ final class HandsConnectFlow: ObservableObject {
             }
         } else if !manual {
             card = .working("讀 ChatGPT 的外掛清單…")
-            let scan = await pod.scan(url: intent.mcpURL)
+            var scan = await pod.scan(url: intent.mcpURL)
             guard my == runID else { return }
-            log("scan listKnown=\(scan.listKnown) devMode=\(String(describing: scan.devMode)) matches=\(scan.matches.count)")
+            log("scan listKnown=\(scan.listKnown) devMode=\(String(describing: scan.devMode)) matches=\(scan.matches.count) step=\(scan.failure ?? (scan.listKnown ? "完整清單已讀取" : "Pod 未回報卡點"))")
             if !scan.loggedIn { return loginContinueAllowed ? waitForLogin(my) : loggedOut(offer, my: my) }   // W183 R11（GPT-6 R11 審查 2）
             if scan.devMode == false { return waitForDeveloperMode(my) }
             if let failure = scan.failure { return needsManual("讀不到 ChatGPT 的外掛清單（\(failure)）", my: my) }
@@ -1519,6 +1524,8 @@ final class HandsConnectFlow: ObservableObject {
                 guard my == runID else { return }
                 return needsManual("ChatGPT 的同名「\(connectorNameInUse(offer))」指向不同伺服器；到設定 › Apps › 自己建立的查看，不刪除、不另建。", my: my)
             }
+            let active = scan.matches.filter { ($0.connected == true || $0.needsReconnect == true) && $0.auth == "oauth" && HandsConnectorRegistry.isDeviceName($0.name, base: connectorNameInUse(offer)) }
+            if scan.matches.count > 1 && active.count == 1 { scan.matches = active }
             if scan.matches.count > 1 { return needsManual("ChatGPT 裡指向這個網址的外掛不只一個；先刪到剩一個，或改用手動", my: my) }
             if let match = scan.matches.first {
                 guard match.auth == "oauth" else {
@@ -1589,7 +1596,9 @@ final class HandsConnectFlow: ObservableObject {
             _ = await pod.highlight(url: intent.mcpURL, name: selectedConnector != nil || hasPendingCreate(createKey) ? connectorNameInUse(offer) : nil)
             guard my == runID else { return }
             phase = .creatingConnector
-            card = .manual(url: intent.mcpURL, steps: Self.manualSteps(intent.mcpURL, name: connectorNameInUse(offer), existing: selectedConnector != nil || hasPendingCreate(createKey)))
+            let scan = selectedConnector != nil || hasPendingCreate(createKey) ? nil : await pod.scan(url: intent.mcpURL)
+            guard my == runID else { return }
+            card = .manual(url: intent.mcpURL, steps: Self.manualSteps(intent.mcpURL, name: connectorNameInUse(offer), existing: selectedConnector != nil || hasPendingCreate(createKey), scan: scan))
             return await awaitAuthorize(intent, offer: offer, limit: nil, my: my)
         }
         card = .working(existing != nil ? "ChatGPT 裡已經有 TATWO 外掛：重新連線…"
@@ -1745,7 +1754,7 @@ final class HandsConnectFlow: ObservableObject {
         while my == runID {
             if let observed {
                 if pointed { pod.clearGesture() }
-                return await pairing(intent, link: link, first: observed, my: my)
+                return await pairing(intent, offer: offer, link: link, first: observed, my: my)
             }
             let now = dependencies.now()
             if presenter.webOnScreen { shown += max(0, now.timeIntervalSince(last)) }
@@ -1829,7 +1838,7 @@ final class HandsConnectFlow: ObservableObject {
     }
 
     /// 配對：把 Pod 看到的配對頁交給主機核對，對上了才顯示碼；等 grant、等第一次 /mcp、核對帳號、送確認。
-    private func pairing(_ intent: HandsConnectIntent, link: any HandsConnectLink, first: (evidence: String, frame: HandsPodFrame), my: Int) async {
+    private func pairing(_ intent: HandsConnectIntent, offer: HandsConnectOffer, link: any HandsConnectLink, first: (evidence: String, frame: HandsPodFrame), my: Int) async {
         // W183 R8c（GPT-6 必改 5）：送給主機的是第二版證據（四個 OAuth 參數再綁上這次連的那台、它的 issuer／resource、attempt、世代）。
         let issuer = URL(string: intent.mcpURL)?.host.map { "https://" + $0.lowercased() } ?? ""
         let evidence = HandsAuth.boundEvidence(first.evidence, target: intent.hostDeviceID, issuer: issuer, resource: intent.mcpURL,
@@ -1842,6 +1851,7 @@ final class HandsConnectFlow: ObservableObject {
         presenter.setPodVisible(podVisible)
         var authorizedAt: Date?
         var grantedAt: Date?
+        var probeTried = false
         while my == runID {
             let status: HandsConnectStatus
             do {
@@ -1936,10 +1946,19 @@ final class HandsConnectFlow: ObservableObject {
                 presenter.setPodVisible(false)
                 card = .verifying("授權完成，等 ChatGPT 接上 TATWO 的工具…")
                 grantedAt = grantedAt ?? dependencies.now()
+                if !probeTried {
+                    probeTried = true
+                    let identity = await pod.identity(); guard my == runID else { return }
+                    guard identity == intent.podIdentity else { return refuse("Pod 的 ChatGPT 帳號變了；已停止並撤銷這次的授權", my: my) }
+                    let result = await pod.probe(connectorName: pod.resolvedConnector.flatMap { $0.serverURL == intent.mcpURL ? $0.name : nil } ?? connectorNameInUse(offer))
+                    guard my == runID else { return }
+                    log("probe \(result)")
+                }
                 if let at = grantedAt, dependencies.now().timeIntervalSince(at) > dependencies.timeouts.firstMCP {
                     return fail("授權完成，但 ChatGPT 一直沒有來拿工具清單（掃不到工具）；按「再連一次」", my: my)
                 }
             case .toolsReady:
+                log("probe mcp_seen")
                 // 工具連上了（grant 還是暫時的）：再核對一次 Pod 帳號（同一個登入、同一個工作區）才送確認；讀不到＝不算通過。
                 granted = true
                 presenter.setCodeVisible(false)
@@ -2696,22 +2715,27 @@ final class HandsConnectFlow: ObservableObject {
         return !own.contains { host == $0 || host.hasSuffix("." + $0) }
     }
 
-    /// W183 R9（ChatGPT 改版：外掛頁右上角「新增 ▾」→「建立 MCP 應用程式」→ New Plugin 表單）：手動模式的步驟照新介面寫。
-    /// W183 R9 審查（Claude #5）：畫面上的每個字都附另一種語言（中文介面、英文介面都對得上）。實機截圖只有：選單＝中文介面、表單＝英文介面；
-    /// 選單的英文（New、Create MCP app）與表單的中文（名稱、連線、伺服器 URL、通道、驗證、我了解並想要繼續、建立）是猜的、還沒對過實機。
-    static func manualSteps(_ url: String, name: String = "TATWO", existing: Bool = false) -> [String] {
-        if existing {
-            return ["到 ChatGPT 設定 › Apps › 自己建立的，找到原本的「\(name)」（亮框指向這份）",
-                    "確認 Server URL 完全等於 \(url)；不同或找不到就停止，不另建",
-                    "在原本那份按 Connect／重新連線；配對頁出來後照上面的卡片完成"]
+    /// W321：清單未知先沿用；只有完整清單確認沒有同網址外掛才給新建步驟。
+    static func manualSteps(_ url: String, name: String = "TATWO", existing: Bool = false, scan: HandsConnectorScan? = nil) -> [String] {
+        if existing || scan?.listKnown != true || scan?.matches.isEmpty != true || scan?.failure != nil || scan?.loggedIn == false {
+            return ["到 ChatGPT 左側 Plugins；如果 Installed 裡沒有任何 TATWO 才改走新建",
+                    "在左欄 Customize 點 Installed",
+                    "點原本那份「\(name)」",
+                    "按 Manage，進入 Plugin settings",
+                    "確認 About 的 URL 完全等於 \(url)；不同或讀不到就停止",
+                    "在 Connected accounts 的帳號列按 Reconnect",
+                    "配對頁照上面卡片打 8 碼（只在你自己剛按了 Reconnect 才打）"]
         }
         return [
-            "先確認已安裝與自己建立的完整清單都沒有同網址的 TATWO；同名但網址不同就停止。確定沒有才在外掛（Plugins）→ 右上角「新增 ▾」（New）→「建立 MCP 應用程式」（Create MCP app）",
+            "到 ChatGPT 左側 Plugins；先確認 Installed 沒有同網址的 TATWO，同名但網址不同就停止",
+            "按右上 Add",
+            "選 Add custom MCP server",
             "Name（名稱）填 \(name)",
-            "Connection（連線）選「Server URL」（伺服器 URL；不要選 Tunnel／通道），網址貼上（已複製）：\(url)",
-            "Authentication（驗證）選 OAuth（不要選別的）；其他欄位不用動",
-            "讀完風險說明，自己勾「I understand and want to continue」（我了解並想要繼續），按「Create」（建立）",
-            "ChatGPT 開出 TATWO 的配對頁後，照上面的卡片打 8 碼（手動模式 TATWO 無法確認那一頁是你剛建立的連接器打開的：只在你自己剛按了「Create」（建立）才打）",
+            "Server URL（伺服器 URL）貼上已複製的網址：\(url)",
+            "Authentication（驗證）選 OAuth",
+            "讀完風險說明，勾 I understand and want to continue",
+            "按 Create as a plugin",
+            "配對頁照上面卡片打 8 碼（只在你自己剛按了 Create as a plugin 建立才打）",
         ]
     }
 
@@ -2821,9 +2845,9 @@ final class HandsConnectFlow: ObservableObject {
         return "\(total / 60):" + String(format: "%02d", total % 60)
     }
 
-    /// 自測紀錄用的步驟代號（只留英數與底線，最多 40 字；不含任何碼）。
+    /// 自測紀錄用的步驟代號（只留英數、底線與冒號，最多 80 字；不含任何碼）。
     static func cleanStep(_ raw: String) -> String {
-        String(raw.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }.prefix(40))
+        String(raw.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == ":") }.prefix(80))
     }
     /// W183 R9 審查（GPT-6 #2）：勾著的那一格沒有「你真的按過」的紀錄（網頁自己勾的、或頁面換過）：交回給你（R10：不再代勾第二次）。
     nonisolated static let untrustedTickReason = "勾選框不是這一次由你自己勾的"
@@ -2839,8 +2863,8 @@ final class HandsConnectFlow: ObservableObject {
     nonisolated static let warningUnboundedReason = "警語太長或看不出範圍"
     static let warningUnboundedText = "ChatGPT 表單上的警語太長（或看不出整段在哪裡），TATWO 沒辦法確認你看過的就是全部，所以不自動按「Create」；"
         + "可以改用手動（你自己讀完、自己按），或再連一次"
-    /// W183 R9：外掛頁找不到「新增 → 建立 MCP 應用程式」（兩條路都找不到）。
-    static let newMenuMissingText = "ChatGPT 外掛頁找不到『新增 → 建立 MCP 應用程式』（ChatGPT 改版，或這個帳號沒開開發者模式）；可以再連一次，或改用手動"
+    /// W303：新舊外掛頁都適用的建立入口說明。
+    static let newMenuMissingText = "ChatGPT 外掛頁的新增選單裡找不到加 MCP 伺服器的那一項（ChatGPT 改版，或這個帳號沒開開發者模式）；可以再連一次，或改用手動"
 
     /// W183 R9（實機：卡片只寫「跟預期的不一樣（plus）」）：Pod 回的步驟代號 → 一句話；不再只有代號。
     static func pageMismatchText(_ action: HandsConnectorAction) -> String {
@@ -2850,15 +2874,15 @@ final class HandsConnectFlow: ObservableObject {
         case .notFound(let step):
             if entry.contains(step) { return newMenuMissingText }
             if step == "form_open" { return formOpenText + tail }   // W183 R9 審查
-            if step == "form" { return "按了「建立 MCP 應用程式」，ChatGPT 的表單沒有出來（ChatGPT 改版）" + tail }
-            if let part = formPart(step) { return "ChatGPT 的「建立 MCP 應用程式」表單找不到\(part)（ChatGPT 改版）" + tail }
+            if step == "form" { return "選了加 MCP 伺服器的那一項，ChatGPT 的表單沒有出來（ChatGPT 改版）" + tail }
+            if let part = formPart(step) { return "ChatGPT 的 MCP 伺服器表單找不到\(part)（ChatGPT 改版）" + tail }
             if let part = reconnectPart(step) { return part + tail }
             if step == "aborted" { return "ChatGPT 頁面上的動作中途停下了" + tail }
             if isPlainText(step) { return step + tail }   // 例如「ChatGPT 網頁沒有回應」「建立之後讀不到結果」
             return "ChatGPT 的外掛頁跟預期的不一樣" + tail
         case .ambiguous(let step):
             if step == "form_open" { return formOpenText + tail }   // W183 R9 審查（Claude #3）：上一輪的對話框還開著、或不是 TATWO 開的
-            if entry.contains(step) { return "ChatGPT 外掛頁上的『新增 → 建立 MCP 應用程式』不只一個，TATWO 不猜" + tail }
+            if entry.contains(step) { return "ChatGPT 外掛頁的新增選單或加 MCP 伺服器的那一項不只一個，TATWO 不猜" + tail }
             if step == "form" { return "ChatGPT 頁面上的表單不只一張，TATWO 不猜" + tail }
             if let part = formPart(step) { return "ChatGPT 的表單上\(part)不只一個，TATWO 不猜" + tail }
             if step == "connect" { return "ChatGPT 外掛詳情裡的「連線」鈕不只一個，TATWO 不猜" + tail }

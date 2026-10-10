@@ -10,7 +10,6 @@ struct PluginsPage: View {
     let skilletRepositoryStore: TatwoSkilletRepositoryStore
     let onRegister: (RegistryKind, String, String, String?) throws -> Void
     let onRemove: (PluginRegistryEntry) throws -> Void
-    let onSyncClaude: () async throws -> TatwoClaudeMCPSyncReceiptV1
     var pocketThreadID: UUID? = nil
     var scrollsContent = false
 
@@ -21,9 +20,17 @@ struct PluginsPage: View {
     @State private var draftPurpose = ""
     @State private var statusMessage = "staging registry"
     @State private var pendingRemoval: PluginRegistryEntry?
-    @State private var isSyncingClaude = false
     @State private var refreshedMCPEntries: [PluginRegistryEntry]?
     @State private var isProbing = false
+    @State private var indexedMCP: OSMCPRegistry.Scan?
+    @State private var isIndexingMCP = false
+    @State private var selectedMCP: Set<String> = []
+    #if DEBUG
+    private var mcpAcceptance = false
+    #endif
+    @State private var osMCP: [PluginRegistryEntry] = []
+    @State private var mcpUpdates: [String: OSMCPRegistry.Update] = [:]
+    @State private var checkingMCPUpdates = false
 
     @State private var canonicalSkills: [TatwoSkillsDirectoryEntryV1] = []
     @State private var canonicalRootAvailable = true
@@ -162,7 +169,7 @@ struct PluginsPage: View {
         HStack(alignment: .center, spacing: 10) {
             Picker("", selection: $selectedTab) {
                 Text("Skillet（\(canonicalSkills.count)）").tag("skills")
-                Text("MCP（\(visibleMCPEntries.count)）").tag("mcp")
+                Text("MCP（\(visibleMCPEntries.count + osMCP.count)）").tag("mcp")
                 // W177（使用者 2026-09-24「設定/plugins/skillet、mcp、tap、pocket」）。
                 Text("TAP").tag("tap")
                 Text("Pocket").tag("pocket")
@@ -176,22 +183,9 @@ struct PluginsPage: View {
             }
             Spacer()
             if selectedTab == "mcp" {
-                Button {
-                    Task { await refreshMCP(force: true) }
-                } label: {
-                    Label(isProbing ? "探測中" : "重新探活", systemImage: "arrow.clockwise")
-                }
-                .disabled(isProbing)
-                .buttonStyle(.bordered)
-                Button {
-                    syncToClaude()
-                } label: {
-                    Label(isSyncingClaude ? "同步中" : "同步到 Claude", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .disabled(isSyncingClaude)
-                .buttonStyle(.bordered)
+                OSChipButton(title: isProbing ? "探測中" : "重新探活", systemImage: "arrow.clockwise") { Task { await refreshMCP(force: true) } }.disabled(isProbing)
             }
-            if usesRegistry {
+            if selectedTab == "skills" {
                 Button {
                     showingAddForm.toggle()
                 } label: {
@@ -204,16 +198,67 @@ struct PluginsPage: View {
         .padding(.horizontal, 2)
     }
 
-    private var mcpSection: some View {
+    private var mcpContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if visibleMCPEntries.isEmpty {
+            if osMCP.contains(where: { $0.trigger == "這版改了同意方式" }) {
+                HStack(spacing: 8) {
+                    Text("這版改了同意方式，已帶入的 MCP 要重新確認一次才會給引擎用").font(.caption).foregroundStyle(.secondary)
+                    OSChipButton(title: "全部重新帶入") { confirmMCPReimport(osMCP.filter { $0.trigger == "這版改了同意方式" }) }.accessibilityIdentifier("mcp-reimport-all")
+                }.accessibilityElement(children: .contain).accessibilityIdentifier("mcp-consent-upgrade")
+            }
+            HStack(spacing: 8) {
+                OSChipButton(title: isIndexingMCP ? "索引中" : "索引全域") { Task { await indexMCP() } }.disabled(isIndexingMCP)
+                if let indexedMCP {
+                    OSChipButton(title: "帶入 OS") { confirmMCPImport(indexedMCP.items.filter { selectedMCP.contains($0.id) }) }.disabled(selectedMCP.isEmpty).accessibilityIdentifier("mcp-import")
+                }
+                if !osMCP.isEmpty {
+                    OSChipButton(title: checkingMCPUpdates ? "檢查中" : "檢查更新") { Task { await checkMCPUpdates() } }.disabled(checkingMCPUpdates)
+                }
+            }
+            ForEach(osMCP) { entry in
+                PluginConnectionCard(entry: entry, osAction: AnyView(
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if let update = mcpUpdates[String(entry.id.dropFirst(7))] {
+                            Text(update.label).font(.caption).foregroundStyle(.secondary)
+                            if update.state == .newer { OSChipButton(title: "更新") { confirmMCPUpdate(entry, update: update) } }
+                        }
+                        if entry.liveness.detail?.contains("請重新帶入") == true {
+                            OSChipButton(title: "重新帶入") { confirmMCPReimport([entry]) }.accessibilityIdentifier("mcp-reimport-" + entry.id)
+                        }
+                        OSChipButton(title: "移出 OS") { changeOSMCP { try $0.remove(String(entry.id.dropFirst(7))) } }
+                    }
+                ))
+            }
+            if let indexedMCP {
+                ForEach(OSMCPRegistry.Group.allCases, id: \.rawValue) { group in
+                    Text(group.rawValue + ":").font(.headline)
+                    ForEach(indexedMCP.items.filter { item in item.group == group && !osMCP.contains { $0.id == "os-mcp:" + item.id } }) { item in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Toggle(isOn: Binding(get: { selectedMCP.contains(item.id) }, set: { if $0 { selectedMCP.insert(item.id) } else { selectedMCP.remove(item.id) } })) { Text(item.displayName) }.toggleStyle(.checkbox).tint(.secondary).disabled(item.blocked).accessibilityIdentifier("mcp-index-" + item.sourceName)
+                            if let warning = item.warning { Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.primary) }
+                            Text(item.source.replacingOccurrences(of: OSMCPRegistry(environment: ProcessInfo.processInfo.environment).paths.userHome.path + "/", with: "~/", options: .anchored)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text(item.commandLine).font(.caption).textSelection(.enabled)
+                        }
+                    }
+                    ForEach(indexedMCP.problems[group] ?? [], id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            if visibleMCPEntries.isEmpty && osMCP.isEmpty && indexedMCP == nil {
                 sectionEmptyHint("尚無 MCP 登錄")
             }
             ForEach(visibleMCPEntries) { entry in
-                PluginConnectionCard(entry: entry) { confirmMCPRemoval(entry) }
+                PluginConnectionCard(entry: entry, osAction: entry.kind == .mcp ? AnyView(EmptyView()) : nil)
             }
         }
-        .task {
+    }
+
+    private var mcpSection: some View {
+        mcpContent.task {
+            #if DEBUG
+            // 自測已注入卡片，探活會覆蓋待驗證的互動狀態。
+            if mcpAcceptance { return }
+            #endif
+            osMCP = PluginsSource.osMCPEntries(environment: ProcessInfo.processInfo.environment)
             while !Task.isCancelled {
                 await refreshMCP(force: false)
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
@@ -221,8 +266,79 @@ struct PluginsPage: View {
         }
     }
 
+    @MainActor private func indexMCP() async {
+        isIndexingMCP = true
+        let registry = OSMCPRegistry(environment: ProcessInfo.processInfo.environment)
+        indexedMCP = await Task.detached(priority: .utility) { registry.scan() }.value
+        selectedMCP = []
+        isIndexingMCP = false
+    }
+
+    @MainActor private func checkMCPUpdates() async {
+        checkingMCPUpdates = true
+        let registry = OSMCPRegistry(environment: ProcessInfo.processInfo.environment)
+        mcpUpdates = await registry.checkUpdates()
+        checkingMCPUpdates = false
+    }
+
+    private func confirmMCPImport(_ items: [OSMCPRegistry.Item]) {
+        Task { @MainActor in
+            guard !items.isEmpty, !items.contains(where: \.blocked), await IslandNotice.shared.confirm(title: "帶入 MCP？", detail: items.map { $0.displayName + "\n" + $0.commandLine }.joined(separator: "\n\n"), confirmLabel: "帶入", timeout: 30) else { return }
+            changeOSMCP { try $0.bringIn(items) }
+        }
+    }
+
+    private func confirmMCPReimport(_ entries: [PluginRegistryEntry]) {
+        Task { @MainActor in
+            let registry = OSMCPRegistry(environment: ProcessInfo.processInfo.environment), ids = Set(entries.map { String($0.id.dropFirst(7)) })
+            let (items, saved) = await Task.detached(priority: .utility) { (registry.scan().items.filter { ids.contains($0.id) }, (try? registry.load()) ?? []) }.value
+            guard !items.isEmpty, items.count == ids.count, !items.contains(where: \.blocked) else { return }
+            let previews = items.map { item -> OSMCPRegistry.Item in
+                var preview = item
+                preview.packageOverride = saved.first { $0.id == item.id }?.packageOverride
+                preview.args = preview.execution(["args": item.args])["args"] as? [String] ?? item.args
+                return preview
+            }
+            guard !previews.contains(where: \.blocked), await IslandNotice.shared.confirm(title: entries.count > 1 ? "全部重新帶入 MCP？" : "重新帶入 MCP？", detail: previews.map { item in item.displayName + "\n" + item.commandLine + (saved.first { $0.id == item.id }.flatMap { registry.changeNotice($0) }.map { "\n" + $0 } ?? "") }.joined(separator: "\n\n"), confirmLabel: entries.count > 1 ? "全部重新帶入" : "重新帶入", timeout: 30) else { return }
+            changeOSMCP { try $0.bringIn(items) }
+        }
+    }
+
+    private func confirmMCPUpdate(_ entry: PluginRegistryEntry, update: OSMCPRegistry.Update) {
+        Task { @MainActor in
+            var preview = ((try? OSMCPRegistry(environment: ProcessInfo.processInfo.environment).load()) ?? []).first { "os-mcp:" + $0.id == entry.id }
+            preview?.args = update.newArgs
+            guard await IslandNotice.shared.confirm(title: "更新 MCP？",
+                detail: entry.purpose + "\n→\n" + (preview?.commandLine ?? ""), confirmLabel: "更新", timeout: 30) else { return }
+            if changeOSMCP({ try $0.update(String(entry.id.dropFirst(7)), to: update, confirmed: true) }) { mcpUpdates[String(entry.id.dropFirst(7))] = .init(state: .latest) }
+        }
+    }
+
+    @discardableResult private func changeOSMCP(_ action: (OSMCPRegistry) throws -> Void) -> Bool {
+        let env = ProcessInfo.processInfo.environment, registry = OSMCPRegistry(environment: ProcessInfo.processInfo.environment)
+        do {
+            try action(registry)
+            osMCP = PluginsSource.osMCPEntries(environment: env)
+            selectedMCP.subtract(((try? registry.load()) ?? []).map(\.id))
+            refreshedMCPEntries = nil
+            return true
+        } catch { statusMessage = "無法儲存 MCP：" + error.localizedDescription; return false }
+    }
+
+    #if DEBUG
+    func mcpAcceptanceView(scan: OSMCPRegistry.Scan?, imported: [PluginRegistryEntry], updates: [String: OSMCPRegistry.Update], interactive: Bool = false) -> some View {
+        var page = self
+        page._indexedMCP = State(initialValue: scan); page._osMCP = State(initialValue: imported)
+        page._selectedMCP = State(initialValue: [])
+        page._mcpUpdates = State(initialValue: updates)
+        page.mcpAcceptance = true
+        page._selectedTab = AppStorage(wrappedValue: "mcp", "tatwo.w245.mcpAcceptanceTab")
+        return Group { if interactive { page } else { VStack(alignment: .leading, spacing: 12) { Text("設定 › 外掛 › MCP").font(.title2); page.mcpContent } } }
+    }
+    #endif
+
     private var visibleMCPEntries: [PluginRegistryEntry] {
-        refreshedMCPEntries ?? (entries.filter { $0.kind == .builtin } + partition.mcp)
+        (refreshedMCPEntries ?? (entries.filter { $0.kind == .builtin } + partition.mcp)).filter { !$0.id.hasPrefix("os-mcp:") }
     }
 
     @MainActor private func refreshMCP(force: Bool) async {
@@ -245,19 +361,8 @@ struct PluginsPage: View {
             let runtime = await BuiltinPluginRuntimeSnapshot.current()
             return PluginsSource.builtinEntries(environment: environment, runtime: runtime)
         }.value
+        osMCP = fresh.filter { $0.id.hasPrefix("os-mcp:") }
         refreshedMCPEntries = builtins + fresh.filter { $0.kind == .mcp }
-    }
-
-    private func confirmMCPRemoval(_ entry: PluginRegistryEntry) {
-        guard entry.kind == .mcp, entry.liveness.state == .unreachable else { return }
-        Task { @MainActor in
-            guard await IslandNotice.shared.confirm(title: "移除外掛登記？",
-                detail: "\(entry.name)・只移除設定登記並保留 .bak；不刪程式、不停止既有對話。",
-                confirmLabel: "移除登記", timeout: 30) else { return }
-            remove(entry)
-            refreshedMCPEntries = nil
-            await refreshMCP(force: true)
-        }
     }
 
     private var skillsSection: some View {
@@ -1287,27 +1392,6 @@ struct PluginsPage: View {
             statusMessage = "移除失敗：\(error.localizedDescription)"
         }
         pendingRemoval = nil
-    }
-
-    private func syncToClaude() {
-        isSyncingClaude = true
-        statusMessage = "正在背景同步到 Claude MCP config；若目標檔已存在會先寫 .bak 備份。"
-        Task {
-            do {
-                let receipt = try await onSyncClaude()
-                await MainActor.run {
-                    isSyncingClaude = false
-                    let backup = receipt.backupPath.map { "；備份：\($0)" } ?? ""
-                    let serverList = receipt.serverNames.joined(separator: ", ")
-                    statusMessage = "Claude MCP 已同步：\(serverList) → \(receipt.wrotePath)\(backup)"
-                }
-            } catch {
-                await MainActor.run {
-                    isSyncingClaude = false
-                    statusMessage = "Claude MCP 同步失敗：\(error.localizedDescription)。可先用 CLI 匯出 staging，再手動合併到 ~/.claude.json。"
-                }
-            }
-        }
     }
 
     private func choosePath() {

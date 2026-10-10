@@ -1,0 +1,13 @@
+# W294b fixed identity/auth evidence and account privacy; product net <=60.
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+App/Sources/Tatwo2/Facade/HandsConnectorRegistry.swift
+App/Sources/Tatwo2/Facade/HandsConnect.swift
+App/Sources/Tatwo2/Facade/HandsConnectLog.swift
+App/Sources/Tatwo2/Facade/W208TapAcceptance.swift
+App/Sources/Tatwo2/Facade/HandsConnectR12Acceptance.swift
+tests/fixtures/w294-plugins-page.mjs
+tests/w294-plugins.test.mjs
+tests/w208-tap-stress.test.mjs
+tests/fixtures/w294b-room-allow.txt
+tests/fixtures/w294b-evidence/*

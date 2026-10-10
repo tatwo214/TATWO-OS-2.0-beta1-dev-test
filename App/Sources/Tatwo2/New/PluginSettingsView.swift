@@ -26,11 +26,6 @@ struct PluginSettingsView: View {
                 _ = try TatwoPluginRegistryStore.defaultStore().remove(id: entry.id)
                 reload()
             },
-            onSyncClaude: {
-                try await Task.detached(priority: .utility) {
-                    try TatwoPluginRegistryStore.defaultStore().syncClaudeMCPConfig()
-                }.value
-            },
             pocketThreadID: model.selectedThreadID,
             scrollsContent: true
         )

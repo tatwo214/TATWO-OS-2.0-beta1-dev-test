@@ -166,12 +166,12 @@ enum DeviceStatusReader {
         return parts.count == 2 ? (parts[0], parts[1]) : nil
     }
 
-    /// W95：入口／staging 位置一律由環境變數推出，絕不寫死任何一台機器的路徑。
+    /// 環境變數可覆寫；平常沿用設備頁設定的施工路徑。
     static func stagingRoot(entry: TatwoEntry,
                             environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
         let raw = environment["TATWO_STAGING"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let raw, !raw.isEmpty, raw.hasPrefix("/") { return URL(fileURLWithPath: raw, isDirectory: true) }
-        return entry.root.appendingPathComponent("staging", isDirectory: true)
+        return (try? WorkPath.current(entry)) ?? WorkPath.defaultURL(entry)
     }
 
     /// free＋inactive 合計（GB）。用 Mach 介面，不開子行程。

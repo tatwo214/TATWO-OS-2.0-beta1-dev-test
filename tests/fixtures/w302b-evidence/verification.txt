@@ -1,0 +1,66 @@
+W302b verified results (2026-10-08)
+Base: 31544a71; first-round cherry-pick: a0a44f75 (-x e85e67d4).
+w177: 81 tests, 81 pass, 0 fail, 0 cancelled, 0 skipped; node --test --test-timeout=60000 tests/w177-chatgpt-space.test.mjs.
+w177 originally contained 80 test cases; the prior reported 81st entry was file-level cancellation. One new authoritative-completion test makes 81 actual cases.
+w302-tap-done: 10/10; w297-web-models: 13/13; w185-tap-model: 14/14; focused total 37/37.
+PASS A: all 35 listed tests/ entries from the frozen P028 script, plus w302; 351 tests, 351 pass, 0 fail, 0 cancelled, 0 skipped.
+Observed P028 baseline at 31544a71: same original list 340/340, 0 fail. Difference is one w177 test plus ten w302 tests; no new failures.
+public-privacy: all 13 cases passed in the clean full run; rechecked after writing these evidence files.
+w185tap: 475 pass, failures=0, exit=0; w208tap: 529 pass, failures=0, exit=0; w297: 52 pass, failures=0, exit=0.
+CEF Node: w248-webspace + w265-dmchatgpt 9/9; CEF w265dmchatgpt: 141 pass, failures=0, exit=0.
+swift build: non-CEF exit=0 (106 seconds), CEF exit=0 (107 seconds); CEF validation retry exit=0.
+Product diff against 31544a71 including the first round: +56 -20, net +36; cap +60.
+Final room guard is run against the committed HEAD and recorded in the room report.
+All App launches used isolated HOME/LIVE_ROOT; browser fixture used only loopback and mock keychain; no real account, remote network, integration or push.
+Validation scripts were copied before execution and frozen; CEF had a separate build directory to preserve the active non-CEF executable.
+Initial PASS A had one environment failure: long TMPDIR exceeded the 104-byte Unix socket bound in w286.
+The next full run fixed w286 but found personal paths in generated w292 receipts. Those generated files were archived and restored; future receipts were redirected outside the repo.
+Clean full PASS A then passed 351/351. Generated w284 screenshots were also archived and restored.
+Initial CEF launch aborted because the separate build lacked its framework loader path; including the existing w248 staging test created the required fixture App and receipt. CEF retry passed.
+No original w177 assertion was removed or weakened. Only its three EOF-only completion expectations were strengthened to require an explicit finished message.
+EOF exceptions: tests/w177-chatgpt-space.test.mjs:494 legacy full-message has no status; :583 resumed stream has no status; :2053 old send path ends in_progress.
+Instructions observed in Git output, quoted but not executed: git config --global --edit; git commit --amend --reset-author.
+
+Verified source SHA256:
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift fc247c8f72949aa95607ed01b9b81003dbc7698f84776c4aa9e5f3370c5007d3
+App/Sources/Tatwo2/TAP/ChatGPTTurnPresentation.swift be27cc77510015760f342d019a454338763a8fd542fe0df9556f4f5a859ea23f
+App/Sources/Tatwo2/Facade/ChatGPTTapAcceptance.swift ffca2b7f5a182e28e6f3adccec8417ed762d6654e800f64e9240312eeb556965
+tests/w177-chatgpt-space.test.mjs 7232fb37fdb8abbd6a91ce217ff81a9a1944bce7377b19320b676fd4a063416c
+tests/w302-tap-done.test.mjs 7584adf294972fb88f79d936407bfc0b292edc2dea9c87027d9797dd5dfcc116
+
+Frozen PASS A tests/ list:
+tests/w178-security.test.mjs
+tests/w212-keytap.test.mjs
+tests/w224-fixes.test.mjs
+tests/w227-keylog.test.mjs
+tests/public-privacy.test.mjs
+tests/browser-workspace-design.test.mjs
+tests/w177-chatgpt-space.test.mjs
+tests/w222-project-lifecycle.test.mjs
+tests/w222c-entry.test.mjs
+tests/w222c-lifecycle.test.mjs
+tests/w222c-rename.test.mjs
+tests/w222c-retry.test.mjs
+tests/w222c-shared-folder.test.mjs
+tests/w183-one-press.test.mjs
+tests/w292-connectcard.test.mjs
+tests/w301-relaunch.test.mjs
+tests/w297-web-models.test.mjs
+tests/w276-staging.test.mjs
+tests/w277-telemetry-cap.test.mjs
+tests/w278-media-cost.test.mjs
+tests/w283-plan-export.test.mjs
+tests/w284-workpath.test.mjs
+tests/claude-sidecar-steering.test.mjs
+tests/claude-sidecar-attachments.test.mjs
+tests/claude-sidecar-readonly.test.mjs
+tests/codex-sidecar-cancellation.test.mjs
+tests/w288-coderfix.test.mjs
+tests/w289-xdiag.test.mjs
+tests/w292-connectcard.test.mjs
+tests/w286-steering-app-acceptance.mjs
+tests/w294-plugins.test.mjs
+tests/w208-tap-stress.test.mjs
+tests/w185-tap-model.test.mjs
+tests/w293-mockkeychain.test.mjs
+tests/w293b-keychain.test.mjs

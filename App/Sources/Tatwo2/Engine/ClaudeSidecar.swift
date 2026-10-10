@@ -35,11 +35,12 @@ final class ClaudeSidecar {
     private var pendingWrites: [Data] = []
     var onRuntimeSelection: (() -> Void)?
     private var child: SidecarGroupedProcess?
+    private var remoteHostPin: SSHHostPin?
     private var buffer = Data()
     private(set) var isRunning = false
     /// W181 R3：啟動時這家有沒有勾「不用 API 金鑰」（勾了才拿掉金鑰變數）；設定之後改了，ChatLiveEngine 會重開它。
     private(set) var startedWithAPIKeyOptOut = false
-    private(set) var startedExecutableIdentity: String?
+    private(set) var startedWithoutMemory = false
     var onEvent: ((Event) -> Void)?
 
     var isStarting: Bool { startupTask != nil }
@@ -109,12 +110,20 @@ final class ClaudeSidecar {
     /// remote 非 nil 時，同一套 stdin/stdout 協議改經 ssh 在另一台跑（R3）；MCP 這輪遠端不帶。
     /// sidecar 讀完就從自己的環境刪掉，不往下傳給子程序。
     static let mcpConfigEnvironmentKey = "TATWO2_MCP_CONFIG"
-    func start(cwd: String, resume: String?, model: String?, systemPrompt: String? = nil, mcpConfig: String? = nil, permissionMode: String? = nil, remote: RemoteEngineHandle? = nil, catalogOnly: Bool = false) throws {
+    #if DEBUG
+    nonisolated(unsafe) static var fixtureLaunch: ((String, [String], [String: String], String) -> Void)?
+    #endif
+    func start(cwd: String, resume: String?, model: String?, systemPrompt: String? = nil, mcpConfig: String? = nil, permissionMode: String? = nil, remote: RemoteEngineHandle? = nil, memoryPolicy: ManagedEnginePolicy? = nil, catalogOnly: Bool = false, runtimeOverride: EngineRuntimeSelection.Choice? = nil) throws {
+        if kind == .claude, NativeStagingIsolation.isW276Bundle { throw NSError(domain: "TatwoStagingIsolation", code: 1, userInfo: [NSLocalizedDescriptionKey: "Staging 停用 Claude 系統鑰匙圈認證。"]) }
         if permissionMode == "readOnly", kind != .claude || remote != nil {
             throw NSError(domain: "TatwoReadOnlyReviewer", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "此引擎／設備不支援唯讀副審"])
         }
+        guard memoryPolicy == nil || remote == nil else {
+            throw DeviceDispatch.Failure(reason: "未開放記憶的受管對話只能在這台的隔離工作資料夾執行")
+        }
         let script = remote?.sidecarScript ?? Self.scriptPath(for: kind, allowsOverride: permissionMode != "readOnly")
+        let systemPrompt = memoryPolicy == nil ? systemPrompt : (systemPrompt ?? "") + "\n受管工作不能 commit、clone 或建立 git 版本庫。"
         var args = [script, "--cwd", cwd]
         if catalogOnly { args += ["--catalog-only"] }
         if let resume { args += ["--resume", resume] }
@@ -155,6 +164,8 @@ final class ClaudeSidecar {
         let runtimeBin = env["TATWO2_RUNTIME_BIN"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
             ?? (Bundle.main.resourceURL ?? Bundle.main.bundleURL).appendingPathComponent("runtime/bin", isDirectory: true)
         try Self.prepareEngineHomes(environment: &env, runtimeBin: runtimeBin)
+        if let memoryPolicy { env = try memoryPolicy.prepareEnvironment(env) }
+        startedWithoutMemory = memoryPolicy != nil
         if remote == nil {
             let paths = EnginePaths(environment: env)
             let id = UUID()
@@ -166,7 +177,8 @@ final class ClaudeSidecar {
             let engineKind = kind
             startupTask = Task { @MainActor [weak self] in
                 do {
-                    let selected = try await paths.selectionAsync(for: engineKind, forceVerification: true)
+                    let selected: EngineRuntimeSelection.Choice
+                    if let runtimeOverride { selected = runtimeOverride } else { selected = try await paths.selectionAsync(for: engineKind, forceVerification: true) }
                     try Task.checkCancellation()
                     guard let self, self.startupID == id else { return }
                     var selectedEnvironment = env
@@ -174,9 +186,8 @@ final class ClaudeSidecar {
                     selectedEnvironment["TATWO2_CLAUDE_BIN"] = self.kind == .claude ? selected.executable.path : nil
                     selectedEnvironment["TATWO2_GROK_BIN"] = self.kind == .grok ? selected.executable.path : selectedEnvironment["TATWO2_GROK_BIN"]
                     selectedEnvironment["TATWO2_ENGINE_IDENTITY"] = selected.identity
-                    self.startedExecutableIdentity = selected.identity
                     try self.launch(args: args, environment: selectedEnvironment, runtimeBin: runtimeBin,
-                                    cwd: cwd, remote: nil, mcpConfig: mcpConfigForEnvironment)
+                                    cwd: cwd, remote: nil, mcpConfig: mcpConfigForEnvironment, memoryPolicy: memoryPolicy)
                     self.startupTask = nil; self.startupID = nil
                     self.onRuntimeSelection?()
                 } catch {
@@ -190,22 +201,29 @@ final class ClaudeSidecar {
             return
         }
         try launch(args: args, environment: env, runtimeBin: runtimeBin, cwd: cwd, remote: remote,
-                   mcpConfig: mcpConfigForEnvironment)
+                   mcpConfig: mcpConfigForEnvironment, memoryPolicy: memoryPolicy)
     }
 
     private func launch(args: [String], environment: [String: String], runtimeBin: URL, cwd: String,
-                        remote: RemoteEngineHandle?, mcpConfig: String?) throws {
+                        remote: RemoteEngineHandle?, mcpConfig: String?, memoryPolicy: ManagedEnginePolicy?) throws {
         var env = environment
         // W181 R3：勾了「不用 API 金鑰」的那家，啟動時拿掉它的 API 金鑰變數，只能用訂閱登入跑；沒勾不動。
         let apiKeyOptedOut = EngineDisableStore.disabled()
         EngineAPIKeyPolicy.removeAPIKeys(from: &env, for: kind, optedOut: apiKeyOptedOut)
         if let mcpConfig, !mcpConfig.isEmpty { env[Self.mcpConfigEnvironmentKey] = mcpConfig }
+        env["DISABLE_AUTOUPDATER"] = "1"
         env["PATH"] = runtimeBin.path + ":/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         let executable: String
         let arguments: [String]
         if let remote {
             // 純函式抽出（2026-09-06，行為不變）：讓 REMOTETEST 能 0 I/O 擷取 production 遠端 argv 基線
-            (executable, arguments) = Self.remoteLaunch(remote: remote.device, sidecarArgs: args, remoteEnvironment: remote.remoteEnvironment)   // production：remoteEnvironment 空＝argv 不變
+            let pin = try DeviceFleetSSHPins.withEnvironment(deviceID: remote.device.id, name: remote.device.name) {
+                try SSHHostPin.make(deviceID: remote.device.id, name: remote.device.name, environment: $0)
+            }
+            let launch = Self.remoteLaunch(remote: remote.device, sidecarArgs: args, remoteEnvironment: remote.remoteEnvironment)
+            executable = launch.executable
+            arguments = pin.options + launch.arguments
+            remoteHostPin = pin   // 保留 pin 到 sidecar 結束，SSH 才不會讀到已清除的檔案。
         } else {
             let bundledNode = runtimeBin.appendingPathComponent("node").path
             if FileManager.default.isExecutableFile(atPath: bundledNode) {
@@ -216,12 +234,17 @@ final class ClaudeSidecar {
                 arguments = ["node"] + args
             }
         }
+        let launchExecutable = memoryPolicy == nil ? executable : "/usr/bin/sandbox-exec"
+        let launchArguments = memoryPolicy?.sandboxArguments(executable: executable, arguments: arguments, writableDirectory: cwd) ?? arguments
+        #if DEBUG
+        Self.fixtureLaunch?(launchExecutable, launchArguments, env, cwd)
+        #endif
         let grouped = try SidecarGroupedProcess.spawn(
-            executable: executable,
-            arguments: arguments,
+            executable: launchExecutable, arguments: launchArguments,
             environment: env,
             currentDirectory: remote == nil ? cwd : NSHomeDirectory())
         child = grouped
+        startedWithoutMemory = memoryPolicy != nil
         startedWithAPIKeyOptOut = apiKeyOptedOut.contains(kind.rawValue)   // W181 R3
         grouped.onStdout = { [weak self] data in
             DispatchQueue.main.async { self?.consume(data) }
@@ -235,6 +258,7 @@ final class ClaudeSidecar {
                 guard let self, self.child === grouped else { return }
                 self.isRunning = false
                 self.child = nil
+                self.remoteHostPin = nil
                 self.onEvent?(.closed)
             }
         }
@@ -319,7 +343,7 @@ final class ClaudeSidecar {
         write(["op": "permission", "id": id, "allow": allow, "message": message ?? "使用者拒絕"])
     }
     func steer(text: String, attachments: [String], requestID: String, targetTurnUUID: String) {
-        guard kind == .codex else { return }
+        guard kind == .codex || kind == .claude else { return }
         write(["op": "steer", "text": text, "attachments": attachments,
                "uuid": requestID, "targetTurnUUID": targetTurnUUID])
     }

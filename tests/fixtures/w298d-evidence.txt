@@ -1,0 +1,19 @@
+W298d: Ollama catalog reimplemented on W298b round 3; base 9eaa9760.
+Implementation: cloud vendor selection loop retained; local catalog uses the shared replacement step.
+Local source: fixed loopback GET /api/tags; timeout 3s; redirects refused; malformed/offline responses preserve catalog.
+Local models: display names preserved; same provider lookupKey deduplicates; Grok identity remains grokCLI.
+Local selection: no update control; cancel preserves row; selected cloud vendors alone install.
+Theme: OSChipButton unchanged; local icon uses TatwoActivePalette; labels use semantic primary/secondary styles.
+Build: swift build exit=0; 0 error (existing compiler warnings remain).
+Focused node: 38 tests, 38 pass, 0 fail, 0 skipped.
+Selftests: w298b 92 pass, 0 failures; w298c 51 pass, 0 failures.
+p028 PASS A node list: all 35 listed paths, 340 tests, 340 pass, 0 fail, 0 skipped.
+Screenshots: 12 files under ~/tatwo-build/verify/W298d-localmodels2-141239/artifacts/w298c/; no PNG added to Git.
+Generated existing fixture receipts: 17 changed files archived under ~/tatwo-build/verify/W298d-verifier/generated-receipts/ and originals restored.
+Verification scripts: immutable snapshots under ~/tatwo-build/verify/W298d-verifier/; copies of executed scripts committed.
+First focused privacy scan flagged a literal model name as an account field; fixture now generates JSON; detector unchanged.
+First p028 attempt started before build and failed for missing binary plus that fixture; complete rebuilt run passed all 340.
+Initial and final diagnostic logs retained under ~/tatwo-build/verify/ with home paths scrubbed.
+Not exercised: real Ollama, accounts, keychain, live, CEF; MLX and Ollama upgrades intentionally excluded; no push.
+GBrain lookup unavailable in this session; no cross-engine review tool used.
+Observed instruction text from existing selftest output: 「主導實機驗」; treated as output, no live verification performed.

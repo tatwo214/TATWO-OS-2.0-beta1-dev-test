@@ -78,13 +78,36 @@ import Foundation
         let next = TatwoPlanArtifactV1(threadID: id, objective: "sample", kind: "distill")
         try engine.savePlanArtifact(next)
         check("F7 replacing another canvas preserves archive", try engine.archivedPlanArtifacts(id).contains { $0.planID == replacement.planID })
-        model.prompt = "/go"
-        model.slashCommandSelectedIndex = nil
-        let consumed = model.handleSlashSuggestionKey(.commit)
-        check("F8 Enter selects sole goal suggestion", consumed && model.prompt == "/goal ")
+        // W256: /goal list is now a separate suggestion, so /go no longer has a sole match.
+        for input in ["/g", "/go", "/goal", "  /g"] {
+            model.prompt = input
+            model.slashCommandSelectedIndex = nil
+            check("F8 goal and list are separate rows \(input)", model.matchingSlashCommands.map(\.cmd) == ["/goal", "/goal list"])
+            let completed = input.hasPrefix("  ") ? "  /goal " : "/goal "
+            check("F8 first unselected goal row completes without sending", model.handleComposerSuggestionKey(.commit) && model.prompt == completed)
+        }
+        model.prompt = "/g"
+        model.slashCommandSelectedIndex = 0
+        check("F8 selected goal Enter inserts add command", model.handleComposerSuggestionKey(.commit) && model.prompt == "/goal ")
+        let goalsBefore = ThreadGoalStore.shared.list(id)
+        for input in ["/g", "/goal", "/goal l", "/goal li", "/goal list"] {
+            model.prompt = input
+            model.goalCardExpanded = false
+            model.slashCommandSelectedIndex = model.matchingSlashCommands.firstIndex { $0.cmd == "/goal list" }
+            check("F8 list Enter opens card without adding goals \(input)", model.handleComposerSuggestionKey(.commit) &&
+                  model.goalCardExpanded && model.prompt.isEmpty && ThreadGoalStore.shared.list(id) == goalsBefore)
+        }
+        model.prompt = "/goal l"
+        check("F8 subcommand partial only suggests list", model.matchingSlashCommands.map(\.cmd) == ["/goal list"])
+        check("F8 list row uses list icon", model.matchingSlashCommands.first?.icon == "list.bullet")
+        check("F8 add row only describes mainline", ChatPageModel.slashCommandItems.first { $0.cmd == "/goal" }?.subtitle == "/goal <目標> 加一條主線")
+        for input in ["/goal legacy objective", "/goal list extra", "/plan draft", "/issue draft", "/plan\n/g"] {
+            check("F8 existing argument and multiline behavior \(input)", ChatComposerSlashCatalog.matches(prompt: input).isEmpty)
+        }
         model.prompt = "/"
         model.slashCommandSelectedIndex = nil
-        check("F8 multiple unselected suggestions do not consume Enter", !model.handleSlashSuggestionKey(.commit))
+        let firstSuggestion = model.matchingSlashCommands[0].cmd + " "
+        check("F8 multiple unselected suggestions complete the first row", model.handleSlashSuggestionKey(.commit) && model.prompt == firstSuggestion)
         model.prompt = "/issue"
         model.requestOpenInfoCard = false
         model.send()
@@ -97,7 +120,7 @@ import Foundation
         check("F11 tray reports existing child", model.composerHint == "已顯示討論串")
         check("S6 second line does not suggest", ChatComposerSlashCatalog.matches(prompt: "sample\n/g").isEmpty)
         check("S6 leading newline does not suggest", ChatComposerSlashCatalog.matches(prompt: "\n/g").isEmpty)
-        check("S6 first line still suggests", ChatComposerSlashCatalog.matches(prompt: "  /g").map(\.command) == ["/goal"])
+        check("S6 first line still suggests", ChatComposerSlashCatalog.matches(prompt: "  /g").map(\.command) == ["/goal", "/goal list"])
         var interrupted = TatwoPlanArtifactV1(threadID: id, objective: "sample", state: .ready, kind: "pr")
         interrupted.prReview = PRPlanReview(directory: root, repository: "fixture/sample", account: "fixture",
             snapshot: .init(head: "fixture", status: "M", diff: "sample", stat: "1", origin: "fixture/sample"))

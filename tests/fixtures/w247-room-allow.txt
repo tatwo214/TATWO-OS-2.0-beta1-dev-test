@@ -1,0 +1,6 @@
+Engines/spotify-helper/src/*.rs
+App/Sources/Tatwo2/Browser/SpotifyConnect.swift
+App/Sources/Tatwo2/Browser/SpotifyConnectAcceptance.swift
+tests/w176-spotify-connect.test.mjs
+tests/fixtures/w247-room-allow.txt
+tests/browser-native-tabs.test.mjs

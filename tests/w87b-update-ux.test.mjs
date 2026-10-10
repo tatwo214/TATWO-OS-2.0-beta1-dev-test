@@ -304,7 +304,18 @@ test('W87b changes no installer, packaging or signing gate', () => {
       assert.equal(withoutConversationBackup(read(path)), withoutConversationBackup(previous.stdout),
         path + '：對話備份之外的簽章、版本、切換閘門必須逐位元一致');
     } else {
-      assert.equal(read(path), previous.stdout, path + '：封裝閘門必須逐位元一致');
+      // 1bffa4d9 adds a mandatory signed native helper. Verify that exact addition;
+      // every pre-existing packaging/signing gate must remain byte-for-byte intact.
+      const helperGate = `[[ -x "$OUT/TATWO OS.app/Contents/Helpers/TatwoFleetGate" ]] || { echo 'Missing native fleet gate' >&2; exit 1; }
+# build-app signs this nested helper before the outer App; approved candidates
+# must already carry that signature (do not invalidate their notarization ticket).
+codesign --verify --strict "$OUT/TATWO OS.app/Contents/Helpers/TatwoFleetGate"
+`;
+      const current = read(path);
+      assert.equal(current.split(helperGate).length, 2, 'native helper gate appears exactly once');
+      assert.ok(current.indexOf(helperGate) < current.indexOf('codesign --verify --deep --strict'), 'nested signature before outer signature');
+      // Once the comparison base itself contains the helper (beta1 after .069), strip it on both sides.
+      assert.equal(current.replace(helperGate, ''), previous.stdout.replace(helperGate, ''), path + '：既有封裝閘門必須逐位元一致');
     }
   }
   assert.deepEqual(readFileSync(new URL('../install.sh', import.meta.url)),

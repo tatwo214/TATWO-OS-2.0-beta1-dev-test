@@ -29,9 +29,11 @@ test('W171 settings: 開始使用 first, pending dots; merged login hides comple
   assert.match(nativeW214(2), /W214 PASS N2.environment-expands-in-place.false/);
   assert.match(nativeW214(2), /W214 PASS N2.completed-banner-absent.false/);
   assert.match(read('New/OSSettingsPage.swift'), /for row in pending \{ try EngineLinks\.link\(row\) \}/);
-  const devices = read('New/DevicesCard.swift');
-  assert.match(devices, /FirstRunDefaults\.switchToExistingPrimary\(\)/);
-  assert.match(devices, /\.confirmationDialog\("改成加入你已經有的那台？"/, 'role switch asks first');
+  // W187 keeps settings read-only; joining an existing primary needs the DM card's
+  // physical action before the production pairing path can change this role.
+  assert.match(read('New/DevicesCard.swift'), /DeviceFleetPage\(snapshot: fleet\.snapshot, openAssistant: \{\s*GlobalDMDeskController\.shared\.openDirect\(\.assistant\)/);
+  assert.match(read('New/DeviceFlowCards.swift'), /action\("加入", primary: true, enabled: session\.code\.count == 6\) \{ await session\.joinFromCard\(\$0\) \}/);
+  assert.match(read('DM/DeviceFlowSession.swift'), /func joinFromCard\(_ authority: DeviceFlowUserAction\) async \{\s*guard authority\.consume\(for: self\) else \{ return \}/, 'role switch asks first');
   const guide = read('Shell/SetupGuide.swift');
   for (const title of ['設定 TATWO 助理模型', '讓你的 AI 用同一套規則', '這台 Mac 的名字和身分', '備份到你的 GitHub', 'Computer Use 權限']) {
     assert.ok(guide.includes(`"${title}"`), title);

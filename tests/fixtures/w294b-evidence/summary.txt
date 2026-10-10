@@ -1,0 +1,21 @@
+W294b baseline: 3e318dd2; branch: w294b/plugins
+Node final suite: tests=153 pass=153 fail=0 skipped=0 exit=0
+w294-plugins.test.mjs: pass=21 fail=0
+w208-tap-stress.test.mjs: pass=14 fail=0
+w183-connect.test.mjs: pass=91 fail=0
+w185-tap-model.test.mjs: pass=14 fail=0
+public-privacy.test.mjs: pass=13 fail=0
+w208tap: exit=0; W208 SUMMARY failures=0 passed=529
+w185tap: exit=0; W185TAP SUMMARY failures=0 passed=438
+w183connect: exit=0; W183CONNECT SUMMARY failures=0 passed=403 skipped=1
+CEF skip: unchanged native Pod/popup/pairing-page check; this build has no Chromium.
+W294b: renamed Accounts + Reconnect cannot delete; /api/mcp About identity ignores description /mcp.
+W294b: custom account text/aria/title/alt excluded from reports and snapshots; second native log mask passed.
+W294b: normal not_connected duplicates delete; keeping App ID remains; native preview excludes unknown.
+W294b: missing/duplicate/malformed fixed fields, description heading, Reconnect-only/disabled Connect stop with item/field.
+Swift build: exit=0 errors=0; existing compiler warnings remain.
+Build used cached local dependencies, --disable-automatic-resolution --skip-update and the local SDK macro plugin.
+Raw receipts and isolated synthetic artifacts retained under the task's existing tatwo-build/tmp area.
+No external requests, real ChatGPT/account/Keychain/live access, installation, release or push.
+Untrusted fixture instruction observed as data: Connect your account to use this plugin.
+Git output suggested git config --global --edit and git commit --amend --reset-author; neither instruction was followed.

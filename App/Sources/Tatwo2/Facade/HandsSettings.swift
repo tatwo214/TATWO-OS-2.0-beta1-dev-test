@@ -162,12 +162,28 @@ enum HandsFiles {
         var info = stat()
         if lstat(url.path, &info) == 0 {
             guard (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == getuid() else { throw HandsFileError.unsafe("directory") }
-            if (info.st_mode & 0o077) != 0 { _ = chmod(url.path, 0o700) }
+            let fd = Darwin.open(url.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw HandsFileError.unsafe("directory_open") }
+            defer { close(fd) }
+            guard fstat(fd, &info) == 0, info.st_uid == getuid(), fchmod(fd, 0o700) == 0 else {
+                throw HandsFileError.unsafe("directory_mode")
+            }
             return
         }
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
-        _ = chmod(url.path, 0o700)
+        try ensureDirectory(url)
+    }
+
+    static func restrictOwnedFile(_ url: URL) throws {
+        let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw HandsFileError.unsafe("private_open") }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              info.st_uid == getuid(), info.st_nlink == 1, fchmod(fd, 0o600) == 0 else {
+            throw HandsFileError.unsafe("private_mode")
+        }
     }
 
     /// 原子寫入：同資料夾建 O_EXCL|O_NOFOLLOW 的 0600 暫存檔，寫完 fsync 再 rename 蓋過去。
@@ -218,6 +234,7 @@ enum HandsFiles {
 
     /// 讀：不跟隨捷徑、必須是自己的一般檔、權限不能比 0600 寬、大小有上限。不合就回 nil（呼叫端當成空／關閉）。
     static func readSecure(_ url: URL, limit: Int = 4 * 1024 * 1024) -> Data? {
+        guard (try? ensureDirectory(url.deletingLastPathComponent())) != nil else { return nil }
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { return nil }
         defer { close(fd) }

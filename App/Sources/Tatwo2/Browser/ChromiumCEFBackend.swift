@@ -57,6 +57,16 @@ enum EmbeddedBrowserEnginePolicy {
     static let configuredEngineKey = "TatwoBrowserEngine"
     static let stagingRootKey = "TatwoStagingRoot"
 
+    static func isDownloadFixture(_ bundleIdentifier: String?) -> Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        return bundleIdentifier == "ai.tatwo.tatwo2.staging.w258" && env["TATWO2_SELFTEST"] == "w258download" &&
+            NativeStagingIsolation.isEnabled(env) && NativeStagingIsolation.validationError(env) == nil
+        #else
+        return false
+        #endif
+    }
+
     static func selectedEngine(
         bundleIdentifier: String?,
         configuredEngine: String?,
@@ -68,8 +78,10 @@ enum EmbeddedBrowserEnginePolicy {
         guard !isExportMode else { return .chromiumUnavailable }
         let isAuthorizedBundle =
             productionSupportDirectory(for: bundleIdentifier) != nil
+            || bundleIdentifier == "ai.tatwo.tatwo2.staging"
             || bundleIdentifier == tatwo2StagingBundleIdentifier
             || bundleIdentifier?.hasPrefix(stagingBundlePrefix) == true
+            || isDownloadFixture(bundleIdentifier)
         guard isAuthorizedBundle,
               configuredEngine == EmbeddedBrowserEngine.chromiumCEF.rawValue
         else {
@@ -1901,13 +1913,31 @@ enum TatwoCEFProfileLocationResolver {
     static let productionApplicationSupportDirectoryName = "Tatwo Ultrawork"
     static let productionChromiumDirectoryName = "chromium"
 
+    private static func usesStagingRoot(_ bundle: Bundle) -> Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        if bundle.bundleIdentifier == "ai.tatwo.tatwo2.staging.w248",
+           ["w248webspace", "w265dmchatgpt"].contains(env["TATWO2_SELFTEST"] ?? ""), NativeStagingIsolation.isEnabled(env),
+           NativeStagingIsolation.validationError(env) == nil { return true }
+        #endif
+        return bundle.bundleIdentifier == "ai.tatwo.tatwo2.staging"
+            || bundle.bundleIdentifier?.hasPrefix(EmbeddedBrowserEnginePolicy.stagingBundlePrefix) == true
+            || EmbeddedBrowserEnginePolicy.isDownloadFixture(bundle.bundleIdentifier)   // W258 download fixture
+    }
+
     static func rootCacheURL(
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) -> URL? {
-        if bundle.bundleIdentifier?
-            .hasPrefix(EmbeddedBrowserEnginePolicy.stagingBundlePrefix) == true
-        {
+        if bundle.bundleIdentifier == "ai.tatwo.tatwo2.staging" {
+            let env = ProcessInfo.processInfo.environment
+            guard NativeStagingIsolation.validationError(env) == nil,
+                  let path = env["TATWO_STAGING_ROOT"] else { return nil }
+            let root = URL(fileURLWithPath: path, isDirectory: true)
+            return validatedAuthorityRoot(stagingRootURL: root,
+                rootCacheURL: root.appendingPathComponent("runtime/cef-root"), fileManager: fileManager)
+        }
+        if usesStagingRoot(bundle) {
             guard let rawRoot = bundle.object(
                 forInfoDictionaryKey:
                     EmbeddedBrowserEnginePolicy.stagingRootKey) as? String,
@@ -2056,9 +2086,7 @@ enum TatwoCEFProfileLocationResolver {
             .appendingPathComponent("cef-logs", isDirectory: true)
             .appendingPathComponent("cef.log")
         let authorityStagingRoot =
-            bundle.bundleIdentifier?
-                .hasPrefix(
-                    EmbeddedBrowserEnginePolicy.stagingBundlePrefix) == true
+            usesStagingRoot(bundle)
             ? rootCache
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
@@ -2379,6 +2407,25 @@ final class TatwoCEFContainerView: NSView { // 2.0：開放給瀏覽器橋找到
         self.profileLease = profileLease
         closeRequested = false
         closeCompleted = false
+        mountBrowserView(browserView)
+    }
+
+    /// Pod owns a borrowed page; only its container geometry is shared with Browser tabs.
+    func mountBorrowedBrowser(_ browser: TatwoCEFBrowserView) {
+        precondition(browserView == nil && browserLifetime == nil && profileLease == nil)
+        mountBrowserView(browser)
+    }
+
+    func detachBorrowedBrowser() {
+        precondition(browserLifetime == nil && profileLease == nil)
+        geometrySyncWorkItem?.cancel()
+        geometrySyncWorkItem = nil
+        browserView?.removeFromSuperview()
+        browserView = nil
+    }
+
+    private func mountBrowserView(_ browserView: TatwoCEFBrowserView) {
+        self.browserView = browserView
         wantsLayer = true
         browserView.wantsLayer = true
         logEmbeddingSnapshot(phase: "container_before_install", force: true)
@@ -2800,6 +2847,8 @@ final class TatwoCEFTabHostView: NSView {
               let selectedTabID, let entry = entries[selectedTabID],
               let browser = entry.container.browserView,
               !entry.container.isHiddenOrHasHiddenAncestor else { return }
+        if event.type == .scrollWheel && browser.browserActor != .agent
+            && !browser.agentControlled && !browser.humanPreferencesDeferred { return }
         guard let source = event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) else {
             if browser.agentControlled { NSLog("phase=actor_recovery result=ignored reason=missing_event_source") }
             return // Unknown/synthetic input must not grant human authority.

@@ -1,0 +1,2 @@
+/Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging:
+	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)

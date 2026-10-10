@@ -64,6 +64,11 @@ struct LiveThreadRecord: Codable, Equatable, Identifiable {
     var isArchived: Bool = false
     var sessionID: String?      // 舊欄位（Claude），保留相容
     var sessionIDs: [String: String] = [:]   // 引擎 → session id（claude/codex/grok 各自續接）
+    var sessionIsolated: [String: Bool] = [:]
+    func sessionID(for engine: String, isolated: Bool) -> String? {
+        guard (sessionIsolated[engine] ?? (controllerCreatorFingerprint == nil ? false : nil)) == isolated else { return nil }
+        return sessionIDs[engine] ?? (engine == "claude" ? sessionID : nil)
+    }
     var engine: String?         // 最近用的引擎
     var requestedModel: String?
     var requestedEffort: String?
@@ -87,6 +92,7 @@ struct LiveThreadRecord: Codable, Equatable, Identifiable {
     var botPermissionPreset: TatwoPermissionPreset? // Bot uses the existing native approval enum, not a new permission system.
     var deviceID: String?   // R3：nil＝本機；有值＝從 devices.json 找遠端設備
     var importedFrom: CoderImportSource?   // W180 E3：從 Codex／Claude Code 匯入的出處；舊檔沒有這欄
+    var controllerCreatorFingerprint: String? // Durable local creator scope for restricted remote work conversations.
     var memoryStrength: String?   // W180 E1：記憶強度 off/light/medium/deep；nil＝照預設（TatwoMemoryStrength.resolve）
     var ultrawork: UltraworkTurnSettings?   // W184 H4 修正（審查 #3）：這條的 ultrawork（檔位＋主導＋每一個副手）；nil＝沒開過
     var ultraworkSent: UltraworkTurnSettings?   // W184 H4 修正（審查 #2）：上一輪真的帶出去的（開著的才記）；關掉那一輪說一聲用
@@ -126,11 +132,12 @@ struct LiveThreadRecord: Codable, Equatable, Identifiable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, projectID, title, isPinned, isArchived, sessionID, sessionIDs, engine, model, enabledMCP
+        case id, projectID, title, isPinned, isArchived, sessionID, sessionIDs, sessionIsolated, engine, model, enabledMCP
         case messages, createdAt, updatedAt, cliTabs, cliTabsUpdatedAt
         case parentThreadID, roomBrief, roomReadOnly, lastOutputAt, subStatus
         case issues, cwdOverride, deviceID, botPermissionPreset, requestedModel, requestedEffort, requestedSpeedTier, nativeGoal
         case importedFrom   // W180 E3
+        case controllerCreatorFingerprint
         case memoryStrength   // W180 E1
         case ultrawork, ultraworkSent   // W184 H4 修正
     }
@@ -144,6 +151,7 @@ struct LiveThreadRecord: Codable, Equatable, Identifiable {
         isArchived = try c.decodeIfPresent(Bool.self, forKey: .isArchived) ?? false
         sessionID = try c.decodeIfPresent(String.self, forKey: .sessionID)
         sessionIDs = try c.decodeIfPresent([String: String].self, forKey: .sessionIDs) ?? [:]
+        sessionIsolated = try c.decodeIfPresent([String: Bool].self, forKey: .sessionIsolated) ?? [:]
         requestedModel = try c.decodeIfPresent(String.self, forKey: .requestedModel)
         requestedEffort = try c.decodeIfPresent(String.self, forKey: .requestedEffort)
         requestedSpeedTier = try c.decodeIfPresent(String.self, forKey: .requestedSpeedTier)
@@ -160,6 +168,7 @@ struct LiveThreadRecord: Codable, Equatable, Identifiable {
         parentThreadID = try c.decodeIfPresent(UUID.self, forKey: .parentThreadID)
         roomBrief = try c.decodeIfPresent(String.self, forKey: .roomBrief)
         roomReadOnly = try c.decodeIfPresent(Bool.self, forKey: .roomReadOnly)
+        controllerCreatorFingerprint = try c.decodeIfPresent(String.self, forKey: .controllerCreatorFingerprint)
         lastOutputAt = try c.decodeIfPresent(Date.self, forKey: .lastOutputAt)
         subStatus = try c.decodeIfPresent(String.self, forKey: .subStatus)
         issues = try c.decodeIfPresent([TatwoIssueListEntryV1].self, forKey: .issues) ?? []
@@ -275,6 +284,12 @@ struct LiveDocumentRecord: Codable, Equatable {
 /// 一份 JSON 放 Application Support/tatwo2/live/document.json；原檔未確認保留就禁止寫回。
 final class ChatLiveStore {
     let url: URL
+    private let persistenceLock = NSRecursiveLock()
+    private var savedDocument: LiveDocumentRecord?
+    private var savedStamp: PolicyFileStamp?
+    #if DEBUG
+    static var fixtureLoad: (() -> Void)?
+    #endif
     private let writeProtectionKeys: [String]
     init(root: URL? = nil) {
         let base = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -288,9 +303,16 @@ final class ChatLiveStore {
     }
 
     enum LoadState: Equatable { case missing, loaded, readFailed, decodeFailed }
-    private(set) var loadState: LoadState = .missing
+    private let loadMetadata = OSAllocatedUnfairLock<(state: LoadState, notice: String?)>(initialState: (.missing, nil))
+    private(set) var loadState: LoadState {
+        get { loadMetadata.withLock { $0.state } }
+        set { loadMetadata.withLock { $0.state = newValue } }
+    }
     private static let readOnlyReasons = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
-    private var notice: String?
+    private var notice: String? {
+        get { loadMetadata.withLock { $0.notice } }
+        set { loadMetadata.withLock { $0.notice = newValue } }
+    }
     private func readOnlyReason(in reasons: [String: String]) -> String? {
         for key in writeProtectionKeys { if let reason = reasons[key] { return reason } }
         return nil
@@ -305,6 +327,17 @@ final class ChatLiveStore {
     }
 
     func load() -> LiveDocumentRecord {
+        persistenceLock.lock(); defer { persistenceLock.unlock() }
+        #if DEBUG
+        Self.fixtureLoad?()
+        #endif
+        let stamp = PolicyFileStamp(url)
+        let document = loadFromDisk()
+        savedDocument = document; savedStamp = stamp
+        return document
+    }
+
+    private func loadFromDisk() -> LiveDocumentRecord {
         let data: Data
         do { data = try Data(contentsOf: url) }
         catch {
@@ -534,7 +567,17 @@ final class ChatLiveStore {
         try? saveChecked(doc, verify: false)
     }
 
+    /// Called by the bridge after leaving MainActor; also respects edits made by another store/CLI.
+    func saveIfChanged(_ doc: LiveDocumentRecord, expectedStamp: PolicyFileStamp? = nil) {
+        persistenceLock.lock(); defer { persistenceLock.unlock() }
+        // A main-actor save after the bridge captured its snapshot supersedes that snapshot.
+        if let expectedStamp, expectedStamp != PolicyFileStamp(url) { return }
+        let previous = savedStamp == PolicyFileStamp(url) ? savedDocument : nil
+        if !OSAgentBridge.documentsEqual(doc, previous ?? load()) { save(doc) }
+    }
+
     func saveChecked(_ doc: LiveDocumentRecord, verify: Bool = true) throws {
+        persistenceLock.lock(); defer { persistenceLock.unlock() }
         guard !isReadOnly else { throw BotLibraryError.invalid("對話紀錄為唯讀：" + url.path) }
         var merged = doc
         let existing = load()
@@ -553,6 +596,7 @@ final class ChatLiveStore {
         try Self.readOnlyReasons.withLock { reasons in
             if let reason = readOnlyReason(in: reasons) { throw BotLibraryError.invalid(reason) }
             try data.write(to: url, options: .atomic)
+            savedDocument = merged; savedStamp = PolicyFileStamp(url)
             if verify {
                 guard try Data(contentsOf: url) == data else {
                     throw BotLibraryError.invalid("chat_store_write_verification_failed")

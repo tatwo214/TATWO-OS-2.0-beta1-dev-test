@@ -1,0 +1,10 @@
+# Existing CEF bridge: opt-in numeric observer, current-tab metrics and process sampler; no mitigation.
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+# Minute summary with explicit gauge/delta/null semantics.
+scripts/x-diag-summary.py
+# Numeric privacy tests, bounded fake feed, native real-CEF harness, build/run receipts and report.
+tests/w289-xdiag.test.mjs
+tests/fixtures/w289-*
+# No download, TAP, or ChatGPT Space product edits.
+!App/Sources/Tatwo2/Browser/BrowserDownload*
+!App/Sources/Tatwo2/TAP/*

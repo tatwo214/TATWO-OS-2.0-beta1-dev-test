@@ -213,7 +213,9 @@ test('F2-11 send automatically refreshes stale catalog once before validating or
   assert.match(method, /try await tap\.models\(\)/);
   assert.match(method, /重新整理失敗，這句未送出/);
   const model = read(app + 'Facade/ChatPageModel.swift');
-  assert.match(model, /chatGPTTapConnection == \.ready, !ChatGPTTapModelCatalog\.isFresh,[\s\S]*snapshot\.contains/);
+  const admission = between(model, 'private func tapSendUnavailableReason(', 'func refreshChatGPTTapModels');
+  assert.match(admission, /choice\.runtimeAdapter == \.chatgptTap, selectedRemote == nil, chatGPTTapConnection == \.ready, !ChatGPTTapModelCatalog\.isFresh/);
+  assert.doesNotMatch(admission, /snapshot\.contains/);
   assert.match(model, /if tapSendUnavailableReason\(routeChoice\) != nil \{ return false \}/);
 });
 

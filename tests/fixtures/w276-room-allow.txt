@@ -1,0 +1,21 @@
+# W276: staging-only build loop, root selection and fail-closed checks.
+Package.swift # Only the staging build links Tatwo2 as a runtime-loaded library.
+script/build_staging_app.sh # Thin 2.0 dispatch; preserve the original 1.0 path.
+script/build_tatwo2_staging_app.sh # Offline Release CEF build, persistent cache, fixed identity and V1 receipt.
+script/tatwo2-staging-launcher.c # Set target-local isolated HOME and roots before Swift/CEF load.
+script/tatwo2-staging-codesign.sh # Stop on Keychain UI without interacting or changing identities.
+scripts/tatwo-cef-bundle.sh # Optional staging framework reuse and signing watchdog; defaults unchanged.
+scripts/rooms/staging-sync.sh # Local incremental App/receipt sync; refuse production destinations.
+App/Sources/Tatwo2/Engine/NativeStagingIsolation.swift # Fixed bundle cannot bypass isolation by removing markers.
+App/Sources/Tatwo2/Engine/CLITmuxRuntime.swift # Keep staging CLI sockets inside its own live root.
+App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift # Recognize fixed staging identity and isolated CEF root.
+App/Sources/Tatwo2/Facade/InAppUpdater.swift # Disable staging downloads, reconciliation and install.
+App/Sources/Tatwo2/Facade/GitHubReleaseUpdateChecker.swift # Disable staging automatic and manual update checks.
+App/Sources/Tatwo2/Shell/AppShell.swift # Skip staging global hotkeys and signed updater.
+tests/w276-staging.test.mjs # Real launcher and bundle-root isolation probes, unsafe sync rejection.
+tests/fixtures/w276-room-allow.txt # Scope and reasons for every modified file.
+tests/fixtures/w276-offline-verify-env.sh # Child build network denial; preserve verify.sh and all assertions.
+tests/fixtures/w276-shots/* # Studio launch, isolation and light screenshot evidence.
+tests/fixtures/w276-launchservices-verify.sh # External LaunchServices/Finder, WindowServer, quit and production coexistence acceptance.
+tests/fixtures/w276-system-windows.m # Independent CGWindowListCopyWindowInfo/NSRunningApplication observer; no pixels.
+tests/fixtures/w276d-system/* # Raw external system evidence, initializer ordering regression and stated proof limits.

@@ -1,0 +1,21 @@
+Generated receipts archived under ~/tatwo-build/tmp/W298b-round3/generated/; originals restored from c96ec963.
+tests/fixtures/w284-shots/documents-dark.png
+tests/fixtures/w284-shots/documents-light.png
+tests/fixtures/w284-shots/getting-started-dark.png
+tests/fixtures/w284-shots/getting-started-light.png
+tests/fixtures/w284-shots/low-space-dark.png
+tests/fixtures/w284-shots/low-space-light.png
+tests/fixtures/w284-shots/unwritable-dark.png
+tests/fixtures/w284-shots/unwritable-light.png
+tests/fixtures/w292-shots/dm-web-entry-light.png
+tests/fixtures/w292-shots/settings-card-dark.png
+tests/fixtures/w292-shots/settings-card-light.png
+tests/fixtures/w292-shots/settings-preview-dark.png
+tests/fixtures/w292-shots/settings-preview-light.png
+tests/fixtures/w292-shots/w183connect.log
+tests/fixtures/w292-shots/w185tap.log
+tests/fixtures/w292-shots/w199quiet.log
+tests/fixtures/w292-shots/w208tap.log
+tests/fixtures/w295-w248webspace.log
+tests/fixtures/w295-w258download.log
+tests/fixtures/w295-w288.log

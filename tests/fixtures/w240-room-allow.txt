@@ -1,0 +1,14 @@
+App/Sources/Tatwo2/Facade/OSMCPRegistry.swift
+App/Sources/Tatwo2/Facade/PluginsSource.swift
+App/Sources/Tatwo2/Pages/PluginsPage.swift
+App/Sources/Tatwo2/Pages/PluginConnectionCard.swift
+App/Sources/Tatwo2/Shell/AppShell.swift
+App/Sources/Tatwo2/New/PluginSettingsView.swift
+App/Sources/Tatwo2/Facade/W235MCPAcceptance.swift
+App/Sources/Tatwo2/Facade/W240MCPAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+Engines/claude-sidecar/sidecar.mjs
+Engines/codex-sidecar/sidecar.mjs
+tests/w235-mcp.test.mjs
+tests/w240-mcp.test.mjs
+tests/fixtures/w240-room-allow.txt

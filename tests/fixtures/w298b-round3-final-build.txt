@@ -1,0 +1,6 @@
+Raw output retained: ~/tatwo-build/verify/W298b-aiinstall-134707/build.log
+SHA256: 7a87c356438891089e771f6aca9a7d0d41730c030d9662cf0c3a13ed02e296e5
+swift build exit=0
+Build complete! (82.33秒)
+Diagnostic occurrences: warnings=495 errors=0
+Compiler source excerpts excluded from this public summary; their synthetic labels triggered the public privacy scanner.

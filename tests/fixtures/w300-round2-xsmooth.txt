@@ -1,0 +1,19 @@
+--- formal xsmooth w295 ---
+W295 COUNTS updates=400 trustReads=1 policyReads=0 mainLoads=0 loads=0 mainJSON=0 JSON=200 coder=0 chatBodies=201 activityLines=1 hydratedBodies=201 workChanges=200 authorityUpdates=1 mode=browser preview=true
+W295 OBSERVED hydratedBodies=201 authorityUnchanged=true probes=[(key: "ChatPage.body", value: 201), (key: "ChatPage.geometry", value: 201), (key: "RemoteOfflineMirror.activityLines", value: 1), (key: "TatwoHydratedPanelView.body", value: 201), (key: "TatwoModesIssuedAuthorityMonitor.revision", value: 1), (key: "authority.event.state", value: 2), (key: "authority.refreshSources.event", value: 1), (key: "presentation.6", value: 200)]
+W295 AUTHORITY revisions=1 hydratedBodies=1
+W295 SUMMARY failures=0
+--- formal xsmooth w292 ---
+W292 SUMMARY failures=0
+--- formal xsmooth w288 ---
+W288 SUMMARY checks=49 failures=0
+--- formal xsmooth w258download ---
+W281f extension SUMMARY failures=0
+W281f SUMMARY failures=0
+W281b SUMMARY failures=0
+W282 SUMMARY failures=0
+W268 SUMMARY failures=0 passed=169
+W281 SUMMARY failures=0
+W258 SUMMARY failures=0 passed=32
+--- formal xsmooth w248webspace ---
+W248 SUMMARY failures=0 passed=75

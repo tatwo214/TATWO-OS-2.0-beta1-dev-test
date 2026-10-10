@@ -1,0 +1,10 @@
+tatwo_os_upstream=unchanged
+tatwo_skills=SKILL.md=unchanged agents/openai.yaml=unchanged
+tatwo_app_mcp=ready http://127.0.0.1
+tatwo_signed_update=disabled reason=staging
+tatwo_pressure_monitor=deferred reason=device_identity_pending
+tatwo_pressure_monitor=started device=fixture-device lease_ttl=20s
+browser_agent_bridge_recovered=stale_socket_archived
+browser_agent_bridge_socket=/Users/fixture/Library/Application Support/tatwo2-staging/browser.sock
+os_agent_bridge_socket=/Users/fixture/Library/Application Support/tatwo2-staging/os.sock
+tatwo_chat_launchctl_sweep=first-frame-presented pid=50231

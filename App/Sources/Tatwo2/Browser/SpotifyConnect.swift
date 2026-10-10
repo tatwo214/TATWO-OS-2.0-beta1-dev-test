@@ -37,7 +37,6 @@ final class SpotifyConnect: ObservableObject {
     private var pendingTransfer: Transfer?
     private var inFlight: Transfer?
     private var deviceID: String?
-    private var lastDeviceWasActive = false
     private var lastGesture: Date?
     private var retakes: [Date] = []
     private var pendingLogin = false
@@ -113,6 +112,11 @@ final class SpotifyConnect: ObservableObject {
         guard isPageTarget,
               [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type)
                 || Self.isMediaKeyDown(event) else { return }
+        // A mouse event cannot distinguish the webpage's play and pause buttons.
+        if event.type != .keyDown && !Self.isMediaKeyDown(event) {
+            if host?.lowercased() == Self.spotifyHost { lastGesture = now() }
+            return
+        }
         spotifyGesture(host: host)
     }
 
@@ -157,7 +161,7 @@ final class SpotifyConnect: ObservableObject {
         inFlight = request
         log("transfer reason=\(request.reason) attempt=\(request.retries + 1) result=requested")
         sendJSON(["command": "transfer", "id": request.id, "device_id": deviceID,
-                  "resume": request.reason == "reconnect-resume"])
+                  "resume": request.reason == "reconnect-resume", "reason": request.reason])
         DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in self?.expireTransfer(id: request.id) }
     }
 
@@ -171,12 +175,12 @@ final class SpotifyConnect: ObservableObject {
         inFlight = nil
         pendingTransfer = nil
         playbackNotice = "Spotify 這次沒接手，再按一次播放"
-        log("transfer reason=\(request.reason) result=failed message=\(message)")
+        log("transfer reason=\(request.reason) result=failed")
         if request.reason == "reconnect-resume" { send("cancel_resume") }
     }
 
-    private func retakeIfNeeded(web: Bool) {
-        guard web, !isActive, status == .connected, let lastGesture,
+    private func retakeIfNeeded(web: Bool, playing: Bool) {
+        guard web, playing, !isActive, status == .connected, let lastGesture,
               now().timeIntervalSince(lastGesture) <= 120 else { return }
         retakes.removeAll { now().timeIntervalSince($0) >= 60 }
         guard retakes.count < 2, inFlight == nil, pendingTransfer == nil else { return }
@@ -302,12 +306,21 @@ final class SpotifyConnect: ObservableObject {
         guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
               let event = object["event"] as? String else { return }
         switch event {
+        case "connected" where object["unconfirmed"] as? Bool == true: log("helper event=connected unconfirmed=true")
+        case "playing", "paused", "active", "inactive": log("helper event=\(event)")
+        case "device": log("helper event=device active=\(object["active"] as? Bool == true) web=\(object["web"] as? Bool == true)")
+        case "transfer_options": log("helper event=transfer_options pause=\(object["pause"] as? Bool == true) play=\(object["play"] as? Bool == true)")
+        case "reconnecting":
+            let reason = object["reason"] as? String ?? "unknown"
+            log("helper event=reconnecting reason=\(["task-ended", "registration-timeout", "connect-failed", "requested", "session-invalid"].contains(reason) ? reason : "unknown")")
+        default: break
+        }
+        switch event {
         case "needs_login":
             if let request = inFlight ?? pendingTransfer { failTransfer(request, message: "helper needs login") }
             if pendingLogin { pendingLogin = false; status = .signingIn; send("login") } else { status = .signedOut }
         case "starting", "reconnecting":
             deviceID = nil
-            lastDeviceWasActive = false
             isActive = false; isPlaying = false
             if status != .signingIn { status = .connecting }
         case "logged_in":
@@ -328,17 +341,14 @@ final class SpotifyConnect: ObservableObject {
         case "active":
             playbackNotice = nil
             isActive = true
-            lastDeviceWasActive = true
         case "inactive":
             isActive = false
             isPlaying = false
         case "device":
-            let wasActive = lastDeviceWasActive
             let active = object["active"] as? Bool == true
             if isActive != active { isActive = active }
-            lastDeviceWasActive = isActive
             if !isActive && isPlaying { isPlaying = false }
-            if wasActive && !isActive { retakeIfNeeded(web: object["web"] as? Bool == true) }
+            if !isActive { retakeIfNeeded(web: object["web"] as? Bool == true, playing: object["playing"] as? Bool == true) }
         case "transferred":
             guard let request = inFlight, object["id"] as? String == request.id else { return }
             inFlight = nil
@@ -361,7 +371,7 @@ final class SpotifyConnect: ObservableObject {
         case "playing": if !isPlaying { isPlaying = true }
         case "paused", "stopped", "unavailable": if isPlaying { isPlaying = false }
         case "error":
-            if let message = object["message"] as? String { log("helper error: \(message)") }
+            log("helper event=error")
         default: break
         }
     }

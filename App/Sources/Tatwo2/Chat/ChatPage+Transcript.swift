@@ -55,6 +55,10 @@ extension ChatPage {
             RemoteOfflineEmptyTranscript(text: note)   // W182 R4：那台離線、這條離線前沒讀過
         } else {
             VStack(spacing: 8) {
+                if model.selectedRemote == nil, let id = model.selectedThreadID,
+                   let group = model.localLiveForBridge?.groupBridge.sessions[id], !group.participants.isEmpty {
+                    ChatGroupParticipants(group: group)
+                }
                 if model.mode == .chat {
                     ChatGPTSessionMappingRow(pageModel: model, spaceModel: .shared, side: .coder,
                                             topInset: surface == .window ? WindowChromeMetrics.bandHeight : 0)
@@ -95,6 +99,8 @@ extension ChatPage {
             threadID: model.selectedThreadID,
             mcpAllowBlockedNote: model.mcpAllowBlockedNote(threadID: model.selectedThreadID),
             messages: model.transcriptMessages,
+            group: model.selectedRemote == nil ? model.selectedThreadID.flatMap { model.localLiveForBridge?.groupBridge.proposalSession($0) } : nil,
+            proposalBridge: model.selectedRemote == nil ? model.localLiveForBridge?.groupBridge : nil,
             selectedSessionReference: model.selectedSessionReference,
             assistantRoute: model.routeChoice,
             rowWidth: rowWidth,
@@ -145,6 +151,8 @@ extension ChatPage {
         // W180 D3：這條不能在這台放行（Coder 正在看遠端那條）時，放行鈕換成的那行字。
         let mcpAllowBlockedNote: String?
         let messages: [ChatMessage]
+        let group: GroupTurnEngine?
+        let proposalBridge: GroupCoderBridge?
         let selectedSessionReference: TatwoNativeChatSessionReference?
         let assistantRoute: ChatRouteChoice
         let rowWidth: CGFloat
@@ -512,7 +520,21 @@ extension ChatPage {
                 ChatSystemNoteRow(presentation: note, rowWidth: rowWidth - 38)
                     .padding(.leading, 32)
                     .id("tatwo-chat-note-\(message.id)")
+            } else if let group, let bridge = proposalBridge,
+                      let event = group.events.first(where: { message.id == "group-\(group.threadID)-\($0.sequence)" && $0.kind.hasPrefix("proposal") }),
+                      let proposal = bridge.proposals.proposal(group.threadID, event.sequence) {
+                ChangeProposalCard(proposal: proposal, event: event, primary: group.primary,
+                    viewPatch: { let store = bridge.proposals; return try await Task.detached { try store.patch(group.threadID, event.sequence) }.value },
+                    review: { bridge.forwardToCoder(group.threadID, eventSequence: event.sequence, model: bridge.owner?.threadRecord(group.threadID)?.model, engine: group.primary == "Claude" ? .claude : group.primary == "Grok" ? .grok : .codex) },
+                    apply: { try await bridge.applyProposal(group.threadID, sequence: event.sequence, confirmed: true) },
+                    reject: { bridge.rejectProposal(group.threadID, sequence: event.sequence) })
+                    .frame(maxWidth: rowWidth, alignment: .leading)
             } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let group, let event = group.events.first(where: { message.id == "group-\(group.threadID)-\($0.sequence)" }),
+                       event.speaker != group.primary, group.participants.contains(where: { $0.id == event.speaker }) {
+                        ChatGroupSpeaker(name: event.speaker, readCount: ChatGroupSpeaker.readCount(message, event: event))
+                    }
                 ChatBubble(
                     message: message,
                     threadID: threadID,
@@ -555,6 +577,7 @@ extension ChatPage {
                         }
                     }) : nil)
                     .padding(.leading, message.role == .system ? 38 : 0)
+                }
             }
         }
 
@@ -1013,5 +1036,95 @@ struct ConversationRecoveryRow: View {
             Text("副本日期：" + ChatLiveStore.backupDate(candidate).formatted(date: .numeric, time: .shortened))
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+struct ChatGroupParticipants: View {
+    let group: GroupTurnEngine
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text("你・協作中").font(.caption)
+                ForEach(group.participants.filter { group.state($0.id) != .unjoined }, id: \.id) { member in
+                    HStack(spacing: 5) {
+                        Text("\(member.id)・\(group.state(member.id).label)")
+                        if member.id != group.primary, group.state(member.id) != .left {
+                            Button("離開") { _ = group.human("@@" + member.id + " 離開") }.buttonStyle(.plain)
+                                .accessibilityIdentifier("group-leave-" + member.id)
+                        }
+                    }.font(.caption).padding(7).liquidGlassPanelSurface(cornerRadius: 12)
+                }
+                Spacer(minLength: 0)
+                if group.canContinueRound {
+                    Button("讓他們繼續") { _ = group.continueRound() }.buttonStyle(.plain)
+                        .padding(7).liquidGlassPanelSurface(cornerRadius: 12).accessibilityIdentifier("group-continue")
+                }
+            }.padding(.horizontal, 12)
+            Text("打 @- 結束協作").font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12)
+        }
+    }
+}
+struct ChatGroupSpeaker: View {
+    let name: String
+    let readCount: Int
+    static func readCount(_ message: ChatMessage, event: GroupEvent) -> Int {
+        // 舊列沒有快照時用事件當時的序號，不借用現在的游標。
+        event.readCount ?? message.turnID.flatMap { $0.hasPrefix("group-read:") ? Int($0.dropFirst("group-read:".count)) : nil } ?? max(0, event.sequence - 1)
+    }
+    var body: some View {
+        Label("\(name)（已讀這串 \(readCount) 則）", systemImage: "bubble.left.and.bubble.right.fill")
+            .font(.caption).foregroundStyle(.secondary).padding(.leading, 8)
+    }
+}
+
+struct ChangeProposalCard: View {
+    static func failureText(_ error: Error) -> String {
+        let text = String(describing: error)
+        guard let colon = text.firstIndex(where: { $0 == "：" || $0 == ":" }) else { return "提案處理失敗，請稍後再試。" }
+        let reason = text[text.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.range(of: "\\p{Han}", options: .regularExpression) == nil ? "提案處理失敗，請稍後再試。" : reason
+    }
+    let proposal: ChangeProposalStore.Proposal
+    let event: GroupEvent
+    let primary: String
+    let viewPatch: () async throws -> String
+    let review: () -> Bool
+    let apply: () async throws -> Void
+    let reject: () -> Void
+    @State private var difference: String?
+    @State private var confirming = false
+    @State private var applying = false
+    @State private var failure = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack { Text("改動提案・\(event.speaker)").font(.headline); Spacer(); Text(proposal.statistics).font(.caption).foregroundStyle(.secondary) }
+            Text(proposal.title).font(.subheadline.weight(.medium))
+            if !proposal.summary.isEmpty { Text(proposal.summary).font(.caption).foregroundStyle(.secondary) }
+            ForEach(proposal.files, id: \.path) { file in
+                HStack { Text(file.path).lineLimit(1); Spacer(); Text("+\(file.added)").foregroundStyle(.green); Text("−\(file.deleted)").foregroundStyle(.red) }.font(.system(.caption, design: .monospaced))
+            }
+            Text(event.kind == "proposal-applied" ? "已套用" : event.kind == "proposal-rejected" ? "不套用" : "還沒寫進專案。")
+                .font(.caption).accessibilityIdentifier("proposal-state")
+            if !failure.isEmpty { Text(failure).font(.caption).foregroundStyle(.red).textSelection(.enabled).accessibilityIdentifier("proposal-error") }
+            if event.kind == "proposal" {
+                HStack(spacing: 12) {
+                    Button(difference == nil ? "看差異" : "收起差異") { if difference != nil { difference = nil } else { Task { do { difference = try await viewPatch() } catch { failure = Self.failureText(error) } } } }.buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 4).chatGlassChip().accessibilityIdentifier("proposal-diff")
+                    Button("請 \(primary) 看") { if !review() { failure = "主要 AI 尚未能接收，請稍後再試。" } }.buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 4).chatGlassChip().accessibilityIdentifier("proposal-review")
+                    Spacer()
+                    Button("不套用", action: reject).buttonStyle(.plain).padding(.horizontal, 10).padding(.vertical, 4).chatGlassChip().accessibilityIdentifier("proposal-reject")
+                    Button(applying ? "套用中…" : "套用") { confirming = true }.buttonStyle(.plain).padding(.horizontal, 12).padding(.vertical, 4).chatGlassChip(isSelected: true).accessibilityIdentifier("proposal-apply")
+                }.font(.caption).disabled(applying)
+            }
+            if event.kind == "proposal", let difference {
+                ScrollView([.horizontal, .vertical]) {
+                    Text(difference).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).fixedSize()
+                        .accessibilityElement(children: .ignore).accessibilityLabel(difference).accessibilityIdentifier("proposal-patch")
+                }.frame(height: min(340, CGFloat(difference.components(separatedBy: "\n").count) * 17 + 12))
+            }
+        }.padding(16).liquidGlassPanelSurface(cornerRadius: 14)
+        .alert("套用這份改動提案？", isPresented: $confirming) {
+            Button("套用") { applying = true; Task { defer { applying = false }; do { try await apply(); failure = "" } catch { failure = Self.failureText(error) } } }.accessibilityIdentifier("proposal-confirm")
+            Button("取消", role: .cancel) {}
+        } message: { Text("會改這些檔案：\n" + proposal.files.map(\.path).joined(separator: "\n")) }
     }
 }

@@ -1,0 +1,5 @@
+App/Sources/Tatwo2/Facade/HandsConnect.swift
+App/Sources/Tatwo2/Facade/HandsConnectR9Acceptance.swift
+tests/w183-connect.test.mjs
+tests/w321-manualsteps.test.mjs
+tests/fixtures/w321-room-allow.txt

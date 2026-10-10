@@ -109,7 +109,8 @@ enum HandsGatewayAcceptance {
     private static func guardChecks(_ check: (Bool, String) -> Void) {
         let current = ProcessInfo.processInfo.environment
         check(!ChatGPTHandsService.allowedToRun(environment: current), "自測行程本身（TATWO2_SELFTEST／staging）不允許開關口")
-        check(!ChatGPTHandsService.allowedToRun(environment: ["HOME": "/tmp/x", "TATWO_STAGING_SCRATCH_HOME": "/tmp/x"]), "staging 不開")
+        check(ChatGPTHandsService.allowedToRun(environment: ["HOME": "/tmp/x", "TATWO_STAGING_SCRATCH_HOME": "/tmp/x"]) == !NativeStagingIsolation.isW276Bundle,
+              "W276 staging 由 bundle 身分選擇；單獨 scratch 標記不改正式版行為")
         check(!ChatGPTHandsService.allowedToRun(environment: ["HOME": "/tmp/x", "TATWO2_SOURCETEST": "1"]), "source test 不開")
         check(!ChatGPTHandsService.allowedToRun(environment: ["HOME": "/tmp/x", "TATWO2_SELFTEST": "other"]), "其他自測不開")
         check(ChatGPTHandsService.allowedToRun(environment: ["HOME": "/tmp/x"]), "一般使用可以開")

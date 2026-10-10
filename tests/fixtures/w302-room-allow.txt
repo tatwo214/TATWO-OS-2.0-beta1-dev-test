@@ -1,0 +1,13 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/TAP/ChatGPTTurnPresentation.swift
+App/Sources/Tatwo2/Facade/ChatGPTTapAcceptance.swift
+tests/w302-tap-done.test.mjs
+tests/w177-chatgpt-space.test.mjs
+tests/fixtures/w302-room-allow.txt
+tests/fixtures/w302b-evidence/baseline-w177.txt
+tests/fixtures/w302b-evidence/verification.txt
+tests/fixtures/w294f-evidence/baseline-node.txt
+tests/fixtures/w294f-evidence/selftest-w183connect.txt
+tests/fixtures/w294f-evidence/selftest-w185tap.txt
+tests/fixtures/w294f-evidence/selftest-w208tap.txt
+tests/fixtures/w294f-evidence/summary.txt

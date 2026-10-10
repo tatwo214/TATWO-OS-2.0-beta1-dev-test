@@ -1,3 +1,4 @@
+import { keychainFixtureFiles } from './helpers/w255b-keychain-fixture.mjs';
 import { writeBrowserVisualTokens } from './helpers/browser-visual-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -67,7 +68,7 @@ test('W50: real Swift vault/planners and settings compile; behavioral/security f
     const binary = join(dir, 'fixture');
     const compile = spawnSync('swiftc', [
       '-parse-as-library', '-swift-version', '6', '-num-threads', '2',
-      vaultPath, viewPath, 'App/Sources/Tatwo2/Browser/BrowserGeneralSettings.swift', 'App/Sources/Tatwo2/Browser/BrowserShortcuts.swift', metadata,
+      ...keychainFixtureFiles(dir, [vaultPath]), viewPath, 'App/Sources/Tatwo2/Browser/BrowserGeneralSettings.swift', 'App/Sources/Tatwo2/Browser/BrowserShortcuts.swift', metadata,
       'App/Sources/Tatwo2/Custody/TOTP.swift','App/Sources/Tatwo2/Custody/AIICloudImport.swift','App/Sources/Tatwo2/Custody/AIAccountEditView.swift',
       'App/Sources/Tatwo2/Browser/BrowserAIVault.swift', 'App/Sources/Tatwo2/Browser/BrowserAIVaultSettingsView.swift',
       'App/Sources/Tatwo2/Browser/Import/BrowserPasswordCSVImport.swift',

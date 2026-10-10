@@ -60,13 +60,13 @@ enum RuleGenerator {
                        root: entry.root.path)
     }
 
-    static func generate(environment: [String: String], runtimePath: String, now: Date = Date()) throws -> String {
+    static func generate(environment: [String: String], runtimePath: String, now: Date = Date(), includeUserPreferences: Bool = true) throws -> String {
         let source = try sources(environment: environment)
-        return try generate(source: source, runtimePath: runtimePath, now: now)
+        return try generate(source: source, runtimePath: runtimePath, now: now, includeUserPreferences: includeUserPreferences)
     }
 
     /// Onboarding renders the same translators before any entrance or engine file exists.
-    static func generate(source: Sources, runtimePath: String, now: Date = Date()) throws -> String {
+    static func generate(source: Sources, runtimePath: String, now: Date = Date(), includeUserPreferences: Bool = true) throws -> String {
         let key = source.constitutionHash + ":" + source.identityHash
         let stampPrefix = "<!-- 由 OS 產生，來源憲法 sha256=\(source.constitutionHash)、身份 sha256=\(source.identityHash)、產生時間="
         // Retain the generation time for the same source version, including a kept proposal.
@@ -98,7 +98,7 @@ enum RuleGenerator {
             }.joined(separator: "\n")
         }
         // W160：內建引擎的家目錄是隔離的，使用者偏好直接帶進來（入口 user.md，讀不到就不帶）。
-        let preferences = AgentsFile.userPreferences(entry: TatwoEntry(environment: ["TATWO_OS_ROOT": source.root], preference: nil))
+        let preferences = (includeUserPreferences ? AgentsFile.userPreferences(entry: TatwoEntry(environment: ["TATWO_OS_ROOT": source.root], preference: nil)) : nil)
             .map { "\n\n## 使用者偏好（入口 user.md）\n" + $0 } ?? ""
         return """
         \(stampPrefix)\(date)；勿手改 -->

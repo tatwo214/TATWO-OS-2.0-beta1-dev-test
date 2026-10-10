@@ -1039,6 +1039,8 @@ struct ComputerUseSelfAuthority: @unchecked Sendable {
 }
 
 enum ComputerUseNative {
+    private static let axRequestLock = NSLock()
+    private static var axRequests: [Int32: (UUID, DispatchWorkItem)] = [:]
     /// 操作 TATWO OS 自己時，被按的元件可能開選單／對話框（modal 事件迴圈）。同步呼叫會讓這次 RPC
     /// 連同主執行緒一起卡在迴圈裡直到有人手動關掉（.015 自測：AXShowMenu 開了右鍵選單，App 看起來當掉）。
     /// 改成排到主執行緒之後立刻回報成功；結果由下一次觀察確認。其他 App 是跨行程呼叫，照舊同步。
@@ -1548,6 +1550,24 @@ enum ComputerUseNative {
         // W184 CU：自己的 AX 動作還卡在它叫出來的選單／對話框裡：同行程再叫 AX 會卡死主執行緒——不讀，回「忙」。
         if pid == ProcessInfo.processInfo.processIdentifier, SelfAction.inFlight { return .busyState(running) }
         let app = AXUIElementCreateApplication(pid)
+        if includeTree, running.bundleIdentifier?.hasPrefix("ai.tatwo.tatwo2") == true {
+            axRequestLock.lock(); defer { axRequestLock.unlock() }
+            let isSelf = pid == ProcessInfo.processInfo.processIdentifier, attr = "AXManualAccessibility"
+            let original = (isSelf ? NSApp.accessibilityAttributeValue(.init(rawValue: attr)) : try? attribute(app, attr, deadline: deadline)) as? Bool
+            func set(_ value: Bool) -> AXError { if isSelf { NSApp.accessibilitySetValue(value, forAttribute: .init(rawValue: attr)); return .success }; return AXUIElementSetAttributeValue(app, attr as CFString, value ? kCFBooleanTrue : kCFBooleanFalse) }
+            if set(true) == .success, axRequests[pid] != nil || original == false {
+                let token = UUID(); axRequests[pid]?.1.cancel()
+                let work = DispatchWorkItem {
+                    axRequestLock.lock(); defer { axRequestLock.unlock() }
+                    guard axRequests[pid]?.0 == token else { return }
+                    axRequests[pid] = nil; if !running.isTerminated { _ = set(false) }
+                }; axRequests[pid] = (token, work); var seconds: Double = 60
+                #if DEBUG
+                seconds = min(60, max(0.1, Double(ProcessInfo.processInfo.environment["TATWO2_CU_AX_SECONDS"] ?? "60") ?? 60))
+                #endif
+                (isSelf ? DispatchQueue.main : .global()).asyncAfter(deadline: .now() + seconds, execute: work)
+            }
+        }
         // Only real AXWindows count. Finder, for example, lists its desktop (an AXScrollArea covering
         // the screen) among its windows; treating that as the window made capture ambiguous.
         func realWindow(_ candidate: AXUIElement?) -> AXUIElement? {

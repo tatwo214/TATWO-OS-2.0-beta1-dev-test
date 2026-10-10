@@ -125,7 +125,9 @@ struct RemoteEngineSync {
         let key = "\(ref.id)|\(ref.sshTarget)|\(ref.sshPort)|engines-v2"
         stamps[key] = try deployIfNeeded(source: localEngines, previousHash: stamps[key]) {
             // 缺主機金鑰指紋就在真的要 ssh／rsync 之前擋掉（訊息：請重新配對），不會退回 TOFU。
-            let pin = try SSHHostPin.make(deviceID: ref.id, name: ref.name)
+            let pin = try DeviceFleetSSHPins.withEnvironment(deviceID: ref.id, name: ref.name, environment: environment) {
+                try SSHHostPin.make(deviceID: ref.id, name: ref.name, environment: $0)
+            }
             for command in plannedCommands(ref: ref, localEngines: localEngines, destination: .production, pin: pin) {
                 try run(executable: command[0], arguments: Array(command.dropFirst()))
             }

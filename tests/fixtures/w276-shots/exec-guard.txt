@@ -1,0 +1,2 @@
+GUARD_PROBE self=50337 records=[-1] other=[-1]
+GUARD_PROBE early_return

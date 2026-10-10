@@ -1,0 +1,16 @@
+# W292 原生連線卡與視窗恢復；對 2f34610e，產品淨增上限 150。
+App/Sources/Tatwo2/New/ChatGPTBuildSection.swift # 設定按鈕可按、重用原卡與 Pod 容器，在原地管理
+App/Sources/Tatwo2/New/HandsConnectDMView.swift # 同一呈現層支援設定位置；沿用碼與敏感頁保護
+App/Sources/Tatwo2/New/HandsConnectEntry.swift # 真正入口註解、W199 小入口政策、晚到的設定點擊作廢
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # 私訊網頁原生頂列入口；不改網頁
+App/Sources/Tatwo2/DM/DMBrowser.swift # 設定原地承載既有登入／配對頁，避免開私訊框
+App/Sources/Tatwo2/DM/GlobalDMLayering.swift # 保留且透明的舊 Space 必須放掉遮罩登記，否則私訊鈕一直被收起
+App/Sources/Tatwo2/SelfTest.swift # 登記 w292
+App/Sources/Tatwo2/Facade/HandsConnectAcceptance.swift # W208 假世界可注入真正呈現層
+App/Sources/Tatwo2/Facade/W292ConnectAcceptance.swift # 原生按鈕與三輪視窗回歸自測
+tests/w183-connect.test.mjs # 舊私訊 sheet／兩頁斷言明確排除設定呈現，安全斷言照留
+tests/w183-r12-connect-ui.test.mjs # 同一張卡在設定時不切私訊框形態
+tests/w183-ui.test.mjs # 保留敏感頁閘門斷言，允許同一個消失回呼收起設定連線卡
+tests/w292-connectcard.test.mjs # 隔離自測 runner（HOME／live／引擎／socket 全指向 fixture）
+tests/fixtures/w292-shots/* # 原生假資料截圖、原始測試回條與收房證據
+tests/fixtures/w292-room-allow.txt # 本白名單與各檔理由

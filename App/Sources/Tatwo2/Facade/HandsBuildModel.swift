@@ -204,6 +204,7 @@ struct HandsBuildInput: Equatable, Sendable {
     var projects: [HandsBuildProject] = []
     /// 勾了、有選好的那個網域的 Cloudflare 授權的設備。
     var authorized: Set<String> = []
+    var reported: Set<String> = []
     /// 勾了、網址已經套用到現在這一版的設備。
     var urlReady: Set<String> = []
     /// 已經有網址的設備（換網域要先在卡片內確認）。
@@ -426,12 +427,12 @@ struct HandsBuildGraph: Equatable, Sendable {
             nodes.append(Node(id: deviceNodeID(device.id), kind: .device,
                               label: device.isPrimary ? HandsBuildCopy.primary : HandsBuildCopy.secondary,
                               sub: device.name + (s.deviceReasons[device.id].map { "：\($0)" } ?? ""),
-                              state: device.state, panel: .devices))
+                              state: device.state == .done && s.deviceReasons[device.id] != nil ? device.connection : device.state, panel: .devices))
         }
         let cloudDone = s.cloudflare == .done
         nodes.append(Node(id: cloudflareID, kind: .cloudflare, label: HandsBuildCopy.cloudflare, sub: cloudflareSub, state: s.cloudflare, panel: .cloudflare))
         nodes.append(Node(id: devID, kind: .dev, label: HandsBuildCopy.dev,
-                          sub: s.dev == .done ? HandsBuildCopy.connectedShort : HandsConnectAbility.words(level: level),   // 實際生效的（frame 傳 actualLevel）；W183 R12：寫能力、不寫 L?
+                          sub: s.dev == .done ? HandsBuildCopy.connectedShort : s.problemPanel == .dev ? "要重連" : HandsConnectAbility.words(level: level),   // 實際生效的（frame 傳 actualLevel）；W183 R12：寫能力、不寫 L?
                           state: s.dev, panel: .dev))
         var edges: [Edge] = []
         for device in s.devices { edges.append(Edge(from: gptID, to: deviceNodeID(device.id), done: device.selected)) }
@@ -834,6 +835,7 @@ final class HandsBuildModel: ObservableObject, HandsBuildModeling, HandsBuildSee
         i.connecting = b.connecting
         for device in i.devices {
             let id = device.id.lowercased()
+            if b.hasFreshReport(id) { i.reported.insert(id) }
             if device.selected, b.authorized(id) { i.authorized.insert(id) }
             if device.selected, b.urlReady(id) { i.urlReady.insert(id) }
             if b.hasURL(id) { i.urlBuilt.insert(id) }

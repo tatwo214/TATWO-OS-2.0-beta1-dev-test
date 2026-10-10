@@ -636,6 +636,15 @@ final class ChatPageModel: ObservableObject {
         #endif
         let preferences = ChatModelPreferences.selection(record)
         let route = preferences.route
+        if route.runtimeAdapter == .chatgptTap {
+            let accepted = engine.send(threadID: threadID, text: text, model: route.id, engine: .codex,
+                systemPrompt: nil, attachments: attachments, reasoningEffort: preferences.effort, serviceTier: nil,
+                ultrawork: ultraworkSettings(for: threadID)) { [weak self] outcome in
+                    if let message = Self.undeliveredMessage(outcome) { onUndelivered(message) }
+                    self?.objectWillChange.send()
+                }
+            if accepted { onDelivered() }; objectWillChange.send(); return accepted
+        }
         let kind: ClaudeSidecar.Kind
         switch route.brandGroup {
         case .anthropic: kind = .claude
@@ -928,10 +937,14 @@ final class ChatPageModel: ObservableObject {
         didSet {
             // 打字後建議清單會變，三個 picker 的高亮都歸零，避免指到錯的項目。1.0 :1519
             guard prompt != oldValue else { return }
+            // 值沒變就不寫：每次寫 @Published 都會通知，Browser 浮層會多收一次更新（W202 效能）。
+            if sigilMenuDismissed { sigilMenuDismissed = false }
+            if sigilSelectionMoved { sigilSelectionMoved = false }
             composerRevision &+= 1
             if skillSuggestionSelectedIndex != nil { skillSuggestionSelectedIndex = nil }
             if slashCommandSelectedIndex != nil { slashCommandSelectedIndex = nil }
-            if issueMentionSelectedIndex != nil { issueMentionSelectedIndex = nil }
+            let sigilIndex: Int? = composerSigil == nil ? nil : 0
+            if issueMentionSelectedIndex != sigilIndex { issueMentionSelectedIndex = sigilIndex }
             if activeSkillQuery != nil { reloadPluginRegistry(ifOlderThan: 60) }
         }
     }
@@ -1191,15 +1204,7 @@ final class ChatPageModel: ObservableObject {
     /// 沒有這道 gate，那排膠囊就會常駐——2026-09-04 使用者回報的就是這個。
     var skillSuggestions: [PluginRegistryEntry] {
         guard isLive, let query = activeSkillQuery else { return [] }
-        let lowered = query.lowercased()
-        let skills = availableThreadPluginEntries.filter { $0.kind == .skill || $0.id == "tatwo-ultrawork" }
-        let matches = skills.filter { entry in
-            lowered.isEmpty
-                || entry.id.lowercased().contains(lowered)
-                || entry.name.lowercased().contains(lowered)
-                || (entry.path ?? "").lowercased().contains(lowered)
-        }
-        return Array(matches.prefix(6))
+        return ChatComposerSkillCatalog.suggestions(in: .init(entries: availableThreadPluginEntries), query: query)
     }
 
     private var activeSkillQuery: String? {
@@ -1260,9 +1265,8 @@ final class ChatPageModel: ObservableObject {
         if choice.runtimeAdapter == .chatgptTap, selectedRemote == nil,
            chatGPTTapConnection == .sleeping || chatGPTTapConnection == .starting,
            choice.id != ChatGPTTapModelCatalog.routeID("unavailable") { return nil }
-        // 舊目錄仍有已選模型時，允許 runner 在送出前刷新一次；離線與登入狀態照舊拒絕。
-        if selectedRemote == nil, chatGPTTapConnection == .ready, !ChatGPTTapModelCatalog.isFresh,
-           ChatGPTTapModelCatalog.snapshot.contains(where: { ChatGPTTapModelCatalog.routeID($0.id) == choice.id }) {
+        // 目錄未就緒時，交給 runner 在送出前刷新；離線與登入狀態照舊拒絕。
+        if choice.runtimeAdapter == .chatgptTap, selectedRemote == nil, chatGPTTapConnection == .ready, !ChatGPTTapModelCatalog.isFresh {
             return nil
         }
         return tapModelUnavailableReason(choice)
@@ -1324,15 +1328,17 @@ final class ChatPageModel: ObservableObject {
     /// /issue 與 /討論串由本機處理；其餘語意交原生引擎。
     static let slashCommandItems: [SlashCommandItem] = [
         SlashCommandItem(id: "/pr", cmd: "/pr", title: "/pr — 貢獻到 TATWO OS 公開倉",
-            subtitle: "僅在 TATWO OS 公開倉或其 fork 使用；其他專案請用原生 Git 工具", icon: "arrow.triangle.branch"),
+            subtitle: "貢獻到 TATWO OS 公開倉（只在公開倉或其 fork 使用）", icon: "arrow.triangle.branch"),
         SlashCommandItem(id: "/feedback", cmd: "/feedback", title: "/feedback — 回報問題",
             subtitle: "檢查原文並確認後，提交至 \(FeedbackSettings.feedbackRepository)", icon: "bubble.left.and.exclamationmark.bubble.right"),
         SlashCommandItem(id: "/plg", cmd: "/plg", title: "/plg — 依已確認的計畫開工",
             subtitle: "先確認計畫；主導能做的直接做，需要協作時再派房間", icon: "point.3.filled.connected.trianglepath.dotted"),
         SlashCommandItem(id: "/plan", cmd: "/plan", title: "/plan — 只討論不動手",
             subtitle: "純規劃釐清；沒有你的「開始」就不改任何檔", icon: "list.bullet.rectangle"),
-        SlashCommandItem(id: "/goal", cmd: "/goal", title: "/goal — 開一張目標卡",
-            subtitle: "目標寫進右側資訊卡，之後逐條對齊驗收", icon: "target"),
+        SlashCommandItem(id: "/goal", cmd: "/goal", title: "/goal — 加一條主線",
+            subtitle: "/goal <目標> 加一條主線", icon: "target"),
+        SlashCommandItem(id: "/goal list", cmd: "/goal list", title: "/goal list — 打開 Goal 清單",
+            subtitle: "打開 Goal 卡片，不加目標", icon: "list.bullet"),
         SlashCommandItem(id: "/issue", cmd: "/issue", title: "/issue — 支線等待佇列",
             subtitle: "/issue <文字> 捕捉支線；/issue 打開佇列（不啟動執行）", icon: "tray.full"),
         SlashCommandItem(id: "/討論串", cmd: "/討論串", title: "/討論串 — 開啟子討論串",
@@ -1423,7 +1429,7 @@ final class ChatPageModel: ObservableObject {
     var selectedGoalRecord: TatwoStoredGoalRun? { nil }
     var plgError: String? { nil }
     var canAdvanceNativeDevelopmentCycle: Bool { false }
-    /// `@` 搜尋結果：標題／內文／來源逐筆比對，最多 8 筆。1.0 :367
+    /// `!` 搜尋結果：標題／內文／來源逐筆比對，最多 8 筆。1.0 :367
     var issueAtMentionMatches: [TatwoIssueListEntryV1] {
         guard let query = issueAtMentionQuery else { return [] }
         let matched = query.isEmpty ? issueListEntries : issueListEntries.filter {
@@ -1431,7 +1437,7 @@ final class ChatPageModel: ObservableObject {
                 || $0.body.lowercased().contains(query)
                 || $0.sourceReference.lowercased().contains(query)
         }
-        // 使用者 2026-09-05：@ 統一叫出，本串排上段、全域排下段
+        // 本串優先，仍使用同一份全域清單。
         let current = selectedThreadID?.uuidString
         let mine = matched.filter { $0.threadReference == current }
         let others = matched.filter { $0.threadReference != current }
@@ -1518,10 +1524,13 @@ final class ChatPageModel: ObservableObject {
         if prompt.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == "/goal", !isLocalNativeGoalCommand { return hasContent }
         if tapSendUnavailableReason(routeChoice) != nil { return false }
         return hasContent && !nativeGoalControlPending &&
-            (!isRunning || isLocalNativeGoalCommand || canSteerCurrentTurn)
+            (!isRunning || isLocalNativeGoalCommand || canSteerCurrentTurn || canQueueCurrentGroup)
+    }
+    var canQueueCurrentGroup: Bool {
+        selectedRemote == nil && selectedThreadID.map { localLive?.groupBridge.sessions[$0]?.busy == true } == true
     }
     var canSteerCurrentTurn: Bool {
-        guard selectedRemote == nil, routeChoice.brandGroup == .openAI, let id = selectedThreadID else { return false }
+        guard selectedRemote == nil, [.openAI, .anthropic].contains(routeChoice.brandGroup), let id = selectedThreadID else { return false }
         return localLive?.canSteer(id) == true
     }
     var codexMirrorStatusMessage: String {
@@ -1542,12 +1551,47 @@ final class ChatPageModel: ObservableObject {
         return plan.kind != "pr" || plan.isPRModeActive
     }
     var isSelectedThreadStandalone: Bool { selectedThreadProject == nil && selectedThread != nil }
-    /// composer 尾端 `@` token 的搜尋字（nil＝沒有 @ token）。1.0 :358
+    /// composer 尾端 `!` token 的搜尋字（nil＝沒有 ! token）。1.0 :358
     var issueAtMentionQuery: String? {
         guard let token = prompt.split(whereSeparator: { $0.isWhitespace }).last.map(String.init),
-              token.hasPrefix("@") else { return nil }
+              token.hasPrefix("!") else { return nil }
         return String(token.dropFirst()).lowercased()
     }
+    private var sigilSelectionMoved = false
+    @Published var sigilMenuDismissed = false
+    var composerSigil: ChatComposerSigil? { sigilMenuDismissed ? nil : ChatComposerSigil.query(prompt)?.kind }
+    var composerSigilItems: [ChatComposerSigilItem] {
+        guard let kind = composerSigil, let query = ChatComposerSigil.query(prompt)?.text else { return [] }
+        switch kind {
+        case .issue: return issueAtMentionMatches.map { .init(name: $0.title, detail: $0.sourceReference, value: "!" + $0.sourceReference, identity: $0.id) }
+        case .mcp:
+            return OSMCPRegistry(environment: runtimeEnvironment).composerNames.filter {
+                query.isEmpty || $0.localizedCaseInsensitiveContains(query)
+            }.map { .init(name: $0, detail: $0 == "TATWO OS" ? "讀寫專案、跑指令、記憶、Computer Use（工具）" : "MCP 工具", value: "@" + $0) }
+        case .skill: return skillSuggestions.map { .init(name: $0.id == "tatwo-ultrawork" ? "ultrawork" : $0.name,
+            detail: "技能（工作守則）・" + $0.purpose, value: "$" + ($0.id == "tatwo-ultrawork" ? "ultrawork" : $0.id)) }
+        case .tap: return (selectedRemote == nil ? localLive?.groupBridge.taps ?? [] : []).filter {
+            query.isEmpty || $0.id.localizedCaseInsensitiveContains(query)
+        }.map { .init(name: $0.id, detail: $0.unavailable() == nil ? "讀這串、一起討論、寫改動提案" : "現在不能用", value: "@@" + $0.id, enabled: $0.unavailable() == nil) }
+        }
+    }
+    func pickComposerSigil(_ item: ChatComposerSigilItem) {
+        guard item.enabled, let kind = composerSigil else { return }
+        if kind == .issue, let entry = issueAtMentionMatches.first(where: { $0.id == item.id }) {
+            pickIssueMention(entry); return
+        }
+        guard let token = prompt.split(whereSeparator: \.isWhitespace).last else { return }
+        // 選取 TAP 是使用者啟用這串協作的動作；未選取時沿用群組預設關閉。
+        if kind == .tap { UserDefaults.standard.set(true, forKey: GroupCoderBridge.flag) }
+        prompt.replaceSubrange(token.startIndex..<prompt.endIndex, with: item.value + " ")
+    }
+    var composerMarkers: [String] {
+        let mcps = OSMCPRegistry(environment: runtimeEnvironment).composerNames.map { "@" + $0 }
+        let skills = availableThreadPluginEntries.filter { $0.kind == .skill }.map { "$" + ($0.id == "tatwo-ultrawork" ? "ultrawork" : $0.id) }
+        let taps = (localLive?.groupBridge.taps ?? []).map { "@@" + $0.id }
+        return (mcps + skills + taps).filter { ChatComposerSigilItem(name: "", detail: "", value: $0).isIn(prompt) }
+    }
+    func dismissComposerSigil() { sigilMenuDismissed = true }
     var queuedChatTurnCount: Int { 0 }
     var remoteMode: DeviceRecord? {
         guard let deviceID = selectedRemote?.deviceID else { return nil }
@@ -1633,6 +1677,8 @@ final class ChatPageModel: ObservableObject {
         return remoteSessions.first { $0.device.id == deviceID }
     }
 
+    var primaryLocalCache: (fleet: DeviceFleetStore, stamps: [PolicyFileStamp], value: Bool)?
+    var fleetRoutingEnvironment: [String: String] { runtimeEnvironment }
     private var activeConversationEngine: (any LiveEngineAPI)? {
         #if DEBUG
         if let double = coderRemoteEngineTestDouble, selectedRemote?.deviceID == double.deviceID { return double.engine }
@@ -1652,6 +1698,9 @@ final class ChatPageModel: ObservableObject {
         selectedRemote == nil ? document : (activeRemoteSession?.document ?? .init())
     }
 
+    #if DEBUG
+    func fixtureConfigureRemoteSessions() { configureRemoteSessions() }
+    #endif
     private func configureRemoteSessions() {
         for session in remoteSessions { session.shutdown() }
         resolvedAssistantPrimaryID = nil   // W179 F：配對清單變了，主設備是誰重讀一次
@@ -1661,7 +1710,10 @@ final class ChatPageModel: ObservableObject {
             remoteSidebarSections = []
             return
         }
-        remoteSessions = devices.map { device in
+        let fleet = DeviceFleetStore(registry: deviceRegistry, environment: runtimeEnvironment)
+        if managedAssistantIsLocal { selectedRemote = nil }
+        Task { @MainActor [weak self] in await self?.clearNonOwnerPrimaryWork() }
+        remoteSessions = devices.filter { fleet.allowsPeerConnection($0.id) }.map { device in
             let session = RemoteDeviceSession(
                 device: device,
                 link: RemoteHostLink(environment: runtimeEnvironment),
@@ -1686,7 +1738,8 @@ final class ChatPageModel: ObservableObject {
                     if session.device.id == self.assistantPrimaryDevice?.id { self.objectWillChange.send() }
                     return
                 }
-                self.isRunning = session.engine?.isRunning(self.selectedThreadID) ?? false
+                let running = session.engine?.isRunning(self.selectedThreadID) ?? false
+                if self.isRunning != running { self.isRunning = running }
                 self.refreshIssueLists()
                 self.distillRemoteSessionUpdated(deviceID: session.device.id)   // W180 E4：AI 回覆後 /蒸餾 畫布跟上
                 self.objectWillChange.send()
@@ -1727,7 +1780,7 @@ final class ChatPageModel: ObservableObject {
         remoteProjectionTask?.cancel()
         remoteProjectionTask = nil
         lastRemoteProjectionAt = Date()
-        remoteSidebarSections = remoteSessions.map { session in
+        let sections = remoteSessions.map { session in
             let isOnline: Bool
             if case .online = session.state {
                 isOnline = true
@@ -1762,6 +1815,7 @@ final class ChatPageModel: ObservableObject {
                 projects: projects,
                 offlineSyncedAt: isOnline || session.offlineMirror.snapshot == nil ? nil : session.offlineMirror.syncedAt)   // W182 R4
         }
+        if remoteSidebarSections != sections { remoteSidebarSections = sections }
     }
 
     init(environment: [String: String] = ProcessInfo.processInfo.environment, botCoreFixture: (ChatLiveEngine, BotStore)? = nil) {
@@ -1952,9 +2006,11 @@ final class ChatPageModel: ObservableObject {
             restoreModelPreferences()
             engine.onChange = { [weak self] in
                 guard let self, let live = self.live else { return }
-                self.document = live.document
+                let document = live.document
+                if self.document != document { self.document = document }
                 if self.selectedRemote == nil {
-                    self.isRunning = live.isRunning(self.selectedThreadID)
+                    let running = live.isRunning(self.selectedThreadID)
+                    if self.isRunning != running { self.isRunning = running }
                 }
                 self.applyPendingModelSelectionIfPossible()
                 if SpaceWorkspaceController.shared.state != nil { self.applySpaceRuntimePreferences() }
@@ -1968,13 +2024,15 @@ final class ChatPageModel: ObservableObject {
             engine.onHint = { [weak self] hint in self?.composerHint = hint }
             engine.onRoomArchived = { [weak self, weak engine] roomID in
                 guard let self, let engine else { return }
+                Task {
                 do {
-                    _ = try self.reclaimRoom(roomID)
+                    _ = try await self.reclaimRoom(roomID)
                 } catch {
                     engine.appendSystemMessage(
                         threadID: roomID,
                         text: "房間封存但工作樹回收失敗：\(error)",
                         status: "error|房間回收")
+                }
                 }
             }
             engine.permissionDecider = { [weak self] tool, input in
@@ -2069,11 +2127,14 @@ final class ChatPageModel: ObservableObject {
     }
     func refreshIssueLists() {
         guard let activeLive = activeConversationEngine else { return }
-        allIssueListEntries = activeLive.issues(threadID: nil, global: true)
-        issueListEntries = activeLive.issues(
+        let all = activeLive.issues(threadID: nil, global: true)
+        let current = activeLive.issues(
             threadID: selectedThreadID,
             global: issueListShowsGlobal)
-        archivedIssueListEntries = allIssueListEntries.filter { $0.status == .archived }
+        let archived = all.filter { $0.status == .archived }
+        if allIssueListEntries != all { allIssueListEntries = all }
+        if issueListEntries != current { issueListEntries = current }
+        if archivedIssueListEntries != archived { archivedIssueListEntries = archived }
     }
     func refreshGitStatus() {
         guard selectedRemote == nil else {
@@ -2283,7 +2344,20 @@ final class ChatPageModel: ObservableObject {
             flashComposerHint("CLI 正在讀取 Space 設定，請稍後再開啟")
             return nil
         }
-        let cwd = workdir ?? selectedThreadProject?.workdir ?? NSHomeDirectory()
+        let thread = localLiveForBridge?.threadRecord(ownerID)
+        let project = thread.flatMap { localLiveForBridge?.projectRecord($0.projectID) }
+        var cwd = workdir ?? thread?.cwdOverride ?? project?.workdir ?? selectedThreadProject?.workdir ?? NSHomeDirectory()
+        var memoryPolicy: ManagedEnginePolicy?
+        let fleet = DeviceFleetStore(registry: DeviceRegistry(environment: runtimeEnvironment), environment: runtimeEnvironment)
+        func failed(_ error: Error) -> UUID? {
+            flashComposerHint(ManagedEnginePolicy.refusal(error, fleet: fleet)); return nil
+        }
+        do {
+            if let thread, let creator = thread.controllerCreatorFingerprint {
+                memoryPolicy = try ManagedEnginePolicy.forThread(ownerID, creator: creator, fleet: fleet)
+                cwd = try memoryPolicy?.workDirectory(for: thread, project: project, requested: workdir) ?? cwd
+            }
+        } catch { return failed(error) }
         if engine != .generic, let problem = ExternalWorkspacePolicy.engineProblem(cwd: cwd) { flashComposerHint(problem); return nil }   // W183 R6c 審查
         let number = (cliSessionsByThread[ownerID]?.count ?? 0) + 1
         let title = "\(cliEngineTitle(engine)) \(number)"
@@ -2295,10 +2369,13 @@ final class ChatPageModel: ObservableObject {
             createdAt: Date(),
             updatedAt: Date(),
             isRunning: false)
+        let launch: TatwoNativeTerminalLaunch
+        do { launch = try launchForCLI(engine: engine, workdir: cwd, extraArguments: extraArguments, memoryPolicy: memoryPolicy) }
+        catch { return failed(error) }
         cliSessionsByThread[ownerID, default: []].append(tab)
         activeCLITabByThread[ownerID] = tab.id
         cliTabOwner[tab.id] = ownerID
-        startCLITab(tab, launch: launchForCLI(engine: engine, workdir: cwd, extraArguments: extraArguments))
+        startCLITab(tab, launch: launch)
         registerCLIWorkbenchPane(tab, owner: ownerID)
         persistCLITabs(ownerID: ownerID)
         objectWillChange.send()
@@ -2521,6 +2598,7 @@ final class ChatPageModel: ObservableObject {
         }
     }
     private func connectPlanCanvas(to engine: ChatLiveEngine) {
+        engine.composerSkills = { [weak self] in self?.pluginEntries ?? [] }
         engine.onPlanChange = { [weak self] plan in
             guard let self, self.selectedRemote == nil, self.selectedThreadID == plan.threadID else { return }
             self.activePlanArtifact = plan
@@ -2647,7 +2725,7 @@ final class ChatPageModel: ObservableObject {
         defer { prompt = draft; droppedPaths = paths; droppedPathDisplayNames = names }
         prompt = "開始"
         droppedPaths = []; droppedPathDisplayNames = [:]
-        send()
+        OSEventSources.scope(origin: "plan", actor: "系統") { send() }
     }
     func returnActivePRToDiscussion() {
         guard selectedRemote == nil, var plan = activePlanArtifact, plan.kind == "pr",
@@ -3119,7 +3197,7 @@ final class ChatPageModel: ObservableObject {
     }
     func deviceRecordsForBridge() -> [DeviceRecord] {
         let rows = deviceRegistry.list()
-        devices = rows
+        if devices != rows { devices = rows }
         return rows
     }
     /// W100：還沒連上就不在主執行緒等 SSH。改成背景連線＋顯示「正在連線」，
@@ -3431,7 +3509,7 @@ final class ChatPageModel: ObservableObject {
             flashComposerHint(CanvasCommandPolicy.tapUnsupported); return
         }
         if handleFeedbackCommand() { return }
-        let eventSource = OSEventSources.begin(origin: "composer", actor: "你", surface: "coder"); defer { OSEventSources.send = eventSource }
+        let source = OSEventSources.Send(origin: OSEventSources.send.origin == "plan" ? "plan" : "composer", actor: OSEventSources.send.origin == "plan" ? "系統" : "你", surface: "coder")
         // W163：「記住…」同時變成一條使用者記憶提案（核准才寫進 user.md）；這句話照樣送給 AI。
         if let remembered = UserMemoryText.rememberRequest(in: prompt) {
             let thread = selectedThreadID?.uuidString.prefix(8) ?? "聊天"
@@ -3565,6 +3643,10 @@ final class ChatPageModel: ObservableObject {
         // W170：/goal 在每一家引擎都是「加一條到這串的目標清單」，只加不蓋；選 OpenAI 時照舊再交給 Codex 原生 goal。
         if prompt.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == "/goal" {
             let shouldStartNativeGoal = isLocalNativeGoalCommand
+            // W252：/goal list（或 /goal 清單）只打開目標卡片，不加目標；只讀，所以遠端設備也可以。
+            if ["list", "清單"].contains(String(trimmedPrompt.dropFirst("/goal".count)).trimmingCharacters(in: .whitespacesAndNewlines)) {
+                openGoalList(); return
+            }
             if rejectRemoteWrite("目標") { return }
             let text = String(trimmedPrompt.dropFirst("/goal".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
@@ -3597,10 +3679,11 @@ final class ChatPageModel: ObservableObject {
             } catch { flashComposerHint("目標沒加上：\(error)") }
             return
         }
-        if activeLive.isRunning(id) {
-            guard canSteerCurrentTurn, let localLive else { return }
+        let wasGroupBusy = canQueueCurrentGroup
+        if activeLive.isRunning(id) && !wasGroupBusy {
+            guard canSteerCurrentTurn, let localLive else { activeLive.appendSystemMessage(threadID: id, text: "這串忙碌中，現在不能排隊；草稿已保留", status: "info|送出"); return }
             let draft = prompt, attachments = droppedPaths, revision = composerRevision
-            _ = localLive.steer(threadID: id, text: draft, attachments: attachments) { [weak self] accepted, error in
+            _ = OSEventSources.scope(source) { localLive.steer(threadID: id, text: prompt, attachments: attachments) { [weak self] accepted, error in
                 guard let self, self.selectedThreadID == id else { return }
                 if accepted {
                     // Never erase text or files edited while waiting for the
@@ -3613,7 +3696,7 @@ final class ChatPageModel: ObservableObject {
                 } else {
                     self.flashComposerHint(error ?? "插話未送出，草稿已保留")
                 }
-            }
+            } }
             return
         }
         let engine: ClaudeSidecar.Kind
@@ -3667,9 +3750,9 @@ final class ChatPageModel: ObservableObject {
         coderDeliveries[id]?.deviceID = selectedRemote?.deviceID
         coderDeliverySnapshots[token] = coderDeliveries[id]
         // W184 H4 修正（審查 #2）：ultrawork 是這條（id）這一輪明確帶的資料（本機接在那一句後面；遠端序列化給那台），不再當 systemPrompt。
-        let accepted = activeLive.send(
+        let accepted = OSEventSources.scope(source) { activeLive.send(
             threadID: id,
-            text: text,
+            text: prompt,
             model: modelArg,
             engine: engine,
             systemPrompt: nil,
@@ -3678,12 +3761,13 @@ final class ChatPageModel: ObservableObject {
             serviceTier: !isTap && (engine == .codex || engine == .claude) ? selectedSpeedTier.appServerValue : nil,
             ultrawork: isTap ? nil : ultraworkSettings(for: id)) { [weak self] outcome in
                 self?.finishCoderDelivery(id, token: token, outcome)
-            }
+            } }
         if accepted {
             prompt = ""
             droppedPaths = []
             droppedPathDisplayNames = [:]
         } else if coderDeliveries[id]?.token == token {
+            if wasGroupBusy { activeLive.appendSystemMessage(threadID: id, text: "群組這句未能排隊，草稿已保留", status: "error|群組") }
             coderDeliveries[id] = nil   // 當場沒收（例：同一條上一句還在路上）：草稿本來就還在輸入框
             coderDeliverySnapshots[token] = nil
         }
@@ -3748,7 +3832,8 @@ final class ChatPageModel: ObservableObject {
             if coderUndelivered?.threadID == id { coderUndelivered = nil }
             flashComposerHint(message)
         } else {
-            coderUndelivered = CoderUndelivered(threadID: id, text: sent.text, attachments: sent.attachments, names: sent.names, deviceID: sent.deviceID)
+            let previous = localLive?.groupBridge.sessions[id] != nil && coderUndelivered?.threadID == id && coderUndelivered?.deviceID == sent.deviceID ? coderUndelivered : nil
+            coderUndelivered = CoderUndelivered(threadID: id, text: (previous.map { $0.text + "\n" } ?? "") + sent.text, attachments: (previous?.attachments ?? []) + sent.attachments, names: previous?.names.merging(sent.names) { _, new in new } ?? sent.names, deviceID: sent.deviceID)
         }
     }
 
@@ -3979,7 +4064,7 @@ final class ChatPageModel: ObservableObject {
             return false
         }
         refreshIssueLists()
-        flashComposerHint("已記到右側的問題清單：「\(firstLine.prefix(30))」；打 @ 可以隨時叫出來")
+        flashComposerHint("已記到右側的問題清單：「\(firstLine.prefix(30))」；打 ! 可以隨時叫出來")
         return true
     }
 
@@ -4797,7 +4882,11 @@ final class ChatPageModel: ObservableObject {
         selectedDiscussionID = discussionID
         selectedThreadID = discussionID
     }
+    private func openGoalList() {
+        goalCardExpanded = true; prompt = ""
+    }
     func applySlashCommandSuggestion(_ item: SlashCommandItem) {
+        if item.cmd == "/goal list" { openGoalList(); return }
         // 只替換已打好的那半截指令，不動使用者其他字（1.0 :3100）
         prompt = ChatComposerSlashCatalog.inserting(command: item.cmd, into: prompt)
     }
@@ -4853,31 +4942,11 @@ final class ChatPageModel: ObservableObject {
         selectedDiscussionID = asBranch ? copyID : nil
         selectedThreadID = copyID
     }
-    /// →/↓ 下一個、←/↑ 上一個、Enter 插入。優先序：@ issue → / 指令 → $ 技能。1.0 :1344
+    /// 四種符號共用鍵盤路徑；斜線指令沿用既有選取。
     func handleComposerSuggestionKey(_ key: ChatComposerSuggestionKey) -> Bool {
-        if issueAtMentionQuery != nil, !issueAtMentionMatches.isEmpty { return handleIssueMentionKey(key) }
+        if composerSigil != nil { return handleIssueMentionKey(key) }
         if !matchingSlashCommands.isEmpty { return handleSlashSuggestionKey(key) }
-        return handleSkillSuggestionKey(key)
-    }
-
-    func handleSkillSuggestionKey(_ key: ChatComposerSuggestionKey) -> Bool {
-        let suggestions = skillSuggestions
-        switch key {
-        case .next:
-            guard !suggestions.isEmpty else { return false }
-            skillSuggestionSelectedIndex = ChatComposerSuggestionSelection.next(
-                current: skillSuggestionSelectedIndex, count: suggestions.count)
-            return true
-        case .prev:
-            guard skillSuggestionSelectedIndex != nil else { return false }
-            skillSuggestionSelectedIndex = ChatComposerSuggestionSelection.previous(
-                current: skillSuggestionSelectedIndex, count: suggestions.count)
-            return true
-        case .commit:
-            guard let cur = skillSuggestionSelectedIndex, cur < suggestions.count else { return false }
-            applySkillSuggestion(suggestions[cur])
-            return true
-        }
+        return false
     }
 
     func handleSlashSuggestionKey(_ key: ChatComposerSuggestionKey) -> Bool {
@@ -4894,30 +4963,34 @@ final class ChatPageModel: ObservableObject {
                 current: slashCommandSelectedIndex, count: suggestions.count)
             return true
         case .commit:
-            guard let cur = slashCommandSelectedIndex ?? (suggestions.count == 1 ? 0 : nil), cur < suggestions.count else { return false }
+            let cur = slashCommandSelectedIndex ?? 0
+            guard suggestions.indices.contains(cur) else { return false }
             applySlashCommandSuggestion(suggestions[cur])
             return true
         }
     }
 
     func handleIssueMentionKey(_ key: ChatComposerSuggestionKey) -> Bool {
-        let matches = issueAtMentionMatches
+        let matches = composerSigilItems
+        guard !matches.isEmpty else { return false }
         switch key {
         case .next:
-            issueMentionSelectedIndex = ChatComposerSuggestionSelection.next(
-                current: issueMentionSelectedIndex, count: matches.count)
-            return true
+            sigilSelectionMoved = true
+            issueMentionSelectedIndex = ChatComposerSuggestionSelection.next(current: issueMentionSelectedIndex, count: matches.count)
         case .prev:
+            sigilSelectionMoved = true
             guard issueMentionSelectedIndex != nil else { return false }
-            issueMentionSelectedIndex = ChatComposerSuggestionSelection.previous(
-                current: issueMentionSelectedIndex, count: matches.count)
-            return true
+            issueMentionSelectedIndex = ChatComposerSuggestionSelection.previous(current: issueMentionSelectedIndex, count: matches.count)
         case .commit:
-            guard let index = issueMentionSelectedIndex, index >= 0, index < matches.count else { return false }
-            issueMentionSelectedIndex = nil
-            pickIssueMention(matches[index])
-            return true
+            guard let index = issueMentionSelectedIndex, matches.indices.contains(index), matches[index].enabled else { return false }
+            if !sigilSelectionMoved {
+                guard let query = ChatComposerSigil.query(prompt), !query.text.isEmpty else { return false }
+                let value = String(matches[index].value.dropFirst(query.kind.rawValue.count)).lowercased()
+                guard value.hasPrefix(query.text) || matches[index].name.lowercased().split(whereSeparator: \.isWhitespace).contains(where: { $0.hasPrefix(query.text) }) else { return false }
+            }
+            pickComposerSigil(matches[index])
         }
+        return true
     }
     func handoffThreadToCLISession(project: TatwoNativeChatProject?, thread: TatwoNativeChatThread, engine: TatwoNativeCLIEngine = .codex) {}
     func openThreadProjectInCLI() {
@@ -4940,9 +5013,9 @@ final class ChatPageModel: ObservableObject {
             }
         }
     }
-    /// 點選 @ 結果：清掉 @token、把該筆釘進右側資訊卡。1.0 :379
+    /// 點選 ! 結果：清掉 !token、把該筆釘進右側資訊卡。1.0 :379
     func pickIssueMention(_ entry: TatwoIssueListEntryV1) {
-        if let token = prompt.split(whereSeparator: { $0.isWhitespace }).last, token.hasPrefix("@") {
+        if let token = prompt.split(whereSeparator: { $0.isWhitespace }).last, token.hasPrefix("!") {
             prompt.removeSubrange(token.startIndex..<token.endIndex)
         }
         focusedIssueEntryID = entry.id
@@ -5028,18 +5101,21 @@ final class ChatPageModel: ObservableObject {
         cliStore?.updateCLITabs(threadID: ownerID, tabs: records)
     }
 
-    private func launchForCLI(
+    func launchForCLI(
         engine: TatwoNativeCLISessionBook.Engine,
         workdir: String,
-        extraArguments: [String] = []
-    ) -> TatwoNativeTerminalLaunch {
+        extraArguments: [String] = [], memoryPolicy: ManagedEnginePolicy? = nil
+    ) throws -> TatwoNativeTerminalLaunch {
+        guard memoryPolicy == nil || engine == .generic else {
+            throw DeviceDispatch.Failure(reason: "受管對話沒有記憶權限，只能開一般終端；引擎 CLI 會讀取這台的引擎紀錄，請改開 Shell 或請管理者開放記憶權限。")
+        }
         let paths = engineLogin.paths
         var environment = runtimeEnvironment
         environment["PATH"] = paths.runtimeBinDirectory.path + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         environment["TATWO2_OS_SOCKET"] = OSAgentBridge.resolveSocketPath(environment: runtimeEnvironment)
         environment["TATWO2_BROWSER_SOCKET"] = BrowserAgentBridge.resolveSocketPath(environment: runtimeEnvironment)
         let executable: String
-        let arguments: [String]
+        var arguments: [String]
         switch engine {
         case .claude:
             executable = paths.claudeExecutable.path
@@ -5063,8 +5139,14 @@ final class ChatPageModel: ObservableObject {
         if let kind = ClaudeSidecar.Kind(rawValue: engine.rawValue) {
             EngineAPIKeyPolicy.removeAPIKeys(from: &environment, for: kind, optedOut: disabledEngines)
         }
-        return TatwoNativeTerminalLaunch(executable: executable, arguments: arguments + (engine == .generic ? [] : extraArguments),
+        var launch = TatwoNativeTerminalLaunch(executable: executable, arguments: arguments + (engine == .generic ? [] : extraArguments),
             workingDirectory: URL(fileURLWithPath: workdir, isDirectory: true), environment: environment)
+        if let memoryPolicy {
+            launch.environment = try memoryPolicy.prepareEnvironment(launch.environment)
+            launch.arguments = memoryPolicy.sandboxArguments(executable: "/usr/bin/env", arguments: ManagedEnginePolicy.removedEnvironment.flatMap { ["-u", $0] } + [launch.executable] + launch.arguments, writableDirectory: workdir)
+            launch.executable = "/usr/bin/sandbox-exec"
+        }
+        return launch
     }
 
     private func cliBookEngine(_ engine: TatwoNativeCLIEngine) -> TatwoNativeCLISessionBook.Engine {

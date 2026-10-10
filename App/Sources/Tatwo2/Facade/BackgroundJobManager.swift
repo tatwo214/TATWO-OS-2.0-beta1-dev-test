@@ -93,9 +93,13 @@ final class BackgroundJobManager: @unchecked Sendable {
     }
 
     /// `beforeSpawn`：真正開程序前（在 manager 佇列裡）最後確認一次；丟錯就不開、不留紀錄。不可在裡面等主執行緒。
-    func run(command: String, cwd: String, title: String, threadID: UUID, requestKey: String? = nil,
+    func run(command: String, cwd: String?, title: String, threadID: UUID, requestKey: String? = nil,
+             memoryPolicy: ManagedEnginePolicy? = nil, authorize: ((String) throws -> Void)? = nil,
              beforeSpawn: (() throws -> Void)? = nil) throws -> Record {
-        try queue.sync {
+        guard memoryPolicy == nil || cwd != nil else { throw DeviceDispatch.Failure(reason: "受管背景指令需要對話的工作資料夾。") }
+        let cwd = cwd ?? NSHomeDirectory()
+        try authorize?(cwd)
+        return try queue.sync {
             if let requestKey {
                 guard !requestKey.isEmpty, requestKey.utf8.count <= 256 else {
                     throw NSError(domain: "BackgroundJobManager", code: 2)
@@ -116,11 +120,34 @@ final class BackgroundJobManager: @unchecked Sendable {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = ["-lc", command]
+            if let memoryPolicy {
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+                process.arguments = memoryPolicy.sandboxArguments(executable: "/bin/zsh", arguments: ["-f", "-c", command], writableDirectory: cwd)
+                process.environment = try memoryPolicy.prepareEnvironment(ProcessInfo.processInfo.environment)
+            }
             process.currentDirectoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
-            process.standardOutput = log
-            process.standardError = log
+            let output = memoryPolicy == nil ? nil : Pipe()
+            let outputLock = NSLock()
+            var outputClosed = false
+            if let output { _ = fcntl(output.fileHandleForReading.fileDescriptor, F_SETFL, O_NONBLOCK) }
+            func drainOutput(close: Bool = false) {
+                outputLock.withLock {
+                    guard !outputClosed else { return }
+                    if let output {
+                        while let data = try? output.fileHandleForReading.read(upToCount: 65536) {
+                            if data.isEmpty { output.fileHandleForReading.readabilityHandler = nil; break }
+                            try? log.write(contentsOf: data)
+                        }
+                        if close { output.fileHandleForReading.readabilityHandler = nil; output.fileHandleForReading.closeFile() }
+                    }
+                    if close { outputClosed = true; log.closeFile() }
+                }
+            }
+            output?.fileHandleForReading.readabilityHandler = { _ in drainOutput() }
+            process.standardOutput = output ?? log as Any
+            process.standardError = output ?? log as Any
             process.terminationHandler = { [weak self] finished in
-                log.closeFile()
+                drainOutput(close: true)
                 self?.queue.async {
                     guard let self, var current = self.records[id], current.state == "running" else { return }
                     current.state = "exited"
@@ -140,7 +167,7 @@ final class BackgroundJobManager: @unchecked Sendable {
                 try process.run()
             } catch {
                 process.terminationHandler = nil
-                log.closeFile()
+                drainOutput(close: true)
                 try? FileManager.default.removeItem(at: logURL) // 程序沒開成，剛建的空記錄檔不留
                 throw error
             }

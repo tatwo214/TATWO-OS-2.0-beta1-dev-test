@@ -1,0 +1,4 @@
+COMMAND     PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+Tatwo2Sta 50191 layer2ai    8u  unix 0xff0ee990d9c86074      0t0      /Users/fixture/Library/Application Support/tatwo2-staging/browser.sock
+Tatwo2Sta 50191 layer2ai   14u  unix 0xd294ab451163d657      0t0      ->0xce15b5f7d8d3b15e
+Tatwo2Sta 50191 layer2ai   23u  unix 0x90c9d93118328c0b      0t0      /Users/fixture/Library/Application Support/tatwo2-staging/os.sock

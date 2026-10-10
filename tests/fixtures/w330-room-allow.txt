@@ -1,0 +1,11 @@
+App/Sources/Tatwo2/Facade/HandsConnectR10Acceptance.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift
+App/Sources/Tatwo2/TAP/W328PairfillAcceptance.swift
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridgeUnavailable.m
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/include/TatwoCEFBridge.h
+tests/fixtures/w328-pairfill-checks.swift
+tests/fixtures/w330-room-allow.txt
+tests/w328-pairfill.test.mjs
+tests/w330-pairtype.test.mjs

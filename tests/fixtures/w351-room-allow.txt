@@ -1,0 +1,16 @@
+App/Sources/Tatwo2/Chat/ChatGPTTapModelCatalog.swift
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift
+App/Sources/Tatwo2/Facade/EngineInstall.swift
+App/Sources/Tatwo2/Facade/W297Acceptance.swift
+App/Sources/Tatwo2/Facade/W298aAcceptance.swift
+App/Sources/Tatwo2/Facade/W298bAcceptance.swift
+App/Sources/Tatwo2/Facade/W351Acceptance.swift
+App/Sources/Tatwo2/New/CrashRelaunch.swift
+App/Sources/Tatwo2/New/EngineLoginCard.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Tatwo2App.swift
+tests/fixtures/w316-realmenu.mjs
+tests/fixtures/w351-room-allow.txt
+tests/w177-chatgpt-space.test.mjs
+tests/w298a-ai-update.test.mjs
+tests/w351-tapengine.test.mjs

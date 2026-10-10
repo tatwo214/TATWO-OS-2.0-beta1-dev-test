@@ -111,6 +111,8 @@ enum BrowserKeyCombo {
     static let shared=SpotifyConnect()
     static let spotifyHost="spotify.invalid"
     func spotifyTabOpened() { preconditionFailure("not a media integration test") }
+    static func isMediaKeyDown(_ event:NSEvent)->Bool { false }
+    func spotifyInput(_ event:NSEvent, host:String?, isPageTarget:Bool) { preconditionFailure("not a media integration test") }
 }
 @MainActor final class BrowserPasswordAssist { init(bridge:TatwoCEFBrowserView) {}; func invalidate() {} }
 @MainActor final class BrowserWebFeatures { init(browser:TatwoCEFBrowserView,container:NSView) {}; func invalidate() {}; func requestPDF(download:Bool) { preconditionFailure("not a PDF test") } }

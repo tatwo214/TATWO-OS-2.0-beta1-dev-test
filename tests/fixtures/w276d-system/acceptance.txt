@@ -1,0 +1,9 @@
+open: launch_exit=0 bundleID=ai.tatwo.tatwo2.staging name="TATWO OS Staging" pid=64593
+CGWindow: owner="TATWO OS Staging" pid=64593 layer=0 visible=1 width=1214 height=876 count=1
+parallel: formal_pid=72148 formal_windows=1 staging_windows=1 formal_main_unchanged=1
+quit: osascript_exit=0 residual_processes=0
+finder: launch_exit=0 bundleID=ai.tatwo.tatwo2.staging name="TATWO OS Staging" pid=64672
+CGWindow: owner="TATWO OS Staging" pid=64672 layer=0 visible=1 width=1216 height=876 count=1
+parallel: formal_pid=72148 formal_windows=1 staging_windows=1 formal_main_unchanged=1
+quit: osascript_exit=0 residual_processes=0
+SYSTEM_ACCEPTANCE PASS evidence=/Users/fixture/tatwo-build/tmp/W276d/system-final

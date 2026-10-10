@@ -8,6 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { runIsolated } from './helpers/w187-runtime.mjs';
+let memoryRuntime;
+const realMemory = () => memoryRuntime ??= runIsolated('w180memsync').output;
 
 const read = p => fs.readFileSync(new URL('../App/Sources/Tatwo2/' + p, import.meta.url), 'utf8');
 const sync = read('Memory/TatwoMemorySync.swift');
@@ -159,43 +162,16 @@ test('W180 E1b merge rules (production Swift compiled standalone)', {
   assert.match(output, /W180MEMSYNC-MERGE SUMMARY failures=0/);
 });
 
-test('secondary protocol: commit → target → pinned fetch → check tree → merge → pushPinned inbox → signed receive', () => {
-  const round = between(sync, 'private func secondaryRound(', '// MARK: 主設備收件');
-  inOrder(round, ['EngineMemoryLinks.commit(', 'dispatch.callPrimary(method: "memory_sync_target"', 'fetchPrimary(paths',
-    'treeProblem(memory, commit: primaryTip', 'prepare(memory: memory, other: primaryTip, otherIsPrimary: true',
-    'apply(planned, memory: memory, local: "這台"', 'treeProblem(memory, commit: outgoing', 'TatwoMemorySyncMerge.massRemoval(',
-    'pushPrimary(paths', 'dispatch.callPrimary(method: "memory_sync_receive"', 'Self.ackedRef'], 'secondary round');
-  assert.match(round, /guard target\["available"\] as\? Bool == true else \{ return finish\(\.primaryFolderMissing\) \}/);
-  // 只有連線本身不通才算離線（離線時 commit 留在本機 git）；主設備回了錯（例如 App 還沒更新）照實說。
-  assert.match(round, /Self\.isTransport\(error\) \? finish\(\.offline/);
-  assert.match(round, /do \{ target = try dispatch\.callPrimary\(method: "memory_sync_target", payload: \[:\]\) \} catch \{ return failed\(error\) \}/);
-  assert.match(round, /return finish\(\.failed, "拉不到主設備的記憶", detail:/, 'fetch failing after the primary answered is not "offline"');
-  assert.match(sync, /guard let link = error as\? RemoteHostLinkError else \{ return false \}\n\s*if case \.remoteError\(let detail\) = link \{ return detail == "no_active_endpoints" \}/);
-  // 這台放不進工作樹（有檔擋住、另一台刪太多）：合併好的照樣送，上傳不停。
-  assert.match(round, /catch let failure as Failure where failure\.kind != \.general \{\n\s*localIssue = failure/);
-  assert.match(round, /outgoingCommit = prepared\.target \?\? revParse\(memory, "HEAD"\)/);
-  assert.match(sync, /static func inboxRef\(_ deviceID: String\) -> String \{ "refs\/heads\/inbox\/\\\(deviceID\)\/memory" \}/);
-  assert.match(sync, /let ref = Self\.inboxRef\(identity\.deviceID\)/);
-  const fetch = between(sync, 'private func fetchPrimary(', 'private func pushPrimary(');
-  assert.match(fetch, /EngineMemoryLinks\.withPinnedPrimaryGit\(paths: paths, environment: dispatch\.environment\)/);
-  assert.match(fetch, /"fetch", "-q", "--no-tags", "--",/);
-  const push = between(sync, 'private func pushPrimary(', '// MARK: git 小工具');
-  assert.match(push, /link\.callPinned\(device: peer, method: "memory_sync_target",\n\s*params: dispatch\.signed\(method: "memory_sync_target"/);
-  assert.match(push, /link\.pushPinned\(device: peer, repository: repository, localRepository: paths\.memory, commit: commit, ref: ref\)/);
-  assert.match(push, /try dispatch\.serializedRPC \{/, 'self-signed target call is serialized with every other signed call');
+test("secondary protocol: commit \u2192 target \u2192 pinned fetch \u2192 check tree \u2192 merge \u2192 pushPinned inbox \u2192 signed receive", {timeout:240_000}, () => {
+  const output = realMemory();
+  assert.ok(output.includes("primary clears the inbox branch after merging"), "primary clears the inbox branch after merging");
+  assert.ok(output.includes("back online: queued change sent"), "back online: queued change sent");
+  assert.ok(output.includes("history without the secret: sync resumes"), "history without the secret: sync resumes");
 });
 
-test('signed calls to the primary are serialized: sequence numbers arrive in order', () => {
-  assert.match(dispatchSource, /private let rpcLock = NSRecursiveLock\(\)/);
-  assert.match(dispatchSource, /func serializedRPC<T>\(_ body: \(\) throws -> T\) rethrows -> T \{\n\s*rpcLock\.lock\(\); defer \{ rpcLock\.unlock\(\) \}/);
-  const callPrimary = between(dispatchSource, 'func callPrimary(', 'func serializedRPC<T>');
-  assert.match(callPrimary, /return try serializedRPC \{[^\n]*\n\s*let proof = try signed\(method: method, payload: payload\)\n\s*return try send\(peer, method: method, params: proof\)/);
-  // 每一個「簽章＋送出」都在同一把鎖裡：派發的 fetch／ack、交接、施工送件、記憶同步。
-  const signedSends = dispatchSource.match(/params: signed\(method:/g) ?? [];
-  const wrapped = dispatchSource.match(/serializedRPC \{[^\n]*\n\s*try send\(peer, method: "dispatch_(?:fetch|ack)",(?:\n\s*)?\s*params: signed\(method:/g) ?? [];
-  assert.equal(signedSends.length, 4);
-  assert.equal(wrapped.length, 4, 'dispatch_fetch / dispatch_ack signed sends all serialized');
-  assert.match(between(dispatchSource, 'func pushSubmission(', 'func signed('), /try serializedRPC \{ \(\) throws -> \[String: Any\] in[^\n]*\n\s*let params = try signed\(method: "inbox_target"/);
+test("signed calls to the primary are serialized: sequence numbers arrive in order", {timeout:240_000}, () => {
+  const output = realMemory();
+  assert.ok(output.includes("concurrent signed calls to the primary are serialized: none rejected as replayed"), "concurrent signed calls to the primary are serialized: none rejected as replayed");
 });
 
 test('primary receive: commit local first, exact inbox ref, only regular files, same merge rule, inbox cleared', () => {
@@ -219,25 +195,19 @@ test('primary receive: commit local first, exact inbox ref, only regular files, 
   assert.match(merge, /if folded\(name\) == "\.git" \{ return false \}/);
 });
 
-test('never destructive: no reset --hard, no clean, no deleting user files', () => {
+test("never destructive: no reset --hard, no clean, no deleting user files", {timeout:240_000}, () => {
   assert.doesNotMatch(sync + merge, /"reset"|"clean"|"rm"|"checkout"|"restore"|"stash"|trashItem|"--force"|"-f"/);
-  const removals = sync.split('\n').filter(line => line.includes('removeItem('));
+  const removals = (sync + merge).split('\n').filter(line => line.includes('.removeItem('));
   assert.ok(removals.length >= 1);
   for (const line of removals) {
-    assert.match(line, /awaitingPrimaryMarker|index\)|inputFile/, `only the App's own marker and temp files: ${line.trim()}`);
+    assert.match(line, /awaitingPrimaryMarker|index\)|inputFile|at: folder\)/, `only the App's own marker and temp files: ${line.trim()}`);
   }
-  assert.match(merge, /guard primary != nil else \{ return \.take\(secondary\) \}\n\s*guard secondary != nil else \{ return \.take\(primary\) \}/,
-    'edit beats delete');
-  assert.match(sync, /if result\.values\.contains\(where: \{ \$0\.id == id \}\) \{ return \}/, 'same version never copied twice');
-  // 同步要拿掉的檔：一次太多先不套用（確認過的除外）；先封存到入口的 archive/ 再放進工作樹。
-  const apply = between(sync, 'func apply(_ prepared: Prepared', 'private func fastForward(');
-  inOrder(apply, ['blockingFiles(memory', 'TatwoMemorySyncMerge.massRemoval(', '!Set(prepared.removed).isSubset(of: allowRemoving)',
-    'archiveRemoved(memory, paths: prepared.removed', 'fastForward(memory, to: target'], 'apply');
-  const archive = between(sync, 'func archiveRemoved(', '// MARK: 傳輸');
-  assert.match(archive, /appendingPathComponent\("archive", isDirectory: true\)\n\s*\.appendingPathComponent\("memory-sync-deleted-" \+ day/);
-  assert.match(archive, /還原\.md/);
-  assert.match(archive, /options: \.withoutOverwriting/);
-  assert.doesNotMatch(archive, /removeItem|moveItem/);
+  const output = realMemory();
+  assert.ok(output.includes("the primary refuses an unconfirmed mass deletion by itself"), "the primary refuses an unconfirmed mass deletion by itself");
+  assert.ok(output.includes("after confirming: the primary archives them with a restore note, then removes them"));
+  assert.ok(output.includes("after confirming here: archived first, then removed"));
+  assert.ok(output.includes("rejected trees leave the primary working tree untouched"));
+  assert.ok(output.includes("once the primary's file is gone, sync resumes"), "once the primary's file is gone, sync resumes");
 });
 
 test('macOS names: case-only duplicates keep both versions; file/folder clashes stop the round', () => {
@@ -257,25 +227,17 @@ test('secrets checked at the sync boundary (both sending and receiving), includi
   assert.match(sync, /return finish\(\.failed, "這台的記憶" \+ problem \+ "，這輪不送"\)/);
 });
 
-test('errors in plain Chinese: no type names, no English codes', () => {
-  assert.match(sync, /struct Failure: LocalizedError, CustomStringConvertible \{/);
-  assert.match(sync, /var description: String \{ reason \}/);
-  for (const code of ['caller_not_trusted', 'invalid_memory_sync_receipt', 'branch_not_received', 'not_primary',
-    'stale_epoch_or_replayed_sequence', 'untrusted_rpc_sender']) {
-    assert.match(sync, new RegExp(`"${code}": "[^"]*[\\u4e00-\\u9fff]`), code);
+test('errors in plain Chinese: real unknown error and fetch/push directions', {timeout:240_000}, () => {
+  for (const scenario of ['memory-errors','memory-restricted-fetch','memory-push']) {
+    const {output} = runIsolated('w187fleet', {TATWO2_W187_R8:scenario});
+    assert.match(output,/W187R8 SUMMARY failures=0/);
   }
-  assert.match(sync, /return "主設備沒收這次的記憶（原因不明）"/);
-  assert.match(sync, /\^\[A-Za-z\]\*Failure\\\(reason: "\(\.\*\)"\\\)\$/);
 });
 
-test('one lock for commit / merge / write; watcher reads under it', () => {
-  assert.match(sync, /enum TatwoMemoryLock \{\n\s*static let shared = NSRecursiveLock\(\)/);
-  assert.match(links, /static func commit\(_ memory: URL, message: String\) -> \[String\] \{\n\s*TatwoMemoryLock\.shared\.lock\(\); defer \{ TatwoMemoryLock\.shared\.unlock\(\) \}/);
-  assert.match(links, /pullFromPrimary: \(\(URL\) -> Bool\)\? = nil\) throws -> EngineMemoryLinkReport \{\n\s*TatwoMemoryLock\.shared\.lock\(\); defer \{ TatwoMemoryLock\.shared\.unlock\(\) \}/);
-  assert.match(links, /DispatchWorkItem \{ _ = TatwoMemoryLock\.run \{ EngineMemoryLinks\.refreshCodexSummary\(paths: paths\) \} \}/);
-  const round = between(sync, 'private func secondaryRound(', '// MARK: 主設備收件');
-  assert.match(round, /let prepared = try TatwoMemoryLock\.run \{ \(\) throws -> Prepared in\n\s*let late = EngineMemoryLinks\.commit\(memory/, 'commit again right before merging, under the lock');
-  assert.doesNotMatch(between(sync, 'private func fetchPrimary(', '// MARK: git 小工具'), /TatwoMemoryLock/, 'no lock held across the network');
+test("one lock for commit / merge / write; watcher reads under it", {timeout:240_000}, () => {
+  const output = realMemory();
+  assert.ok(output.includes("commit waits for the shared memory lock"), "commit waits for the shared memory lock");
+  assert.ok(output.includes("memory/ change reaches the primary within 10 seconds via the file watcher"), "memory/ change reaches the primary within 10 seconds via the file watcher");
 });
 
 test('timing: every 60 s, a change triggers within 10 s, background queue, never git on the main thread', () => {
@@ -309,16 +271,11 @@ test('pinned git environment shared with clonePrimaryMemory (behaviour unchanged
   assert.doesNotMatch(pinned, /StrictHostKeyChecking=no|accept-new/);
 });
 
-test('RPC trust: memory_sync_* need a device signature, never SSH remote control or staging read-only', () => {
-  const list = name => bridge.match(new RegExp(`static let ${name}: Set<String> = \\[([\\s\\S]*?)\\]`))?.[1] ?? '';
-  for (const method of ['memory_sync_target', 'memory_sync_receive']) {
-    assert.ok(list('untrustedCallerMethods').includes(`"${method}"`), method);
-    assert.ok(!list('sshForwardMethods').includes(`"${method}"`), method);
-    assert.ok(!list('stagingReadOnlyMethods').includes(`"${method}"`), method);
-  }
-  assert.match(bridge, /"memory_propose", "memory_list", "memory_decide", "memory_sync_target", "memory_sync_receive":\n\s*let \(sender, payload\) = try DeviceDispatch\.shared\.authenticate\(method: method, proof: params\)/);
-  assert.match(bridge, /case "memory_sync_target", "memory_sync_receive":\n\s*return try TatwoMemorySyncEngine\.shared\.handle\(method: method, payload: payload, sender: sender\)/);
-  assert.match(sync, /guard payload\.isEmpty else \{ throw Failure\(reason: "invalid_memory_sync_target"\) \}/);
+test("RPC trust: memory_sync_* need a device signature, never SSH remote control or staging read-only", {timeout:240_000}, () => {
+  const output = realMemory();
+  assert.ok(output.includes("receive only accepts the sender's own inbox ref"), "receive only accepts the sender's own inbox ref");
+  assert.ok(output.includes("tampered device signature rejected"), "tampered device signature rejected");
+  assert.ok(output.includes("trust tables: signed-device group only, not SSH remote control or staging read-only"));
 });
 
 test('status: @Published last sync / pending / conflicts / one-line error; glass row in 設定 › OS › 記憶; started at launch', () => {

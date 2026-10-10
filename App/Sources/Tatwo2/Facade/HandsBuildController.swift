@@ -171,6 +171,8 @@ final class HandsBuildController: ObservableObject, HandsBuildModeling {
 
     var enabled: Bool { config?.enabled ?? false }
 
+    func hasFreshReport(_ id: String) -> Bool { fresh(report(id)) }
+
     private func report(_ id: String) -> HandsBuildDeviceReport? { view.report(id) }
 
     /// 那台的回報夠新：主設備收到它的時間離主設備現在不到兩輪，而且這台自己最近也拿到過全貌（這台失聯時快取的不算新）。
@@ -242,6 +244,7 @@ final class HandsBuildController: ObservableObject, HandsBuildModeling {
     func connectionReason(_ id: String) -> String {
         let info = report(id)
         guard fresh(info) else {
+            if info == nil { return "沒收到這台的回報" }
             let at = info?.receivedAt.map { received in
                 if let server = view.serverTime, let local = view.localTime {
                     return local.addingTimeInterval(-server.timeIntervalSince(received))
@@ -274,9 +277,13 @@ final class HandsBuildController: ObservableObject, HandsBuildModeling {
     }
 
     var localAvailabilityText: String? {
-        Self.memberAvailability(permit: dependencies.sync.memberPermit,
+        let availability = Self.memberAvailability(permit: dependencies.sync.memberPermit,
                                 primary: (view.devices.isEmpty ? cachedPaired : view.devices).first(where: \.isPrimary)?.name ?? "主設備",
                                 lastSync: dependencies.sync.lastSync, now: dependencies.now())
+        if let availability, dependencies.sync.problem?.contains("主設備的遠端登入沒有回應") == true {
+            return (availability.hasPrefix("已暫停") ? "已暫停：" : "") + "主設備的遠端登入沒有回應"
+        }
+        return availability
     }
 
     /// 那台現在用的網址就是設定要的那一個（期望＝已套用）。
@@ -500,6 +507,7 @@ final class HandsBuildController: ObservableObject, HandsBuildModeling {
         }
         if connecting != nil || !connectQueue.isEmpty { return "連線中…" }
         if cloudflareState == .working { return "準備中…" }
+        if selected.contains(where: { !fresh(report($0.id)) }) { return "沒收到這台的回報" }
         if config?.zoneID == nil { return zones.isEmpty ? "等你登入 Cloudflare" : "等你選網址" }
         if let missing = selected.first(where: { !authorized($0.id) }) { return "等你替\(missing.name)登入 Cloudflare" }
         if selected.contains(where: { !urlApplied($0.id) || !appliedCurrent($0.id) }) { return "等你按套用" }

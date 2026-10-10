@@ -1,0 +1,46 @@
+BUILD W298a-aiupdate @ 2dcc0f65 (lock wait 0s)
+free+inactive 39.5GB
+swift build exit=0 seconds=101
+== node tests/w298a-ai-update.test.mjs tests/public-privacy.test.mjs
+✖ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (6024.758459ms)
+ℹ tests 16
+ℹ pass 15
+ℹ fail 1
+ℹ skipped 0
+✖ failing tests:
+✖ W298a synthetic sources, model retirement, rules, real approval buttons and six native screenshots (6024.758459ms)
+== selftest w298a
+PASS lines: 26
+W298A FAIL Coder menu replaced
+W298A FAIL retired conversation uses provider default
+W298A FAIL defer preserves config and dispatch remains blocked
+W298A FAIL running button disabled false
+W298A FAIL running button disabled true
+W298A FAIL retired dispatch refused
+W298A FAIL dispatch refusal creates no child or worktree
+W298A SUMMARY failures=8 passed=26
+selftest w298a exit=1
+== selftest w214
+PASS lines: 98
+W214 SUMMARY failures=0 passed=98
+selftest w214 exit=0
+== selftest w288
+PASS lines: 49
+W288 SUMMARY checks=49 failures=0
+selftest w288 exit=0
+== selftest w189commands
+PASS lines: 230
+W189COMMANDS F4 SUMMARY checks=4 failures=0
+W189COMMANDS F5 SUMMARY checks=16 failures=0
+W189COMMANDS F6 SUMMARY checks=6 failures=0
+W189COMMANDS F7 SUMMARY checks=8 failures=0
+W189COMMANDS F8 SUMMARY checks=23 failures=0
+W189COMMANDS S2 SUMMARY checks=15 failures=0
+W189COMMANDS S6 SUMMARY checks=3 failures=0
+W189COMMANDS SUMMARY checks=230 failures=0
+selftest w189commands exit=0
+== selftest w297
+PASS lines: 43
+W297 SUMMARY failures=0 passed=43
+selftest w297 exit=0
+DONE ~/tatwo-build/verify/W298a-aiupdate-120549

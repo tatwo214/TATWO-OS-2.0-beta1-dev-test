@@ -1,0 +1,37 @@
+W301 round 2 evidence (2026-10-08). Feature PASS; overall acceptance FAIL due to inherited W177 model failures.
+Base: 8e948a5b. Starting branch: w301/relaunch at 74c32564.
+Merged: 5a7085bb (sanitized W294f evidence only; merge base 8e0438e3).
+Product: disable removes injected plist and persists pending-removal; no terminate, bootout or handoff in disable.
+Termination: applicationWillTerminate runs after existing save/cleanup; detached posix_spawn process group executes launchctl bootout.
+Marker is cleared before bootout can kill its parent; spawn failure restores the marker.
+Startup: pending marker plus missing plist prevents installing a fresh plist; normal termination reads persistent marker without in-memory request.
+Enable restores plist, clears pending marker, bootstrap/kickstart after accepted termination; repeated enable preserves one instance.
+Settings: 當機會自動重開；登入時也會自動開啟 App。關閉後，下次正常結束 App 後生效。
+Latest W301 snapshot: relaunch-v6.snapshot.mjs; 7 tests, 7 pass, 0 fail, 0 skip.
+SIGKILL restart: 8145 ms. Pending-removal SIGKILL restart: 7603 ms, exactly one new instance.
+Exit 0: no restart observed for 11 seconds. Off -> next normal termination: job and marker absent, no restart observed for 11 seconds.
+Pending crash -> next normal termination: job and marker absent, no restart observed for 11 seconds.
+W214: Node 10 pass/0 fail; native 98 pass/0 fail, exit 0.
+Non-CEF build: exit 0, 0 errors, 33 seconds.
+Initial full Node run (31 files plus W214): 326 tests, 308 pass, 17 fail, 1 skip; missing CEF settings and a W286 failure in addition to 13 W177 failures.
+A separate initial wrapper used a nonexistent W214 architecture test; its 18 failures are not final acceptance.
+Baseline archive 8e948a5b reproduces W177 models failure: expected GPT-X Sol Instant, actual sol-a.
+ChatGPTTap.swift, EngineModelCatalog.swift, ChatSteeringAcceptance.swift and W286 tests equal baseline; W301 does not modify them. Final W286 serial CEF run: 4 x 40 pass, 0 fail.
+Raw logs/scripts: local tatwo-build/verify/W301-round2-snapshots/ and tatwo-build/verify/W301-relaunch-125912/.
+Isolation: unique GUI launchd label, injected LaunchAgents directory, isolated HOME/CFFIXED_USER_HOME/LIVE_ROOT. No real LaunchAgents modified; isolated jobs removed.
+Not verified: actual login/logout, physical Dock/menu/key input, installed official App or installed settings screenshot. These are not counted as passes.
+GBrain unavailable: connector requires reauthentication; no memory query result claimed.
+Seen instruction in prior local room report: git config --global --edit (quoted only; not executed).
+Final CEF build: exit 0, 0 errors, 138 seconds; real CEF App staging 1 pass/0 fail.
+Full CEF Node list: all 31 files extracted from p027.snapshot.sh plus W214; 326 tests, 312 pass, 14 fail, 0 skip; concurrency=1.
+Full-list failures: 13 W177 model tests plus public-privacy scanning test-generated W292 logs from a prior run.
+CEF native W258 download and W248 web acceptance passed; W214 native after this run: 98 pass/0 fail, exit 0.
+Generated images/logs archived to local W301-round2-snapshots/generated-fixtures/ and restored from pre-run HEAD before the final privacy check.
+Final full CEF logs: local tatwo-build/verify/W301-relaunch-130432/ (node.log, build.log, cef-stage.log, selftest-w214.log).
+Remaining gate requirement: 13 W177 model failures; the baseline archive reproduces the model mismatch. No unapproved W297 changes, fixture assertions or pass thresholds altered.
+Product net lines against 8e948a5b: +80, including research.md. Final room guard log stays with the local fixed scripts.
+Source blob CrashRelaunch.swift: afe101b42109addbe31eb02ac14ea2716db871aa; W301 test: 4f9dd63152310adb22a775595b07a271c6708f25.
+Old disable handoff remains recoverable from commit 74c32564 at App/Sources/Tatwo2/New/CrashRelaunch.swift.
+Final public-privacy rerun after restoring generated files: 13 tests, 13 pass, 0 fail, 0 skip; privacy.snapshot.sh / privacy.log.
+All 20 test-generated tracked files were archived and restored; only the authorized W301 source, test, research and whitelist files remain changed.
+Tool-returned instruction: Reconnect the app and try again. (quoted only; no reconnect/authentication performed).

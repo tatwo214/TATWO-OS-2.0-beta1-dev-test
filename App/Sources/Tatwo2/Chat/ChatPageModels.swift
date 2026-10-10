@@ -53,6 +53,7 @@ enum ChatRouteBrandGroup: String, CaseIterable, Identifiable, Hashable {
     case xAI = "xAI"
     case miniMax = "MiniMax"
     case openClaw = "OpenClaw"
+    case local = "本機模型"
     case other = "Other"
 
     var id: String { rawValue }
@@ -64,6 +65,7 @@ enum ChatRouteBrandGroup: String, CaseIterable, Identifiable, Hashable {
         .xAI,
         .miniMax,
         .openClaw,
+        .local,
         .other,
     ]
 }
@@ -97,6 +99,7 @@ struct ChatRouteChoice: Identifiable, Hashable {
     var isAvailable: Bool { runtimeAdapter != .chatgptTap || tapModel != nil }
 
     var brandGroup: ChatRouteBrandGroup {
+        if family == "本機模型" { return .local }
         if runtimeAdapter == .chatgptTap { return .chatgptTap }
         let identities = [
             id,
@@ -137,10 +140,11 @@ struct ChatRouteChoice: Identifiable, Hashable {
         // User-facing Chat UI should read as a Codex-App-like model selector, not
         // as a terminal command surface. The runtime adapter still owns the
         // actual launch plan; this label is only a compact model identity.
-        runtimeAdapter == .chatgptTap ? "ChatGPT / \(title)" : title
+        runtimeAdapter == .chatgptTap ? (tapModel == nil ? "ChatGPT" : "ChatGPT / \(title)") : title
     }
 
     var providerIconID: String {
+        if family == "本機模型" { return "local-api" }
         let key = [id, family, canonicalModelSlug, modelArgument ?? ""]
             .joined(separator: " ")
             .lowercased()
@@ -184,11 +188,15 @@ struct ChatRouteChoice: Identifiable, Hashable {
         ChatRouteLookupCache.shared.resolve(id, deviceID: deviceID) { all in
             // TAP 的記錄不能解析成 Codex（Pod 休眠時目錄暫時沒有該模型也一樣）。
             if ChatGPTTapModelCatalog.isRouteID(id) {
+                if let model = ChatGPTTapModelCatalog.effectiveModel(id) { return ChatGPTTapModelCatalog.choice(model: model) }
                 return ChatGPTTapModelCatalog.choice(model: TapModel(
                     id: ChatGPTTapModelCatalog.modelID(id),
                     title: ChatGPTTapModelCatalog.rememberedTitle(ChatGPTTapModelCatalog.modelID(id)) ?? "ChatGPT 模型", detail: ""))
             }
+            if let current = all.first(where: { $0.id == id || $0.modelArgument == id }) { return current }
             let compatible = TatwoChatRouteProfile.resolve(id)
+            if let catalog = EngineAIUpdate.retired(id, deviceID: deviceID), let preferred = catalog.defaultModel,
+               let current = all.first(where: { EngineModelCatalog.engineID($0.profile) == catalog.engine && $0.modelArgument == preferred }) { return current }
             if let name = EngineModelCatalog.rememberedName(id, deviceID: deviceID) {
                 return ChatRouteChoice(profile: EngineModelCatalog.resolvedProfile(compatible, deviceID: deviceID), rememberedDisplayName: name)
             }

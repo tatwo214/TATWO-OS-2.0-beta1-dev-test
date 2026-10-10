@@ -1,0 +1,8 @@
+base:
+- isolation.yaml
+- template:_images/ubuntu-26.04
+memory: 4GiB
+disk: 30GiB
+provision:
+- mode: system
+  file: {url: linux.sh}

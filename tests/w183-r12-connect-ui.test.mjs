@@ -47,14 +47,14 @@ test('R12 1: the connect task — in process + needs the web → inner landscape
   assert.match(dmView, /if inProcess \{ taskLayout\.want\(\.connect\) \}/);
   assert.match(between(dmView, 'func hide() {', 'private func requestBox()'), /taskLayout\.end\(\.connect\)/);
   assert.match(between(dmView, 'func markDone() {', '/// 正式：Pod 的原生回報'), /taskLayout\.end\(\.connect\)/);
-  assert.match(dmView, /var showsSheet: Bool \{ isShown && currentCard\(\) != nil && !floatsInBrowser && !onLeftPage \}/);
+  assert.match(dmView, /var showsSheet: Bool \{ !inSettings && isShown && currentCard\(\) != nil && !floatsInBrowser && !onLeftPage \}/);
   assert.match(dmView, /var cardWithBrowser: Bool \{ floatsInBrowser && !onLeftPage \}/);
   assert.match(browserView, /guard connect\.cardWithBrowser, !showingTabList, let tab = browser\.activeTab else \{ return false \}/);
   assert.match(browserView, /pageFrame\(toolbar: toolbar, yield: card == nil \? nil : cardTop\.map \{ max\(0, size\.height - \$0 \+ DMBrowserPhone\.pageSide\) \}\)/);
   // 自測自己建的框不動到這台的形態設定。
   assert.match(dmView, /self\.taskLayout = taskLayout \?\? \(store === GlobalDMStore\.shared \? \.shared : \.inert\(\)\)/);
   // 收起私訊框：等的時間不倒數（只算網頁在畫面上的時間）、流程不取消。
-  assert.match(dmView, /var webOnScreen: Bool \{ store\.isShowingBox && browser\.shownSurface != nil \}/);
+  assert.match(dmView, /var webOnScreen: Bool \{ \(inSettings \|\| store\.isShowingBox\) && browser\.shownSurface != nil \}/);
   assert.match(between(connect, 'private func awaitAuthorize(', 'private func pairing('), /if presenter\.webOnScreen \{ shown \+= max\(0, now\.timeIntervalSince\(last\)\) \}/);
   // 左頁：整頁高度、自己捲；進度寫第幾步／共幾步；「上面的頁面」在兩頁說「右邊的頁面」。
   assert.match(dmView, /"第 \\\(min\(max\(step, 0\), total - 1\) \+ 1\) 步／共 \\\(total\) 步"/);

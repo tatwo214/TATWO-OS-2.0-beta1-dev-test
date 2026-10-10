@@ -113,9 +113,7 @@ struct BrowserDiagnosticsView: View {
     }
 }
 
-/// W97. Mirrors `CEFAccessibilityTreeReason()` in `TatwoCEFBridge.mm`: the same
-/// inputs, read here only to report them. The bridge decides per browser, so
-/// this row describes what the next created browser will get.
+/// Reports native macOS reader demand as well as the explicit debug override.
 @MainActor
 enum BrowserAccessibilityTreeState {
     static var stateText: String {
@@ -124,12 +122,14 @@ enum BrowserAccessibilityTreeState {
         case "0": return "無障礙樹：關（原因：環境變數 TATWO_CEF_FORCE_AX=0）"
         default: break
         }
-        return NSWorkspace.shared.isVoiceOverEnabled
-            ? "無障礙樹：開（原因：VoiceOver）"
-            : "無障礙樹：關（原因：未偵測到輔助工具）"
+        if NSWorkspace.shared.isVoiceOverEnabled { return "無障礙樹：開（原因：VoiceOver）" }
+        if NSApp?.accessibilityAttributeValue(.init(rawValue: "AXEnhancedUserInterface")) as? Bool == true {
+            return "無障礙樹：開（原因：輔助工具 AXEnhancedUserInterface／AXManualAccessibility）"
+        }
+        return "無障礙樹：關（原因：未偵測到輔助工具）"
     }
 
-    static let scopeText = "執行中開關 VoiceOver 不是即時的：之後新建的分頁才跟上，既有分頁要重開分頁或睡眠喚醒；只偵測 VoiceOver，其他輔助工具請設 TATWO_CEF_FORCE_AX=1"
+    static let scopeText = "輔助工具或 Computer Use 要求時開啟，既有分頁也會跟上；TATWO_CEF_FORCE_AX=1 僅供量測與除錯"
 }
 
 private struct BrowserDiagnosticsCard<Content: View>: View {

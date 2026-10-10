@@ -112,6 +112,7 @@ final class GlobalDMCoverRegistry: ObservableObject {
 }
 
 private struct GlobalDMCoverReporter: ViewModifier {
+    @Environment(\.tatwoWorkspaceVisible) private var workspaceVisible
     let active: Bool
     let id: String
     /// 這一個畫面自己登記過沒有：選單列面板那份 ChatPage（永遠 false）不會把主視窗登記的同一個 id 清掉。
@@ -121,7 +122,9 @@ private struct GlobalDMCoverReporter: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: active, initial: true) { _, now in report(now) }
+            // W292：保留的 Space 只變透明，不會消失；離開時必須放掉它的遮罩登記。
+            .onChange(of: active && workspaceVisible, initial: true) { _, now in report(now) }
+            .onAppear { report(active && workspaceVisible) }
             .onDisappear { report(false) }
     }
 

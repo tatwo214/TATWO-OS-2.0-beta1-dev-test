@@ -1,5 +1,6 @@
 // OS-owned MCP boundary. No database driver: every adapter shares one HTTP owner.
 import fs from 'node:fs';
+import { dualPinOptions } from './ssh-pins.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import readline from 'node:readline';
@@ -135,7 +136,7 @@ export function keychainToken(root) {
 }
 export function sshArguments(config) {
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(config.host)) throw new Error('invalid_ssh_target');
-  const args = ['-T', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=5'];
+  const args = [...dualPinOptions(config.host, config.sshPort ?? 22), '-T', '-o', 'ConnectTimeout=5'];
   if (config.user) {
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(config.user)) throw new Error('invalid_ssh_user');
     args.push('-l', config.user);

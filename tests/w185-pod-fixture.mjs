@@ -64,6 +64,7 @@ export function fixture({ allowNetwork = false, respond, navigationEvents = true
     set textContent(text) { this.textOverride = text; }
     get innerText() { return this.innerOverride ?? this.textContent; }
     set innerText(text) { this.innerOverride = text; }
+    get nextElementSibling() { const siblings = nodes.filter(n => n.isConnected && n.parentElement === this.parentElement); return siblings[siblings.indexOf(this) + 1] || null; }
     get form() { return this.owner === undefined ? this.closest('form') : this.owner; }
     getAttribute(name) { return this.attrs[name] ?? null; }
     setAttribute() { assert.fail('send must not change DOM attributes'); }
@@ -85,7 +86,7 @@ export function fixture({ allowNetwork = false, respond, navigationEvents = true
       }
       const contains = selector.match(/^\[([\w-]+)\*='([^']*)'\]$/) || selector.match(/^\[([\w-]+)\*="([^"]*)"\]$/);
       if (contains) return String(this.attrs[contains[1]] || '').includes(contains[2]);
-      const match = selector.match(/^([a-z]+)?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/);
+      const match = selector.match(/^([a-z][a-z0-9-]*)?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/);
       return !!match && (!match[1] || this.tagName === match[1].toUpperCase())
         && (!match[2] || (match[3] === undefined ? match[2] in this.attrs : this.attrs[match[2]] === match[3]));
     }

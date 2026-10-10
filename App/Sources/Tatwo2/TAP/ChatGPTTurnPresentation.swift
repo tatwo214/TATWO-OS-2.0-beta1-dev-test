@@ -121,7 +121,7 @@ struct ChatGPTTurnFailure: Equatable {
     var isTooLong: Bool { reason == "conversation_too_long" }
     var displayText: String { isTooLong ? "這則對話太長，ChatGPT 無法繼續。" : message }
     var actionTitle: String { isTooLong ? "開新對話接著聊" : "放回輸入框" }
-    var category: String { isTooLong ? "對話太長" : reason == "not_submitted" ? "沒有送出" : "ChatGPT 回報錯誤" }
+    var category: String { isTooLong ? "對話太長" : reason == "not_submitted" ? "沒有送出" : reason == "timeout" || reason == "no_progress" ? "未完成" : "ChatGPT 回報錯誤" }
     var storedStatus: String { "error|" + category }
 
     /// Only fixed categories are decoded, never provider text from a stored status.
@@ -130,6 +130,7 @@ struct ChatGPTTurnFailure: Equatable {
         case "error|對話太長": return Self(message: "對話太長", reason: "conversation_too_long", draft: draft)
         case "error|ChatGPT 回報錯誤": return Self(message: "ChatGPT 回報錯誤", reason: nil, draft: draft)
         case "error|沒有送出": return Self(message: "沒有送出", reason: "not_submitted", draft: draft)
+        case "error|未完成": return Self(message: "ChatGPT 回答未完成", reason: "timeout", draft: draft)
         default: return nil
         }
     }

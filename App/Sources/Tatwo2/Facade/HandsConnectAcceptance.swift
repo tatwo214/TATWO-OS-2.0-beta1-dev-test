@@ -135,16 +135,22 @@ enum HandsConnectAcceptance {
         var inspections = 0
         var resolvedConnector: HandsConnectorScan.Match?
         var deletedConnectors: [String] = []
+        // W294: optional real Pod-script transport, backed only by the local Plugins fixture.
+        var fixtureScan: (() async -> HandsConnectorScan)?
+        var fixtureInspect: ((HandsConnectorScan.Match) async -> HandsConnectorAuthorization)?
+        var fixtureDelete: ((HandsConnectorScan.Match, String) async -> Bool)?
+        var fixtureReconnect: ((String) async -> HandsConnectorAction)?
         var beforeDelete: (() -> Bool)?
         var deleteWaiting: (() async -> Void)?
         func inspect(_ connector: HandsConnectorScan.Match, url: String) async -> HandsConnectorAuthorization {
             inspections += 1
             resolvedConnector = connector
-            return authorization
+            return await fixtureInspect?(connector) ?? authorization
         }
         func deleteConnector(_ connector: HandsConnectorScan.Match, keeping: String, url: String) async -> Bool {
             guard let id = connector.id, id != keeping, connector.serverURL == url, beforeDelete?() != false else { return false }
             if let deleteWaiting { await deleteWaiting(); guard held else { return false } }
+            if let fixtureDelete, !(await fixtureDelete(connector, keeping)) { return false }
             deletedConnectors.append(id)
             scanResult.matches.removeAll { $0.id == id }
             return true
@@ -159,6 +165,15 @@ enum HandsConnectAcceptance {
         var windowOpenAt: [String: Bool] = [:]
         let window: () -> Bool
         var held = false
+        var probeResult = "failed:unsupported"
+        var probeNames: [String] = []
+        var onProbe: (() -> Void)?
+        func probe(connectorName: String) async -> String {
+            calls.append("probe")
+            probeNames.append(connectorName)
+            onProbe?()
+            return probeResult
+        }
         var reloads = 0
         private var generations: [Int: UInt64] = [:]
         static let plugins = URL(string: "https://chatgpt.com/plugins")!
@@ -181,6 +196,7 @@ enum HandsConnectAcceptance {
         func scan(url: String) async -> HandsConnectorScan {
             calls.append("scan")
             windowOpenAt["scan"] = window()
+            if let fixtureScan { scanResult = await fixtureScan() }
             if let rescanResult, calls.filter({ $0 == "scan" }).count > 1 { return rescanResult }
             return scanResult
         }
@@ -200,8 +216,9 @@ enum HandsConnectAcceptance {
             calls.append("reconnect:" + connectorID)
             acks.append(acknowledged)
             windowOpenAt["reconnect"] = window()
-            pressed(reconnectResult, operation: pressOperation ?? "")
-            return reconnectResult
+            let result = await fixtureReconnect?(connectorID) ?? reconnectResult
+            pressed(result, operation: pressOperation ?? "")
+            return result
         }
         func pressedForTest(operation: String) { pressed(.pressed, operation: operation) }
         /// 真的按下去（或可能按了）才有錨點、ChatGPT 才開始 OAuth（跟實機一樣：要使用者看、要勾的那幾種不會開始）。錨點在前、OAuth 在後。
@@ -352,6 +369,7 @@ enum HandsConnectAcceptance {
         ///（HandsDisconnectOutcome）；正式的三條撤銷路（本機、主設備 RPC、信箱）在 w183build 的 HandsBuildR11Acceptance 用正式的 controller 驗。
         /// accounts（W183 R11 第二輪，GPT-6 R11 審查 4）：這台按［連線］連上的紀錄（nil＝不記）。
         init(_ base: URL, _ name: String, owner: String = HandsConnectAcceptance.hostID, link: ((HandsConnectHost) -> any HandsConnectLink)? = nil,
+             presenting: (any HandsConnectPresenting)? = nil,
              configure: ((HandsService) -> Void)? = nil,
              disconnect: (@MainActor (HandsService, [String]) async -> [String: HandsDisconnectOutcome])? = nil,
              accounts: HandsConnectAccounts? = nil, loginGeneration: (@MainActor () -> Int)? = nil,
@@ -386,7 +404,7 @@ enum HandsConnectAcceptance {
             timeouts.gesturePoint = 0.2; timeouts.gestureRetry = 0.3   // W183 R12（主導 2）
             timeouts.popupWaitNotice = 0.6   // W183 R12（.035 實機）
             var dependencies = HandsConnectFlow.Dependencies(
-                link: { (chosen, nil) }, pod: { pod }, presenter: { presenter }, localDeviceID: { owner },
+                link: { (chosen, nil) }, pod: { pod }, presenter: { presenting ?? presenter }, localDeviceID: { owner },
                 copy: { [weak self] text in self?.copied.append(text) }, pollInterval: 0.05, timeouts: timeouts)
             if let disconnect { dependencies.disconnect = { hosts in await disconnect(service, hosts) } }
             dependencies.accounts = accounts
@@ -466,7 +484,9 @@ enum HandsConnectAcceptance {
         try await warningAck(check, base)
         try await leftPairingPage(check, base)
         try await provenance(check, base)
+        try await w334ConnectSource(check, base)
         try await accountAtConfirm(check, base)
+        try await grantedProbe(check, base)
         try await cancelAdoptsHost(check, base)
         try await staleCommitPoints(check, base)
         try restartRevokesUnfinished(check, base)
@@ -537,13 +557,6 @@ enum HandsConnectAcceptance {
         let granted = await waitUntil(3) { if case .verifying(let text)? = world.flow.card { return text.contains("授權完成") }; return false }
         check(authorized && granted && grants.count == 1 && world.flow.phase == .verifying,
               "授權完成（verifying）跟工具連上分開：grant 有了但還沒 /mcp＝不是已連線", "\(String(describing: world.flow.card))")
-        // W183 R6b 審查：擁有者確認之前 grant 是暫時的：能拿工具清單、不能呼叫工具。
-        var callBlocked = false
-        let toolName = "hands_status"
-        do { _ = try service.handle(method: "hands_call", params: ["access_token": access, "name": toolName]) }
-        catch let error as HandsWireError { callBlocked = error == .rateLimited }
-        check(service.auth.grant(forAccess: access)?.provisional == true && callBlocked,
-              "擁有者確認之前：這個 attempt 的 grant 是暫時的，不能呼叫工具（只能拿工具清單）")
         // W183 R8a 審查（GPT-6）：暫時的 grant 在畫面上不算「已連線」——HandsState.confirmedGrants 不含它、
         // 副設備看的 remote_hands_status 也標 provisional（ChatGPT build 的節點與那一行狀態只看確認過的）。
         state.refresh()
@@ -557,12 +570,19 @@ enum HandsConnectAcceptance {
         try other.tools(otherAccess)
         try? await Task.sleep(nanoseconds: 200_000_000)
         check(world.flow.phase == .verifying, "別的 grant 的 /mcp 不算這次成功（不是「任何有效 grant」）")
-        try chatgpt.tools(access)
+        // W183 R6b 審查：擁有者確認之前 grant 是暫時的：不能呼叫工具。W333：ChatGPT 對舊連接器不再拿工具清單、直接呼叫，
+        // 所以這一次被擋的呼叫也算這個 attempt 的 /mcp（接著核對 Pod 帳號、確認轉正）。
+        var callBlocked = false
+        let wasProvisional = service.auth.grant(forAccess: access)?.provisional == true
+        let toolName = "hands_status"
+        do { _ = try service.handle(method: "hands_call", params: ["access_token": access, "name": toolName]) }
+        catch let error as HandsWireError { callBlocked = error == .rateLimited }
+        check(wasProvisional && callBlocked, "擁有者確認之前：這個 attempt 的 grant 是暫時的，不能呼叫工具")
         let connected = await waitUntil(3) { world.flow.phase == .connected }
         let record = grants.first.flatMap { service.auth.grantRecord($0) }
         check(connected && record?.isActive == true && record?.level == 1 && world.host.currentAttemptID == nil
               && service.auth.grant(forAccess: access)?.provisional == false && world.pod.identityReads >= 3,
-              "這個 attempt 的 grant 第一次 /mcp 成功、擁有者再核對一次 Pod 帳號並確認＝已連線（終態；grant 轉正）")
+              "這個 attempt 的 grant 第一次 /mcp（W333：被擋的工具呼叫也算）、擁有者再核對一次 Pod 帳號並確認＝已連線（終態；grant 轉正）")
         state.refresh()
         check(state.confirmedGrants.contains { $0.id == attemptGrant },
               "W183 R8a 審查 grant 轉正之後才算已連線（HandsState.confirmedGrants 含它）")
@@ -1193,6 +1213,49 @@ enum HandsConnectAcceptance {
         }
     }
 
+    @MainActor static func grantedProbe(_ check: Checker, _ base: URL) async throws {
+        for mode in ["sent", "resolved_name", "foreign_resolved", "input", "send_button", "unconfirmed", "ready_first", "switched", "changed_after_probe"] {
+            let world = try World(base, "w332-probe-" + mode)
+            let chatgpt = FakeChatGPT(service: world.service)
+            let name = "TATWO（Primary One）4"
+            let successfulProbe = ["sent", "resolved_name", "foreign_resolved", "changed_after_probe"].contains(mode)
+            world.pod.scanResult.matches = [.init(id: "fixture-connector", name: mode == "resolved_name" ? "TATWO（Primary One）3" : name, auth: "oauth", serverURL: "https://\(publicHost)/mcp")]
+            world.pod.probeResult = successfulProbe ? "sent" : "failed:" + mode
+            world.chatgptStarts(chatgpt, before: {
+                if mode == "resolved_name" { world.pod.resolvedConnector = .init(id: "fixture-connector", name: name, auth: "oauth", serverURL: "https://\(publicHost)/mcp") }
+                if mode == "foreign_resolved" { world.pod.resolvedConnector = .init(id: "foreign-connector", name: "TATWO（Foreign）", auth: "oauth", serverURL: "https://foreign.invalid/mcp") }
+            })
+            world.flow.offer()
+            _ = await waitUntil(5) { isConfirm(world.flow.card) }
+            world.flow.connect()
+            _ = await waitUntil(8) { world.pairing?.pairingCode != nil }
+            let attempt = world.attemptID ?? ""
+            let access = try chatgpt.token(try chatgpt.submit(world.pairing?.pairingCode ?? ""))
+            if mode == "ready_first" { try chatgpt.tools(access) }
+            if mode == "switched" { world.pod.identityValue = "u=other|w=other|e=other" }
+            world.pod.onProbe = {
+                if successfulProbe {
+                    if mode == "changed_after_probe" { world.pod.identityValue = "u=other|w=other|e=other" }
+                    try? chatgpt.tools(access)
+                }
+            }
+            let finished = await waitUntil(8) { [.connected, .failed, .refused].contains(world.flow.phase) }
+            let probes = world.pod.calls.filter { $0 == "probe" }.count
+            let status = try world.host.status(attemptID: attempt, sender: hostID, evidence: nil)
+            if successfulProbe && mode != "changed_after_probe" || mode == "ready_first" {
+                check(finished && status.state == .connected && world.service.auth.grant(forAccess: access)?.provisional == false
+                      && probes == (mode == "ready_first" ? 0 : 1) && world.flow.debugLog.contains("probe mcp_seen")
+                      && (mode == "ready_first" || (world.pod.probeNames == [name] && world.flow.debugLog.contains("probe sent"))),
+                      "W332 \(mode): granted → probe once → MCP → toolsReady → confirm; toolsReady first skips probe")
+            } else {
+                let revoked = await waitUntil(3) { world.service.auth.grant(forAccess: access) == nil }
+                check(finished && revoked && status.state != .connected && probes == (mode == "switched" ? 0 : 1)
+                      && (mode == "switched" || mode == "changed_after_probe" || world.flow.debugLog.contains("probe failed:" + mode)),
+                      "W332 \(mode): no second probe; timeout/account refusal revokes grant")
+            }
+        }
+    }
+
     // MARK: - 19. W183 R6b 審查：取消採用主機的回覆（成功先到、結果不確定）；取消與撤銷同一刻
 
     /// 包一層主機連線：可以讓 begin 晚到、讓取消與查詢「結果未知」。
@@ -1450,7 +1513,11 @@ enum HandsConnectAcceptance {
         var onPopup: ((TatwoCEFBrowserView) -> Void)?
         private(set) var loads: [URL] = []
         private var generation: UInt64 = 0
-        func loadMain(_ url: URL) { loads.append(url) }
+        var onPluginsLoaded: (() -> Void)?
+        func loadMain(_ url: URL) {
+            loads.append(url)
+            if url.path == "/plugins" { commit(url.absoluteString); onPluginsLoaded?() }
+        }
         func commit(_ url: String) { generation += 1; onMainFrame?(url, generation, false, 200) }
     }
 
@@ -1461,6 +1528,7 @@ enum HandsConnectAcceptance {
         let pod = ChatGPTConnectorPod(tap: tap, surface: { surface })
         pod.restoreTimeout = 3
         pod.attach()
+        surface.onPluginsLoaded = { transport.hello() }
         surface.commit("https://chatgpt.com/plugins")
         let acquired = await pod.acquireExclusive(timeout: 1)
         // 拿著獨占：會換頁的指令與語音一律拒絕；連接器指令沒帶獨占也拒絕。
@@ -1478,7 +1546,7 @@ enum HandsConnectAcceptance {
         let queued = tap.send(requestID: UUID().uuidString, text: "hello", conversationID: nil)
         pod.releaseExclusive()
         try? await Task.sleep(nanoseconds: 300_000_000)
-        let heldBack = !transport.commands.contains("send") && surface.loads == [ChatGPTTap.homeURL]
+        let heldBack = !transport.commands.contains("send") && surface.loads == [FakePod.plugins, ChatGPTTap.homeURL]
         surface.commit("https://chatgpt.com/")
         transport.onChatGPT = true
         transport.hello()

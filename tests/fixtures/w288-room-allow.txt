@@ -1,0 +1,40 @@
+# 1、8：修正補全與公開倉貢獻說明
+App/Sources/Tatwo2/Facade/ChatPageModel.swift
+# 1–8：隔離原生按鍵、畫面與狀態自測；註冊入口
+App/Sources/Tatwo2/Chat/W288Acceptance.swift
+App/Sources/Tatwo2/Chat/CommandModeAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+# 2、3、4、6：固定停止、重用語音入口、面板互斥、封存玻璃 chip
+App/Sources/Tatwo2/Chat/ChatPage+Composer.swift
+App/Sources/Tatwo2/Chat/ChatPage.swift
+App/Sources/Tatwo2/Chat/ChatPage+Panels.swift # 4：重用點外收卡監看，不吞模型膠囊點擊
+# 5：可見文字與無障礙標籤中文化
+App/Sources/Tatwo2/Chat/ChatPage+Plan.swift
+# 7：stderr 背景記憶診斷與回合錯誤分類
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+# 回歸測試與舊斷言隨新需求調整
+tests/w288-coderfix.test.mjs
+tests/fixtures/w288-sidecar.mjs # 本機引擎替身；不連外、不登入
+tests/w189-commands.test.mjs
+tests/w189-claude-controls.test.mjs # 沿用 Claude 原生送出狀態宣告，補 W286 後漏掉的夾具狀態
+# 原始測試證據、淺深色 UI、白名單、收房報告
+tests/fixtures/w288-room-allow.txt
+tests/fixtures/w288-shots/2-gpt-6.1-sol-draft-dark.png
+tests/fixtures/w288-shots/2-gpt-6.1-sol-draft-light.png
+tests/fixtures/w288-shots/2-opus-5.5-draft-dark.png
+tests/fixtures/w288-shots/2-opus-5.5-draft-light.png
+tests/fixtures/w288-shots/3-tap-voice-dark.png
+tests/fixtures/w288-shots/3-tap-voice-light.png
+tests/fixtures/w288-shots/4-model-panel-dark.png
+tests/fixtures/w288-shots/4-model-panel-light.png
+tests/fixtures/w288-shots/6-archived-chip-dark.png
+tests/fixtures/w288-shots/6-archived-chip-light.png
+tests/fixtures/w288-before-keys.log
+tests/fixtures/w288-verify.log
+tests/fixtures/w288-node.log
+tests/fixtures/w288-selftest-w288.log
+tests/fixtures/w288-selftest-w189commands.log
+tests/fixtures/w288-selftest-w189send.log
+tests/fixtures/w288-selftest-w217voice.log
+tests/fixtures/w288-guard.log
+tests/fixtures/w288-report.md

@@ -422,19 +422,24 @@ struct ChatGPTHandsPairingCard: View {
     let memory: String
     let attemptsLeft: Int
     let onMismatch: () -> Void
+    var sandbox = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("授權這筆連線？").font(.system(size: 13, weight: .semibold))
-            Text("確認 ChatGPT 跳出的 TATWO 頁面上的交易編號跟這裡一樣，再在那個頁面輸入下面的配對碼。對不上就按「對不上，作廢」。")
+            Text(sandbox ? "確認沙盒版剛建立的交易與回呼網域，再在沙盒版輸入配對碼。對不上就按「對不上，作廢」。" : "確認 ChatGPT 跳出的 TATWO 頁面上的交易編號跟這裡一樣，再在那個頁面輸入下面的配對碼。對不上就按「對不上，作廢」。")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
                 GridRow { label("交易編號"); Text(transaction).font(.system(size: 15, weight: .semibold, design: .monospaced)) }
                 GridRow { label("回到"); Text(callbackHost).font(.callout) }
-                GridRow { label("等級"); Text(HandsState.levelLabel(level)).font(.callout) }
-                GridRow { label("專案"); Text(projects.isEmpty ? "（沒有勾任何專案）" : projects.joined(separator: "、")).font(.callout) }
-                GridRow { label("記憶"); Text(memory).font(.callout).fixedSize(horizontal: false, vertical: true) }
+                if sandbox {
+                    GridRow { label("權限"); Text("只能領工、交件、回報心跳").font(.callout) }
+                } else {
+                    GridRow { label("等級"); Text(HandsState.levelLabel(level)).font(.callout) }
+                    GridRow { label("專案"); Text(projects.isEmpty ? "（沒有勾任何專案）" : projects.joined(separator: "、")).font(.callout) }
+                    GridRow { label("記憶"); Text(memory).font(.callout).fixedSize(horizontal: false, vertical: true) }
+                }
             }
             HStack(alignment: .center, spacing: 12) {
                 Text(pairingCode)

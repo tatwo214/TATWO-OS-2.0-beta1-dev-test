@@ -1,0 +1,8 @@
+"TATWO OS Staging" ASN:0x0-0x2d1dd1b: 
+    bundleID="ai.tatwo.tatwo2.staging"
+    bundle path="/private/tmp/w276-fixture/Checkin.app"
+    executable path="/private/tmp/w276-fixture/Checkin.app/Contents/MacOS/Tatwo2Staging"
+    pid = 64600 token=[sess=165074 pid=64600 uid:501,501,501 g:20,20 pV:9052035] !signalled type="Foreground" flavor=2 Version=[ NULL ]  fileType="APPL" creator="????" Arch=ARM64 
+    checkin time = now-ish 2026/10/08 04:18:52 ( 0.0216169 seconds ago )
+
+tatwo_staging_bootstrap=isolated pid=64600

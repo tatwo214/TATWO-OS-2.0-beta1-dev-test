@@ -2,6 +2,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import TatwoCEFBridge
 import Combine
 import UniformTypeIdentifiers
 import Darwin
@@ -123,31 +124,31 @@ enum PlanDownloadPolicy {
         {
             return URL(fileURLWithPath: configuredPath, isDirectory: true)
         }
-        return fileManager.urls(
-            for: .downloadsDirectory,
-            in: .userDomainMask).first
-            ?? fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Downloads", isDirectory: true)
+        let path = NSSearchPathForDirectoriesInDomains(
+            .downloadsDirectory, .userDomainMask, true).first
+            ?? fileManager.homeDirectoryForCurrentUser.path + "/Downloads"
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
-    static func availableDestination(
-        in directory: URL,
-        fileManager: FileManager = .default
-    ) -> URL {
-        let original = directory.appendingPathComponent("PLAN.md")
-        guard fileManager.fileExists(atPath: original.path) else {
-            return original
-        }
+    static func export(_ markdown: String, in directory: URL, name: String = "PLAN.md") throws -> URL {
+        let filename = try TatwoPlanExport.write(
+            Data(markdown.utf8), directory: directory.path, name: name)
+        return directory.appendingPathComponent(filename)
+    }
 
-        var suffix = 2
-        while true {
-            let candidate = directory.appendingPathComponent(
-                "PLAN \(suffix).md")
-            if !fileManager.fileExists(atPath: candidate.path) {
-                return candidate
-            }
-            suffix += 1
+    @MainActor static func download(_ markdown: String) {
+        do {
+            _ = try export(markdown, in: downloadDirectory())
+        } catch {
+            report(error)
         }
+    }
+
+    @MainActor static func report(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "計畫匯出失敗"
+        alert.informativeText = error.localizedDescription
+        TatwoModalPanelGate.run { alert.runModal() }
     }
 }
 
@@ -155,7 +156,7 @@ private struct PlanWritingAnimatedText: View {
     @State private var isDimmed = false
 
     var body: some View {
-        Text("Writing plan")
+        Text("正在撰寫計畫")
             .opacity(isDimmed ? 0.52 : 1)
             .animation(
                 .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
@@ -177,7 +178,7 @@ private extension View {
 
 /// Codex-style Plan transcript item. Model-produced plans attach to their
 /// assistant turn; deterministic local plans render as a standalone row.
-/// While a Plan turn is active the row reads “Writing plan”.
+/// While a Plan turn is active the row reads “正在撰寫計畫”.
 struct PlanTranscriptSummaryView: View {
     let artifact: TatwoPlanArtifactV1?
     let isWriting: Bool
@@ -218,8 +219,8 @@ struct PlanTranscriptSummaryView: View {
                         .buttonStyle(.plain)
                         .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
-                        .help("Close plan side panel")
-                        .accessibilityLabel("Close plan side panel")
+                        .help("關閉計畫側邊面板")
+                        .accessibilityLabel("關閉計畫側邊面板")
                         .accessibilityIdentifier("plan-summary-side-panel")
                     } else {
                         planHeaderActions
@@ -261,8 +262,8 @@ struct PlanTranscriptSummaryView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help("Download plan")
-            .accessibilityLabel("Download plan")
+            .help("下載計畫")
+            .accessibilityLabel("下載計畫")
             .accessibilityIdentifier("plan-summary-download")
 
             Button {
@@ -272,7 +273,7 @@ struct PlanTranscriptSummaryView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help(copied ? "Copied" : "Copy markdown")
+            .help(copied ? "已複製" : "複製 Markdown")
             .accessibilityIdentifier("plan-summary-copy")
 
             Button {
@@ -282,8 +283,8 @@ struct PlanTranscriptSummaryView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help("Open plan in side panel")
-            .accessibilityLabel("Open plan in side panel")
+            .help("在側邊面板開啟計畫")
+            .accessibilityLabel("在側邊面板開啟計畫")
             .accessibilityIdentifier("plan-summary-side-panel")
         }
     }
@@ -317,7 +318,7 @@ struct PlanTranscriptSummaryView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Open plan in side panel")
+            .accessibilityLabel("在側邊面板開啟計畫")
             .accessibilityIdentifier("plan-summary-preview-open")
         }
         .frame(
@@ -354,20 +355,15 @@ struct PlanTranscriptSummaryView: View {
                 UTType(filenameExtension: "md") ?? .plainText
             ]
             guard TatwoModalPanelGate.run({ panel.runModal() }) == .OK, let url = panel.url else { return }
-            try? markdown.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try markdown.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                PlanDownloadPolicy.report(error)
+            }
             return
         }
 
-        let fileManager = FileManager.default
-        let directory = PlanDownloadPolicy.downloadDirectory(
-            fileManager: fileManager)
-        let destination = PlanDownloadPolicy.availableDestination(
-            in: directory,
-            fileManager: fileManager)
-        try? markdown.write(
-            to: destination,
-            atomically: true,
-            encoding: .utf8)
+        PlanDownloadPolicy.download(markdown)
     }
 }
 
@@ -553,7 +549,7 @@ struct PlanTranscriptInspectorView: View {
                     }
                 }
             } else {
-                Text("No plan is available.")
+                Text("目前沒有計畫")
                     .foregroundStyle(.secondary)
             }
         }
@@ -574,8 +570,8 @@ struct PlanTranscriptInspectorView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help("Download plan")
-            .accessibilityLabel("Download plan")
+            .help("下載計畫")
+            .accessibilityLabel("下載計畫")
 
             Button {
                 copyPlan()
@@ -584,7 +580,7 @@ struct PlanTranscriptInspectorView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help(copied ? "Copied" : "Copy markdown")
+            .help(copied ? "已複製" : "複製 Markdown")
 
             Button {
                 if isEditing {
@@ -599,10 +595,10 @@ struct PlanTranscriptInspectorView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help(isEditing ? "Finish editing plan" : "Edit plan")
+            .help(isEditing ? "完成編輯計畫" : "編輯計畫")
             .disabled(isWriting || feedbackLocked || artifact?.distillSubmission != nil || (artifact?.kind == "pr" && artifact?.state != .discussing))
             .accessibilityLabel(
-                isEditing ? "Finish editing plan" : "Edit plan")
+                isEditing ? "完成編輯計畫" : "編輯計畫")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
@@ -614,11 +610,11 @@ struct PlanTranscriptInspectorView: View {
             }
             .buttonStyle(.plain)
             .planSummaryActionStyle()
-            .help(isCollapsed ? "Expand" : "Collapse")
+            .help(isCollapsed ? "展開" : "收合")
             .accessibilityLabel(
                 isCollapsed
-                    ? "Expand plan summary"
-                    : "Collapse plan summary")
+                    ? "展開計畫摘要"
+                    : "收合計畫摘要")
         }
         .padding(.horizontal, 12)
         .frame(height: 40)
@@ -681,16 +677,7 @@ struct PlanTranscriptInspectorView: View {
     }
 
     private func downloadPlan() {
-        let fileManager = FileManager.default
-        let directory = PlanDownloadPolicy.downloadDirectory(
-            fileManager: fileManager)
-        let destination = PlanDownloadPolicy.availableDestination(
-            in: directory,
-            fileManager: fileManager)
-        try? markdown.write(
-            to: destination,
-            atomically: true,
-            encoding: .utf8)
+        PlanDownloadPolicy.download(markdown)
     }
 }
 

@@ -1,0 +1,11 @@
+App/Sources/Tatwo2/Facade/HandsAuth.swift # R1 沙盒配對窗口、獨立授權限流；R5 專用錯誤
+App/Sources/Tatwo2/Facade/HandsSandboxLane.swift # R2 摘要與全文分離；R3 心跳與快照清理；R4 撤銷提案；R5 先驗請求
+App/Sources/Tatwo2/Facade/ChangeProposalStore.swift # R2 報告檔與摘要上限；R4 需要重新確認並禁止套用
+App/Sources/Tatwo2/Facade/DeviceFleetRevocation.swift # R4 名單移除與角色縮減一律撤銷沙盒 grant
+App/Sources/Tatwo2/Facade/HandsService.swift # R5 重放與時效檢查先於 git
+Engines/chatgpt-hands/gateway.mjs # R1 沙盒獨立限流與先辨 scope；R5 一般拒絕文案還原
+App/Sources/Tatwo2/Facade/W264SandboxLaneAcceptance.swift # R1–R5 隔離正式路徑驗收、角色縮減撤 grant 與70筆交件
+tests/w264b-sandboxfix.test.mjs # R1 外網洪水與主線正常；R5 主線錯誤文案
+tests/w264-sandboxlane.test.mjs # R1 新驗收標籤與沙盒註冊 scope
+tests/fixtures/w264b-room-allow.txt # 本房逐檔理由
+tests/w183-gateway.test.mjs # R5 主連線錯誤文案還原驗收；保留39項關口回歸

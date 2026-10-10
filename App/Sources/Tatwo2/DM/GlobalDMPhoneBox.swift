@@ -131,7 +131,7 @@ struct GlobalDMPhoneBox: View {
     @ViewBuilder
     private func phone(_ look: GlobalDMPhoneLook, width: CGFloat) -> some View {
         ZStack(alignment: .topLeading) {
-            if look.showsChat {
+            if look.showsChat || webChatGPTTent {
                 VStack(spacing: 0) {
                     GlobalDMTopBar(store: store, form: form)
                     columns(look, width: width)
@@ -144,10 +144,10 @@ struct GlobalDMPhoneBox: View {
                 // 模型與思考強度回到輸入框）；左緣指到從左邊滑出對話抽屜（W184 G3c：蓋在主畫面上、主畫面不動；GlobalDMChatGPTNavigation.swift）。
                 .environment(\.globalDMChatGPTTopWidth, chatGPTColumnShown ? look.chatWidth(in: width) : nil)
                 .modifier(GlobalDMChatGPTDrawerLayer(store: store, enabled: chatGPTColumnShown, directory: ChatGPTSpaceModel.shared))
-                .opacity(look.chat)
-                .allowsHitTesting(look.chat > 0.5)
+                .opacity(webChatGPTTent ? 1 : look.chat)
+                .allowsHitTesting(webChatGPTTent || look.chat > 0.5)
             }
-            if look.showsTent {
+            if look.showsTent && !webChatGPTTent {
                 GlobalDMTentContent(store: store)   // W184 AB → 房 E：倒放整塊都是它（沒有頂列）
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(look.tent)
@@ -158,7 +158,11 @@ struct GlobalDMPhoneBox: View {
 
     /// ChatGPT 那一欄在這支手機上（對象是 ChatGPT、單欄沒換成 Browser、ChatGPT 分頁開著）：抽屜、頂列的 ChatGPT 控制才有。
     private var chatGPTColumnShown: Bool {
-        store.target == .chatGPT && !(store.isBrowsing && !form.isDuo) && store.chatGPTAvailable
+        !ChatGPTWebSpace.isEnabled && store.target == .chatGPT && !(store.isBrowsing && !form.isDuo) && store.chatGPTAvailable
+    }
+
+    private var webChatGPTTent: Bool {
+        form == .tent && ChatGPTWebSpace.isEnabled && store.target == .chatGPT && !store.isBrowsing && store.chatGPTAvailable
     }
 
     /// 欄：對話欄貼左緣（寬＝框寬 ×（1 → 左欄比例））；內橫的右欄貼右緣、寬度用它最後的寬度、只露出對話欄右邊那一段

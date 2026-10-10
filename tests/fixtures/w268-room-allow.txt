@@ -1,0 +1,32 @@
+# W268；基準 4d2977f7；每一個路徑後為本房改動理由。
+App/Sources/Tatwo2/Browser/BrowserDownloadStore.swift # 合計進度、10 Hz 節流、最新卡片、完成脈衝與未讀狀態；維持既有 CEF 控制與歷史隔離。
+App/Sources/Tatwo2/Browser/BrowserDownloadFeedback.swift # 小型下載環與卡片；沿用品牌 token、系統文字色與材質；減少動態與不取焦點。
+App/Sources/Tatwo2/Browser/BrowserWorkSpaceDesignView.swift # 接入下載環、側欄／網頁角落卡片與打開清單清除未讀；維持 1300 行限制。
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift # 沿用真 CEF 隔離啟動，接入 W268 畫面與驗收；保留 A–E 與 agent 拒絕。
+App/Sources/Tatwo2/Browser/W268DownloadAcceptance.swift # 真 CEF human 限速下載、原生視圖／滑鼠／按鍵、16 圖、脈衝／淡出／失敗重試／減少動態與磁碟證據。
+tests/browser-workspace-design.test.mjs # 編譯既有完整設計測試時載入新元件；維持原有架構、1300 行與安全斷言。
+tests/fixtures/browser-download-permissions-checks.swift # 執行合計／未知大小／節流／最新卡片／未讀與已看狀態；保留所有權與歷史隱私檢查。
+tests/fixtures/w258-server.py # 本機 2 MB／256 KB/s、未知總長與中斷假站；輸入焦點與按鍵回顯；無外網。
+tests/fixtures/w268-d5-lifecycle.json # 隔離下載 inode、位元組與權限的原始量測；D5 不改引擎的依據。
+tests/fixtures/w268-report.md # 30 行內驗收與未做事項報告。
+tests/fixtures/w268-room-allow.txt # 本房逐檔白名單與理由，列明四個禁改檔。
+tests/fixtures/w268-shots/light-expanded-start.png # 真 CEF 截圖：light／expanded／start。
+tests/fixtures/w268-shots/light-expanded-progress.png # 真 CEF 截圖：light／expanded／progress。
+tests/fixtures/w268-shots/light-expanded-complete.png # 真 CEF 截圖：light／expanded／complete。
+tests/fixtures/w268-shots/light-expanded-faded.png # 真 CEF 截圖：light／expanded／faded。
+tests/fixtures/w268-shots/light-collapsed-start.png # 真 CEF 截圖：light／collapsed／start。
+tests/fixtures/w268-shots/light-collapsed-progress.png # 真 CEF 截圖：light／collapsed／progress。
+tests/fixtures/w268-shots/light-collapsed-complete.png # 真 CEF 截圖：light／collapsed／complete。
+tests/fixtures/w268-shots/light-collapsed-faded.png # 真 CEF 截圖：light／collapsed／faded。
+tests/fixtures/w268-shots/dark-expanded-start.png # 真 CEF 截圖：dark／expanded／start。
+tests/fixtures/w268-shots/dark-expanded-progress.png # 真 CEF 截圖：dark／expanded／progress。
+tests/fixtures/w268-shots/dark-expanded-complete.png # 真 CEF 截圖：dark／expanded／complete。
+tests/fixtures/w268-shots/dark-expanded-faded.png # 真 CEF 截圖：dark／expanded／faded。
+tests/fixtures/w268-shots/dark-collapsed-start.png # 真 CEF 截圖：dark／collapsed／start。
+tests/fixtures/w268-shots/dark-collapsed-progress.png # 真 CEF 截圖：dark／collapsed／progress。
+tests/fixtures/w268-shots/dark-collapsed-complete.png # 真 CEF 截圖：dark／collapsed／complete。
+tests/fixtures/w268-shots/dark-collapsed-faded.png # 真 CEF 截圖：dark／collapsed／faded。
+!App/Sources/Tatwo2/Chat/ChatPage.swift
+!App/Sources/Tatwo2/Chat/ChatPage+Panels.swift
+!App/Sources/Tatwo2/Shell/AppShell.swift
+!App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift

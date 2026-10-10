@@ -4,11 +4,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetRPCCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = resolve('App/Sources/Tatwo2');
 const source = name => readFileSync(join(app, name), 'utf8');
 
-const driverPrelude = String.raw`
+const driverPrelude = fleetRPCCompileStubs() + String.raw`
 import Darwin
 import Foundation
 
@@ -32,7 +33,6 @@ extension RemoteHostLink {
 }
 `);
   writeFileSync(join(root, 'Checks.swift'), driverPrelude + String.raw`
-enum DeviceRole: String, Codable, Sendable { case primary, secondary }
 enum DeviceStatusReader {
     static func registry(environment: [String: String]) -> [DeviceRecord] { [] }
 }
@@ -162,7 +162,8 @@ struct DeviceStatusProbe {
 `);
   const binary = join(root, 'checks');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
-    join(app, 'Facade/DeviceRegistry.swift'), join(root, 'Remote.swift'), join(root, 'Checks.swift'),
+    ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate']
+      .map(name => join(app, 'Facade', name + '.swift')), join(root, 'Remote.swift'), join(root, 'Checks.swift'),
     '-o', binary], { encoding: 'utf8', timeout: 180_000 });
   const output = execFileSync(binary, [root], { encoding: 'utf8', timeout: 60_000 });
   assert.match(output, /W91B PASS registry/);
@@ -291,7 +292,7 @@ func reply(_ payload: [String: Any], port: Int) throws -> String {
   const binary = join(root, 'driver');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
     ...['TatwoEntry', 'DeviceIdentity', 'DeviceRegistry', 'DevicePairingCode', 'DevicePairingStubs',
-      'DevicePairingAuth', 'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
+      'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate', 'DevicePairingHost', 'DevicePairingClient'].map(name => join(app, 'Facade', name + '.swift')),
     join(app, 'Chat/UltraworkRoleConfiguration.swift'), join(root, 'Driver.swift'),
     '-o', binary], { encoding: 'utf8', timeout: 240_000 });
   const env = Object.fromEntries(Object.entries(process.env)

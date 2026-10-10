@@ -1,0 +1,10 @@
+# W294c whole-page Settings / direct Reconnect; product net <=50.
+App/Sources/Tatwo2/Facade/HandsConnect.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/TAP/ChatGPTConnectorPod.swift
+tests/fixtures/w294-plugins-page.mjs
+tests/w294-plugins.test.mjs
+tests/fixtures/w294c-room-allow.txt
+tests/fixtures/w294c-verify.sh
+tests/fixtures/w294c-verify-native.py
+tests/fixtures/w294c-evidence/*

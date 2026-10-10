@@ -17,7 +17,8 @@ const flag = (name, fallback) => {
 
 const catalogOnly = argv.includes('--catalog-only');
 const cwd = flag('--cwd', process.cwd());
-const resumeThreadID = flag('--resume', undefined);
+const managedNoMemory = process.env.TATWO2_MANAGED_NO_MEMORY === '1';
+const resumeThreadID = managedNoMemory ? undefined : flag('--resume', undefined);
 let selectedModel = flag('--model', undefined);
 const permissionMode = flag('--permission-mode', 'default');
 const systemPrompt = flag('--system-prompt', undefined);
@@ -95,31 +96,56 @@ const approvalPolicy = permissionMode === 'default'
   : permissionMode === 'bypassPermissions'
     ? 'never'
     : 'on-request';
-const sandbox = permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write';
+// The App already applies the inherited memory/workspace Seatbelt policy.
+// A second sandbox-exec fails sandbox_apply on macOS. Native approvals retain
+// their existing policy; approving a command cannot remove the outer boundary.
+const sandbox = managedNoMemory || permissionMode === 'bypassPermissions' ? 'danger-full-access' : 'workspace-write';
 const disabledMCPNames = new Set(mcpConfig?.engine === 'codex'
   ? (mcpConfig.configured ?? [])
       .filter((name) => !(mcpConfig.enabled ?? []).includes(name))
       .filter((name) => isolatedHasServer(name))   // 獨立 config 沒定義的不能下 enabled=false（會 invalid transport）
   : []);
-const disabledMCPArgs = [...disabledMCPNames].flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]);
+const disabledMCPArgs = [...disabledMCPNames].flatMap((name) => ['-c', `mcp_servers.${mcpKey(name)}.enabled=false`]);
 // OS 內建瀏覽器橋永遠掛上；討論串沒勾的 MCP 用 -c 關掉
 // 代我核准（App 傳非 default 的 permission mode）時，MCP 工具直接放行：
 // Codex 0.153 把 MCP 工具核准包成表單（elicitation），而它自己解析表單 schema 會失敗（unknown field `title`），
 // 走問答流程必卡死；所以改用官方設定 default_tools_approval_mode=approve 直接不問。
 const autoApproveMCP = permissionMode !== 'default';
-const threadMCPNames = mcpConfig?.engine === 'codex' ? (mcpConfig.enabled?.length ? mcpConfig.enabled : mcpConfig.configured ?? []) : [];
-const mcpNamesForApproval = new Set(['tatwo2_browser', 'tatwo2_os', ...(threadMCPNames.length ? threadMCPNames : configuredMCPNamesFromToml())]);
+const threadMCPNames = mcpConfig?.engine === 'codex' ? (mcpConfig.enabled ?? []) : configuredMCPNamesFromToml();
+const mcpNamesForApproval = new Set(['tatwo2_browser', 'tatwo2_os', ...threadMCPNames.filter(name => !disabledMCPNames.has(name) && !((mcpConfig?.servers?.[name]?.url != null && secretURL(mcpConfig.servers[name].url, true)) || (mcpConfig?.servers?.[name]?.args ?? []).some(secretURL)))]);
 const approveMCPArgs = autoApproveMCP
-  ? [...mcpNamesForApproval].flatMap((name) => ['-c', `mcp_servers.${name}.default_tools_approval_mode="approve"`])
+  ? [...mcpNamesForApproval].flatMap((name) => ['-c', `mcp_servers.${mcpKey(name)}.default_tools_approval_mode="approve"`])
   : [];
 // GitHub 帳號 MCP 是 App 依 Keychain 即時組出的 OS 內建條目。token 先換成 sidecar 子行程環境別名，
 // Codex 再用 env_vars 的 source→name 映射交給各自的 github-mcp-server，避免 token 出現在 codex 的 -c argv。
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+function mcpKey(name) { return String(name).replace(/[^A-Za-z0-9_-]/g, '_') || 'mcp'; }
+function secretURL(value, urlOnly = false) {
+  const raw = String(value ?? ''); let text;
+  const direct = /(?:^|[\s=:"',])(?:sk-|ghp_|github_pat_|xox|AKIA)|(?:[?;&]|\s)(?:password|passwd|pwd)\s*=\s*[^;&\s]+/i;
+  try { text = decodeURIComponent(raw); } catch { return urlOnly === true || raw.includes('://') || direct.test(raw); }
+  if (direct.test(text)) return true;
+  const expression = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]*/gi;
+  const urls = text.match(expression) ?? [];
+  if ((raw.match(expression) ?? []).some(url => url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[/?#]/, 1)[0].includes('@'))) return true;
+  if (urlOnly === true && (urls.length !== 1 || urls[0] !== text)) return true;
+  return urls.some(url => {
+    if (typeof URL === 'function') { try { new URL(url); } catch { return true; } }
+    const rest = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, ''), end = rest.search(/[/?#]/);
+    const authority = end < 0 ? rest : rest.slice(0, end), tail = end < 0 ? '' : rest.slice(end);
+    if (!/^(?:[^/@?#\s]+@)?(?:\[[0-9a-f:.]+\]|[^:/?#\s\[\]]+)(?::[0-9]{1,5})?$/i.test(authority)) return true;
+    if (Number(authority.split(']').at(-1).split(':').at(-1)) > 65535) return true;
+    return authority.includes('@') || tail.split(/[/?#;&=]/).some(part => /key|token|secret|password|passwd|pwd|auth|sig|^(?:sk-|ghp_|github_pat_|xox|AKIA)/i.test(part));
+  });
+}
 const githubMCPArgs = [];
 const githubMCPEnvironment = {};
 if (mcpConfig?.engine === 'codex' && mcpConfig.servers && typeof mcpConfig.servers === 'object') {
   let index = 0;
   for (const [name, server] of Object.entries(mcpConfig.servers)) {
+    if (!server) continue;
+    if ((server.url != null && secretURL(server.url, true)) || (server.args ?? []).some(secretURL)) { githubMCPArgs.push('-c', `mcp_servers.${mcpKey(name)}.enabled=false`, '-c', `mcp_servers.${mcpKey(name)}.command="/usr/bin/false"`, '-c', `mcp_servers.${mcpKey(name)}.args=[]`); continue; }
+    for (const field of ['enabled_tools', 'disabled_tools']) if (Array.isArray(server[field])) githubMCPArgs.push('-c', `mcp_servers.${mcpKey(name)}.${field}=${JSON.stringify(server[field])}`);
     if (name === 'gbrain_allai' && typeof server?.command === 'string' && Array.isArray(server.args)) {
       // OS-owned definition overrides the isolated legacy entry. No token in TOML or argv.
       githubMCPArgs.push(
@@ -131,7 +157,44 @@ if (mcpConfig?.engine === 'codex' && mcpConfig.servers && typeof mcpConfig.serve
       );
       continue;
     }
-    if (!/^github-[A-Za-z0-9-]+$/.test(name) || !server || typeof server.command !== 'string') continue;
+    if (!/^github-[A-Za-z0-9-]+$/.test(name) || typeof server.url === 'string'
+        || Object.keys(server.env ?? {}).some((key) => key !== 'GITHUB_PERSONAL_ACCESS_TOKEN')) {
+      const key = `mcp_servers.${mcpKey(name)}`;
+      const enabled = (mcpConfig.enabled ?? []).includes(name);
+      githubMCPArgs.push('-c', `${key}.enabled=${enabled}`);
+      // 每項各用環境別名，避免同名 env 互蓋或秘密進入 Codex argv。
+      if (typeof server.command === 'string') {
+        const args = Array.isArray(server.args) ? server.args.map(String) : [];
+        const aliases = [], assignments = [];
+        for (const [envKey, value] of Object.entries(enabled ? server.env ?? {} : {})) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey) || typeof value !== 'string') continue;
+          const alias = `TATWO2_OS_MCP_ENV_${index++}`;
+          githubMCPEnvironment[alias] = value;
+          aliases.push(alias); assignments.push(`${shellQuote(envKey + '=')}"$${alias}"`);
+        }
+        // export 而不是 /usr/bin/env KEY=…：env 程序的 argv 會短暫帶著展開後的秘密（ps 看得到）。
+        const shell = `${assignments.map((assignment) => `export ${assignment}`).join('; ')}; exec ${shellQuote(server.command)} ${args.map(shellQuote).join(' ')}`;
+        githubMCPArgs.push('-c', `${key}.command=${JSON.stringify(aliases.length ? '/bin/sh' : server.command)}`,
+          '-c', `${key}.args=${JSON.stringify(aliases.length ? ['-c', shell] : args)}`,
+          '-c', `${key}.env={}`, '-c', `${key}.env_vars=${JSON.stringify([...new Set([...(server.env_vars ?? []), ...aliases])])}`);
+      } else if (typeof server.url === 'string') {
+        const headers = { ...(enabled ? server.env_http_headers ?? {} : {}) };
+        for (const [header, value] of Object.entries(enabled ? server.headers ?? server.http_headers ?? {} : {})) {
+          if (typeof value !== 'string') continue;
+          const alias = `TATWO2_OS_MCP_HEADER_${index++}`;
+          githubMCPEnvironment[alias] = value; headers[header] = alias;
+        }
+        const mapping = Object.entries(headers).map(([header, alias]) => `${JSON.stringify(header)}=${JSON.stringify(alias)}`).join(',');
+        githubMCPArgs.push('-c', `${key}.url=${JSON.stringify(server.url)}`,
+          '-c', `${key}.http_headers={}`, '-c', `${key}.env_http_headers={${mapping}}`);
+      }
+      for (const field of ['cwd', 'startup_timeout_sec', 'tool_timeout_sec', 'bearer_token_env_var']) {
+        if (typeof server[field] === 'string' || typeof server[field] === 'number') githubMCPArgs.push('-c', `${key}.${field}=${JSON.stringify(server[field])}`);
+      }
+      if (!server.command && Array.isArray(server.env_vars)) githubMCPArgs.push('-c', `${key}.env_vars=${JSON.stringify(server.env_vars)}`);
+      continue;
+    }
+    if (typeof server.command !== 'string') continue;
     const args = Array.isArray(server.args) ? server.args.map(String) : [];
     const token = (mcpConfig.enabled ?? []).includes(name) ? server.env?.GITHUB_PERSONAL_ACCESS_TOKEN : undefined;
     if (typeof token === 'string' && token.length) {
@@ -141,14 +204,14 @@ if (mcpConfig?.engine === 'codex' && mcpConfig.servers && typeof mcpConfig.serve
       githubMCPEnvironment[source] = token;
       const shell = `GITHUB_PERSONAL_ACCESS_TOKEN="$${source}" exec ${shellQuote(server.command)} ${args.map(shellQuote).join(' ')}`;
       githubMCPArgs.push(
-        '-c', `mcp_servers.${name}.command="/bin/sh"`,
-        '-c', `mcp_servers.${name}.args=${JSON.stringify(['-c', shell])}`,
-        '-c', `mcp_servers.${name}.env_vars=${JSON.stringify([source])}`,
+        '-c', `mcp_servers.${mcpKey(name)}.command="/bin/sh"`,
+        '-c', `mcp_servers.${mcpKey(name)}.args=${JSON.stringify(['-c', shell])}`,
+        '-c', `mcp_servers.${mcpKey(name)}.env_vars=${JSON.stringify([source])}`,
       );
     } else {
       githubMCPArgs.push(
-        '-c', `mcp_servers.${name}.command=${JSON.stringify(server.command)}`,
-        '-c', `mcp_servers.${name}.args=${JSON.stringify(args)}`,
+        '-c', `mcp_servers.${mcpKey(name)}.command=${JSON.stringify(server.command)}`,
+        '-c', `mcp_servers.${mcpKey(name)}.args=${JSON.stringify(args)}`,
       );
     }
   }
@@ -200,12 +263,15 @@ const appServer = spawn(resolveCodexBinary() ?? 'codex', [
   ...(process.env.TATWO2_OS_SOCKET ? ['-c', `mcp_servers.tatwo2_os.env.TATWO2_OS_SOCKET=${JSON.stringify(process.env.TATWO2_OS_SOCKET)}`] : []),
   ...(process.env.TATWO2_BROWSER_SOCKET ? ['-c', `mcp_servers.tatwo2_browser.env.TATWO2_BROWSER_SOCKET=${JSON.stringify(process.env.TATWO2_BROWSER_SOCKET)}`] : []),
   ...githubMCPArgs, ...disabledMCPArgs, ...approveMCPArgs,
+  ...(managedNoMemory ? ['-c', 'mcp_servers.tatwo2_os.enabled=false',
+    '-c', 'mcp_servers.tatwo2_browser.enabled=false', '-c', 'features.plugins=false',
+    '-c', 'features.plugin_sharing=false'] : []),
   // 防禦性縮窄（2026-09-06；根因未收斂）：App 層同一顆 bundled codex 上，舊做法（對 toml 裡所有 server 加 env.TATWO2_THREAD_ID）
   // 會 `invalid transport in mcp_servers.blender`，只改成不加就回合完成；但 Codex 用最小 fixture 反證「toml server 加 env」本身不會壞，
   // 我的最小重現又顯示 enabled 的 `uvx` server 會讓 initialize 無回應——哪個旗標組合觸發尚未分離。
   // 所以 thread id 只給我們自己用 -c 定義的 server（tatwo2_os／tatwo2_browser／github-*）；toml 裡的其他 MCP 拿不到 thread id，是否需要本輪未證實。
   ...(mcpConfig?.threadID ? ['tatwo2_os', 'tatwo2_browser', ...Object.keys(mcpConfig.servers ?? {}).filter((n) => /^github-[A-Za-z0-9-]+$/.test(n))]
-      .flatMap((name) => ['-c', `mcp_servers.${name}.env.TATWO2_THREAD_ID=${JSON.stringify(mcpConfig.threadID)}`]) : []),
+      .flatMap((name) => ['-c', `mcp_servers.${mcpKey(name)}.env.TATWO2_THREAD_ID=${JSON.stringify(mcpConfig.threadID)}`]) : []),
   'app-server',
 ], {
   cwd,
@@ -225,6 +291,7 @@ let threadModel = selectedModel;
 // One in-flight turn, including its start RPC and cancellation. Keep the same
 // object until both the terminal notification and start RPC have settled.
 let currentTurn = null;
+let outputTotal;
 let lastCompletedTurnID = null;
 let nativeGoal = null;
 let goalKnown = false;
@@ -468,6 +535,21 @@ function handleOtherServerRequest(message) {
 function handleNotification(message) {
   const { method, params = {} } = message;
   if (params.threadId && params.threadId !== threadID) return;
+  if (method === 'thread/tokenUsage/updated') {
+    const total = params.tokenUsage?.total?.outputTokens;
+    const last = params.tokenUsage?.last?.outputTokens;
+    const valid = n => Number.isSafeInteger(n) && n >= 0;
+    const turn = currentTurn;
+    const matches = turn && !turn.completed && params.turnId &&
+      params.turnId !== lastCompletedTurnID && (!turn.id || params.turnId === turn.id);
+    // outputTokens already includes reasoningOutputTokens. total is cumulative across API calls.
+    if (matches && valid(total) && valid(last)) {
+      const baseline = turn.outputBaseline ?? (total - last);
+      if (baseline >= 0 && total >= baseline) { turn.outputBaseline = baseline; turn.outputTokens = total - baseline; }
+    }
+    if (valid(total) && (!turn || matches)) outputTotal = total;
+    return;
+  }
   if (method === 'thread/goal/updated' && params.threadId === threadID) {
     publishGoal(params.goal);
     return;
@@ -489,7 +571,7 @@ function handleNotification(message) {
       params.turn?.id && params.turn.id !== lastCompletedTurnID &&
       (!currentTurn || currentTurn.completed)) {
     // Native Goal may start its own turn. Observe it, never synthesize a send.
-    currentTurn = { id: params.turn.id, uuid: `native:${params.turn.id}`, starting: false,
+    currentTurn = { id: params.turn.id, uuid: `native:${params.turn.id}`, starting: false, outputBaseline: outputTotal,
       completed: false, cancelled: goalStopPending, interruptSent: false, autonomous: true };
     sdk({ type: 'system', subtype: 'native_turn_started', session_id: threadID,
       client_turn_id: currentTurn.uuid, stopping: currentTurn.cancelled });
@@ -706,7 +788,7 @@ function drainSteer(turn) {
 function drainSendQueue() {
   if (!initialized || !threadID || currentTurn || sendQueue.length === 0 || closing) return;
   const command = sendQueue.shift();
-  const turn = { id: null, uuid: command.uuid, starting: true, completed: false,
+  const turn = { id: null, uuid: command.uuid, starting: true, completed: false, outputBaseline: outputTotal,
     cancelled: false, interruptSent: false };
   currentTurn = turn;
   if (command.model && command.model !== threadModel) {
@@ -742,7 +824,8 @@ function releaseTurn(turn) {
 function finishTurn(turn, message) {
   if (currentTurn !== turn || turn.completed) return;
   if (turn.steer && !turn.steer.submitted) finishSteer(turn, false, '原回合已結束，插話未送出');
-  sdk(message);
+  sdk({ ...message, ...(Number.isSafeInteger(turn.outputTokens) ? { usage: { output_tokens: turn.outputTokens } } : {}) });
+  if (!Number.isSafeInteger(turn.outputTokens)) outputTotal = undefined;
   turn.completed = true;
   lastCompletedTurnID = turn.id;
   activeTurnText = '';
@@ -788,7 +871,7 @@ async function publishCatalog() {
   } while (cursor && seen.size < 100);
   if (cursor) throw new Error('model/list pagination limit');
   emit({ev:'sdk', msg:{type:'system',subtype:'model_catalog',engine:'codex',
-    identity:process.env.TATWO2_ENGINE_IDENTITY ?? 'unknown', source:'app-server model/list', models:codexModels(rows)}});
+    identity:process.env.TATWO2_ENGINE_IDENTITY ?? 'unknown', source:'app-server model/list', models:codexModels(rows), defaultModel:rows.find(r => r.isDefault)?.model}});
 }
 
 async function boot() {

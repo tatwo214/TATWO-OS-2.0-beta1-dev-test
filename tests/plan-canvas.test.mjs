@@ -97,6 +97,9 @@ test('production Swift start predicate and planContext enforce two-stage and PR 
   const policy = read('App/Sources/Tatwo2/Chat/CanvasCommandPolicy.swift').split('enum CanvasCommandPolicy')[1];
   writeFileSync(join(root, 'main.swift'), `import Foundation
 enum CanvasCommandPolicy ${policy}
+enum OSEventSources {
+ static func scope<T>(origin: String, actor: String, _ work: () -> T) -> T { work() }
+}
 // W180 E4：/蒸餾 規則段引用的型別（這個測試只管計畫／PR 的兩段式，蒸餾給最小替身）。
 enum DistillOutputKind: Equatable { case skill, checklist, sop, gbrain; var label: String { "技能" } }
 enum DistillCanvas {

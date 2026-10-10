@@ -1,0 +1,8 @@
+App/Sources/Tatwo2/TAP/ChatGPTDots.swift
+App/Sources/Tatwo2/TAP/ChatGPTSpace.swift
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift
+App/Sources/Tatwo2/Facade/W197DotsAcceptance.swift
+App/Sources/Tatwo2/SelfTest.swift
+tests/w197-dots.test.mjs
+tests/w177-chatgpt-space.test.mjs
+tests/fixtures/w234-room-allow.txt

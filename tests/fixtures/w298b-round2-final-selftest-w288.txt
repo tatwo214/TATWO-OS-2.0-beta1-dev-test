@@ -1,0 +1,60 @@
+W288 PASS 1 typed /go by keyDown
+W288 PASS 1 first Return completes first suggestion without send
+W288 PASS 1 arrows select goal list before Return prompt= sends=0
+W288 PASS 2 gpt-6.1-sol starts isolated native turn
+W288 PASS 2 gpt-6.1-sol draft shows send and Stop
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/2-gpt-6.1-sol-draft-light.png
+W288 PASS UI drawn 2-gpt-6.1-sol-draft-light.png
+W288 PASS 2 gpt-6.1-sol Stop position stays fixed
+W288 PASS 2 gpt-6.1-sol real Stop click preserves draft
+W288 PASS 2 gpt-6.1-sol Stop confirms turn ended
+W288 PASS 2 opus-5.5 starts isolated native turn
+W288 PASS 2 opus-5.5 draft shows send and Stop
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/2-opus-5.5-draft-light.png
+W288 PASS UI drawn 2-opus-5.5-draft-light.png
+W288 PASS 2 opus-5.5 Stop position stays fixed
+W288 PASS 2 opus-5.5 real Stop click preserves draft
+W288 PASS 2 opus-5.5 Stop confirms turn ended
+W288 PASS 3 TAP voice entry exists
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/3-tap-voice-light.png
+W288 PASS UI drawn 3-tap-voice-light.png
+W288 PASS 3 real voice click uses shared mode and Stop
+W288 PASS 3 real voice Stop ends fake microphone
+W288 PASS 3 other models hide voice
+W288 PASS 4 Issue List opens real Thread card
+W288 PASS 4 model click closes Thread card
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/4-model-panel-light.png
+W288 PASS UI drawn 4-model-panel-light.png
+W288 PASS 4 opening Thread closes model panel
+W288 PASS 6 archived glass chip appears
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/6-archived-chip-light.png
+W288 PASS UI drawn 6-archived-chip-light.png
+W288 PASS 2 gpt-6.1-sol starts isolated native turn
+W288 PASS 2 gpt-6.1-sol draft shows send and Stop
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/2-gpt-6.1-sol-draft-dark.png
+W288 PASS UI drawn 2-gpt-6.1-sol-draft-dark.png
+W288 PASS 2 gpt-6.1-sol Stop position stays fixed
+W288 PASS 2 gpt-6.1-sol real Stop click preserves draft
+W288 PASS 2 gpt-6.1-sol Stop confirms turn ended
+W288 PASS 2 opus-5.5 starts isolated native turn
+W288 PASS 2 opus-5.5 draft shows send and Stop
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/2-opus-5.5-draft-dark.png
+W288 PASS UI drawn 2-opus-5.5-draft-dark.png
+W288 PASS 2 opus-5.5 Stop position stays fixed
+W288 PASS 2 opus-5.5 real Stop click preserves draft
+W288 PASS 2 opus-5.5 Stop confirms turn ended
+W288 PASS 3 TAP voice entry exists
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/3-tap-voice-dark.png
+W288 PASS UI drawn 3-tap-voice-dark.png
+W288 PASS 3 real voice click uses shared mode and Stop
+W288 PASS 3 real voice Stop ends fake microphone
+W288 PASS 3 other models hide voice
+W288 PASS 4 Issue List opens real Thread card
+W288 PASS 4 model click closes Thread card
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/4-model-panel-dark.png
+W288 PASS UI drawn 4-model-panel-dark.png
+W288 PASS 4 opening Thread closes model panel
+W288 PASS 6 archived glass chip appears
+W184CHAT NOTE evidence ~/tatwo-build/verify/W298b-aiinstall-130252/artifacts/w288/6-archived-chip-dark.png
+W288 PASS UI drawn 6-archived-chip-dark.png
+W288 SUMMARY checks=49 failures=0

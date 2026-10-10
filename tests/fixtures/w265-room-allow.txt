@@ -1,0 +1,14 @@
+# W265: exact files and reasons; all work stays in the supplied room.
+App/Sources/Tatwo2/TAP/ChatGPTWebSpace.swift # Reuse web pane; glass ChatGPT/Dots segments and exclusive human surface ownership.
+App/Sources/Tatwo2/TAP/TapWebPod.swift # Keep two human sibling pages in the same Pod context and lease; close both before release.
+App/Sources/Tatwo2/DM/GlobalDMView.swift # Route enabled DM ChatGPT to the shared web pane; retain native opt-out.
+App/Sources/Tatwo2/DM/GlobalDMPhoneBox.swift # Disable native drawer/top controls for web; adapt ChatGPT in tent as well as portrait/Duo.
+App/Sources/Tatwo2/DM/GlobalDMPanelController.swift # Let web keyboard shortcuts reach CEF instead of native conversation commands.
+App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift # Allow the isolated w265 CEF fixture under the existing W248 bundle identity.
+App/Sources/Tatwo2/SelfTest.swift # Register w265 and initialize the existing CEF application for its real browser test.
+App/Sources/Tatwo2/TAP/W248WebSpaceAcceptance.swift # Reuse the isolated server/app/profile harness for W265 without production accounts.
+App/Sources/Tatwo2/DM/W265DMChatGPTAcceptance.swift # Verify real Duo sizes, native segment clicks, state retention, window arbitration and eight screenshots.
+tests/w265-dmchatgpt.test.mjs # Assert URL, opt-out, page lifetime and exclusive mounting source contracts.
+tests/w184-chat.test.mjs # Retain native-control contract with the W265 web flag opt-out condition.
+tests/fixtures/w265-room-allow.txt # Record each changed file's purpose and guard scope.
+tests/fixtures/w265-lease.md # Describe ownership, transfer, shared login and the local-only validation evidence.

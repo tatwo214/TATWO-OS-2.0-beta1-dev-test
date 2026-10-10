@@ -1,0 +1,18 @@
+# W341: end collaboration and remove the standalone offline-copy clear button.
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift
+App/Sources/Tatwo2/Facade/GroupCoderBridge.swift
+App/Sources/Tatwo2/Facade/GroupTurnEngine.swift
+App/Sources/Tatwo2/Facade/GroupCoderAcceptance.swift
+App/Sources/Tatwo2/Facade/W264SandboxLaneAcceptance.swift
+App/Sources/Tatwo2/Facade/RemoteOfflineAcceptance.swift
+App/Sources/Tatwo2/Facade/RemoteOfflineCache.swift
+App/Sources/Tatwo2/Facade/ChatPageModel+OfflineContinue.swift
+App/Sources/Tatwo2/Chat/ChatPage+Transcript.swift
+App/Sources/Tatwo2/Chat/ChatPage+Composer.swift
+App/Sources/Tatwo2/Chat/ChatComposerSuggestionCatalog.swift
+App/Sources/Tatwo2/New/RemoteOfflineThreadView.swift
+tests/w182-offline.test.mjs
+tests/fixtures/w341-room-allow.txt
+!Engines/sandbox-agent/*
+!App/Sources/Tatwo2/Facade/HandsSandboxLane.swift
+!App/Sources/Tatwo2/Facade/HandsAuth.swift

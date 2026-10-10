@@ -53,7 +53,7 @@ import AppKit
         defer { OSPresence.shared = originalPresence }
         OSPresence.shared.install()
         NotificationCenter.default.post(name: .tatwoWorkOSPageDidChange, object: TatwoPage.chat.rawValue)
-        let dispatched = try model.dispatchChecked(rooms: [RoomSpec(title: "dispatch fixture", engine: "claude", model: "fable5", brief: "dispatch", readOnly: true)], parent: thread)
+        let dispatched = try await model.dispatchChecked(rooms: [RoomSpec(title: "dispatch fixture", engine: "claude", model: "fable5", brief: "dispatch", readOnly: true)], parent: thread)
         let room = UUID(uuidString: dispatched[0].threadID)!
         try await until { !engine.isRunning(room) }
         let dispatch = try rows("user_send").first { $0.thread == room.uuidString.lowercased() }

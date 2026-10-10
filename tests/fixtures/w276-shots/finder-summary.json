@@ -1,0 +1,11 @@
+{
+  "launch": "Finder AppleScript open (same LaunchServices path as double-click)",
+  "seconds": 32.561,
+  "aliveAt30": [
+    "51826 /Users/fixture/tatwo-build/tmp/W276c/final/TATWO OS Staging.app/Contents/MacOS/Tatwo2Staging"
+  ],
+  "quitExit": 0,
+  "remaining": [],
+  "formalStillAlive": true,
+  "keychainUI": false
+}

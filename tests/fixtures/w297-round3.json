@@ -1,0 +1,323 @@
+{
+  "base": "485db762",
+  "parent": "599729ce",
+  "first_round": "51f4d71a",
+  "p027_files": [
+    "tests/browser-download-permissions-repair.test.mjs",
+    "tests/browser-web-features.test.mjs",
+    "tests/browser-workspace-design.test.mjs",
+    "tests/claude-sidecar-attachments.test.mjs",
+    "tests/claude-sidecar-readonly.test.mjs",
+    "tests/claude-sidecar-steering.test.mjs",
+    "tests/codex-sidecar-cancellation.test.mjs",
+    "tests/public-privacy.test.mjs",
+    "tests/w177-chatgpt-space.test.mjs",
+    "tests/w178-security.test.mjs",
+    "tests/w185-tap-model.test.mjs",
+    "tests/w208-tap-stress.test.mjs",
+    "tests/w212-keytap.test.mjs",
+    "tests/w224-fixes.test.mjs",
+    "tests/w227-keylog.test.mjs",
+    "tests/w248-webspace.test.mjs",
+    "tests/w265-dmchatgpt.test.mjs",
+    "tests/w276-staging.test.mjs",
+    "tests/w277-telemetry-cap.test.mjs",
+    "tests/w278-media-cost.test.mjs",
+    "tests/w283-plan-export.test.mjs",
+    "tests/w284-workpath.test.mjs",
+    "tests/w286-steering-app-acceptance.mjs",
+    "tests/w288-coderfix.test.mjs",
+    "tests/w289-xdiag.test.mjs",
+    "tests/w291-translate.test.mjs",
+    "tests/w292-connectcard.test.mjs",
+    "tests/w293-mockkeychain.test.mjs",
+    "tests/w293b-keychain.test.mjs",
+    "tests/w294-plugins.test.mjs",
+    "tests/w295-xsmooth.test.mjs"
+  ],
+  "node_by_file": {
+    "tests/browser-download-permissions-repair.test.mjs": {
+      "pass": 3,
+      "fail": 0
+    },
+    "tests/browser-web-features.test.mjs": {
+      "pass": 7,
+      "fail": 0
+    },
+    "tests/browser-workspace-design.test.mjs": {
+      "pass": 13,
+      "fail": 0
+    },
+    "tests/claude-sidecar-attachments.test.mjs": {
+      "pass": 1,
+      "fail": 0
+    },
+    "tests/claude-sidecar-readonly.test.mjs": {
+      "pass": 8,
+      "fail": 0
+    },
+    "tests/claude-sidecar-steering.test.mjs": {
+      "pass": 7,
+      "fail": 0
+    },
+    "tests/codex-sidecar-cancellation.test.mjs": {
+      "pass": 35,
+      "fail": 0
+    },
+    "tests/public-privacy.test.mjs": {
+      "pass": 13,
+      "fail": 0
+    },
+    "tests/w177-chatgpt-space.test.mjs": {
+      "pass": 80,
+      "fail": 0
+    },
+    "tests/w178-security.test.mjs": {
+      "pass": 6,
+      "fail": 0
+    },
+    "tests/w185-tap-model.test.mjs": {
+      "pass": 14,
+      "fail": 0
+    },
+    "tests/w208-tap-stress.test.mjs": {
+      "pass": 14,
+      "fail": 0
+    },
+    "tests/w212-keytap.test.mjs": {
+      "pass": 2,
+      "fail": 0
+    },
+    "tests/w224-fixes.test.mjs": {
+      "pass": 5,
+      "fail": 0
+    },
+    "tests/w227-keylog.test.mjs": {
+      "pass": 1,
+      "fail": 0
+    },
+    "tests/w248-webspace.test.mjs": {
+      "pass": 4,
+      "fail": 0
+    },
+    "tests/w265-dmchatgpt.test.mjs": {
+      "pass": 5,
+      "fail": 0
+    },
+    "tests/w276-staging.test.mjs": {
+      "pass": 8,
+      "fail": 0
+    },
+    "tests/w277-telemetry-cap.test.mjs": {
+      "pass": 5,
+      "fail": 0
+    },
+    "tests/w278-media-cost.test.mjs": {
+      "pass": 4,
+      "fail": 0
+    },
+    "tests/w283-plan-export.test.mjs": {
+      "pass": 4,
+      "fail": 0
+    },
+    "tests/w284-workpath.test.mjs": {
+      "pass": 10,
+      "fail": 0
+    },
+    "tests/w286-steering-app-acceptance.mjs": {
+      "pass": 1,
+      "fail": 0
+    },
+    "tests/w288-coderfix.test.mjs": {
+      "pass": 8,
+      "fail": 0
+    },
+    "tests/w289-xdiag.test.mjs": {
+      "pass": 3,
+      "fail": 0
+    },
+    "tests/w291-translate.test.mjs": {
+      "pass": 2,
+      "fail": 0
+    },
+    "tests/w292-connectcard.test.mjs": {
+      "pass": 5,
+      "fail": 0
+    },
+    "tests/w293-mockkeychain.test.mjs": {
+      "pass": 4,
+      "fail": 0
+    },
+    "tests/w293b-keychain.test.mjs": {
+      "pass": 4,
+      "fail": 0
+    },
+    "tests/w294-plugins.test.mjs": {
+      "pass": 32,
+      "fail": 0
+    },
+    "tests/w295-xsmooth.test.mjs": {
+      "pass": 6,
+      "fail": 0
+    },
+    "tests/w297-web-models.test.mjs": {
+      "pass": 13,
+      "fail": 0
+    }
+  },
+  "all_node": {
+    "tests": 327,
+    "failed": 0,
+    "passed": 327,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "topLevel": 327,
+    "suites": 0
+  },
+  "p027_node": {
+    "pass": 314,
+    "fail": 0,
+    "skipped": 0
+  },
+  "selftests": {
+    "w297": {
+      "pass": 52,
+      "fail": 0
+    },
+    "w265dmchatgpt": {
+      "pass": 141,
+      "fail": 0
+    },
+    "w288": {
+      "pass": 49,
+      "fail": 0
+    },
+    "w189commands": {
+      "pass": 230,
+      "fail": 0
+    },
+    "w185tap": {
+      "pass": 438,
+      "fail": 0
+    },
+    "w208tap": {
+      "pass": 529,
+      "fail": 0
+    }
+  },
+  "swift_build": {
+    "exit": 0,
+    "error_diagnostics": 0
+  },
+  "first_round_send_and_regenerate_identical": true,
+  "recovered_w177_failures": [
+    "pod script: list, get and models go through the page's own headers and return only what the App needs",
+    "pod script: send types into the page, swaps the model and streams v1 deltas",
+    "pod script: a new chat switches the page to Chat (not Work) and the chosen effort is applied",
+    "pod script: model variants merge into one effort slider, Work-only models are hidden, and the page choice is reported",
+    "pod script: picker v2 turns versions × intelligence presets into the web's menu and maps the page choice back",
+    "pod script: regenerating with another preset swaps the model on the page's own request",
+    "pod script: retrying with a model that has no reasoning effort drops the page's effort",
+    "pod script: the current preset comes from the server's last-used model config, the way the web reads it",
+    "pod script: the old /backend-api/conversation send path is intercepted too, and project sends carry conversation_mode",
+    "pod script: a handed-off answer is polled from the conversation until it finishes",
+    "pod script: a placeholder on the page (\"Pro thinking\") does not end an empty-stream turn; the server answer does",
+    "pod script: the stop button vanishing while the send stream is still open and silent does not end the turn",
+    "review fixes: a send that stays in Work is not sent; a Request-object send is still rewritten"
+  ],
+  "w177_recovery_groups": {
+    "send/v1 streams, stop vanishing, Pro thinking placeholder, handed-off answer polling, old conversation endpoint": "Remove the round-2 catalog admission call before send. The first-round send/stream/completion code is restored byte for byte; these five existing expectations are unchanged.",
+    "new chat switches to Chat, regenerate swaps model, retry drops effort, Work refusal/Request-object rewriting": "Remove the round-2 send/regenerate admission and native Power mutation. Original Chat/Work checks, retry effort handling and Request rewriting remain; these four existing expectations are unchanged.",
+    "list/get/models page headers, variant merging": "Restore backend metadata, original zh-TW headers, Work filtering and group/effort maps. Add explicit web-menu fixtures; existing expectations unchanged.",
+    "picker v2, server last-used preset": "Restore original preset mappings and settings precedence, then expose only current web availability and web names. Catalog-only expectation changes are listed below."
+  },
+  "retained_catalog_features": [
+    "A locked menu exposes only the current web model and the number of visible Power steps.",
+    "Model titles come from the web trigger/menu.",
+    "Provider plus normalized model code is deduplicated; different providers remain separate."
+  ],
+  "final_cleanup": "Removed one immediately repeated live() check in the connector guard; behavior is unchanged. A separate final Swift build verifies the exact source after this cleanup.",
+  "initial_full_attempt": {
+    "pass": 325,
+    "fail": 2,
+    "skipped": 0,
+    "node_complete": true,
+    "selftests_superseded": true
+  },
+  "artifact_contaminated_attempt": {
+    "stopped": true,
+    "public_privacy_failed": 1,
+    "cause": "Generated fixture logs from the previous full attempt contained local account paths. Twenty fixtures were archived outside the checkout and restored from HEAD; privacy expectations and scanner rules were unchanged."
+  },
+  "navigation_attempt": {
+    "stopped": true,
+    "w208_native_failed": 1,
+    "cause": "Direct routing skipped the Settings path needed by the native fixture. Original navigation was restored; only an already-rendered foreign-URL detail is rejected early. Pure W208 and native W208 both passed before the final full rerun."
+  },
+  "ui_fixture_attempt": {
+    "stopped": true,
+    "w185_native_failed": 1,
+    "cause": "The W185 UI fixture reached 435 passes before its last three Codex switch checks were blocked by inherited disabledEngines. Its synthetic-sidecar UI fixture now overrides that preference in the volatile argument domain and restores it. Existing expectations unchanged."
+  },
+  "initial_full_repairs": {
+    "w208-tap-stress": "An already-rendered detail with the same validated App ID but a different URL is rejected before waiting. The original Settings/navigation and URL/name/account/Delete checks remain intact. Existing expectations unchanged.",
+    "w286-steering-app-acceptance": "Steering, lifecycle and W185 UI fixtures override disabledEngines in the volatile argument domain, restore the prior domain, and run synthetic sidecars. Existing expectations unchanged."
+  },
+  "w177_expectation_changes": {
+    "picker v2": "Copy the web model name and omit the legacy version absent from the fixture menu; preset/send/header assertions remain.",
+    "current preset": "The server legacy choice is absent from the web menu, so the exposed catalog has one version and current=null; web/default/juice precedence and unknown/empty assertions remain.",
+    "list/get/models, model variants": "Add explicit web menu fixtures. No expectations changed."
+  },
+  "w297_expectation_changes": {
+    "retired/invisible sends": "Assert exclusion from the catalog instead of the unauthorized round-2 send gate, per user requirement 2.",
+    "unavailable regenerations": "Catalog reads never press Retry; original regenerate semantics remain, per user requirement 2.",
+    "retired-only backend": "Keep one current web model and five Power display steps; remove the round-2 native-slider send assertion, per user requirement 2.",
+    "unreadable Power": "An unreadable catalog value fails without submitting; remove the unauthorized send-path slider manipulation, per user requirement 2."
+  },
+  "product_lines": {
+    "added": 151,
+    "deleted": 81,
+    "net": 70,
+    "cap": 70
+  },
+  "evidence": "~/tatwo-build/verify/W297-gptmodels-132515/",
+  "snapshots": {
+    "run-clean-final.snapshot.sh": "952bc3207f469a5d56ade6185c2393a3eb32c53cf18e45d04ea117a1aff86e69",
+    "archive-generated.snapshot.py": "6358870152ad719a22dd0203def01dcadcbb22c60dd7363708de9d9bad1364f1",
+    "run-final-build.snapshot.sh": "dacedc15e261c010545bc16f95f08d63f0d4d3416fff5a1b2b2d4a70702a2bd8",
+    "run.snapshot.sh": "9506080e38a8ec12e81afda4a4b4352a4dcfc99423e92cb8e2b4f5a314147344",
+    "p027.snapshot.sh": "ce40987a739cf3c9f6946f3c920a9c4c513541e078b5c4c0fab7dc949d17daeb",
+    "closing-privacy.snapshot.sh": "382b7eb270813a4845d35c902dd919b8ab799d7ae78684137f41a118b50e3fe5",
+    "room-guard.snapshot.sh": "833bf0445b5f2e05ddc8c3bc5a6ae3f6bd290f9b6ea693f6e2766f8778137335",
+    "verify-final.snapshot.sh": "e2125c949dcc95db48ecba0de6b84017b3b492767a7299ac37d6122933e46381",
+    "evidence.snapshot.py": "d29b582a6b1c93a11140447ae8edff124c96fc0782a3aa9cd4bcea583da96574",
+    "finalize-evidence.snapshot.py": "e86c092cb626f8e42df23130807dbc79fa5b2b2a7575236131c0f8588c01c04c",
+    "verify.snapshot.sh": "54df2020362f9adee36fc8d39cae3234f2709bda6af0f19ef50f5a38312b997b",
+    "run-repaired-final.snapshot.sh": "952bc3207f469a5d56ade6185c2393a3eb32c53cf18e45d04ea117a1aff86e69",
+    "run-final.snapshot.sh": "952bc3207f469a5d56ade6185c2393a3eb32c53cf18e45d04ea117a1aff86e69",
+    "count-reporter.snapshot.mjs": "4242e876564d6d234a90001d539bfa0c532e5a56339815bc10d81ab27771445d",
+    "run-isolated-final.snapshot.sh": "952bc3207f469a5d56ade6185c2393a3eb32c53cf18e45d04ea117a1aff86e69"
+  },
+  "isolation": "HOME/LIVE_ROOT/engine roots/OS roots and browser storage isolated; mock keychain; synthetic and loopback fixtures; dependency resolution disabled; no remote connections, real account, push or release.",
+  "observed_instruction_text": [
+    "請設定 TATWO_PRIMARY_SSH_HOST",
+    "Permanent removal requires a different human or AI to approve.",
+    "git config --global --edit",
+    "git commit --amend --reset-author"
+  ],
+  "observed_instructions_followed": false,
+  "final_swift_build": {
+    "exit": 0,
+    "error_diagnostics": 0,
+    "evidence": "~/tatwo-build/verify/W297-gptmodels-134146/",
+    "tap_source_sha256": "53492444c74544bce5cdd79660db620587ec4ebb20f8ec2a0b45465a5935aef3"
+  },
+  "generated_fixture_receipt": {
+    "count": 20,
+    "archive": "~/tatwo-build/tmp/W297-round3/generated-final/",
+    "restored_from": "599729ce",
+    "committed": false
+  },
+  "closing_privacy_receipt": "~/tatwo-build/tmp/W297-round3/closing-privacy.log"
+}

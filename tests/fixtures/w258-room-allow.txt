@@ -1,0 +1,18 @@
+# SelfTest.swift: register the real CEF download acceptance suite.
+App/Sources/Tatwo2/SelfTest.swift
+# Bridge: trace host-only download callbacks in the isolated DEBUG fixture.
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm
+# CEF backend: authorize only the isolated DEBUG W258 fixture bundle for the real Browser space host.
+App/Sources/Tatwo2/Browser/ChromiumCEFBackend.swift
+# Acceptance: exercise native human Browser space A–E and agent denial.
+App/Sources/Tatwo2/Browser/W258DownloadAcceptance.swift
+# Existing download tests: stage CEF before verify.sh launches the raw selftest on a fresh worktree.
+tests/browser-download-permissions-repair.test.mjs
+# Disposable signed CEF fixture bundle, adapted from the W248 staging test.
+tests/fixtures/w258-stage.mjs
+# Local attachment and three-redirect HTTP fixture.
+tests/fixtures/w258-server.py
+# Scope and per-file reasons for the room guard.
+tests/fixtures/w258-room-allow.txt
+# Reproduction evidence and final report.
+tests/fixtures/w258-report.md

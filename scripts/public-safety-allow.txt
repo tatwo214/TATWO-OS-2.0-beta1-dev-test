@@ -346,3 +346,9 @@ tests/w162-scan.test.mjs | macos username | 掃描測試用的合成路徑，使
 tests/w177-chatgpt-space.test.mjs | email address | W177 帳號測試用 invalid 範例網域的合成信箱，不是個人信箱 | ^(?:user\x40example\.invalid)$
 tests/w177-chatgpt-space.test.mjs | macos username | W177 測試假資料的 name／username 欄位：ChatGPT 工具與外掛的產品名、MCP 工具名、合成檔名與 fixture 帳號，不是作業系統帳號 | ^(?:PDF|GitHub|github|Search|canva|Canva|Notion|triage|Triage|search_repos|create_issue|delete_branch|list_prs|hidden|secret|image_gen|Tasks|Sketch|Study|notes\.md|Folder|a\.png|fixture)$
 Engines/chatgpt-hands/fixtures/wire.json | macos username | W183 兩房共用接口範例（主導定）：name 欄位是 MCP 工具名稱，不是作業系統帳號 | ^(?:read_file|memory_inbox_save)$
+App/Sources/Tatwo2/New/W335SandboxUIAcceptance.swift | macos username | W336 fake Lima instance names used to exercise W335 source metadata; not accounts. | ^(?:tatwo-linux-ab12|tatwo-macos-cd34)$
+App/Sources/Tatwo2/New/W336VMDeviceAcceptance.swift | macos username | Fake Lima instance identifiers for prefix/platform filtering; not operating system accounts. | ^(?:tatwo-linux-ab12|tatwo-macos-cd34|someone-else|tatwo-windows)$
+Engines/sandbox-agent/vm/linux.sh | private ip | Public network denial masks and Lima's documented guest DNS resolver, copied from sandbox hardening. | ^(?:10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0|192\.168\.5\.3)$
+Engines/sandbox-agent/vm/macos.sh | private ip | Public network denial masks and Lima guest DNS exception for the work account; not host addresses. | ^(?:10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0|192\.168\.5\.3)$
+Engines/sandbox-agent/vm/macos.sh | macos username | Product-created unprivileged guest account work, not a personal host account. | ^work$
+tests/w336-vmdevice.test.mjs | private ip | Assertions for public network denial masks in guest firewall provision. | ^(?:10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0)$

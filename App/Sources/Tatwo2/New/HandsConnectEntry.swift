@@ -5,10 +5,9 @@ import SwiftUI
 // W183 R11（使用者 09-30：「全程使用者應該只按一兩個按鍵 不勾選、不研究，就是一個很簡單的串接，關鍵是 ui要簡單好懂而不是砸文字做解釋」；
 // 主導 09-30 用 Computer Use 實測 .031 之後 A、D：私訊框 ChatGPT 對象、＋ › 外掛程式都找不到「連線」，入口只在主視窗 ChatGPT 分頁右上一顆
 // 小圖示，「一般人看不出是入口」）：
-// - 使用者會去的三個地方各一個一眼看懂的入口（圖示＋「連線」兩個字、一顆鈕）：私訊框 ChatGPT 對象的頂列下面（HandsConnectDMLayer）、
-//   「＋ › 外掛程式」那一頁的第一列（ChatGPTQuickMenu.plusSections，私訊框與 ChatGPT Space 同一份）與 ChatGPT Space 的「外掛」頁、
-//   ChatGPT Space 的對話上方（還沒登入 ChatGPT 的那一頁也有）。主視窗右上那顆小圖示照舊（不是唯一入口了）。
-// - W199（10-03）：常駐入口只在需要動手時出一行。健康、短暫自動核對安靜；外掛選單、設定與 hands_setup_status 仍可查連線。
+// - W292（10-08）：設定 › Plugin › TAP › ChatGPT build 的「連線／已連線」在設定頁原地打開同一張卡；斷線、整理重複與刪除確認都在卡上。
+// - 私訊框真正 ChatGPT 網頁的「ChatGPT｜Dots」頂列旁：沒連或需要處理時有小入口，健康與短暫核對安靜；按了開私訊框的同一張卡。
+// - W265／W248 之後網頁的「Add files and more」不是 TATWO 管理入口；不修改或注入網頁選單。
 // - 按「連線」＝ChatGPT build 的［連線］（HandsBuildController.connect：勾的每台逐台排；同一張確認卡，按連線＝同意）。還沒登入 ChatGPT：
 //   同一顆鈕——按了［連線］之後框裡是 ChatGPT 的登入頁，登入好自動接著連（HandsConnectFlow.waitForLogin）。
 //   ChatGPT build 開了、網址還沒好＝到 設定 › Plugin › TAP › ChatGPT build（Cloudflare 那幾步在那裡）；沒開＝不出入口（照舊在 TAP 打開）。
@@ -252,7 +251,7 @@ final class HandsConnectEntry: ObservableObject {
     private var started = false
     private var refreshQueued = false
     /// 目前 Pod 帳號身分的雜湊（只在這台；登出、關掉＝nil＝核對不了）。
-    private(set) var identityTag: String?
+    @Published private(set) var identityTag: String?
     private var probing = false
     /// W183 R11 第二輪（GPT-6 R11b 審查 3，中：「登出清掉身分後，晚到的 probe 會把 A 寫回來」）：Pod 這一次登入的世代——登出、停用、
     /// 起不來＝換一代：還在路上的身分查詢一律作廢（晚到的結果不採用），新的一代照常查。睡著、醒來不換代（帳號不會變）。
@@ -539,12 +538,25 @@ final class HandsConnectEntry: ObservableObject {
         return status
     }
 
+    /// 網頁頂列：初次未連可進卡；已連線只在既有 W199 提示需要動手時出現。
+    var webEntryText: String? {
+        Self.webEntryText(state: state, notice: noticeText, canStart: identityTag != nil || login.connection == .needsLogin,
+                          hasRecord: accounts.records().contains { $0.identityTag == identityTag })
+    }
+
+    static func webEntryText(state: HandsConnectEntryState, notice: String?, canStart: Bool, hasRecord: Bool) -> String? {
+        if let notice { return notice }
+        guard (state == .connect || state == .setup), canStart, !hasRecord else { return nil }
+        return state.help
+    }
+
     /// 按了（三個地方同一個動作）。先核對目前帳號（登出、換帳號之後不照舊的算），再照狀態做。
-    func tap() {
+    func tap(valid: @escaping @MainActor () -> Bool = { true }) {
         HandsConnectLog.shared.write("entry.tap", "state=\(state.code) branch=probe")
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.probeNow()
+            guard valid() else { return }
             self.refresh()
             self.notice.userInitiated = true
             self.act()

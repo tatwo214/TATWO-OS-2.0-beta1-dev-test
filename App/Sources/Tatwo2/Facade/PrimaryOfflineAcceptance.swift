@@ -711,9 +711,41 @@ enum PrimaryOfflineAcceptance {
         await library.ready()
         let model = ChatPageModel(environment: environment, botCoreFixture: (local, BotStore(library: library)))
         model.disabledEngines = []
-        let device = DeviceRecord(id: "quiet-primary", name: "Primary One", host: "192.0.2.10", user: "example", sshPort: 22,
+        let device = DeviceRecord(id: "00000001-4444-4444-8444-444444444444", name: "Primary One", host: "192.0.2.10", user: "example", sshPort: 22,
                                   publicKeyFingerprint: "SHA256:quietfixture", addedAt: Date(),
                                   lastSeenAt: Date(), workdirMap: [:])
+        // W221b: the device row must come from a verified roster, including in offline UI fixtures.
+        let fleetEntry = TatwoEntry(environment: environment)
+        let fleetStore = DeviceFleetStore(registry: DeviceRegistry(environment: environment), environment: environment)
+        let originalFleet = try fleetStore.read()
+        let originalIdentity = try? Data(contentsOf: fleetEntry.deviceJSON)
+        defer {
+            try? fleetStore.save(originalFleet)
+            if let originalIdentity { try? originalIdentity.write(to: fleetEntry.deviceJSON) }
+            else { try? FileManager.default.removeItem(at: fleetEntry.deviceJSON) }
+        }
+        let fixtureKey = root.appendingPathComponent("quiet-roster-key").path
+        guard try DeviceDispatch.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "fixture", "-f", fixtureKey]).0 == 0 else {
+            throw DeviceFleetError.missingKey
+        }
+        let publicKey = try String(contentsOfFile: fixtureKey + ".pub", encoding: .utf8)
+        let fingerprint = try DeviceRegistry.fingerprint(publicKey: publicKey)
+        var signingEnvironment = environment; signingEnvironment["TATWO2_SSH_KEY_PATH"] = fixtureKey
+        signingEnvironment.removeValue(forKey: "SSH_AUTH_SOCK")
+        try FileManager.default.createDirectory(at: fleetEntry.root, withIntermediateDirectories: true)
+        try DeviceIdentity(deviceID: device.id, name: "fixture", hardwareModel: "fixture", role: .primary,
+                           epoch: 1, primaryDeviceID: device.id, updatedAt: Date()).encoded().write(to: fleetEntry.deviceJSON)
+        let member = DeviceFleetMember(id: device.id, name: device.name, factionID: "main", role: .primary,
+            clientKeyFingerprint: fingerprint, hostKeyFingerprint: nil, clientPublicKey: publicKey, hostPublicKey: nil,
+            endpoints: [.init(kind: .lan, host: device.host)], user: device.user, legacy: true)
+        let group = DeviceFleetGroup(id: "main", name: "fixture", type: .main, primaryDeviceID: device.id, managerDisplayName: "fixture")
+        let roster = DeviceFleetRoster(version: 1, primaryID: device.id, epoch: 1, groups: [group], devices: [member], edges: [])
+        var signedState = originalFleet
+        signedState.trust = DeviceFleetTrust(localID: device.id, primaryID: device.id, epoch: 1, pinnedPrimaryKey: fingerprint, kind: .owner)
+        signedState.envelope = try DeviceFleetEnvelope.issue(.init(roster: roster), environment: signingEnvironment)
+        try fleetStore.save(signedState)
+        check(try fleetStore.readGraph()?.roster?.devices.contains { $0.id == device.id } == true,
+              "W221b offline device row belongs to the verified roster")
         let session = RemoteDeviceSession(device: device, link: RemoteHostLink(environment: environment), environment: environment)
         defer { session.shutdown() }
         model.devices = [device]

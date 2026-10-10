@@ -1,0 +1,12 @@
+# W257 local scroll benchmark, demand-driven accessibility and diagnostics only.
+tests/fixtures/w257-room-allow.txt # Enumerate every changed file and its room-specific reason, including this allow file.
+App/Sources/Tatwo2/SelfTest.swift # Register the isolated real-CEF w257xsmooth suite and CEF NSApplication host.
+App/Sources/Tatwo2/Browser/W257XSmoothAcceptance.swift # Three fresh-process page samples and native AX demand proof; acceptance code only.
+Apps/TatwoUltraworkMac/Sources/TatwoCEFBridge/TatwoCEFBridge.mm # Route native accessibility requests through the CEF host; remove persistent automatic force scope.
+App/Sources/Tatwo2/New/ComputerUseController.swift # Request native browser accessibility only before an authorized tree read.
+App/Sources/Tatwo2/Browser/Diagnostics/BrowserDiagnosticsView.swift # Report requested accessibility state and reason in the existing diagnostics row.
+tests/w97-browser-perf.test.mjs # Update the earlier accessibility gate contract to cover native demand requests.
+tests/w257-xsmooth.test.mjs # Verify the local benchmark, metrics and restricted native demand integration.
+tests/fixtures/w257-timeline.py # Loopback-only infinite timeline and generated image fixture; record raw frames and longtasks.
+tests/fixtures/w257-pack.py # Assemble a disposable local CEF App with mock keychain and current worktree binary.
+tests/fixtures/w257-results.md # Preserve before/after measurements, validation receipts and limitations.

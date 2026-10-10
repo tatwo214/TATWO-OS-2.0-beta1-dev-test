@@ -1,0 +1,11 @@
+W270：第二次修正後仍失敗的回歸項目，已停止修補。
+證據：verify/W270-dlfly-185557/selftest-w258download.log:677-679
+W268 PASS dark-collapsed card timeout measured=4.176s
+W268 FAIL dark-collapsed card faded after 4s and arrow restored
+W268 PASS screenshot dark-collapsed-faded
+W268 SUMMARY failures=1 passed=168
+W258 SUMMARY failures=1 passed=31
+原斷言未放寬：完成後 4.35 秒，card probe 必須移除且 completionID 必須為 nil。
+兩次修正：宿主只保留最新已完成卡片；浮出鈕與卡片移除改為 260 ms 淡出。
+原始截圖副本：tests/fixtures/w270-w268-dark-collapsed-faded.png（未修改）。
+另外：w269gptchrome failures=0 passed=60 browserMounted=false；其 Browser 比較分支未掛載 CEF，不列為通過。

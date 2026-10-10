@@ -18,6 +18,8 @@ extension LiveDocumentRecord {
     /// 這條對話的記憶強度（照 TatwoMemoryStrength.resolve 的規則；子討論串一路往上跟母串，最多 6 層）。
     func memoryStrength(for threadID: UUID?, depth: Int = 0) -> TatwoMemoryStrength {
         guard let threadID, let thread = threads.first(where: { $0.id == threadID }) else { return .light }
+        // Remote work never passively receives the user's private memory. Explicit tools check current creator grants.
+        if thread.controllerCreatorFingerprint != nil { return .off }
         let parent = depth < 6 ? thread.parentThreadID.flatMap { id in
             threads.contains(where: { $0.id == id }) ? memoryStrength(for: id, depth: depth + 1) : nil
         } : nil

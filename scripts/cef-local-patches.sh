@@ -13,3 +13,24 @@ if grep -q "kProfilePureComputation = kSBXProfilePureComputation;" "$f"; then
 else
   echo "already patched: sandbox/mac/seatbelt.cc"
 fi
+# 2. CEF 154 把 component_updater::RegisterPathProvider 搬進 #if !BUILDFLAG(ENABLE_CEF)，CEF 不執行，
+#    DIR_COMPONENT_USER 沒登記 → 所有元件（含 Widevine）裝不起來 → Spotify 網頁播放器啟動失敗、按鈕沒反應。
+#    在 CEF 分支補登記同一個路徑提供者（Chrome 本來就這樣做）；不改其他行為。10-06 實機查證。
+f="$SRC/chrome/app/chrome_main_delegate.cc"
+python3 - "$f" <<'PY'
+import sys
+p = sys.argv[1]; s = open(p).read()
+marker = "TATWO local patch: component path provider"
+if marker in s:
+    print("already patched: chrome/app/chrome_main_delegate.cc")
+else:
+    anchor = "#endif  // !defined(BUILDING_CHROME_RENDERER)\n#endif  // !BUILDFLAG(ENABLE_CEF)\n"
+    assert s.count(anchor) == 1, "anchor count %d" % s.count(anchor)
+    add = ("#if BUILDFLAG(ENABLE_CEF)\n"
+           "  // " + marker + ": CEF 154 moved this call into the !ENABLE_CEF block above,\n"
+           "  // leaving DIR_COMPONENT_USER unregistered so no component (Widevine) can install.\n"
+           "  component_updater::RegisterPathProvider(chrome::DIR_COMPONENTS,\n"
+           "                                          chrome::DIR_USER_DATA);\n"
+           "#endif  // BUILDFLAG(ENABLE_CEF)\n")
+    open(p, "w").write(s.replace(anchor, anchor + add)); print("patched: chrome/app/chrome_main_delegate.cc (component path provider)")
+PY

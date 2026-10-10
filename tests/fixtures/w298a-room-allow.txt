@@ -1,0 +1,14 @@
+App/Sources/Tatwo2/Facade/EngineAIUpdate.swift # 版本與模型同步、純規則接手、備份
+App/Sources/Tatwo2/Chat/EngineModelCatalog.swift # Grok 支援、同代號去重、預設模型
+App/Sources/Tatwo2/Chat/EngineModelCatalogProbe.swift # 獨立唯讀模型查詢，不碰對話 sidecar
+App/Sources/Tatwo2/Chat/ChatPageModels.swift # 動態新模型與同家回退
+App/Sources/Tatwo2/Facade/ChatLiveEngine.swift # 下一句送出採用現行模型
+App/Sources/Tatwo2/Facade/DispatchEngine.swift # 下架角色暫停派工
+App/Sources/Tatwo2/New/EngineLoginCard.swift # 核准的登入頁三種狀態
+Engines/codex-sidecar/sidecar.mjs # 回傳官方預設代號
+Engines/claude-sidecar/sidecar.mjs # 回傳原生預設證據
+App/Sources/Tatwo2/Facade/W298aAcceptance.swift # 假來源、按鈕、自測截图
+App/Sources/Tatwo2/SelfTest.swift # 登記自測
+tests/fixtures/w298a-* # 隔離測試、快照、輸出與六張圖
+tests/w298a-ai-update.test.mjs # 新增測試
+docs/specs/298-ai-version-update/research.md # 三家調查與 W298b 依據

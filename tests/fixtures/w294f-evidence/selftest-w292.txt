@@ -1,0 +1,43 @@
+W292 PASS settings connected entry AXPress false
+W292 PASS settings card appears in place without opening DM false
+W292 PASS cleanup entry AXPress false
+W292 PASS fake Pod reaches preview false
+W292 PASS preview names and delete confirmation stay on settings card false
+W292 PASS cancel cleanup AXPress false
+W292 PASS cancel leaves fake connectors intact false
+W292 PASS leaving retained settings releases card and in-place routing false
+W292 PASS settings connected entry AXPress true
+W292 PASS settings card appears in place without opening DM true
+W292 PASS cleanup entry AXPress true
+W292 PASS fake Pod reaches preview true
+W292 PASS preview names and delete confirmation stay on settings card true
+W292 PASS cancel cleanup AXPress true
+W292 PASS cancel leaves fake connectors intact true
+W292 PASS settings disconnect AXPress
+W292 PASS settings disconnect reaches result on same card
+W292 PASS settings disconnect keeps original connector for W208 reconnect
+W292 PASS leaving retained settings releases card and in-place routing true
+W292 PASS settings mounts existing Pod surface without any DM open request
+W292 PASS settings pairing popup stays in existing native surface
+W292 PASS W199 healthy entry stays quiet
+W292 PASS new unconnected account has entry
+W292 PASS W199 offline or pending identity remains quiet
+W292 PASS W199 actionable revocation has entry
+W292 PASS DM web header entry AXPress
+W292 PASS healthy web header has no resident entry
+W292 PASS visible settings holds its cover 1
+W292 PASS settings keeps registered DM panel 1
+W292 PASS closing settings restores DM panel 1
+W292 PASS leaving retained Space releases cover without closing old settings 1
+W292 PASS Space switch 1 retains visible registered DM panel
+W292 PASS visible settings holds its cover 2
+W292 PASS settings keeps registered DM panel 2
+W292 PASS closing settings restores DM panel 2
+W292 PASS leaving retained Space releases cover without closing old settings 2
+W292 PASS Space switch 2 retains visible registered DM panel
+W292 PASS visible settings holds its cover 3
+W292 PASS settings keeps registered DM panel 3
+W292 PASS closing settings restores DM panel 3
+W292 PASS leaving retained Space releases cover without closing old settings 3
+W292 PASS Space switch 3 retains visible registered DM panel
+W292 SUMMARY failures=0

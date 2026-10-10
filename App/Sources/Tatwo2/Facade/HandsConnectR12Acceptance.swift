@@ -23,6 +23,7 @@ extension HandsConnectAcceptance {
         r12Levels(check)   // W183 R12 第二批（主導 4）
         try await r12Gesture(check, base)   // W183 R12 第二批（主導 2）
         try await r12ConnectLog(check, base)   // W183 R12（.033 實機）：正式版的連線紀錄
+        try await w304bInstalled(check, base)
         r12DomTick(check)   // W183 R12（.034 實機）：代勾改走 DOM 驗證
         try await r12PopupWait(check, base)   // W183 R12（.035 實機）：ChatGPT 的對話框停在等它的授權視窗
         try await r12UserPress(check, base)   // W183 R12（.036 實機）：量不到 Create＝請使用者自己按；ChatGPT 沒建成＝講清楚
@@ -141,6 +142,11 @@ extension HandsConnectAcceptance {
         check(noCEF && point == NSPoint(x: 65, y: 537) && refused.allSatisfy { $0 == nil },
               "W183 R12（.034 實機）代勾：CEF 快照認不到（整頁只有 1 個控制項、或空的）不再當成找不到——腳本在同一份文件再驗一次、量位置，點那一格的中心（57,529 16×16 → 65,537）；狀態不是 ok、畫面大小對不上、有縮放（zoomLevel 0＝100%）、位置出界＝不點",
               "point=\(String(describing: point))")
+        let strip: [String: Any] = ["status": "ok", "tick": ["x": 40, "y": 613, "w": 320, "h": 4, "vw": 524, "vh": 617]]
+        check(P.domClickPoint(strip, generation: 1, viewSize: size, zoomLevel: 0, minimumHeight: 4) == NSPoint(x: 200, y: 615)
+              && P.domClickPoint(strip, generation: 1, viewSize: size, zoomLevel: 0) == nil
+              && P.domClickPoint(strip, generation: 1, viewSize: size, zoomLevel: 1, minimumHeight: 4) == nil,
+              "W304b Create accepts the measured 4px strip at 100% zoom; checkbox and zoom guards stay strict")
         check(P.tickTook(["status": "ok", "checked": true, "create": true]) && !P.tickTook(["status": "ok", "checked": true, "create": false])
               && !P.tickTook(["status": "ok", "checked": false, "create": true]) && !P.tickTook(["status": "gone"]) && !P.tickTook(nil),
               "W183 R12 代勾點完用 DOM 確認：勾上了而且 Create 能按才算；不然交回使用者（不點第二次）")
@@ -166,6 +172,13 @@ extension HandsConnectAcceptance {
               && mode == 0o600,
               "W183 R12（.033 實機）正式版的連線紀錄：一行一步（時間、這次嘗試的代號、步驟、內容）、結構快照整段一行；信箱、token、配對碼、網址查詢字串一律遮掉；檔案 0600",
               "mode=\(String(describing: mode)) \(text.prefix(600))")
+        let accountName = "Custom Display Persona", accountMail = "custom-persona" + "@" + "example.invalid"
+        let accountTree = "div role=dialog\n section aria=\"\(accountName)\"\n  h3 \"Accounts\"\n  p aria=\"\(accountName)\" title=\"\(accountName)\" \"\(accountName)\"\n  img alt=\"\(accountName)\"\n  p \"\(accountMail)\"\n section\n  h3 \"About\""
+        log.structure("pod", "account privacy", accountTree)
+        log.write("pod", "account_name=\(accountName) email=\(accountMail)")
+        let accountLog = log.tail(2).joined(separator: "\n")
+        check(accountLog.contains("(account)") && !accountLog.contains(accountName) && !accountLog.contains(accountMail) && accountLog.contains("About"),
+              "W294b second log mask removes custom account names, email and aria/title/alt subtree")
         for index in 0..<120 { log.write("flow", "filler line \(index) " + String(repeating: "x", count: 40)) }
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
         let rotated = log.tail(500)

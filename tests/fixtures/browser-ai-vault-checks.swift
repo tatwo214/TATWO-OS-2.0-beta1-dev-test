@@ -39,7 +39,7 @@ final class W58Secrets: BrowserSecretStore {
     var onPasswordAssistInvalidated: ((Bool, Bool) -> Void)?
     var fills = 0
     var onFill: (() -> Void)?
-    func fillCredentialUsername(_ username: String, password: String, formID: String, navigationGeneration: UInt64) {
+    func fillCredentialUsername(_ username: String, password: String, formID: String, navigationGeneration: UInt64, userApproved: Bool) {
         onFill?(); fills += 1
     }
     func detect() { onLoginFormDetected?(passwordAssistOrigin!, "form", "user", "pass", "") }
@@ -182,7 +182,7 @@ final class W58Secrets: BrowserSecretStore {
         let humanIndex = root.appendingPathComponent("human-index-\(UUID()).json")
         let human = BrowserPasswordVault(indexURL: humanIndex, secrets: humanSecrets, authenticator: auth)
         let index = root.appendingPathComponent("ai-index-\(UUID()).json")
-        let ai = BrowserAIVault(indexURL: index, secrets: aiSecrets, authenticator: auth)
+        let ai = BrowserAIVault(indexURL: index, secrets: aiSecrets, authenticator: auth, totpSecrets: W58Secrets(), pendingSecrets: W58Secrets())
         let caller = AICaller(engine: "codex", botID: "bot-A", threadID: "thread-A", preset: .fullAccess)
         let h = try human.add(origin: "https://example.com", username: "human", password: "fixture-secret-human", title: "", source: .manual)
         let a = try ai.add(origin: "https://example.com", username: "ai", password: "fixture-secret-ai", label: "AI")
@@ -201,7 +201,7 @@ final class W58Secrets: BrowserSecretStore {
         check(CallerScope.thread(id: uuid.uuidString.lowercased()).allows(
             AICaller(engine: "codex", botID: nil, threadID: uuid.uuidString, preset: nil)), "UUID case insensitive")
         let wrongHuman = BrowserPasswordVault(indexURL: index, secrets: humanSecrets, authenticator: auth)
-        let wrongAI = BrowserAIVault(indexURL: humanIndex, secrets: aiSecrets, authenticator: auth)
+        let wrongAI = BrowserAIVault(indexURL: humanIndex, secrets: aiSecrets, authenticator: auth, totpSecrets: W58Secrets(), pendingSecrets: W58Secrets())
         check(wrongHuman.storageError != nil && wrongHuman.matches(origin: "https://example.com").isEmpty,
             "human rejects AI metadata index")
         check(wrongAI.storageError != nil && wrongAI.matches(origin: "https://example.com", caller: caller).isEmpty,
@@ -232,14 +232,14 @@ final class W58Secrets: BrowserSecretStore {
         check(!log.contains("fixture-secret-") && log.split(separator: "\n").count == 1 && !log.contains("private=1"), "audit no secrets/query/injected lines")
         let tail = BrowserDiagnosticsAudit.readTail(at: audit)
         check(tail.lines.first?.contains("ai_login caller=codex/bot-A/thread-A origin=example.com username=aiforged decision=allow") == true, "audit readable line")
-        let restored = BrowserAIVault(indexURL: index, secrets: aiSecrets, authenticator: auth)
+        let restored = BrowserAIVault(indexURL: index, secrets: aiSecrets, authenticator: auth, totpSecrets: W58Secrets(), pendingSecrets: W58Secrets())
         check(restored.credentials == ai.credentials, "AI metadata reload")
         try ai.delete(a.id)
         check(aiSecrets.values[a.id] == nil && ai.credentials.count == 1 && human.credentials.count == 1, "AI delete does not mutate human")
     }
     @MainActor static func login() async throws {
         let store = W58Secrets()
-        let vault = BrowserAIVault(indexURL: nil, secrets: store, authenticator: W58Auth())
+        let vault = BrowserAIVault(indexURL: nil, secrets: store, authenticator: W58Auth(), totpSecrets: W58Secrets(), pendingSecrets: W58Secrets())
         let account = try vault.add(origin: "https://example.com", username: "ai", password: "fixture-secret-login", label: "Work")
         var asks = 0, notices = 0, audits: [String] = []
         let ask: (String,String) async -> Bool = {title,detail in
@@ -311,7 +311,7 @@ final class W58Secrets: BrowserSecretStore {
     @MainActor static func render(_ root: URL) throws {
         NSApplication.shared.setActivationPolicy(.accessory)
         let human = BrowserPasswordVault(indexURL: nil, secrets: InMemorySecretStore(), authenticator: AlwaysAllowAuthenticator())
-        let ai = BrowserAIVault(indexURL: nil, secrets: InMemorySecretStore(), authenticator: AlwaysAllowAuthenticator())
+        let ai = BrowserAIVault(indexURL: nil, secrets: InMemorySecretStore(), authenticator: AlwaysAllowAuthenticator(), totpSecrets: InMemorySecretStore(), pendingSecrets: InMemorySecretStore())
         try human.add(origin: "https://example.com", username: "human@example.com", password: "fixture-secret-human", title: "Personal", source: .manual)
         try ai.add(origin: "https://work.example", username: "assistant@example.com", password: "fixture-secret-ai", label: "工作帳號", allowedCallers: .anyEngine)
         try ai.add(origin: "https://tools.example", username: "research-bot", password: "fixture-secret-bot", label: "研究專用", allowedCallers: .bot(id: "research"))

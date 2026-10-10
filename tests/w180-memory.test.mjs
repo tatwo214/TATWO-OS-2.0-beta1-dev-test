@@ -327,7 +327,8 @@ test('W180 E1 threads on the primary: the choice rides with the next sentence; o
   assert.match(slice(remote, 'nonisolated static func deliverParams(', '\n    }\n'), /if let memoryStrength \{ params\["memoryStrength"\] = memoryStrength \}/);
   const bridge = read('Facade/OSAgentBridge.swift');
   const sendMessage = slice(bridge, 'case "send_message", "send_message_with_options":', 'case "new_thread":');
-  assert.match(sendMessage, /let memoryStrength = TatwoMemoryStrength\.accepting\(params\["memoryStrength"\]\)/);
+  assert.match(sendMessage, /let mayUseMemory = try context\.controllerFingerprint\.map \{\s*try requestDispatch\.fleet\.methodAllowed\(fingerprint: \$0, method: "memory_sync_receive"\)\s*\} \?\? true/);
+  assert.match(sendMessage, /let memoryStrength = mayUseMemory \? TatwoMemoryStrength\.accepting\(params\["memoryStrength"\]\) : \.off/);
   assert.match(sendMessage, /if let memoryStrength \{ \(live as\? ChatLiveEngine\)\?\.setMemoryStrength\(threadID: threadID, memoryStrength\) \}/);
   assert.ok(sendMessage.indexOf('setMemoryStrength') < sendMessage.indexOf('Self.routesToAssistant('), 'stored before routing to the assistant');
   assert.doesNotMatch(sendMessage, /isSubset|params\.keys/, 'no extra-key check: an old primary ignores memoryStrength and still sends');

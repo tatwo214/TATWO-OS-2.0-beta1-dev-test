@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { testScratch } from './helpers/test-scratch.mjs';
+import { fleetRPCCompileStubs } from './helpers/fleet-rpc-compile-stubs.mjs';
 
 const app = resolve('App/Sources/Tatwo2');
 const source = name => readFileSync(join(app, name), 'utf8');
@@ -21,10 +22,9 @@ extension RemoteHostLink {
     }
 }
 `);
-  writeFileSync(join(root, 'Checks.swift'), String.raw`
+  writeFileSync(join(root, 'Checks.swift'), fleetRPCCompileStubs() + String.raw`
 import Foundation
 
-enum DeviceRole: String, Codable, Sendable { case primary, secondary }
 enum DeviceStatusReader {
     static func registry(environment: [String: String]) -> [DeviceRecord] { [] }
 }
@@ -49,7 +49,8 @@ struct DeviceStatusProbe {
     }
     static func main() throws {
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
-        let registry = DeviceRegistry(root: root, authorizedKeysURL: root.appendingPathComponent("authorized"), environment: [:])
+        let registry = DeviceRegistry(root: root, authorizedKeysURL: root.appendingPathComponent("authorized"),
+                                      knownHostsURL: root.appendingPathComponent("known_hosts"), environment: [:])
         let legacy = #"[{"id":"fixture-peer","name":"Fixture","host":"192.0.2.10","sshPort":22,"user":"fixture","publicKeyFingerprint":"SHA256:synthetic","addedAt":"2026-01-01T00:00:00Z","lastSeenAt":"2026-01-01T00:00:00Z","workdirMap":{}}]"#
         try Data(legacy.utf8).write(to: registry.url)
         var record = registry.list()[0]
@@ -124,7 +125,8 @@ struct DeviceStatusProbe {
   writeFileSync(join(root, 'Legacy.swift'), 'import Foundation\n' + declaration.replace('struct DeviceRecord:', 'struct LegacyDeviceRecord:'));
   const binary = join(root, 'checks');
   execFileSync('swiftc', ['-swift-version', '5', '-parse-as-library', '-num-threads', '2',
-    join(app, 'Facade/DeviceRegistry.swift'), join(root, 'Remote.swift'), join(root, 'Legacy.swift'),
+    join(app, 'Facade/DeviceRegistry.swift'),
+    ...['TatwoEntry', 'DeviceIdentity', 'DevicePairingAuth', 'DeviceSignature', 'DeviceFleetRoster', 'DeviceFleetGraph', 'DeviceFleetTransfer', 'DeviceFleetRevocation', 'DeviceFleetGate'].map(name => join(app, 'Facade', name + '.swift')), join(root, 'Remote.swift'), join(root, 'Legacy.swift'),
     join(root, 'Checks.swift'), '-o', binary], { encoding: 'utf8', timeout: 120_000 });
   const output = execFileSync(binary, [root], { encoding: 'utf8', timeout: 30_000 });
   assert.match(output, /PASS openssh-config-preserves-route-not-trust/);
@@ -139,9 +141,10 @@ test('W91 endpoint budget and UI use shared production paths; live script stays 
   assert.match(remote, /try prepareHostPin\(device\)/);
   assert.match(remote, /touch\(id: device.id, endpoint: endpoint\)/);
   assert.doesNotMatch(remote, /StrictHostKeyChecking=(?:no|accept-new)/);
-  for (const file of ['New/DevicesCard.swift', 'Pages/DeviceSyncLeafViews.swift']) {
-    assert.match(source(file), /DeviceEndpointsRow\(device: device/);
-  }
+  assert.match(source('Pages/DeviceSyncLeafViews.swift'), /DeviceEndpointsRow\(device: device/);
+  // W187 settings expose signed routes as text; route editing remains in the existing diagnostic surface.
+  assert.match(source('New/DeviceFleetListView.swift'), /device\.endpoints\.map\(\\\.label\)/);
+  assert.doesNotMatch(source('New/DevicesCard.swift').split('enum RemoteDevicePresentation')[0], /DeviceEndpointsRow\(/);
   const script = readFileSync('scripts/w91-live-check.sh', 'utf8');
   assert.deepEqual([...script.matchAll(/rpc\('([^']+)'\)/g)].map(m => m[1]), ['device_status', 'list_devices']);
   assert.doesNotMatch(script, /write_text|write_bytes|dispatch_wake|rpc\('dispatch_fetch'/);

@@ -65,7 +65,7 @@ struct BrowserShortcutsSettingsView: View {
 }
 
 /// A first-responder recorder, never a global monitor; leaving the row tears it down.
-private struct BrowserShortcutRecorder: NSViewRepresentable {
+struct BrowserShortcutRecorder: NSViewRepresentable {
     var record: (BrowserKeyCombo?) -> Void
     var cancel: () -> Void
     final class Capture: NSView {

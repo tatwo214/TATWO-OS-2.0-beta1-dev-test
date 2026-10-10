@@ -1,0 +1,4 @@
+App/Sources/Tatwo2/TAP/ChatGPTTap.swift: matches_base=True; sha256=bf8ebc1a96aab4ddf23c8a24d5c976b712755e5084e483a86cc69f25ea4fa7aa
+tests/w177-chatgpt-space.test.mjs: matches_base=True; sha256=61d3f8a9caa2b6610c3a953cda0695727d3659af60047ed0d8e65b672fdaff7d
+tests/w185-pod-fixture.mjs: matches_base=True; sha256=ae8cdb9e56300976074c9d9110f0c7e804593aa29a474d2cf0c18a4e35c9027a
+W177 baseline 8e948a5b: tests=80 pass=67 fail=13 skipped=0.

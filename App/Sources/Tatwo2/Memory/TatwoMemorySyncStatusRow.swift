@@ -10,54 +10,56 @@ struct TatwoMemorySyncStatusRow: View {
 
     var body: some View {
         let status = sync.status
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Circle().fill(dot(status.state)).frame(width: 7, height: 7)
-                    Text(status.line)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .chatGlassChip()
-                .help(status.detail.map { status.line + "\n" + $0 } ?? status.line)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("記憶同步：" + status.line)
-                .accessibilityIdentifier("tatwo.memory.sync.status")
-                if status.state == .held, !confirming {
-                    OSChipButton(title: status.heldOutgoing ? "照樣送出" : "照樣套用") { confirming = true }
-                        .accessibilityIdentifier("tatwo.memory.sync.held")
-                }
-            }
-            if status.state == .held, confirming {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(status.heldOutgoing ? "讓主設備也刪掉這 \(status.held) 條記憶？" : "讓這台也刪掉這 \(status.held) 條記憶？")
-                        .font(.system(size: 13, weight: .semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text((status.heldNames.isEmpty ? "" : status.heldNames + "。")
-                         + (status.heldOutgoing ? "主設備" : "這台") + "會先把它們複製到入口的 archive/memory-sync-deleted-日期（附還原說明）再刪。")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Spacer(minLength: 0)
-                        OSChipButton(title: "先不要") { confirming = false }
-                        OSChipButton(title: "刪掉") {
-                            sync.approveHeld()
-                            confirming = false
-                        }
+        if status.state != .disabled {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Circle().fill(dot(status.state)).frame(width: 7, height: 7)
+                        Text(status.line)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    .padding(.top, 2)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .chatGlassChip()
+                    .help(status.detail.map { status.line + "\n" + $0 } ?? status.line)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("記憶同步：" + status.line)
+                    .accessibilityIdentifier("tatwo.memory.sync.status")
+                    if status.state == .held, !confirming {
+                        OSChipButton(title: status.heldOutgoing ? "照樣送出" : "照樣套用") { confirming = true }
+                            .accessibilityIdentifier("tatwo.memory.sync.held")
+                    }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .chatLiquidSection(cornerRadius: 12)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("tatwo.memory.sync.confirm")
+                if status.state == .held, confirming {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(status.heldOutgoing ? "讓主設備也刪掉這 \(status.held) 條記憶？" : "讓這台也刪掉這 \(status.held) 條記憶？")
+                            .font(.system(size: 13, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text((status.heldNames.isEmpty ? "" : status.heldNames + "。")
+                             + (status.heldOutgoing ? "主設備" : "這台") + "會先把它們複製到入口的 archive/memory-sync-deleted-日期（附還原說明）再刪。")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(spacing: 8) {
+                            Spacer(minLength: 0)
+                            OSChipButton(title: "先不要") { confirming = false }
+                            OSChipButton(title: "刪掉") {
+                                sync.approveHeld()
+                                confirming = false
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .chatLiquidSection(cornerRadius: 12)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("tatwo.memory.sync.confirm")
+                }
             }
-        }
-        .onChange(of: status.state) { _, state in
-            if state != .held { confirming = false }
+            .onChange(of: status.state) { _, state in
+                if state != .held { confirming = false }
+            }
         }
     }
 
@@ -65,7 +67,7 @@ struct TatwoMemorySyncStatusRow: View {
         switch state {
         case .synced: .green
         case .offline, .primaryFolderMissing, .failed, .held: .orange
-        case .starting, .folderMissing: Color.secondary.opacity(0.35)
+        case .starting, .folderMissing, .disabled: Color.secondary.opacity(0.35)
         }
     }
 }

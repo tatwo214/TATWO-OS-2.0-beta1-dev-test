@@ -983,7 +983,10 @@ tatwo_cef_stage_app_artifacts() {
     return 1
   }
   mkdir -p "$frameworks"
-  /usr/bin/ditto "$framework_source" "$framework_destination"
+  # W276 keeps the receipt-verified framework on incremental staging builds.
+  if [[ "${12:-true}" == "true" ]]; then
+    /usr/bin/ditto "$framework_source" "$framework_destination"
+  fi
   for helper_index in "${!helper_name_suffixes[@]}"; do
     helper_name="$helper_base_name${helper_name_suffixes[$helper_index]}"
     helper_app="$frameworks/$helper_name.app"
@@ -1042,10 +1045,11 @@ tatwo_cef_sign_nested_artifacts() {
   else
     sign_args+=(--timestamp=none)
   fi
+  if [[ "${4:-true}" == "true" ]]; then
   if [[ "$signing_mode" != "adhoc" && "$signing_mode" != "ad-hoc" ]]; then
     while IFS= read -r -d '' nested_code; do
       if /usr/bin/file -b "$nested_code" | /usr/bin/grep -q 'Mach-O'; then
-        /usr/bin/codesign "${sign_args[@]}" "$nested_code"
+        "${TATWO_CEF_CODESIGN:-/usr/bin/codesign}" "${sign_args[@]}" "$nested_code"
       fi
     done < <(
       find "$framework" -type f \
@@ -1053,9 +1057,10 @@ tatwo_cef_sign_nested_artifacts() {
         | LC_ALL=C sort -z
     )
   fi
-  /usr/bin/codesign --deep "${sign_args[@]}" "$framework"
+  "${TATWO_CEF_CODESIGN:-/usr/bin/codesign}" --deep "${sign_args[@]}" "$framework"
+  fi
   while IFS= read -r -d '' helper_app; do
-    /usr/bin/codesign "${sign_args[@]}" "$helper_app"
+    "${TATWO_CEF_CODESIGN:-/usr/bin/codesign}" "${sign_args[@]}" "$helper_app"
   done < <(find "$contents/Frameworks" -maxdepth 1 -type d -name '* Helper*.app' -print0 | LC_ALL=C sort -z)
   printf 'CEF_NESTED_SIGNATURES=passed mode=%s\n' "$signing_mode"
 }

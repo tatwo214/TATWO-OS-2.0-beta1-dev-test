@@ -180,6 +180,7 @@ final class GitHubReleaseUpdateChecker: ObservableObject {
     }
 
     func start() {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         guard schedule == nil else { return }
         schedule = Task { [weak self] in
             do {
@@ -203,6 +204,7 @@ final class GitHubReleaseUpdateChecker: ObservableObject {
     func checkForUpdatesFromUser() { Task { await check() } }
 
     func check() async {
+        guard Bundle.main.bundleIdentifier != "ai.tatwo.tatwo2.staging" else { return }
         guard !isChecking else { return }
         isChecking = true
         defer {

@@ -116,9 +116,12 @@ enum HandsTradingFloor {
     /// 拒絕時回給 ChatGPT 的字。
     static let refusal = "project_read_only: this is a live-trading project; ChatGPT may only read it (L0). Writing, running commands and workspaces are refused by TATWO"
 
-    /// 專案名、資料夾名（最後一段）任何一個含關鍵字。
+    /// 專案名、設定資料夾末段及真實路徑家目錄以下各段含關鍵字（非整段相等；tradingcard-notes 也算）。
     static func isTrading(name: String, folder: String) -> Bool {
-        let texts = [name.lowercased(), (folder as NSString).lastPathComponent.lowercased()]
+        let real = (HandsPath.realpath(folder) ?? (folder as NSString).standardizingPath).lowercased()
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path.lowercased()
+        let tail = real == home ? "" : real.hasPrefix(home + "/") ? String(real.dropFirst(home.count + 1)) : real
+        let texts = [name.lowercased(), (folder as NSString).lastPathComponent.lowercased()] + tail.split(separator: "/").map(String.init)
         return keywords.contains { keyword in texts.contains { $0.contains(keyword.lowercased()) } }
     }
 

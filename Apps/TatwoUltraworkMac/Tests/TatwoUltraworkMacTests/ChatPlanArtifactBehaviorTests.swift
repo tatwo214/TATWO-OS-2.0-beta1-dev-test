@@ -1594,13 +1594,13 @@ final class ChatPlanArtifactBehaviorTests: XCTestCase {
       withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     try Data().write(to: root.appendingPathComponent("PLAN.md"))
-    try Data().write(to: root.appendingPathComponent("PLAN 2.md"))
+    try Data().write(to: root.appendingPathComponent("PLAN (1).md"))
 
     XCTAssertFalse(
       PlanDownloadPolicy.shouldPromptForLocation(defaults: UserDefaults()))
     XCTAssertEqual(
-      PlanDownloadPolicy.availableDestination(in: root).lastPathComponent,
-      "PLAN 3.md")
+      try PlanDownloadPolicy.export("fixture plan", in: root).lastPathComponent,
+      "PLAN (2).md")
   }
 
   func testPlanDownloadPolicyCanOptIntoSavePanel() throws {

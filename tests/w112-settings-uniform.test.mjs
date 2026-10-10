@@ -58,7 +58,10 @@ test('共用元件存在：內距 14、區塊間距 12、標題 .headline、副�
 
 test('十一頁都改用同一組標題列與內距（Space 本來就是標準）', () => {
   for (const [title, file] of Object.entries(pageFiles)) {
-    const source = read(file);
+    // W187 delegates the device page content; assert its real shared header too.
+    const source = file === 'New/DevicesCard.swift'
+      ? read(file) + read('New/DeviceFleetPage.swift') : read(file);
+    if (file === 'New/DevicesCard.swift') assert.match(read(file), /DeviceFleetPage\(snapshot: fleet\.snapshot/);
     assert.match(source, /TatwoSettingsPageHeader\(/, `${file} 沒有用共用標題列`);
     assert.ok(source.includes(`title: "${title}"`), `${file} 少了「${title}」的標題`);
     assert.match(source, /TatwoSettingsPageMetrics\.inset/, `${file} 的內距沒有統一`);
